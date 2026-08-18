@@ -12,7 +12,7 @@ import (
 
 func TestAuthRouteHookStrictLoginSessionAndCSRF(t *testing.T) {
 	hash, _ := session.HashPassword("correct horse battery staple")
-	sessions, err := session.New(session.Options{Username: "owner", PasswordHash: hash, Mode: "test", TTL: time.Hour})
+	sessions, err := session.New(session.Options{Username: "owner", PasswordHash: hash, TTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

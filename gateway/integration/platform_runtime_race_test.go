@@ -5,13 +5,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 )
 
 func TestPlatformRuntimeConcurrentReadsObserveWholeGenerations(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeTest)
+	harness := newPlatformHarness(t)
 	first := platformSnapshot(t, "race-first", "account-race", 1, 1, rawOpaqueRef, spotRoute(), perpRoute())
 	harness.promote(t, first)
 	router, err := order.NewAccountRouter(harness.manager)

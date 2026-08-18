@@ -18,13 +18,6 @@ var (
 	ErrSupersessionUnsupported = errors.New("ledger funding supersession unsupported")
 )
 
-type Mode string
-
-const (
-	ModeTest Mode = "test"
-	ModeLive Mode = "live"
-)
-
 type Kind string
 
 const (
@@ -37,7 +30,6 @@ const (
 type Entry struct {
 	PrincipalID  string    `json:"-"`
 	EntryID      string    `json:"entryId"`
-	Mode         Mode      `json:"mode"`
 	LineageID    string    `json:"lineageId"`
 	ProductID    string    `json:"productId"`
 	AccountID    string    `json:"accountId"`
@@ -50,14 +42,12 @@ type Entry struct {
 
 type Unrealized struct {
 	PrincipalID, LineageID, ProductID, AccountID, InstrumentID string
-	Mode                                                       Mode
 	Amount, Currency                                           string
 	AsOf                                                       time.Time
 }
 
 type Query struct {
 	PrincipalID                                   string
-	Mode                                          Mode
 	ProductID, LineageID, AccountID, InstrumentID string
 }
 
@@ -121,7 +111,7 @@ func (service *Service) SupersedeFunding(ctx context.Context, priorEntryID strin
 
 func (service *Service) SetUnrealized(ctx context.Context, value Unrealized) error {
 	amount, err := decimal.NewFromString(value.Amount)
-	if err != nil || value.PrincipalID == "" || (value.Mode != ModeTest && value.Mode != ModeLive) || value.LineageID == "" || value.ProductID == "" || value.AccountID == "" || value.InstrumentID == "" || value.Currency == "" || value.AsOf.IsZero() {
+	if err != nil || value.PrincipalID == "" || value.LineageID == "" || value.ProductID == "" || value.AccountID == "" || value.InstrumentID == "" || value.Currency == "" || value.AsOf.IsZero() {
 		return fmt.Errorf("invalid unrealized attribution")
 	}
 	value.Amount = amount.String()
@@ -129,8 +119,8 @@ func (service *Service) SetUnrealized(ctx context.Context, value Unrealized) err
 }
 
 func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, error) {
-	if query.PrincipalID == "" || (query.Mode != ModeTest && query.Mode != ModeLive) {
-		return PnLSnapshot{}, fmt.Errorf("invalid mode")
+	if query.PrincipalID == "" {
+		return PnLSnapshot{}, fmt.Errorf("pnl query principal is required")
 	}
 	if query.ProductID == "" || query.LineageID == "" || query.AccountID == "" || query.InstrumentID == "" {
 		return PnLSnapshot{}, fmt.Errorf("pnl query attribution is incomplete")
@@ -181,14 +171,14 @@ func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, erro
 }
 
 func (service *Service) List(ctx context.Context, query Query) ([]Entry, error) {
-	if query.PrincipalID == "" || (query.Mode != ModeTest && query.Mode != ModeLive) {
+	if query.PrincipalID == "" {
 		return nil, fmt.Errorf("invalid ledger query scope")
 	}
 	return service.store.Entries(ctx, query)
 }
 
 func validateEntry(entry Entry) error {
-	if entry.PrincipalID == "" || entry.EntryID == "" || (entry.Mode != ModeTest && entry.Mode != ModeLive) || entry.LineageID == "" || entry.ProductID == "" || entry.AccountID == "" || entry.InstrumentID == "" || entry.Currency == "" || entry.OccurredAt.IsZero() {
+	if entry.PrincipalID == "" || entry.EntryID == "" || entry.LineageID == "" || entry.ProductID == "" || entry.AccountID == "" || entry.InstrumentID == "" || entry.Currency == "" || entry.OccurredAt.IsZero() {
 		return fmt.Errorf("ledger attribution is incomplete")
 	}
 	switch entry.Kind {
@@ -261,7 +251,7 @@ func (store *MemoryStore) Entries(_ context.Context, query Query) ([]Entry, erro
 	defer store.mu.Unlock()
 	result := make([]Entry, 0)
 	for _, entry := range store.entries {
-		if entry.PrincipalID == query.PrincipalID && entry.Mode == query.Mode && matches(query, entry.ProductID, entry.LineageID, entry.AccountID, entry.InstrumentID) {
+		if entry.PrincipalID == query.PrincipalID && matches(query, entry.ProductID, entry.LineageID, entry.AccountID, entry.InstrumentID) {
 			result = append(result, entry)
 		}
 	}
@@ -271,7 +261,7 @@ func (store *MemoryStore) Entries(_ context.Context, query Query) ([]Entry, erro
 func (store *MemoryStore) SetUnrealized(_ context.Context, value Unrealized) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	key := ledgerKey(value.PrincipalID, string(value.Mode), value.ProductID, value.LineageID, value.AccountID, value.InstrumentID)
+	key := ledgerKey(value.PrincipalID, value.ProductID, value.LineageID, value.AccountID, value.InstrumentID)
 	if existing, ok := store.unrealized[key]; ok && !existing.AsOf.Before(value.AsOf) {
 		return nil
 	}
@@ -282,7 +272,7 @@ func (store *MemoryStore) SetUnrealized(_ context.Context, value Unrealized) err
 func (store *MemoryStore) Unrealized(_ context.Context, query Query) (decimal.Decimal, string, time.Time, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	value, ok := store.unrealized[ledgerKey(query.PrincipalID, string(query.Mode), query.ProductID, query.LineageID, query.AccountID, query.InstrumentID)]
+	value, ok := store.unrealized[ledgerKey(query.PrincipalID, query.ProductID, query.LineageID, query.AccountID, query.InstrumentID)]
 	if !ok {
 		return decimal.Zero, "", time.Time{}, nil
 	}
@@ -298,6 +288,6 @@ func matches(query Query, product, lineage, account, instrument string) bool {
 func ledgerKey(parts ...string) string { return strings.Join(parts, "\x00") }
 
 func sameFundingScope(left, right Entry) bool {
-	return left.Kind == KindFunding && right.Kind == KindFunding && left.Mode == right.Mode && left.ProductID == right.ProductID &&
+	return left.Kind == KindFunding && right.Kind == KindFunding && left.ProductID == right.ProductID &&
 		left.PrincipalID == right.PrincipalID && left.LineageID == right.LineageID && left.AccountID == right.AccountID && left.InstrumentID == right.InstrumentID && left.Currency == right.Currency
 }

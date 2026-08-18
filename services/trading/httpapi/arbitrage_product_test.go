@@ -93,7 +93,6 @@ func (arbitrageBoardFixture) Get(context.Context) (marketdata.BoardSnapshot, err
 		}
 	}
 	return marketdata.BoardSnapshot{
-		Mode:       "test",
 		ObservedAt: time.Now(),
 		Venues: []marketdata.BoardVenue{
 			{Venue: "binance", Environment: "live", Product: "perp", RouteProfileID: "binance-perp", Rows: []marketdata.BoardRow{row("-0.0001")}},
@@ -124,11 +123,11 @@ func (fixture *arbitrageGatewayFixture) Execute(_ context.Context, request manua
 		return manual.GatewayResult{Handoff: orders.HandoffResult{Outcome: orders.HandoffNotAttempted}}, errors.New("venue refused the handoff")
 	}
 	return manual.GatewayResult{
-		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
+		CommandID: request.CommandID, AccountID: request.AccountID,
 		State: manual.GatewayStateFilled,
 		Fills: []manual.FillFact{{
 			FillID: fmt.Sprintf("arbitrage-fill-%d", fixture.calls), CommandID: request.CommandID,
-			AccountID: request.AccountID, InstrumentID: request.InstrumentID, Mode: request.Mode,
+			AccountID: request.AccountID, InstrumentID: request.InstrumentID,
 			Side: portfolio.Side(request.Side), Quantity: request.Quantity,
 			Price: "50", Fee: "0.05", FeeCurrency: "USDT", SettlementCurrency: "USDT",
 			OccurredAt: time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC),
@@ -147,12 +146,22 @@ type arbitrageHarness struct {
 func newArbitrageHarness(t *testing.T, gateway *arbitrageGatewayFixture) arbitrageHarness {
 	t.Helper()
 	reservationService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
-	commandService := orders.NewService(orders.NewMemoryStore(), manualReservationGate{service: reservationService}, time.Now)
+	commandService := newCommandService(orders.NewMemoryStore(), manualReservationGate{service: reservationService}, time.Now)
 	portfolioProjection := portfolio.NewProjection()
 	ledgerService := ledger.NewService(ledger.NewMemoryStore(), time.Now)
 	previewKey := []byte("shared-preview-signing-key-with-32-bytes")
 	projection, err := catalog.NewProjection(arbitrageCatalogSource{}, time.Minute, time.Now)
 	if err != nil {
+		t.Fatal(err)
+	}
+	arbitrageService := arbitrage.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, gateway, time.Now, previewKey)
+	// Both switches used to be one disjunct of a two-part admission: a test-mode
+	// command was admitted whether or not live writes were armed. With one mode
+	// left the switches are the only gate, and they start closed — so a harness
+	// that means to place an order has to arm every layer the order passes
+	// through. app.go arms exactly these two from the same config flag.
+	commandService.SetLiveWritesEnabled(true)
+	if err := arbitrageService.SetExecutionAdmission(true); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
@@ -162,11 +171,10 @@ func newArbitrageHarness(t *testing.T, gateway *arbitrageGatewayFixture) arbitra
 		Portfolio:         portfolioProjection,
 		Ledger:            ledgerService,
 		Catalog:           projection,
-		Arbitrage:         arbitrage.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, gateway, time.Now, previewKey),
+		Arbitrage:         arbitrageService,
 		FundingBoard:      arbitrageBoardFixture{},
 		ManualAccounts:    readyArbitrageAccounts(),
-		ManualMarketData:  &manualMarketDataFixture{ask: "50"},
-		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
 	if err != nil {
@@ -177,11 +185,12 @@ func newArbitrageHarness(t *testing.T, gateway *arbitrageGatewayFixture) arbitra
 
 const arbitragePreviewBody = `{"long":{"accountId":"account-long","instrumentId":"BTC-USDT-BINANCE"},` +
 	`"short":{"accountId":"account-short","instrumentId":"BTC-USDT-OKX"},` +
-	`"quantity":"2","orderType":"market","timeInForce":"ioc","mode":"test"}`
+	`"quantity":"2","orderType":"market","timeInForce":"ioc"}`
 
 // preview runs the preview route and returns the sealed token the open route
-// spends. Quantity 2 at the fixture's 50 prices each leg at exactly the 100
-// test-mode notional ceiling, which manualTestNotionalAllowed admits.
+// spends. Quantity 2 at the fixture's 50 prices each leg at 100 USDT, which used
+// to be exactly the test-mode notional ceiling; there is no ceiling left, and
+// the size is kept only because the fill prices downstream assertions.
 func (harness arbitrageHarness) preview(t *testing.T) string {
 	t.Helper()
 	response := httptest.NewRecorder()
@@ -242,7 +251,7 @@ func TestArbitrageOpenEmitsTwoCommandsSharingLineage(t *testing.T) {
 		t.Fatalf("legs are not a hedge: %+v", execution.Legs)
 	}
 
-	commands, err := harness.commands.ListOwned(context.Background(), "principal-a", orders.ModeTest, arbitrage.ProductID)
+	commands, err := harness.commands.ListOwned(context.Background(), "principal-a", arbitrage.ProductID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +277,7 @@ func TestArbitrageOpenEmitsTwoCommandsSharingLineage(t *testing.T) {
 		t.Fatalf("gateway calls=%d", harness.gateway.calls)
 	}
 
-	positions, err := harness.portfolio.ListContext(context.Background(), "principal-a", portfolio.ModeTest, "", arbitrage.ProductID)
+	positions, err := harness.portfolio.ListContext(context.Background(), "principal-a", "", arbitrage.ProductID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +334,7 @@ func TestArbitragePartialOpenIsNotAutoRolledBack(t *testing.T) {
 		}
 	}
 
-	positions, err := harness.portfolio.ListContext(context.Background(), "principal-a", portfolio.ModeTest, "", arbitrage.ProductID)
+	positions, err := harness.portfolio.ListContext(context.Background(), "principal-a", "", arbitrage.ProductID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +342,7 @@ func TestArbitragePartialOpenIsNotAutoRolledBack(t *testing.T) {
 		t.Fatalf("the filled leg must stay visible, got %+v", positions)
 	}
 
-	commands, err := harness.commands.ListOwned(context.Background(), "principal-a", orders.ModeTest, arbitrage.ProductID)
+	commands, err := harness.commands.ListOwned(context.Background(), "principal-a", arbitrage.ProductID)
 	if err != nil {
 		t.Fatal(err)
 	}

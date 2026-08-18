@@ -49,12 +49,20 @@ settlement, named by an ID like `binance.spot.v1` or `nado.perp.usdt0.v1`. A
 **route** is a profile bound to one account's credentials, and a **route ID**
 names it inside a write.
 
-**Mode** is a deployment attribute, not a market one. It used to be coarser than
-environment — `test` covered `demo` and `testnet`, `live` covered `live`, and a
-process running in one mode could not resolve a profile belonging to the other.
-With the non-production tier gone, a route profile carries no mode at all. What
-survives is a `test` or `live` label on the database, secret namespace, and
-principal that one deployment runs under.
+**Mode** was a deployment attribute, not a market one, and it is gone. It was
+coarser than environment — `test` covered `demo` and `testnet`, `live` covered
+`live` — and a process running in one mode could not resolve a profile belonging
+to the other. With the non-production tier removed, one side of that pair had
+nothing left to name, so the axis was deleted rather than left with a single
+value: the databases, the secret namespace, and the principal all dropped the
+label, and the two headers that carried a mode attestation between services no
+longer exist.
+
+A **live-write switch**, `BT_LIVE_PRIVATE_WRITES_ENABLED`, is what replaces it
+operationally. It is not a mode: it does not change which venue a route reaches
+or which credentials a write uses, and there is nothing on the other side of it.
+Closed, every private write is refused with `LIVE_PRIVATE_WRITE_DISABLED`. Open,
+a write goes to a real exchange with real money.
 
 ## Product rows
 

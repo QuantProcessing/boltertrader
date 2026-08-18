@@ -357,7 +357,6 @@ func (request RotationFinalizationRequest) CanonicalDigest() (string, error) {
 		ExpectedActiveFence   domain.AccountFence `json:"expectedActiveFence"`
 		ExpectedRetiringFence domain.AccountFence `json:"expectedRetiringFence"`
 		TombstoneRevision     uint64              `json:"tombstoneRevision"`
-		Mode                  secretstore.Mode    `json:"mode"`
 		Namespace             string              `json:"namespace"`
 		KeyVersion            string              `json:"keyVersion"`
 	}{
@@ -365,7 +364,6 @@ func (request RotationFinalizationRequest) CanonicalDigest() (string, error) {
 		request.ExpectedActiveFence,
 		request.ExpectedRetiringFence,
 		request.ExpectedActiveFence.DesiredStateRevision,
-		request.Scope.Mode,
 		request.Scope.Namespace,
 		request.Scope.KeyVersion,
 	}
@@ -420,10 +418,9 @@ func (request RetirementRequest) CanonicalDigest() (string, error) {
 		AccountID           domain.AccountID    `json:"accountId"`
 		ExpectedActiveFence domain.AccountFence `json:"expectedActiveFence"`
 		TombstoneRevision   uint64              `json:"tombstoneRevision"`
-		Mode                secretstore.Mode    `json:"mode"`
 		Namespace           string              `json:"namespace"`
 		KeyVersion          string              `json:"keyVersion"`
-	}{request.AccountID, request.ExpectedActiveFence, request.TombstoneRevision, request.Scope.Mode, request.Scope.Namespace, request.Scope.KeyVersion}
+	}{request.AccountID, request.ExpectedActiveFence, request.TombstoneRevision, request.Scope.Namespace, request.Scope.KeyVersion}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("encode retirement digest: %w", err)

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -56,7 +55,6 @@ type runtimeDeps struct {
 	listenInternal           func(network, address string) (net.Listener, error)
 	wait                     func(context.Context, *process.Service) error
 	metrics                  *observability.Metrics
-	runtimeMode              account.RuntimeMode
 	runtimeLifecycle         account.RuntimeLifecycle
 	resolveRuntimeSecret     func(context.Context, secret.OpaqueRef) (string, error)
 	activateRuntime          func(context.Context, account.DesiredRuntime, string) error
@@ -93,16 +91,12 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		metrics = observability.NewMetrics()
 	}
 	connectPostgres := defaultConnectPostgres(deps.connectPostgres)
-	runtimeMode := deps.runtimeMode
-	if runtimeMode == "" {
-		runtimeMode = account.RuntimeMode(file.Server.Mode)
-	}
-	validateDatabaseIdentity := defaultValidateDatabaseIdentity(deps.validateDatabaseIdentity, runtimeMode)
+	validateDatabaseIdentity := defaultValidateDatabaseIdentity(deps.validateDatabaseIdentity)
 	credentialResolver := deps.credentialResolver
 	var credentialProvider *secretstore.FilesystemProvider
 	validationProfile := file.Server.StartupProfile == config.StartupProfileMigrationValidation
 	if !validationProfile && credentialResolver == nil && deps.buildAccountManager == nil {
-		credentialProvider, credentialResolver, err = newGatewayCredentialResolver(runtimeMode)
+		credentialProvider, credentialResolver, err = newGatewayCredentialResolver()
 		if err != nil {
 			return err
 		}
@@ -166,15 +160,15 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle, mode: runtimeMode})
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle})
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
 		ResolveSecret:            provider.Resolve,
 		ConnectPostgres:          observedConnectPostgres(metrics, connectPostgres),
 		ValidateDatabaseIdentity: validateDatabaseIdentity,
-		VerifyDatabaseAuthority:  defaultVerifyDatabaseAuthority(deps.verifyDatabaseAuthority, runtimeMode),
-		BuildAccountManager:      defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver, runtimeMode),
+		VerifyDatabaseAuthority:  defaultVerifyDatabaseAuthority(deps.verifyDatabaseAuthority),
+		BuildAccountManager:      defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver),
 		RestoreAccountManager: func(restoreCtx context.Context, pool process.PostgresPool, manager process.AccountManager) error {
 			if deps.restoreAccountManager != nil {
 				return deps.restoreAccountManager(restoreCtx, pool, manager)
@@ -189,7 +183,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 					return attachErr
 				}
 			}
-			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, runtimeMode, withFundingBoard(fundingBoard))
+			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, withFundingBoard(fundingBoard))
 			if restoreErr != nil {
 				return restoreErr
 			}
@@ -210,7 +204,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 					return nil, handlerErr
 				}
 			}
-			return modeAttestedHandler(runtimeMode, publicHandler), nil
+			return publicHandler, nil
 		},
 		ValidationHandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool) (http.Handler, error) {
 			gatewayMonitor = monitor
@@ -228,7 +222,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 					}
 					var handlerErr error
 					internalHandler, handlerErr = httpapi.NewInternalHandler(httpapi.InternalOptions{
-						Authority: validationSnapshotAuthority{snapshots: postgres.NewStore(realPool), mode: runtimeMode},
+						Authority: validationSnapshotAuthority{snapshots: postgres.NewStore(realPool)},
 						Authenticate: func(request *http.Request) error {
 							if _, ok := auth.Principal(request.Context()); !ok {
 								return errors.New("internal authentication required")
@@ -264,7 +258,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			_ = service.Shutdown(context.Background())
 			return fmt.Errorf("internal listen failed")
 		}
-		internalService = startAuthorityHTTPServer(listener, modeAttestedHandler(runtimeMode, internalHandler))
+		internalService = startAuthorityHTTPServer(listener, internalHandler)
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -290,24 +284,6 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		wait = waitForSignal
 	}
 	return wait(ctx, service)
-}
-
-const gatewayModeHeader = "X-Bolter-Mode"
-
-func modeAttestedHandler(mode account.RuntimeMode, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(gatewayModeHeader, string(mode))
-		if r.Header.Get(gatewayModeHeader) != string(mode) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
-				"code": "MODE_ATTESTATION_REQUIRED", "message": "request denied",
-				"requestId": r.Header.Get("X-Request-ID"), "retryable": false,
-			}})
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func defaultInternalHandlerFactory(
@@ -368,7 +344,6 @@ func defaultInternalHandlerFactory(
 type accountLifecycleDeps struct {
 	credentials *secretstore.FilesystemProvider
 	runtime     account.RuntimeLifecycle
-	mode        account.RuntimeMode
 }
 
 func (deps accountLifecycleDeps) available() bool {
@@ -394,17 +369,16 @@ func (deps accountLifecycleDeps) available() bool {
 // promotion once the routes really are ready. Creation is eventually
 // consistent by construction, so nothing else has to be.
 func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpapi.InternalAuthority) (*lifecycle.Service, *lifecycle.Reconciler, error) {
-	mode := secretstore.Mode(deps.mode)
 	// The namespace and key version are the ones newGatewayCredentialResolver
 	// already refused to start without, so the lifecycle writes into the same
 	// scope the runtime reads from.
 	credentials, err := secret.NewStore(secret.Config{
-		Mode: mode, Namespace: "boltertrader/" + string(deps.mode), KeyVersion: "v1",
+		Namespace: secret.Namespace, KeyVersion: "v1",
 	}, deps.credentials.Writer())
 	if err != nil {
 		return nil, nil, fmt.Errorf("account lifecycle credential store")
 	}
-	desired, err := authorityclient.New(authority, mode)
+	desired, err := authorityclient.New(authority)
 	if err != nil {
 		return nil, nil, fmt.Errorf("account lifecycle authority client")
 	}
@@ -415,7 +389,6 @@ func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpap
 		Secrets: secrets,
 		Audit:   postgres.NewAccountLifecycleAuditStore(pool),
 		Gateway: desired,
-		Mode:    mode,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("account lifecycle setup")
@@ -732,7 +705,6 @@ func defaultBuildAccountManager(
 	override func(context.Context) (process.AccountManager, error),
 	lifecycle account.RuntimeLifecycle,
 	credentialResolver account.ScopedCredentialResolver,
-	mode account.RuntimeMode,
 ) func(context.Context) (process.AccountManager, error) {
 	if override != nil {
 		return override
@@ -757,7 +729,6 @@ func defaultBuildAccountManager(
 			ExchangeCatalog:         exchangeCatalog,
 			GatewayCatalog:          gatewayCatalog,
 			HTTPClient:              httpClient,
-			RuntimeMode:             mode,
 			Lifecycle:               lifecycle,
 			CredentialResolver:      credentialResolver,
 			RuntimeGroupBuilder:     account.NewFactoryRuntimeGroupBuilder(httpClient, exchangeCatalog),
@@ -779,13 +750,12 @@ func (gatewayKeychainRunner) Run(ctx context.Context, name string, args ...strin
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-func newGatewayCredentialResolver(mode account.RuntimeMode) (*secretstore.FilesystemProvider, account.ScopedCredentialResolver, error) {
+func newGatewayCredentialResolver() (*secretstore.FilesystemProvider, account.ScopedCredentialResolver, error) {
 	keySourceName := strings.TrimSpace(os.Getenv("BT_SECRET_KEY_SOURCE"))
 	stateDir := strings.TrimSpace(os.Getenv("BT_SECRET_STORE_DIR"))
 	namespace := strings.TrimSpace(os.Getenv("BT_SECRET_STORE_NAMESPACE"))
 	keyVersion := strings.TrimSpace(os.Getenv("BT_SECRET_MASTER_KEY_VERSION"))
-	secretMode := secretstore.Mode(mode)
-	if !filepath.IsAbs(stateDir) || namespace != "boltertrader/"+string(mode) || keyVersion != "v1" || (secretMode != secretstore.ModeTest && secretMode != secretstore.ModeLive) {
+	if !filepath.IsAbs(stateDir) || namespace != secretstore.Namespace || keyVersion != "v1" {
 		return nil, nil, fmt.Errorf("credential resolver configuration is invalid")
 	}
 	var keySource secretstore.KeySource
@@ -806,11 +776,11 @@ func newGatewayCredentialResolver(mode account.RuntimeMode) (*secretstore.Filesy
 	default:
 		return nil, nil, fmt.Errorf("credential resolver key source is invalid")
 	}
-	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: stateDir, Mode: secretMode, KeySource: keySource})
+	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: stateDir, KeySource: keySource})
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize credential resolver failed")
 	}
-	resolver, err := secret.NewScopedCredentialResolver(provider.Resolver(), secretstore.Scope{Mode: secretMode, Namespace: namespace, KeyVersion: keyVersion})
+	resolver, err := secret.NewScopedCredentialResolver(provider.Resolver(), secretstore.Scope{Namespace: namespace, KeyVersion: keyVersion})
 	if err != nil {
 		provider.Close()
 		return nil, nil, fmt.Errorf("initialize credential resolver failed")
@@ -831,15 +801,16 @@ func defaultConnectPostgres(override func(context.Context, string) (process.Post
 	}
 }
 
-func defaultValidateDatabaseIdentity(override func(context.Context, process.PostgresPool) error, mode account.RuntimeMode) func(context.Context, process.PostgresPool) error {
+// gatewayDatabaseIdentity is the database and role the gateway must be
+// connected as. Both halves are checked against this one name: a gateway
+// pointed at another service's database would migrate and write into it.
+const gatewayDatabaseIdentity = "bolter_gateway"
+
+func defaultValidateDatabaseIdentity(override func(context.Context, process.PostgresPool) error) func(context.Context, process.PostgresPool) error {
 	if override != nil {
 		return override
 	}
 	return func(ctx context.Context, pool process.PostgresPool) error {
-		if mode != account.RuntimeModeTest && mode != account.RuntimeModeLive {
-			return fmt.Errorf("postgres identity configuration is invalid")
-		}
-		expectedIdentity := "bolter_gateway_" + string(mode)
 		realPool, ok := pool.(*pgxpool.Pool)
 		if !ok {
 			return fmt.Errorf("postgres pool type")
@@ -848,7 +819,7 @@ func defaultValidateDatabaseIdentity(override func(context.Context, process.Post
 		if err := realPool.QueryRow(ctx, `SELECT current_database(), current_user`).Scan(&database, &role); err != nil {
 			return fmt.Errorf("query postgres identity")
 		}
-		return validateConnectedDatabaseIdentity(database, role, expectedIdentity)
+		return validateConnectedDatabaseIdentity(database, role, gatewayDatabaseIdentity)
 	}
 }
 
@@ -859,14 +830,11 @@ func validateConnectedDatabaseIdentity(database, role, expectedIdentity string) 
 	return nil
 }
 
-func defaultVerifyDatabaseAuthority(override func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error), mode account.RuntimeMode) func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
+func defaultVerifyDatabaseAuthority(override func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error)) func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
 	if override != nil {
 		return override
 	}
 	return func(ctx context.Context, pool process.PostgresPool) (postgres.AuthorityResult, error) {
-		if mode != account.RuntimeModeTest {
-			return postgres.AuthorityResult{}, fmt.Errorf("Gateway authority matrix is unavailable for mode")
-		}
 		realPool, ok := pool.(*pgxpool.Pool)
 		if !ok {
 			return postgres.AuthorityResult{}, fmt.Errorf("postgres pool type")

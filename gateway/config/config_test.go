@@ -17,7 +17,7 @@ func TestLoadStrictYAMLAcceptsOperationalOnlyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadYAML: %v", err)
 	}
-	if file.Server.Mode != "test" || file.Server.Listen != "127.0.0.1:18080" {
+	if file.Server.Listen != "127.0.0.1:18080" {
 		t.Fatalf("server = %+v", file.Server)
 	}
 	if file.Server.AuthTokenRef.IsZero() || file.Postgres.DSNRef.IsZero() {
@@ -210,7 +210,7 @@ func TestDevPlatformConfigsDeclareNormalAndMigrationValidationProfiles(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if file.Server.Mode != "test" || file.Server.StartupProfile != want {
+		if file.Server.StartupProfile != want {
 			t.Fatalf("%s server=%+v", name, file.Server)
 		}
 	}

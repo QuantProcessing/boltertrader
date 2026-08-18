@@ -16,8 +16,8 @@ import (
 )
 
 func TestFilesystemProviderRoundTripReplayAndConflict(t *testing.T) {
-	provider := newTestProvider(t, secretstore.ModeTest)
-	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+	provider := newTestProvider(t)
+	scope := testScope()
 	op, err := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
 	if err != nil {
 		t.Fatal(err)
@@ -53,16 +53,16 @@ func TestFilesystemProviderRoundTripReplayAndConflict(t *testing.T) {
 	}
 }
 
-func TestFilesystemProviderRejectsTamperingAndCrossScope(t *testing.T) {
-	provider := newTestProvider(t, secretstore.ModeTest)
-	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+func TestFilesystemProviderRejectsTamperingAndForeignScope(t *testing.T) {
+	provider := newTestProvider(t)
+	scope := testScope()
 	op, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
 	ref, err := provider.Writer().Put(context.Background(), scope, op, []byte("credential-canary"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	objectName := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.RawForTrustedBoundary())))
-	objectPath := filepath.Join(provider.StateDir(), "test", "objects", objectName+".json")
+	objectPath := filepath.Join(provider.StateDir(), "objects", objectName+".json")
 	data, err := os.ReadFile(objectPath)
 	if err != nil {
 		t.Fatal(err)
@@ -76,9 +76,14 @@ func TestFilesystemProviderRejectsTamperingAndCrossScope(t *testing.T) {
 	} else if strings.Contains(err.Error(), "credential-canary") || strings.Contains(err.Error(), ref.RawForTrustedBoundary()) || strings.Contains(err.Error(), objectPath) {
 		t.Fatalf("error leaked provider detail: %v", err)
 	}
-	live := secretstore.Scope{Mode: secretstore.ModeLive, Namespace: "boltertrader/live", KeyVersion: "v1"}
-	if _, err := provider.Resolver().Resolve(context.Background(), live, ref); !errors.Is(err, secretstore.ErrInvalidScope) {
-		t.Fatalf("cross-scope err=%v", err)
+	// The foreign scope used to be the other mode: a test-mode provider handed a
+	// live scope refused it, and the two namespaces were "boltertrader/test" and
+	// "boltertrader/live". One namespace is left, so the scope a provider will not
+	// serve is any scope that does not name it — which is what a reference minted
+	// against different storage would arrive carrying.
+	foreign := secretstore.Scope{Namespace: "boltertrader/other", KeyVersion: "v1"}
+	if _, err := provider.Resolver().Resolve(context.Background(), foreign, ref); !errors.Is(err, secretstore.ErrInvalidScope) {
+		t.Fatalf("foreign-scope err=%v", err)
 	}
 }
 
@@ -91,15 +96,15 @@ func TestFilesystemProviderRejectsEachAuthenticatedEnvelopeMutation(t *testing.T
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
-			provider := newTestProvider(t, secretstore.ModeTest)
-			scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+			provider := newTestProvider(t)
+			scope := testScope()
 			op, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
 			ref, err := provider.Writer().Put(context.Background(), scope, op, []byte("credential-canary"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			objectName := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.RawForTrustedBoundary())))
-			path := filepath.Join(provider.StateDir(), "test", "objects", objectName+".json")
+			path := filepath.Join(provider.StateDir(), "objects", objectName+".json")
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -121,8 +126,8 @@ func TestFilesystemProviderRejectsEachAuthenticatedEnvelopeMutation(t *testing.T
 }
 
 func TestFilesystemProviderRevalidatesCanonicalOperationID(t *testing.T) {
-	provider := newTestProvider(t, secretstore.ModeTest)
-	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+	provider := newTestProvider(t)
+	scope := testScope()
 	invalid := secretstore.OperationID("018F47A8-2578-7D3C-9D7D-5E4F4A445C33")
 	if _, err := provider.Writer().Put(context.Background(), scope, invalid, []byte("value")); !errors.Is(err, secretstore.ErrInvalidOperationID) {
 		t.Fatalf("Put err=%v", err)
@@ -132,23 +137,42 @@ func TestFilesystemProviderRevalidatesCanonicalOperationID(t *testing.T) {
 	}
 }
 
-func TestFilesystemProviderFailsClosedOnMalformedSiblingMetadata(t *testing.T) {
-	stateDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stateDir, "live"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "live", "metadata.json"), []byte(`{"version":2}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+// A provider that cannot reconcile the metadata already sitting in its state
+// directory must refuse to start rather than write its own over the top. The
+// directory is where credential material lives; overwriting the marker would
+// leave every existing envelope unopenable and report nothing.
+//
+// This used to be aimed one directory sideways. State was split per mode, so
+// bootstrap read the *other* mode's metadata: malformed meant ErrIntegrity, and
+// a check that matched this provider's key meant ErrModeKeyReuse — one key
+// encrypting both modes' credentials. There is one mode and one directory now,
+// so there is no sibling to read and no reuse to detect; what is left is the
+// provider's own marker, and both of its failure shapes still have to close.
+func TestFilesystemProviderFailsClosedOnUnreconcilableMetadata(t *testing.T) {
 	key := make([]byte, 32)
-	_, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: stateDir, Mode: secretstore.ModeTest, KeySource: secretstore.StaticKeySource{Key: key}})
-	clear(key)
-	if !errors.Is(err, secretstore.ErrIntegrity) {
-		t.Fatalf("err=%v", err)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	defer clear(key)
+
+	for name, metadata := range map[string]string{
+		"malformed":   `{"version":2}`,
+		"foreign key": `{"version":1,"check":"` + strings.Repeat("a", 64) + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(stateDir, "metadata.json"), []byte(metadata), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: stateDir, KeySource: secretstore.StaticKeySource{Key: key}})
+			if !errors.Is(err, secretstore.ErrIntegrity) {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
 
-func newTestProvider(t *testing.T, mode secretstore.Mode) *secretstore.FilesystemProvider {
+func newTestProvider(t *testing.T) *secretstore.FilesystemProvider {
 	t.Helper()
 	key := make([]byte, 32)
 	for i := range key {
@@ -156,7 +180,6 @@ func newTestProvider(t *testing.T, mode secretstore.Mode) *secretstore.Filesyste
 	}
 	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{
 		StateDir: t.TempDir(),
-		Mode:     mode,
 		KeySource: secretstore.StaticKeySource{
 			Key: key,
 		},
@@ -167,6 +190,13 @@ func newTestProvider(t *testing.T, mode secretstore.Mode) *secretstore.Filesyste
 	}
 	t.Cleanup(provider.Close)
 	return provider
+}
+
+// testScope is the only scope any provider here will serve. It used to be one
+// of two, paired with the mode the provider was built in; the namespace is a
+// constant now, and Validate refuses anything that is not it.
+func testScope() secretstore.Scope {
+	return secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"}
 }
 
 func TestFileKeySourceRequiresSecureCanonicalKeyFile(t *testing.T) {

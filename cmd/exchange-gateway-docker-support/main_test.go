@@ -200,24 +200,33 @@ postgres:
 	}
 }
 
-// The Gateway answers 409 to any request that does not attest the mode it is
-// running in, health routes included, and Compose reads that 409 as "unhealthy"
-// forever — holding back every service that depends on it. The mode is read
-// from the config rather than assumed, so this asserts the explicit case: a
-// hard-coded "test" would satisfy the default and fail exactly where it matters.
-func TestHealthAttestsTheModeFromTheConfig(t *testing.T) {
+// A malformed probe must fail before it dials, not after: a request built from
+// a bad flag would either hit the wrong path or hang past the healthcheck's own
+// interval, and Compose reads both as unhealthy forever, holding back every
+// service that waits on the Gateway. So each guard is asserted alongside the
+// fact that nothing was sent.
+//
+// This replaces a test that varied `mode:` in the config and asserted the value
+// reached an X-Bolter-Mode header. There is one mode now and the header is gone
+// from both ends; the token is the only config-derived value still on the wire,
+// and the test above already covers it.
+func TestHealthRejectsMalformedInvocationsWithoutDialing(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		modeLine string
-		want     string
+		name string
+		args []string
+		want string
 	}{
-		{name: "default", modeLine: "", want: "test"},
-		{name: "explicit live", modeLine: "  mode: live\n", want: "live"},
+		{name: "no config", args: []string{"health", "-kind", "ready"}, want: "requires -config"},
+		{name: "unknown kind", args: []string{"health", "-kind", "readyish"}, want: "kind must be live or ready"},
+		{name: "negative timeout", args: []string{"health", "-kind", "ready", "-timeout", "-1s"}, want: "timeout must be positive"},
+		{name: "timeout past the ceiling", args: []string{"health", "-kind", "ready", "-timeout", "30s"}, want: "at most 10s"},
+		{name: "positional argument", args: []string{"health", "-kind", "ready", "extra"}, want: "does not accept positional arguments"},
+		{name: "unknown flag", args: []string{"health", "-kind", "ready", "-mode", "test"}, want: "parse health arguments"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var gotMode string
-			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				gotMode = request.Header.Get("X-Bolter-Mode")
+			dialed := false
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				dialed = true
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body:       io.NopCloser(strings.NewReader("ok")),
@@ -231,19 +240,24 @@ func TestHealthAttestsTheModeFromTheConfig(t *testing.T) {
 server:
   listen: 127.0.0.1:18080
   auth_token_ref: env://TOKEN
-`+test.modeLine+`
 postgres:
   dsn_ref: env://POSTGRES_DSN
 `)
-
-			err := runDockerSupport(context.Background(), []string{
-				"health", "-config", configPath, "-kind", "ready",
-			}, dockerSupportDeps{secretRoot: root, httpClient: client})
-			if err != nil {
-				t.Fatalf("health ready: %v", err)
+			args := test.args
+			if test.name != "no config" {
+				// Inserted right after the subcommand rather than appended:
+				// flag parsing stops at the first positional, so a trailing
+				// -config would itself become one and the missing-config check
+				// would fire before the guard under test.
+				args = append([]string{args[0], "-config", configPath}, args[1:]...)
 			}
-			if gotMode != test.want {
-				t.Fatalf("attested mode = %q, want %q", gotMode, test.want)
+
+			err := runDockerSupport(context.Background(), args, dockerSupportDeps{secretRoot: root, httpClient: client})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("err = %v, want one containing %q", err, test.want)
+			}
+			if dialed {
+				t.Fatal("a malformed probe reached the Gateway")
 			}
 		})
 	}

@@ -10,39 +10,24 @@ import (
 	"github.com/google/uuid"
 )
 
-type Mode string
-
-const (
-	ModeTest Mode = "test"
-	ModeLive Mode = "live"
-)
-
 var (
 	ErrInvalidScope       = errors.New("invalid secret store scope")
 	ErrInvalidOperationID = errors.New("invalid secret store operation id")
 	ErrInvalidReference   = errors.New("invalid secret store reference")
 )
 
+// Namespace is the only namespace secret material is stored under. It is a
+// constant rather than a caller-supplied string so that a scope cannot be
+// constructed that addresses material the provider would then refuse to serve.
+const Namespace = "boltertrader"
+
 type Scope struct {
-	Mode       Mode
 	Namespace  string
 	KeyVersion string
 }
 
 func (scope Scope) Validate() error {
-	if scope.KeyVersion != "v1" {
-		return ErrInvalidScope
-	}
-	switch scope.Mode {
-	case ModeTest:
-		if scope.Namespace != "boltertrader/test" {
-			return ErrInvalidScope
-		}
-	case ModeLive:
-		if scope.Namespace != "boltertrader/live" {
-			return ErrInvalidScope
-		}
-	default:
+	if scope.KeyVersion != "v1" || scope.Namespace != Namespace {
 		return ErrInvalidScope
 	}
 	return nil
@@ -101,5 +86,5 @@ type CredentialResolver interface {
 }
 
 func (scope Scope) String() string {
-	return fmt.Sprintf("secretstore.Scope{Mode:%q Namespace:%q KeyVersion:%q}", scope.Mode, scope.Namespace, scope.KeyVersion)
+	return fmt.Sprintf("secretstore.Scope{Namespace:%q KeyVersion:%q}", scope.Namespace, scope.KeyVersion)
 }

@@ -13,7 +13,7 @@ Gateway 账户不是一对带标签的凭证。它是一条同时携带下列内
 
 | 组成 | 装的是什么 |
 | --- | --- |
-| 身份 | 交易所、交易所环境、模式、显示名 |
+| 身份 | 交易所、交易所环境、原生环境、显示名 |
 | 凭证 | 一个指向密钥存储的引用——绝不是材料本身 |
 | Route | 一条或多条 product route，各自绑定一个 route profile |
 | 修订号 | 期望状态修订号、runtime generation、凭证版本 |
@@ -58,17 +58,19 @@ Gateway 账户不是一对带标签的凭证。它是一条同时携带下列内
 一个账户没有 product，它的 **route** 才有。
 
 每条 route 点名一个 product、一个结算资产、一个 route profile，以及运维希望它处在的状态。
-Profile 在账户所属 mode 下经 route profile 注册表解析，而校验是一次三方一致：profile 的
-product、结算资产与原生环境必须逐项与账户自身相符。能解析但不一致的 route 会被拒绝——因为
+Profile 按交易所与 profile ID 经 route profile 注册表解析，而校验是一次两方一致：profile 的
+product 与结算资产必须各自与 route 自身相符。能解析但不一致的 route 会被拒绝——因为
 route profile 恰恰就是决定一个签名请求发去哪里的那个东西。
 
 这就是为什么一个账户可以同时持有多条 route——一家用不止一种资产结算永续的交易所，每种结算就要
 一条——也是为什么处在 `creating`、`active` 或 `rotating` 的账户必须至少有一条活跃 route。一个
 没有任何途径抵达交易所的账户，不属于上述任何一个状态；它只是绕了个弯的 `disabled`。
 
-Mode 边界同样是绝对的。`test` 覆盖 demo 与 testnet，`live` 覆盖 live，而跑在其中一种下的进程
-解析不出属于另一种的 profile。这不是一道可以被授予的权限检查——那个 profile 根本不在那张注册
-表里。
+这里曾经还有第二条边界，同样是绝对的：mode。`test` 覆盖 demo 与 testnet，`live` 覆盖 live，
+而跑在其中一种下的进程解析不出属于另一种的 profile。两个非生产层都已经没有了，所以这条边界
+只剩一侧，也不再分开任何东西。它留下来的是一道校验、而不是一道划分——从存储里读回来的账户，
+只要交易所环境或原生环境不是 `live` 就会被拒绝，因为那两列不过是字符串，而一行在那些
+endpoint 被删除之前写下的记录，绝不能被默默路由到真实交易所去。
 
 ## Instrument 是投影，不是透传
 

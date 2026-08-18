@@ -47,28 +47,22 @@ func TestInternalAuthorityAppliesDesiredThroughStrictOperationIdentity(t *testin
 	body := `{"operationId":"` + operationID + `","accountId":"acct_1","venue":"binance","nativeEnvironment":"live","secretRef":"` + opaqueRef + `","desiredStateRevision":2,"runtimeGeneration":3,"credentialVersion":4,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","requestedState":"active"}]}`
 	path := "/internal/v1/accounts/desired/acct_1/operations/" + operationID
 
-	for name, mutate := range map[string]func(*http.Request){
-		"unauthenticated": func(*http.Request) {},
-		"missing mode": func(request *http.Request) {
-			request.Header.Set("Authorization", "Bearer gateway-adapter")
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
-			request.Header.Set("Content-Type", "application/json")
-			mutate(request)
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			if response.Code < 400 || len(authority.requests) != 0 {
-				t.Fatalf("status=%d requests=%d body=%s", response.Code, len(authority.requests), response.Body.String())
-			}
-		})
+	// A caller the audience check rejects must not reach the authority at all.
+	// This used to be one of two such callers: the other authenticated correctly
+	// but carried no mode attestation header, and the route refused it before it
+	// could name which mode it meant. There is one mode left, so the header is
+	// gone and authentication is the whole of what stands here.
+	unauthenticated := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+	unauthenticated.Header.Set("Content-Type", "application/json")
+	unauthenticatedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticatedResponse, unauthenticated)
+	if unauthenticatedResponse.Code < 400 || len(authority.requests) != 0 {
+		t.Fatalf("unauthenticated status=%d requests=%d body=%s", unauthenticatedResponse.Code, len(authority.requests), unauthenticatedResponse.Body.String())
 	}
 
 	invalid := httptest.NewRequest(http.MethodPut, path, strings.NewReader(strings.Replace(body, `"routes":`, `"secretMaterial":{"apiKey":"credential-canary"},"routes":`, 1)))
 	invalid.Header.Set("Authorization", "Bearer gateway-adapter")
 	invalid.Header.Set("Content-Type", "application/json")
-	invalid.Header.Set("X-Bolter-Mode", "test")
 	invalidResponse := httptest.NewRecorder()
 	handler.ServeHTTP(invalidResponse, invalid)
 	if invalidResponse.Code != http.StatusBadRequest || len(authority.requests) != 0 || strings.Contains(invalidResponse.Body.String(), "credential-canary") {
@@ -78,7 +72,6 @@ func TestInternalAuthorityAppliesDesiredThroughStrictOperationIdentity(t *testin
 	request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer gateway-adapter")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Bolter-Mode", "test")
 	request.Header.Set("X-Request-ID", "platform-request-1")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -86,7 +79,7 @@ func TestInternalAuthorityAppliesDesiredThroughStrictOperationIdentity(t *testin
 		t.Fatalf("status=%d requests=%d body=%s", response.Code, len(authority.requests), response.Body.String())
 	}
 	received := authority.requests[0]
-	if received.Operation != AuthorityApplyDesired || received.Mode != "test" || received.OperationID != operationID || received.AccountID != "acct_1" || received.DesiredApply == nil || received.DesiredApply.SecretRef != opaqueRef {
+	if received.Operation != AuthorityApplyDesired || received.OperationID != operationID || received.AccountID != "acct_1" || received.DesiredApply == nil || received.DesiredApply.SecretRef != opaqueRef {
 		t.Fatalf("authority request=%+v", received)
 	}
 	if strings.Contains(response.Body.String(), "secretRef") || strings.Contains(response.Body.String(), opaqueRef) {
@@ -107,7 +100,6 @@ func TestInternalAuthorityRetirementReturnsExplicitTombstoneTruth(t *testing.T) 
 	body := `{"operationId":"` + operationID + `","accountId":"acct_1","desiredStateRevision":2,"runtimeGeneration":1,"credentialVersion":1}`
 	request := httptest.NewRequest(http.MethodPut, "/internal/v1/accounts/desired/acct_1/retirements/"+operationID, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Bolter-Mode", "test")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || len(authority.requests) != 1 || authority.requests[0].Operation != AuthorityRetireDesired {
@@ -136,14 +128,13 @@ func TestInternalAuthorityFinalizesRotationThroughStrictProofRoute(t *testing.T)
 	path := "/internal/v1/accounts/desired/acct_1/rotation-finalizations/" + operationID
 	request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Bolter-Mode", "test")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || len(authority.requests) != 1 {
 		t.Fatalf("status=%d requests=%+v body=%s", response.Code, authority.requests, response.Body.String())
 	}
 	received := authority.requests[0]
-	if received.Operation != AuthorityFinalizeRotation || received.Mode != "test" || received.AccountID != "acct_1" || received.OperationID != operationID || received.RotationFinalization == nil {
+	if received.Operation != AuthorityFinalizeRotation || received.AccountID != "acct_1" || received.OperationID != operationID || received.RotationFinalization == nil {
 		t.Fatalf("authority request=%+v", received)
 	}
 	for _, forbidden := range []string{`"secretRef":`, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", `"namespace":`, `"provider":`, `"keyVersion":`} {

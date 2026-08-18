@@ -91,14 +91,14 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 	now := service.now().UTC()
 	account.ID = service.id()
 	account.UpdatedAt = now
-	operation := CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Mode: service.mode, Kind: OperationCreate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: digestString(idempotencyKey), RequestDigest: requestDigest, TargetDesiredStateRevision: 1, TargetRuntimeGeneration: 1, TargetCredentialVersion: 1, CreatedAt: now, UpdatedAt: now}
+	operation := CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Kind: OperationCreate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: digestString(idempotencyKey), RequestDigest: requestDigest, TargetDesiredStateRevision: 1, TargetRuntimeGeneration: 1, TargetCredentialVersion: 1, CreatedAt: now, UpdatedAt: now}
 	if err := account.Validate(); err != nil {
 		return Account{}, validationError(err)
 	}
 	if err := operation.Validate(); err != nil {
 		return Account{}, validationError(err)
 	}
-	lookup := OperationLookup{Mode: service.mode, PrincipalID: principalID, Kind: OperationCreate, IdempotencyKeyDigest: digestString(idempotencyKey)}
+	lookup := OperationLookup{PrincipalID: principalID, Kind: OperationCreate, IdempotencyKeyDigest: digestString(idempotencyKey)}
 	found, err := service.store.FindCredentialOperation(ctx, lookup)
 	newOperation := errors.Is(err, ErrNotFound)
 	if err != nil && !newOperation {
@@ -227,7 +227,7 @@ func (service *Service) normalizeDurableCreate(request CreateRequest) (Account, 
 		clear(material)
 		return Account{}, nil, "", validationError(errors.New("route profile is invalid"))
 	}
-	account := Account{Venue: request.Venue, VenueEnvironment: EnvironmentLive, Mode: service.mode, NativeEnvironment: EnvironmentLive, DisplayName: request.DisplayName, ProductIDs: append([]string(nil), policy...), ProductPolicy: policy, Routes: routes, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: StateCreating}
+	account := Account{Venue: request.Venue, VenueEnvironment: EnvironmentLive, NativeEnvironment: EnvironmentLive, DisplayName: request.DisplayName, ProductIDs: append([]string(nil), policy...), ProductPolicy: policy, Routes: routes, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: StateCreating}
 	validationAccount := account
 	validationAccount.ID = "pending"
 	if err := validationAccount.Validate(); err != nil {
@@ -300,7 +300,7 @@ func (service *Service) rotateDurable(ctx context.Context, id string, revision i
 	}
 	decoded.Clear()
 	requestDigest := digestBytes(append([]byte(id+"\x00"+fmt.Sprint(revision)+"\x00"), material...))
-	lookup := OperationLookup{Mode: service.mode, PrincipalID: principalID, Kind: OperationRotate, IdempotencyKeyDigest: digestString(strings.TrimSpace(idempotencyKey))}
+	lookup := OperationLookup{PrincipalID: principalID, Kind: OperationRotate, IdempotencyKeyDigest: digestString(strings.TrimSpace(idempotencyKey))}
 	operation, findErr := service.store.FindCredentialOperation(ctx, lookup)
 	if findErr == nil {
 		if operation.RequestDigest != requestDigest || operation.AccountID != id {
@@ -329,7 +329,7 @@ func (service *Service) rotateDurable(ctx context.Context, id string, revision i
 		account.RuntimeGeneration++
 		account.CredentialVersion++
 		account.UpdatedAt = now
-		operation = CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Mode: service.mode, Kind: OperationRotate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: lookup.IdempotencyKeyDigest, RequestDigest: requestDigest, TargetDesiredStateRevision: account.DesiredStateRevision, TargetRuntimeGeneration: account.RuntimeGeneration, TargetCredentialVersion: account.CredentialVersion, CreatedAt: now, UpdatedAt: now}
+		operation = CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Kind: OperationRotate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: lookup.IdempotencyKeyDigest, RequestDigest: requestDigest, TargetDesiredStateRevision: account.DesiredStateRevision, TargetRuntimeGeneration: account.RuntimeGeneration, TargetCredentialVersion: account.CredentialVersion, CreatedAt: now, UpdatedAt: now}
 		if err := service.store.BeginCredentialOperation(ctx, revision, account, operation); err != nil {
 			return Account{}, err
 		}
@@ -423,7 +423,7 @@ func exactGatewayActiveTruth(operationID secretstore.OperationID, account Accoun
 
 func (service *Service) removeDurable(ctx context.Context, id string, revision int64, principalID, idempotencyKey string) (Account, error) {
 	requestDigest := digestString(id + "\x00" + fmt.Sprint(revision))
-	lookup := OperationLookup{Mode: service.mode, PrincipalID: principalID, Kind: OperationRetire, IdempotencyKeyDigest: digestString(strings.TrimSpace(idempotencyKey))}
+	lookup := OperationLookup{PrincipalID: principalID, Kind: OperationRetire, IdempotencyKeyDigest: digestString(strings.TrimSpace(idempotencyKey))}
 	operation, err := service.store.FindCredentialOperation(ctx, lookup)
 	account, getErr := service.store.Get(ctx, id)
 	if getErr != nil {
@@ -447,7 +447,7 @@ func (service *Service) removeDurable(ctx context.Context, id string, revision i
 		}
 		now := service.now().UTC()
 		account.State, account.DesiredStateRevision, account.UpdatedAt = StateRemoving, account.DesiredStateRevision+1, now
-		operation = CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: id, Mode: service.mode, Kind: OperationRetire, State: OperationCleanupPending, IdempotencyKeyDigest: lookup.IdempotencyKeyDigest, RequestDigest: requestDigest, TargetDesiredStateRevision: account.DesiredStateRevision, TargetRuntimeGeneration: account.RuntimeGeneration, TargetCredentialVersion: account.CredentialVersion, CreatedAt: now, UpdatedAt: now}
+		operation = CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: id, Kind: OperationRetire, State: OperationCleanupPending, IdempotencyKeyDigest: lookup.IdempotencyKeyDigest, RequestDigest: requestDigest, TargetDesiredStateRevision: account.DesiredStateRevision, TargetRuntimeGeneration: account.RuntimeGeneration, TargetCredentialVersion: account.CredentialVersion, CreatedAt: now, UpdatedAt: now}
 		if err := service.store.BeginCredentialOperation(ctx, revision, account, operation); err != nil {
 			return Account{}, err
 		}

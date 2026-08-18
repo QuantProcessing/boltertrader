@@ -26,20 +26,20 @@ var stackRoles = map[string]roleAttributes{
 	// Serving identities. They log in, and they must inherit: the gateway
 	// runtime holds no grant of its own, only what its writer membership
 	// carries.
-	"bolter_gateway_test":  {login: true, inherit: true},
-	"bolter_trading_test":  {login: true, inherit: true},
-	"bolter_authedge_test": {login: true, inherit: true},
+	"bolter_gateway":  {login: true, inherit: true},
+	"bolter_trading":  {login: true, inherit: true},
+	"bolter_authedge": {login: true, inherit: true},
 	// The migrator owns the gateway database, which is what leaves the serving
 	// role owning nothing it could drop. It logs in because nothing in this
 	// repository issues SET ROLE — cmd/gateway-migrate has to arrive as this
 	// role rather than become it.
-	"bolter_gateway_test_migrator": {login: true, inherit: true},
+	"bolter_gateway_migrator": {login: true, inherit: true},
 	// A privilege container, not a connection. VerifyRuntimeCatalog fails when
 	// it finds the writer able to reach the database in its own right.
-	"bolter_gateway_test_writer": {login: false, inherit: true},
+	"bolter_gateway_writer": {login: false, inherit: true},
 	// Exists only to receive the CONNECT grant ApplyAuthority issues, which
 	// would error against a missing role.
-	"bolter_platform_test_admin": {login: false, inherit: true},
+	"bolter_platform_admin": {login: false, inherit: true},
 }
 
 // TestStackClusterTopologyRealPostgres checks the cluster the stack is started
@@ -70,7 +70,7 @@ func TestStackClusterTopologyRealPostgres(t *testing.T) {
 	// stack that both logs in and has no serving duty to disturb. The catalogs
 	// read below are cluster-wide, so which database it lands in does not
 	// matter — but the service file supplies no dbname, so one is named here.
-	pool, err := pgxpool.New(ctx, "service=gateway_test dbname=bolter_gateway_test")
+	pool, err := pgxpool.New(ctx, "service=gateway_test dbname=bolter_gateway")
 	if err != nil {
 		t.Fatalf("connect through the gateway_test service: %v", err)
 	}
@@ -120,8 +120,8 @@ func TestStackClusterTopologyRealPostgres(t *testing.T) {
 	// denial on the first write, which is a bad thing to learn from an order.
 	var writerMembership, runtimeInherits bool
 	if err := pool.QueryRow(ctx, `
-		SELECT pg_has_role('bolter_gateway_test', 'bolter_gateway_test_writer', 'MEMBER'),
-		       (SELECT rolinherit FROM pg_roles WHERE rolname = 'bolter_gateway_test')`).Scan(&writerMembership, &runtimeInherits); err != nil {
+		SELECT pg_has_role('bolter_gateway', 'bolter_gateway_writer', 'MEMBER'),
+		       (SELECT rolinherit FROM pg_roles WHERE rolname = 'bolter_gateway')`).Scan(&writerMembership, &runtimeInherits); err != nil {
 		t.Fatal(err)
 	}
 	if !writerMembership || !runtimeInherits {
@@ -135,7 +135,7 @@ func TestStackClusterTopologyRealPostgres(t *testing.T) {
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM pg_auth_members membership
 		JOIN pg_roles member ON member.oid = membership.member
-		WHERE member.rolname = 'bolter_platform_test_admin'`).Scan(&maintenanceMemberships); err != nil {
+		WHERE member.rolname = 'bolter_platform_admin'`).Scan(&maintenanceMemberships); err != nil {
 		t.Fatal(err)
 	}
 	if maintenanceMemberships != 0 {
@@ -148,9 +148,9 @@ func TestStackClusterTopologyRealPostgres(t *testing.T) {
 	// auth edge own their own, since neither verifies an authority matrix and a
 	// split nothing checks would drift in silence.
 	for database, owner := range map[string]string{
-		"bolter_gateway_test":  "bolter_gateway_test_migrator",
-		"bolter_trading_test":  "bolter_trading_test",
-		"bolter_authedge_test": "bolter_authedge_test",
+		"bolter_gateway":  "bolter_gateway_migrator",
+		"bolter_trading":  "bolter_trading",
+		"bolter_authedge": "bolter_authedge",
 	} {
 		var observedOwner string
 		var publicConnect bool

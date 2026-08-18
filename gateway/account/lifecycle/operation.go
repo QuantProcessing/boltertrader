@@ -32,7 +32,6 @@ type CredentialOperation struct {
 	ID                               secretstore.OperationID
 	PrincipalID                      string
 	AccountID                        string
-	Mode                             secretstore.Mode
 	Kind                             OperationKind
 	State                            OperationState
 	IdempotencyKeyDigest             string
@@ -54,9 +53,6 @@ func (operation CredentialOperation) Validate() error {
 		operation.AccountID == "" || operation.AccountID != strings.TrimSpace(operation.AccountID) ||
 		operation.IdempotencyKeyDigest == "" || operation.RequestDigest == "" {
 		return errors.New("credential operation identity is invalid")
-	}
-	if operation.Mode != secretstore.ModeTest && operation.Mode != secretstore.ModeLive {
-		return errors.New("credential operation mode is invalid")
 	}
 	switch operation.Kind {
 	case OperationCreate, OperationRotate, OperationRetire:
@@ -219,7 +215,6 @@ func ValidateRotationCleanupCompletion(account Account, operation CredentialOper
 }
 
 type OperationLookup struct {
-	Mode                 secretstore.Mode
 	PrincipalID          string
 	Kind                 OperationKind
 	IdempotencyKeyDigest string

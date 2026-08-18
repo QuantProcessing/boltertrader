@@ -102,9 +102,13 @@ intervalHours`）再两两相比，价差是 `shortDaily − longDaily`，标题
 一条腿成交、另一条腿 `uncertain`，而这正是账本存在要兜住的状态。Reconciliation 会各自
 对着各自的交易所把每条腿解决掉，对儿最终是什么样，取决于它的腿最终是什么样。
 
-Live 写被直接拒绝。`open`、`close`、`cancel` 在 live 模式下一律返回
-`403 LIVE_PRIVATE_WRITE_DISABLED`；在拿到它目前还没有的证据之前，这个产品只在 test 模式
-下存在。
+这三个 action 和其他每一次私有写一样，都挡在同一道 live 写开关后面：开关关着时，
+`open`、`close`、`cancel` 在任何东西抵达交易所之前就返回 `403 LIVE_PRIVATE_WRITE_DISABLED`。
+
+它们过去是被无条件拒绝的，理由是：在这个产品拿到它当时还没有的证据之前，一个对儿可以先在
+test 那一层上练手。那一层已经没有了，所以这道拒绝再没有地方可以把人送过去，而开关就是
+一次 `open` 与两笔真实订单之间唯一挡着的东西。它当年替代的那个证据缺口并没有补上——套利
+背后的东西比手动产品少，而开关并不知道这件事。
 
 ## Reconciliation
 
@@ -150,8 +154,9 @@ venue-product-settlement 一列；历史是某家交易所上某个标的在一�
 
 ## 存储
 
-服务持有自己的数据库 `bolter_trading_<mode>`，并以同名角色连接。`cmd/trading` 在两者不
-完全匹配时拒绝启动，因此一个生产进程打不开测试数据。
+服务持有自己的数据库 `bolter_trading`，并以同名角色连接。`cmd/trading` 把两者都钉死，而不
+是照单全收：别的地方都不会去校验它们，所以一个拼写错误会让这个服务把订单对着「碰巧应答的
+那个 schema」去做 reconciliation。
 
 它的表名不带 schema 限定：schema 来自连接的 `search_path`，所以同一个二进制不改代码就能
 跑在 `trading`、一次性测试 schema 或 `public` 之上。Go 代码里没有任何地方写死 schema 名。

@@ -20,7 +20,7 @@ make up
 That generates credentials and `.env.stack` on first run, builds and starts
 every container, waits for them to become healthy, and then runs the checks
 below. The first run prints a generated `operator` password once — it is also
-kept in `.secrets/<mode>/bootstrap_password`. Open the app at
+kept in `.secrets/stack/bootstrap_password`. Open the app at
 <http://127.0.0.1:18090>.
 
 ```sh

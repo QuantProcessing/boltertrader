@@ -1,6 +1,5 @@
 server:
   startup_profile: migration-validation
-  mode: test
   listen: 127.0.0.1:0
   auth_token_ref: env://BT_DEV_GATEWAY_TOKEN
   internal_listen: 127.0.0.1:18082

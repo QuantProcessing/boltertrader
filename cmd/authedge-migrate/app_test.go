@@ -22,9 +22,9 @@ func stubMigrate(t *testing.T, applied result, failure error) *[]string {
 }
 
 func TestRunReportsTheAppliedLedger(t *testing.T) {
-	calls := stubMigrate(t, result{Database: "bolter_authedge_test", SchemaVersion: 1, LedgerDigest: "abc"}, nil)
+	calls := stubMigrate(t, result{Database: "bolter_authedge", SchemaVersion: 1, LedgerDigest: "abc"}, nil)
 	var stdout, stderr bytes.Buffer
-	err := run([]string{"-database", "bolter_authedge_test", "-role", "bolter_authedge_test_migrator"}, &stdout, &stderr)
+	err := run([]string{"-database", "bolter_authedge", "-role", "bolter_authedge_migrator"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,10 +32,10 @@ func TestRunReportsTheAppliedLedger(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.SchemaVersion != 1 || decoded.LedgerDigest != "abc" || decoded.Database != "bolter_authedge_test" {
+	if decoded.SchemaVersion != 1 || decoded.LedgerDigest != "abc" || decoded.Database != "bolter_authedge" {
 		t.Fatalf("decoded=%+v", decoded)
 	}
-	if len(*calls) != 1 || (*calls)[0] != "127.0.0.1:15432|bolter_authedge_test|bolter_authedge_test_migrator" {
+	if len(*calls) != 1 || (*calls)[0] != "127.0.0.1:15432|bolter_authedge|bolter_authedge_migrator" {
 		t.Fatalf("calls=%v", *calls)
 	}
 }
@@ -45,14 +45,14 @@ func TestRunReportsTheAppliedLedger(t *testing.T) {
 // are rejected before any connection is attempted.
 func TestRunRejectsUnsafeIdentities(t *testing.T) {
 	for name, args := range map[string][]string{
-		"empty database":  {"-database", "", "-role", "bolter_authedge_test_migrator"},
-		"empty role":      {"-database", "bolter_authedge_test", "-role", ""},
-		"spaced database": {"-database", "bolter authedge", "-role", "bolter_authedge_test_migrator"},
-		"equals in role":  {"-database", "bolter_authedge_test", "-role", "role=other"},
-		"quoted role":     {"-database", "bolter_authedge_test", "-role", `role'or'1`},
-		"long database":   {"-database", strings.Repeat("d", 65), "-role", "bolter_authedge_test_migrator"},
-		"unsafe host":     {"-database", "bolter_authedge_test", "-role", "bolter_authedge_test_migrator", "-host", "127.0.0.1:15432 x"},
-		"stray argument":  {"-database", "bolter_authedge_test", "-role", "bolter_authedge_test_migrator", "extra"},
+		"empty database":  {"-database", "", "-role", "bolter_authedge_migrator"},
+		"empty role":      {"-database", "bolter_authedge", "-role", ""},
+		"spaced database": {"-database", "bolter authedge", "-role", "bolter_authedge_migrator"},
+		"equals in role":  {"-database", "bolter_authedge", "-role", "role=other"},
+		"quoted role":     {"-database", "bolter_authedge", "-role", `role'or'1`},
+		"long database":   {"-database", strings.Repeat("d", 65), "-role", "bolter_authedge_migrator"},
+		"unsafe host":     {"-database", "bolter_authedge", "-role", "bolter_authedge_migrator", "-host", "127.0.0.1:15432 x"},
+		"stray argument":  {"-database", "bolter_authedge", "-role", "bolter_authedge_migrator", "extra"},
 	} {
 		calls := stubMigrate(t, result{}, nil)
 		var stdout, stderr bytes.Buffer
@@ -75,7 +75,7 @@ func TestRunRejectsUnsafeIdentities(t *testing.T) {
 func TestRunSurfacesOpaqueFailureCodes(t *testing.T) {
 	stubMigrate(t, result{}, fmt.Errorf("AUTHEDGE_MIGRATION_BLOCKED"))
 	var stdout, stderr bytes.Buffer
-	err := run([]string{"-database", "bolter_authedge_test", "-role", "bolter_authedge_test_migrator"}, &stdout, &stderr)
+	err := run([]string{"-database", "bolter_authedge", "-role", "bolter_authedge_migrator"}, &stdout, &stderr)
 	if err == nil || err.Error() != "AUTHEDGE_MIGRATION_BLOCKED" {
 		t.Fatalf("err=%v", err)
 	}

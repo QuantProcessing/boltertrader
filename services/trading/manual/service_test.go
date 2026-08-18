@@ -81,7 +81,7 @@ func TestCancelRestingOrderTransitionsOriginalCommand(t *testing.T) {
 	command := createCommand(t, commands, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"limit","limitPrice":"100","timeInForce":"gtc"}`)
 	command = submittedCommand(t, commands, command)
 	fixture.cancelResults = []GatewayResult{{
-		CommandID: command.CommandID, AccountID: command.AccountID, Mode: command.Mode,
+		CommandID: command.CommandID, AccountID: command.AccountID,
 		State: GatewayStateCanceled, Handoff: authoritativeHandoff("canceled", 2, nil),
 	}}
 
@@ -106,14 +106,14 @@ func TestCancelAppliesPartialFillsAndFeesBeforeCanceledTransition(t *testing.T) 
 	fill := filledResult().Fills[0]
 	fill.CommandID, fill.Quantity, fill.Price, fill.Fee = command.CommandID, "1", "100", "0.5"
 	fixture.cancelResults = []GatewayResult{{
-		CommandID: command.CommandID, AccountID: command.AccountID, Mode: command.Mode,
+		CommandID: command.CommandID, AccountID: command.AccountID,
 		State: GatewayStateCanceled, Fills: []FillFact{fill}, Handoff: authoritativeHandoff("canceled", 2, []FillFact{fill}),
 	}}
 
 	result, err := service.Cancel(context.Background(), command)
-	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
+	positions := projection.List("principal-a", "account-a", "manual")
 	entries, ledgerErr := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a",
-		Mode: ledger.ModeTest, ProductID: "manual", LineageID: command.LineageID, AccountID: command.AccountID, InstrumentID: "BTC-USDT",
+		ProductID: "manual", LineageID: command.LineageID, AccountID: command.AccountID, InstrumentID: "BTC-USDT",
 	})
 	if err != nil || ledgerErr != nil || result.State != orders.StateCanceled || len(positions) != 1 || positions[0].Quantity != "1" || len(entries) != 1 || entries[0].Kind != ledger.KindFee || entries[0].Amount != "0.5" {
 		t.Fatalf("Cancel()=%+v positions=%+v entries=%+v err=%v ledgerErr=%v", result, positions, entries, err, ledgerErr)
@@ -132,12 +132,12 @@ func TestCancelFillRaceAppliesAuthoritativeFillAndClosesPosition(t *testing.T) {
 	fill := filledResult().Fills[0]
 	fill.FillID, fill.CommandID, fill.Side, fill.Price = "gateway-fill-cancel-race", resting.CommandID, portfolio.SideSell, "102"
 	fixture.cancelResults = []GatewayResult{{
-		CommandID: resting.CommandID, AccountID: resting.AccountID, Mode: resting.Mode,
+		CommandID: resting.CommandID, AccountID: resting.AccountID,
 		State: GatewayStateFilled, Fills: []FillFact{fill}, Handoff: authoritativeHandoff("filled", 2, []FillFact{fill}),
 	}}
 
 	result, err := service.Cancel(context.Background(), resting)
-	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
+	positions := projection.List("principal-a", "account-a", "manual")
 	if err != nil || result.State != orders.StateFilled || len(positions) != 1 || positions[0].Quantity != "0" {
 		t.Fatalf("Cancel()=%+v positions=%+v err=%v", result, positions, err)
 	}
@@ -149,7 +149,7 @@ func TestCancelAmbiguousHandoffPreservesOrderForReconciliation(t *testing.T) {
 	command := createCommand(t, commands, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"limit","limitPrice":"100","timeInForce":"gtc"}`)
 	command = submittedCommand(t, commands, command)
 	fixture.cancelResults = []GatewayResult{{
-		CommandID: command.CommandID, AccountID: command.AccountID, Mode: command.Mode,
+		CommandID: command.CommandID, AccountID: command.AccountID,
 		State: GatewayStateSubmitted, Handoff: orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: command.ExecutionEvidence},
 	}}
 	fixture.cancelErrors = []error{context.DeadlineExceeded}
@@ -173,14 +173,14 @@ func TestExecuteAppliesOnlyGatewayAuthoritativeFillFacts(t *testing.T) {
 		t.Fatalf("Gateway calls=%d, want 1", len(fixture.requests))
 	}
 	request := fixture.requests[0]
-	if request.CommandID != command.CommandID || request.IdempotencyKey != command.IdempotencyKey || request.ReservationID != "reservation-a" || request.Mode != orders.ModeTest {
+	if request.CommandID != command.CommandID || request.IdempotencyKey != command.IdempotencyKey || request.ReservationID != "reservation-a" {
 		t.Fatalf("Gateway request lost durable authority fields: %+v", request)
 	}
-	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
+	positions := projection.List("principal-a", "account-a", "manual")
 	if len(positions) != 1 || positions[0].Quantity != "2" || positions[0].AverageEntryPrice != "101.25" {
 		t.Fatalf("positions=%+v", positions)
 	}
-	entries, err := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
+	entries, err := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
 	if err != nil || len(entries) != 1 || entries[0].EntryID != "gateway-fill-1:fee" || entries[0].Amount != "1.5" {
 		t.Fatalf("ledger entries=%+v err=%v", entries, err)
 	}
@@ -202,10 +202,9 @@ func TestExecuteDenialHasNoEconomicSideEffects(t *testing.T) {
 
 func TestApplyFillsKeepsFeeAndSettlementCurrenciesIndependent(t *testing.T) {
 	service, _, _, ledgerService := newFixture(nil)
-	command := orders.Command{CommandID: "command-1", PrincipalID: "principal-a", LineageID: "lineage-a", ProductID: "manual", Mode: orders.ModeTest}
+	command := orders.Command{CommandID: "command-1", PrincipalID: "principal-a", LineageID: "lineage-a", ProductID: "manual"}
 	base := FillFact{
-		FillID: "fill-open", CommandID: command.CommandID, AccountID: "account-a", InstrumentID: "BTC-USDT", Mode: orders.ModeTest,
-		Side: portfolio.SideBuy, Quantity: "1", Price: "100", Fee: "0.01", FeeCurrency: "BNB", SettlementCurrency: "USDT", OccurredAt: fixtureTime,
+		FillID: "fill-open", CommandID: command.CommandID, AccountID: "account-a", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy, Quantity: "1", Price: "100", Fee: "0.01", FeeCurrency: "BNB", SettlementCurrency: "USDT", OccurredAt: fixtureTime,
 	}
 	if err := service.applyFills(context.Background(), command, []FillFact{base}); err != nil {
 		t.Fatal(err)
@@ -215,7 +214,7 @@ func TestApplyFillsKeepsFeeAndSettlementCurrenciesIndependent(t *testing.T) {
 	if err := service.applyFills(context.Background(), command, []FillFact{closeFill}); err != nil {
 		t.Fatal(err)
 	}
-	query := ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"}
+	query := ledger.Query{PrincipalID: "principal-a", ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"}
 	entries, err := ledgerService.List(context.Background(), query)
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +240,6 @@ func TestExecuteRejectsMalformedOrMismatchedGatewayFactsBeforeSideEffects(t *tes
 	tests := map[string]func(*GatewayResult){
 		"wrong command": func(result *GatewayResult) { result.CommandID = "other-command" },
 		"wrong account": func(result *GatewayResult) { result.AccountID = "other-account" },
-		"wrong mode":    func(result *GatewayResult) { result.Mode = orders.ModeLive },
 		"wrong fill command": func(result *GatewayResult) {
 			result.Fills[0].CommandID = "other-command"
 		},
@@ -265,7 +263,7 @@ func TestExecuteRejectsMalformedOrMismatchedGatewayFactsBeforeSideEffects(t *tes
 			if err == nil || got.State != orders.StateUncertain {
 				t.Fatalf("Execute() result=%+v err=%v", got, err)
 			}
-			tasks, claimErr := commands.ClaimDueReconciliation(context.Background(), orders.ModeTest, fixtureTime.Add(2*time.Minute), time.Minute, 1)
+			tasks, claimErr := commands.ClaimDueReconciliation(context.Background(), fixtureTime.Add(2*time.Minute), time.Minute, 1)
 			if claimErr != nil || len(tasks) != 1 || tasks[0].Reason != orders.ReconciliationEvidenceInvalid {
 				t.Fatalf("reconciliation tasks=%+v err=%v", tasks, claimErr)
 			}
@@ -290,8 +288,8 @@ func TestExecuteReplayIsDeterministicAndDoesNotDuplicateEffects(t *testing.T) {
 	if len(fixture.requests) != 1 {
 		t.Fatalf("terminal replay called Gateway %d times", len(fixture.requests))
 	}
-	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
-	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual"})
+	positions := projection.List("principal-a", "account-a", "manual")
+	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", ProductID: "manual"})
 	if len(positions) != 1 || positions[0].Quantity != "2" || len(entries) != 1 {
 		t.Fatalf("replay duplicated effects: positions=%+v entries=%+v", positions, entries)
 	}
@@ -315,8 +313,8 @@ func TestReconciliationAppliesPartialThenTerminalFillsIdempotently(t *testing.T)
 	if err != nil || current.State != orders.StateFilled {
 		t.Fatalf("terminal result=%+v err=%v", current, err)
 	}
-	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
-	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual"})
+	positions := projection.List("principal-a", "account-a", "manual")
+	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", ProductID: "manual"})
 	if len(positions) != 1 || positions[0].Quantity != "2" || len(entries) != 1 {
 		t.Fatalf("replay duplicated effects positions=%+v entries=%+v", positions, entries)
 	}
@@ -334,7 +332,7 @@ func TestExecuteResumesUncertainGatewayHandoffWithSameIdentity(t *testing.T) {
 	if err == nil || uncertain.State != orders.StateUncertain {
 		t.Fatalf("first Execute() result=%+v err=%v", uncertain, err)
 	}
-	tasks, claimErr := commands.ClaimDueReconciliation(context.Background(), orders.ModeTest, fixtureTime.Add(2*time.Minute), time.Minute, 1)
+	tasks, claimErr := commands.ClaimDueReconciliation(context.Background(), fixtureTime.Add(2*time.Minute), time.Minute, 1)
 	if claimErr != nil || len(tasks) != 1 || tasks[0].Reason != orders.ReconciliationAmbiguousHandoff {
 		t.Fatalf("reconciliation tasks=%+v err=%v", tasks, claimErr)
 	}
@@ -345,8 +343,8 @@ func TestExecuteResumesUncertainGatewayHandoffWithSameIdentity(t *testing.T) {
 	if len(fixture.requests) != 2 || fixture.requests[0] != fixture.requests[1] {
 		t.Fatalf("Gateway replay identity changed: %+v", fixture.requests)
 	}
-	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
-	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual"})
+	positions := projection.List("principal-a", "account-a", "manual")
+	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", ProductID: "manual"})
 	if len(positions) != 1 || len(entries) != 1 {
 		t.Fatalf("resume effects positions=%+v entries=%+v", positions, entries)
 	}
@@ -375,7 +373,11 @@ func TestAmbiguousHandoffPersistsKnownEvidenceAndSurfacesTransitionFailure(t *te
 		transitionErr := errors.New("persist uncertain transition")
 		commandStore := failingTransitionStore{Store: orders.NewMemoryStore(), err: transitionErr}
 		commands := orders.NewService(commandStore, nil, func() time.Time { return fixtureTime })
+		commands.SetLiveWritesEnabled(true)
 		service := NewGatewayService(commands, portfolio.NewProjection(), ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return fixtureTime }), ambiguous, func() time.Time { return fixtureTime })
+		// This one builds its own service to reach the failing store, so it has to
+		// arm both switches the way newFixture does.
+		_ = service.SetExecutionAdmission(true)
 		command := createCommand(t, commands, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market"}`)
 		returned, err := service.Execute(context.Background(), command)
 		if !errors.Is(err, transitionErr) {
@@ -408,81 +410,65 @@ func TestAmbiguousHandoffReconcilesExactEvidenceWithoutSecondPlacement(t *testin
 	if err != nil || filled.State != orders.StateFilled || placements != 1 {
 		t.Fatalf("reconciled result=%+v placements=%d err=%v", filled, placements, err)
 	}
-	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
-	entries, listErr := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual"})
+	positions := projection.List("principal-a", "account-a", "manual")
+	entries, listErr := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", ProductID: "manual"})
 	if listErr != nil || len(positions) != 1 || positions[0].Quantity != "2" || len(entries) != 1 {
 		t.Fatalf("reconciled effects positions=%+v entries=%+v err=%v", positions, entries, listErr)
 	}
 }
-func TestExecuteRejectsLiveAndBrowserSuppliedFillFactsBeforeGateway(t *testing.T) {
-	t.Run("live", func(t *testing.T) {
-		fixture := new(gatewayFixture)
-		service, _, projection, ledgerService := newFixture(fixture)
-		command := orders.Command{CommandID: "command-live", AccountID: "account-a", LineageID: "lineage-a", ProductID: "manual", Mode: orders.ModeLive, IdempotencyKey: "live", CommandKind: "manual.place", State: orders.StateAccepted, Payload: []byte(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market"}`)}
-		if _, err := service.Execute(context.Background(), command); !errors.Is(err, orders.ErrLiveWriteDisabled) {
-			t.Fatalf("Execute() err=%v", err)
-		}
-		if len(fixture.requests) != 0 {
-			t.Fatal("Live command reached Gateway")
-		}
-		assertNoEconomicSideEffects(t, projection, ledgerService)
-	})
 
-	t.Run("browser fill facts", func(t *testing.T) {
-		fixture := new(gatewayFixture)
-		service, commands, projection, ledgerService := newFixture(fixture)
-		command := createCommand(t, commands, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market","price":"1","fee":"0"}`)
-		failed, err := service.Execute(context.Background(), command)
-		if err == nil || failed.State != orders.StateFailed {
-			t.Fatal("browser-supplied fill facts were accepted")
-		}
-		if len(fixture.requests) != 0 {
-			t.Fatal("invalid intent reached Gateway")
-		}
-		assertNoEconomicSideEffects(t, projection, ledgerService)
-	})
+// TestExecuteRejectsLiveAndBrowserSuppliedFillFactsBeforeGateway had a "live"
+// case first: a live-mode command handed to a test-mode service, refused
+// because the two modes disagreed. With one mode left there is nothing to
+// disagree about, and what that case actually proved about an unadmitted
+// service is now TestExecuteAdmissionIsExplicit's job.
+func TestExecuteRejectsBrowserSuppliedFillFactsBeforeGateway(t *testing.T) {
+	fixture := new(gatewayFixture)
+	service, commands, projection, ledgerService := newFixture(fixture)
+	command := createCommand(t, commands, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market","price":"1","fee":"0"}`)
+	failed, err := service.Execute(context.Background(), command)
+	if err == nil || failed.State != orders.StateFailed {
+		t.Fatal("browser-supplied fill facts were accepted")
+	}
+	if len(fixture.requests) != 0 {
+		t.Fatal("invalid intent reached Gateway")
+	}
+	assertNoEconomicSideEffects(t, projection, ledgerService)
 }
 
-func TestExecuteLiveAdmissionIsExplicitAndModeScoped(t *testing.T) {
-	t.Run("enabled Live reaches fake Gateway", func(t *testing.T) {
-		result := filledResult()
-		result.Mode = orders.ModeLive
-		for index := range result.Fills {
-			result.Fills[index].Mode = orders.ModeLive
-		}
-		fixture := &gatewayFixture{results: []GatewayResult{result}}
+// TestExecuteLiveAdmissionIsExplicitAndModeScoped also swept a cross-mode axis:
+// an admitted service still refused a command whose mode was test or was not a
+// mode at all. That half described the mode agreement, which is gone. What
+// survives is the half the name led with — admission is never implied, so a
+// service nobody armed reaches no venue.
+func TestExecuteAdmissionIsExplicit(t *testing.T) {
+	t.Run("admitted reaches the Gateway", func(t *testing.T) {
+		fixture := &gatewayFixture{results: []GatewayResult{filledResult()}}
 		service, commands, _, _ := newFixture(fixture)
-		commands.SetLiveWritesEnabled(true)
-		if err := service.SetExecutionAdmission(orders.ModeLive, true); err != nil {
-			t.Fatal(err)
-		}
-		command := createCommandForMode(t, commands, orders.ModeLive, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market"}`)
+		command := createCommand(t, commands, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market"}`)
 
 		got, err := service.Execute(context.Background(), command)
 		if err != nil || got.State != orders.StateFilled {
 			t.Fatalf("Execute() result=%+v err=%v", got, err)
 		}
-		if len(fixture.requests) != 1 || fixture.requests[0].Mode != orders.ModeLive {
+		if len(fixture.requests) != 1 {
 			t.Fatalf("Gateway requests=%+v", fixture.requests)
 		}
 	})
 
-	for _, mode := range []orders.Mode{orders.ModeTest, "unsupported"} {
-		t.Run("reject "+string(mode), func(t *testing.T) {
-			fixture := new(gatewayFixture)
-			service, _, _, _ := newFixture(fixture)
-			if err := service.SetExecutionAdmission(orders.ModeLive, true); err != nil {
-				t.Fatal(err)
-			}
-			command := orders.Command{CommandID: "cross-mode", ProductID: "manual", CommandKind: "manual.place", Mode: mode}
-			if _, err := service.Execute(context.Background(), command); !errors.Is(err, orders.ErrLiveWriteDisabled) {
-				t.Fatalf("Execute() err=%v", err)
-			}
-			if len(fixture.requests) != 0 {
-				t.Fatalf("cross-mode command reached Gateway: %+v", fixture.requests)
-			}
-		})
-	}
+	t.Run("unadmitted reaches nothing", func(t *testing.T) {
+		fixture := new(gatewayFixture)
+		service, commands, projection, ledgerService := newUnadmittedFixture(fixture)
+		command := createCommand(t, commands, `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market"}`)
+
+		if _, err := service.Execute(context.Background(), command); !errors.Is(err, orders.ErrLiveWriteDisabled) {
+			t.Fatalf("Execute() err=%v", err)
+		}
+		if len(fixture.requests) != 0 {
+			t.Fatalf("unadmitted command reached Gateway: %+v", fixture.requests)
+		}
+		assertNoEconomicSideEffects(t, projection, ledgerService)
+	})
 }
 
 func TestPreviewTokenReconstructsAcrossServiceInstancesAndRejectsTampering(t *testing.T) {
@@ -491,25 +477,39 @@ func TestPreviewTokenReconstructsAcrossServiceInstancesAndRejectsTampering(t *te
 	second := NewGatewayServiceWithPreviewKey(nil, nil, nil, nil, time.Now, key)
 	payload := []byte(`{"accountId":"account-a","instrumentId":"BTC-USDT","quantity":"2"}`)
 
-	token, err := first.SealPreview("principal-a", orders.ModeTest, payload)
+	token, err := first.SealPreview("principal-a", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := second.OpenPreview("principal-a", orders.ModeTest, token)
+	decoded, err := second.OpenPreview("principal-a", token)
 	if err != nil || string(decoded) != string(payload) {
 		t.Fatalf("decoded=%s err=%v", decoded, err)
 	}
-	if _, err := second.OpenPreview("principal-b", orders.ModeTest, token); err == nil {
+	if _, err := second.OpenPreview("principal-b", token); err == nil {
 		t.Fatal("preview token crossed principal ownership")
 	}
 	tampered := token[:len(token)-1] + "A"
-	if _, err := second.OpenPreview("principal-a", orders.ModeTest, tampered); err == nil {
+	if _, err := second.OpenPreview("principal-a", tampered); err == nil {
 		t.Fatal("tampered preview token was accepted")
 	}
 }
 
+// newFixture arms both write switches: the command service's and the manual
+// service's execution admission. Neither used to matter here, because a
+// test-mode command was admitted by both with nothing armed. With one mode left
+// they are the only gates and both start closed, so every test that creates or
+// executes a command needs them open. TestExecuteAdmissionIsExplicit builds an
+// unarmed manual service to prove that gate still holds.
 func newFixture(gateway Gateway) (*Service, *orders.Service, *portfolio.Projection, *ledger.Service) {
+	service, commands, projection, ledgerService := newUnadmittedFixture(gateway)
+	// Only a nil receiver can fail this, and it was just constructed.
+	_ = service.SetExecutionAdmission(true)
+	return service, commands, projection, ledgerService
+}
+
+func newUnadmittedFixture(gateway Gateway) (*Service, *orders.Service, *portfolio.Projection, *ledger.Service) {
 	commands := orders.NewService(orders.NewMemoryStore(), nil, func() time.Time { return fixtureTime })
+	commands.SetLiveWritesEnabled(true)
 	projection := portfolio.NewProjection()
 	ledgerService := ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return fixtureTime })
 	return NewGatewayService(commands, projection, ledgerService, gateway, func() time.Time { return fixtureTime }), commands, projection, ledgerService
@@ -519,19 +519,11 @@ func createCommand(t *testing.T, commands *orders.Service, payload string) order
 	return createCommandWithKey(t, commands, "manual-command-1", payload)
 }
 
-func createCommandForMode(t *testing.T, commands *orders.Service, mode orders.Mode, payload string) orders.Command {
-	return createCommandForModeWithKey(t, commands, mode, "manual-command-1", payload)
-}
-
 func createCommandWithKey(t *testing.T, commands *orders.Service, key, payload string) orders.Command {
-	return createCommandForModeWithKey(t, commands, orders.ModeTest, key, payload)
-}
-
-func createCommandForModeWithKey(t *testing.T, commands *orders.Service, mode orders.Mode, key, payload string) orders.Command {
 	t.Helper()
 	command, _, err := commands.Create(context.Background(), orders.CreateRequest{
 		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a", ReservationID: "reservation-a",
-		IdempotencyKey: key, Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Mode: mode, Payload: []byte(payload),
+		IdempotencyKey: key, Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: []byte(payload),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -572,17 +564,17 @@ func authoritativeHandoff(state string, version int64, fills []FillFact) orders.
 
 func filledResult() GatewayResult {
 	return GatewayResult{
-		CommandID: "command_0000000000000001", AccountID: "account-a", Mode: orders.ModeTest, State: GatewayStateFilled,
-		Fills: []FillFact{{FillID: "gateway-fill-1", CommandID: "command_0000000000000001", AccountID: "account-a", Mode: orders.ModeTest, InstrumentID: "BTC-USDT", Side: portfolio.SideBuy, Quantity: "2", Price: "101.25", Fee: "1.5", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: fixtureTime}},
+		CommandID: "command_0000000000000001", AccountID: "account-a", State: GatewayStateFilled,
+		Fills: []FillFact{{FillID: "gateway-fill-1", CommandID: "command_0000000000000001", AccountID: "account-a", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy, Quantity: "2", Price: "101.25", Fee: "1.5", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: fixtureTime}},
 	}
 }
 
 func assertNoEconomicSideEffects(t *testing.T, projection *portfolio.Projection, ledgerService *ledger.Service) {
 	t.Helper()
-	if positions := projection.List("principal-a", portfolio.ModeTest, "", "manual"); len(positions) != 0 {
+	if positions := projection.List("principal-a", "", "manual"); len(positions) != 0 {
 		t.Fatalf("unexpected positions: %+v", positions)
 	}
-	entries, err := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual"})
+	entries, err := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", ProductID: "manual"})
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("unexpected ledger entries=%+v err=%v", entries, err)
 	}

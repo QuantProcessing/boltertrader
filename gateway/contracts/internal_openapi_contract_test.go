@@ -325,14 +325,19 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 			refs = append(refs, parameter.Ref)
 		}
 		sort.Strings(refs)
-		wantRefs := []string{"#/components/parameters/AccountID", "#/components/parameters/ModeAttestation", "#/components/parameters/OperationID"}
+		wantRefs := []string{"#/components/parameters/AccountID", "#/components/parameters/OperationID"}
 		if !reflect.DeepEqual(refs, wantRefs) {
 			t.Errorf("%s parameter refs=%v want=%v", path, refs, wantRefs)
 		}
 	}
-	mode := document.Components.Parameters["ModeAttestation"]
-	if mode.Name != "X-Bolter-Mode" || mode.In != "header" || !mode.Required || mode.Schema.Type != "string" || !reflect.DeepEqual(mode.Schema.Enum, []string{"test", "live"}) {
-		t.Errorf("mode attestation parameter=%+v", mode)
+	// Every write used to carry an X-Bolter-Mode attestation, declared as a
+	// required header parameter and echoed back on every response, so that a
+	// caller and the gateway could not disagree about which mode they were in.
+	// There is one mode now and the header is gone; what this asserts is that it
+	// stays gone, because a document that quietly reacquired it would describe a
+	// header no process on either side of the boundary sets or reads.
+	if _, declared := document.Components.Parameters["ModeAttestation"]; declared || len(document.Components.Headers) != 0 {
+		t.Errorf("mode attestation parameter/header components=%v %v", declared, document.Components.Headers)
 	}
 	finalizationOperation := document.Paths["/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}"]["put"]
 	if finalizationOperation.RequestBody.Ref != "#/components/requestBodies/RotationFinalization" {
@@ -342,13 +347,9 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	if !finalizationBody.Required || len(finalizationBody.Content) != 1 || finalizationBody.Content["application/json"].Schema.Ref != "#/components/schemas/RotationFinalizationRequest" {
 		t.Errorf("rotation finalization request body=%+v", finalizationBody)
 	}
-	modeResponse := document.Components.Headers["ModeAttestation"].Schema
-	if modeResponse.Type != "string" || !reflect.DeepEqual(modeResponse.Enum, []string{"test", "live"}) {
-		t.Errorf("mode response header=%+v", modeResponse)
-	}
-	for _, responseName := range []string{"RotationFinalizationProof", "Error"} {
-		if got := document.Components.Responses[responseName].Headers["X-Bolter-Mode"].Ref; got != "#/components/headers/ModeAttestation" {
-			t.Errorf("%s mode response header ref=%q", responseName, got)
+	for responseName, response := range document.Components.Responses {
+		if len(response.Headers) != 0 {
+			t.Errorf("%s declares response headers=%v", responseName, response.Headers)
 		}
 	}
 	for _, status := range []string{"400", "401", "404", "409", "500"} {
@@ -483,8 +484,8 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	wantErrors := []string{
 		"ACCOUNT_RUNTIME_BLOCKED", "CANDIDATE_NOT_READY", "DESIRED_ACCOUNT_NOT_FOUND", "DESIRED_STATE_REVISION_CONFLICT",
 		"GATEWAY_ADAPTER_AUTH_REQUIRED", "HANDOFF_DRAIN_BLOCKED", "IF_MATCH_REQUIRED", "IF_NONE_MATCH_REQUIRED",
-		"INTERNAL_ERROR", "INVALID_ACCOUNT_TRANSITION", "LIVE_PRIVATE_WRITE_DISABLED", "MODE_ATTESTATION_REQUIRED",
-		"OPERATION_ID_CONFLICT", "PROMOTION_FENCE_CONFLICT", "RETIRED_SECRET_REFERENCE", "RUNTIME_MODE_MISMATCH",
+		"INTERNAL_ERROR", "INVALID_ACCOUNT_TRANSITION", "LIVE_PRIVATE_WRITE_DISABLED",
+		"OPERATION_ID_CONFLICT", "PROMOTION_FENCE_CONFLICT", "RETIRED_SECRET_REFERENCE",
 		"STALE_RUNTIME_FENCE", "VALIDATION_ERROR",
 	}
 	gotErrors := document.Components.Schemas["InternalErrorEnvelope"].Properties["error"].Properties["code"].Enum

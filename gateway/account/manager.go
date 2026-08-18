@@ -25,12 +25,11 @@ var (
 	ErrUnknownAccount      = errors.New("unknown account")
 	ErrProductMismatch     = errors.New("account product mismatch")
 	ErrManagerClosed       = errors.New("account manager closed")
-	ErrRuntimeExists       = errors.New("runtime account already exists")
-	ErrRuntimeRevision     = errors.New("runtime desired-state revision conflict")
-	ErrRuntimeModeMismatch = errors.New("runtime mode mismatch")
-	ErrRuntimeBlocked      = errors.New("runtime transition blocked")
-	ErrStaleWriteFence     = errors.New("stale runtime write fence")
-	ErrLiveWriteDisabled   = errors.New("live private writes disabled")
+	ErrRuntimeExists     = errors.New("runtime account already exists")
+	ErrRuntimeRevision   = errors.New("runtime desired-state revision conflict")
+	ErrRuntimeBlocked    = errors.New("runtime transition blocked")
+	ErrStaleWriteFence   = errors.New("stale runtime write fence")
+	ErrLiveWriteDisabled = errors.New("live private writes disabled")
 )
 
 const (
@@ -48,7 +47,6 @@ type Options struct {
 	GatewayCatalog          *catalog.Service
 	HTTPClient              *http.Client
 	RefreshInterval         time.Duration
-	RuntimeMode             RuntimeMode
 	AllowLiveWrites         bool
 	Lifecycle               RuntimeLifecycle
 	RuntimeGroupBuilder     RuntimeGroupBuilder
@@ -58,13 +56,6 @@ type Options struct {
 	PublicConnectors        *publicconn.Registry
 	RequirePublicConnectors bool
 }
-
-type RuntimeMode string
-
-const (
-	RuntimeModeTest RuntimeMode = "test"
-	RuntimeModeLive RuntimeMode = "live"
-)
 
 type RuntimeState string
 
@@ -78,7 +69,6 @@ type DesiredRuntime struct {
 	AccountID            domain.AccountID `json:"accountId"`
 	Venue                string           `json:"venue"`
 	VenueEnvironment     string           `json:"venueEnvironment"`
-	Mode                 RuntimeMode      `json:"-"`
 	SecretRef            secret.OpaqueRef `json:"secretRef"`
 	DesiredStateRevision uint64           `json:"desiredStateRevision"`
 	RuntimeGeneration    uint64           `json:"runtimeGeneration"`
@@ -171,7 +161,6 @@ type Manager struct {
 	refreshDone             chan struct{}
 	started                 bool
 	runtimes                map[domain.AccountID]RuntimeAccount
-	runtimeMode             RuntimeMode
 	allowLiveWrites         bool
 	lifecycle               RuntimeLifecycle
 	groupMu                 sync.Mutex
@@ -233,7 +222,6 @@ func newManager(ctx context.Context, accounts []config.AccountConfig, options Op
 		cleanup:                 make(map[domain.AccountID]bool, len(accounts)),
 		refreshInterval:         options.RefreshInterval,
 		runtimes:                make(map[domain.AccountID]RuntimeAccount),
-		runtimeMode:             options.RuntimeMode,
 		allowLiveWrites:         options.AllowLiveWrites,
 		lifecycle:               options.Lifecycle,
 		groups:                  make(map[domain.AccountID]*accountRuntime),
@@ -243,9 +231,6 @@ func newManager(ctx context.Context, accounts []config.AccountConfig, options Op
 		runtimeStore:            options.RuntimeStore,
 		publicConnectors:        options.PublicConnectors,
 		requirePublicConnectors: options.RequirePublicConnectors,
-	}
-	if manager.runtimeMode == "" {
-		manager.runtimeMode = RuntimeModeTest
 	}
 	if manager.profileRegistry == nil {
 		manager.profileRegistry = NewProfileRegistry(nil)
@@ -1059,7 +1044,7 @@ func (manager *Manager) dynamicRouteStatus(access activeRouteAccess, enforceWrit
 			status.Reason = ReasonCapabilityNotPromoted
 		case !clientRoute.ExactLookupReady():
 			status.Reason = ReasonExactLookupUnavailable
-		case enforceWritePolicy && manager.runtimeMode == RuntimeModeLive && !manager.allowLiveWrites:
+		case enforceWritePolicy && !manager.allowLiveWrites:
 			status.Reason = ErrLiveWriteDisabled.Error()
 		default:
 			status.WriteReady = true
@@ -1330,13 +1315,12 @@ func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 		return ErrManagerClosed
 	}
 	runtime, ok := manager.runtimes[fence.AccountID]
-	runtimeMode, allowLiveWrites := manager.runtimeMode, manager.allowLiveWrites
+	allowLiveWrites := manager.allowLiveWrites
 	manager.mu.RUnlock()
 	if ok {
 		if runtime.State != RuntimeStateActive || runtime.Desired.Fence() != fence {
 			return ErrStaleWriteFence
 		}
-		runtimeMode = runtime.Desired.Mode
 	} else {
 		active := manager.ActiveSnapshot(fence.AccountID)
 		if active == nil || active.Fence != (domain.AccountFence{
@@ -1346,7 +1330,10 @@ func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 			return ErrStaleWriteFence
 		}
 	}
-	if runtimeMode == RuntimeModeLive && !allowLiveWrites {
+	// Every runtime reaches a real venue, so the gate is the operator switch and
+	// nothing else. It used to also consult the runtime's own mode, back when a
+	// test runtime could pass a fence the switch would otherwise have refused.
+	if !allowLiveWrites {
 		return ErrLiveWriteDisabled
 	}
 	return nil
@@ -1377,9 +1364,6 @@ func (manager *Manager) validateDesired(desired DesiredRuntime) error {
 	}
 	if err := config.ValidateRuntimeIdentity(string(desired.AccountID), desired.Venue, desired.VenueEnvironment); err != nil {
 		return err
-	}
-	if desired.Mode != manager.runtimeMode {
-		return ErrRuntimeModeMismatch
 	}
 	if desired.SecretRef.IsZero() || desired.DesiredStateRevision == 0 || desired.RuntimeGeneration == 0 || desired.CredentialVersion == 0 {
 		return fmt.Errorf("runtime desired state is incomplete")

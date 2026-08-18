@@ -166,13 +166,13 @@ They are still authenticated — the internal listener has its own bearer token 
 and they still refuse to emit a native symbol, a native ID, or a raw venue
 error.
 
-The board is the whole table for the gateway's mode in one response: one column
-per venue, product, and settlement asset, each carrying its rates, its
-settlement interval, and whether that venue publishes history at all. It takes
-no parameters, because there is nothing a caller could ask for that would make
-one column right and another wrong. A column that cannot be read degrades to an
-unavailable column with a reason rather than failing the response — one
-unreachable venue must not blank out the other nine.
+The board is the whole table in one response: one column per venue, product, and
+settlement asset, each carrying its rates, its settlement interval, and whether
+that venue publishes history at all. It takes no parameters, because there is
+nothing a caller could ask for that would make one column right and another
+wrong. A column that cannot be read degrades to an unavailable column with a
+reason rather than failing the response — one unreachable venue must not blank
+out the other nine.
 
 The history read takes a venue, an environment, a symbol, and an explicit
 `since`/`until` pair, and returns one series of funding points with the
@@ -267,14 +267,14 @@ Bring it up with:
 make up
 ```
 
-That generates the stack's credentials under `.secrets/test/` and its variables
+That generates the stack's credentials under `.secrets/stack/` and its variables
 into `.env.stack`, brings every service up, and then runs `make doctor`. It is
 idempotent: a second run reuses the existing credentials. `make doctor` reports
 what is wrong when something is, and `make logs` tails every service.
 
 Nothing needs to be copied by hand and no secret value belongs in `.env.stack`,
 the image, a build argument, or `docker/gateway.docker.yaml`. The bearer token
-and the Gateway PostgreSQL DSN live in files under `.secrets/test/` at 0600, and
+and the Gateway PostgreSQL DSN live in files under `.secrets/stack/` at 0600, and
 `.env.stack` holds only the paths that point at them. Both files reach Gateway as
 Docker secrets at `/run/secrets/GATEWAY_AUTH_TOKEN` and
 `/run/secrets/GATEWAY_POSTGRES_DSN`.

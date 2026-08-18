@@ -22,7 +22,7 @@ func acceptCommand(t *testing.T, commands *orders.Service, productID, kind strin
 		PrincipalID: "principal-a", AccountID: "account-a", ProductID: productID,
 		LineageID: "lineage-" + productID, IdempotencyKey: "idem-" + productID,
 		Method: "POST", Path: "/api/v1/products/" + productID + "/commands",
-		CommandKind: kind, Mode: orders.ModeTest, Payload: json.RawMessage(`{}`),
+		CommandKind: kind, Payload: json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -38,8 +38,14 @@ func newProductServices(t *testing.T) (*manual.Service, *orders.Service, *arbitr
 	// Deliberately separate stores. Both products answer a non-authoritative
 	// outcome with the same sentence, so the only way to observe which service a
 	// command actually reached is to see which ledger moved.
+	//
+	// Both are armed for live writes because that switch is now the only gate on
+	// Create: it used to admit a test-mode command unarmed, and these commands
+	// were test-mode.
 	manualCommands := orders.NewService(orders.NewMemoryStore(), nil, time.Now)
+	manualCommands.SetLiveWritesEnabled(true)
 	arbitrageCommands := orders.NewService(orders.NewMemoryStore(), nil, time.Now)
+	arbitrageCommands.SetLiveWritesEnabled(true)
 	manualService := manual.NewGatewayService(manualCommands, portfolio.NewProjection(), ledger.NewService(ledger.NewMemoryStore(), time.Now), nil, time.Now)
 	arbitrageService := arbitrage.NewGatewayServiceWithPreviewKey(arbitrageCommands, portfolio.NewProjection(), ledger.NewService(ledger.NewMemoryStore(), time.Now), nil, time.Now, nil)
 	return manualService, manualCommands, arbitrageService, arbitrageCommands

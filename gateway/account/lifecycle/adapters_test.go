@@ -40,7 +40,7 @@ func (writer *scopedCredentialWriter) Delete(_ context.Context, _ secretstore.Sc
 func TestSecretStoreAdapterCarriesTheProviderHandleAndDropsTheScope(t *testing.T) {
 	raw := strings.Repeat("A", 43)
 	writer := &scopedCredentialWriter{ref: secretstore.OpaqueRef(raw), lookupRef: secretstore.OpaqueRef(raw)}
-	store, err := secret.NewStore(secret.Config{Mode: secret.ModeTest, Namespace: secret.TestNamespace, KeyVersion: "v1"}, writer)
+	store, err := secret.NewStore(secret.Config{Namespace: secret.Namespace, KeyVersion: "v1"}, writer)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}

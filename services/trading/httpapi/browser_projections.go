@@ -89,22 +89,21 @@ type AccountRuntimeProjection struct {
 }
 
 type AccountRuntimeProjectionReader interface {
-	ListAccountRuntimes(context.Context, string, string, string) ([]AccountRuntimeProjection, error)
+	ListAccountRuntimes(context.Context, string, string) ([]AccountRuntimeProjection, error)
 }
 
 type FailClosedAccountRuntimeProjectionReader struct{}
 
-func (FailClosedAccountRuntimeProjectionReader) ListAccountRuntimes(context.Context, string, string, string) ([]AccountRuntimeProjection, error) {
+func (FailClosedAccountRuntimeProjectionReader) ListAccountRuntimes(context.Context, string, string) ([]AccountRuntimeProjection, error) {
 	return nil, fmt.Errorf("account runtime projection is unavailable")
 }
 
 type CommandProjectionReader interface {
-	ListOwned(context.Context, string, orders.Mode, string) ([]orders.Command, error)
+	ListOwned(context.Context, string, string) ([]orders.Command, error)
 }
 
 type ActivityRecord struct {
 	PrincipalID string
-	Mode        string
 	Kind        string
 	ProductID   string
 	AccountID   string
@@ -123,7 +122,6 @@ type ActivityEvent struct {
 	Payload    json.RawMessage `json:"payload"`
 	ObservedAt time.Time       `json:"observedAt"`
 	principal  string
-	mode       string
 }
 
 type ActivityQuery struct {
@@ -134,7 +132,7 @@ type ActivityQuery struct {
 }
 
 type ActivityProjectionReader interface {
-	ListActivity(context.Context, string, string, ActivityQuery) ([]ActivityEvent, error)
+	ListActivity(context.Context, string, ActivityQuery) ([]ActivityEvent, error)
 }
 
 type ActivityPublisher interface {
@@ -157,7 +155,7 @@ func NewActivityLog(capacity int, now func() time.Time, hub *realtime.Hub) (*Act
 }
 
 func (log *ActivityLog) Publish(record ActivityRecord) (ActivityEvent, error) {
-	if strings.TrimSpace(record.PrincipalID) == "" || (record.Mode != "test" && record.Mode != "live") || strings.TrimSpace(record.Kind) == "" {
+	if strings.TrimSpace(record.PrincipalID) == "" || strings.TrimSpace(record.Kind) == "" {
 		return ActivityEvent{}, fmt.Errorf("activity scope and kind are required")
 	}
 	payload := record.Payload
@@ -171,11 +169,11 @@ func (log *ActivityLog) Publish(record ActivityRecord) (ActivityEvent, error) {
 	realtimePayload := map[string]any{"productId": nullableString(record.ProductID), "accountId": nullableString(record.AccountID), "resourceId": nullableString(record.ResourceID), "payload": json.RawMessage(encoded)}
 	log.mu.Lock()
 	defer log.mu.Unlock()
-	streamEvent, err := log.hub.PublishScoped(record.PrincipalID, record.Mode, record.Kind, realtimePayload)
+	streamEvent, err := log.hub.PublishScoped(record.PrincipalID, record.Kind, realtimePayload)
 	if err != nil {
 		return ActivityEvent{}, err
 	}
-	event := ActivityEvent{EventID: streamEvent.EventID, Sequence: streamEvent.Sequence, Cursor: streamEvent.Cursor, Kind: streamEvent.Kind, ProductID: stringPointer(record.ProductID), AccountID: stringPointer(record.AccountID), ResourceID: stringPointer(record.ResourceID), Payload: encoded, ObservedAt: streamEvent.ObservedAt, principal: record.PrincipalID, mode: record.Mode}
+	event := ActivityEvent{EventID: streamEvent.EventID, Sequence: streamEvent.Sequence, Cursor: streamEvent.Cursor, Kind: streamEvent.Kind, ProductID: stringPointer(record.ProductID), AccountID: stringPointer(record.AccountID), ResourceID: stringPointer(record.ResourceID), Payload: encoded, ObservedAt: streamEvent.ObservedAt, principal: record.PrincipalID}
 	log.events = append(log.events, event)
 	if len(log.events) > log.capacity {
 		log.events = append([]ActivityEvent(nil), log.events[len(log.events)-log.capacity:]...)
@@ -183,8 +181,8 @@ func (log *ActivityLog) Publish(record ActivityRecord) (ActivityEvent, error) {
 	return cloneActivityEvent(event), nil
 }
 
-func (log *ActivityLog) ListActivity(_ context.Context, principal, mode string, query ActivityQuery) ([]ActivityEvent, error) {
-	if principal == "" || (mode != "test" && mode != "live") {
+func (log *ActivityLog) ListActivity(_ context.Context, principal string, query ActivityQuery) ([]ActivityEvent, error) {
+	if principal == "" {
 		return nil, fmt.Errorf("activity scope is required")
 	}
 	log.mu.RLock()
@@ -192,7 +190,7 @@ func (log *ActivityLog) ListActivity(_ context.Context, principal, mode string, 
 	items := make([]ActivityEvent, 0, len(log.events))
 	for index := len(log.events) - 1; index >= 0; index-- {
 		event := log.events[index]
-		if event.principal != principal || event.mode != mode || (query.Kind != "" && event.Kind != query.Kind) || (query.ProductID != "" && stringValuePointer(event.ProductID) != query.ProductID) || (query.AccountID != "" && stringValuePointer(event.AccountID) != query.AccountID) || (query.ResourceID != "" && stringValuePointer(event.ResourceID) != query.ResourceID) {
+		if event.principal != principal || (query.Kind != "" && event.Kind != query.Kind) || (query.ProductID != "" && stringValuePointer(event.ProductID) != query.ProductID) || (query.AccountID != "" && stringValuePointer(event.AccountID) != query.AccountID) || (query.ResourceID != "" && stringValuePointer(event.ResourceID) != query.ResourceID) {
 			continue
 		}
 		items = append(items, cloneActivityEvent(event))
@@ -204,7 +202,7 @@ type BrowserProjectionRoutesOptions struct {
 	Runtimes  AccountRuntimeProjectionReader
 	Commands  CommandProjectionReader
 	Activity  ActivityProjectionReader
-	Principal func(*http.Request) (principalID, mode string, err error)
+	Principal func(*http.Request) (principalID string, err error)
 }
 
 func RegisterBrowserProjectionRoutes(mux *http.ServeMux, options BrowserProjectionRoutesOptions) error {
@@ -224,11 +222,11 @@ type browserProjectionHandler struct {
 }
 
 func (handler *browserProjectionHandler) accountRuntimes(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok || !validOptionalQuery(r, nil, w) {
 		return
 	}
-	items, err := handler.options.Runtimes.ListAccountRuntimes(r.Context(), principal, mode, r.PathValue("accountId"))
+	items, err := handler.options.Runtimes.ListAccountRuntimes(r.Context(), principal, r.PathValue("accountId"))
 	if err != nil {
 		projectionError(w, http.StatusServiceUnavailable, "RUNTIME_PROJECTION_UNAVAILABLE")
 		return
@@ -237,11 +235,11 @@ func (handler *browserProjectionHandler) accountRuntimes(w http.ResponseWriter, 
 }
 
 func (handler *browserProjectionHandler) commands(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok || !validOptionalQuery(r, []string{"productId", "accountId", "state"}, w) {
 		return
 	}
-	items, err := handler.listCommands(r.Context(), principal, mode, r.URL.Query().Get("productId"))
+	items, err := handler.listCommands(r.Context(), principal, r.URL.Query().Get("productId"))
 	if err != nil {
 		projectionError(w, http.StatusServiceUnavailable, "COMMAND_PROJECTION_UNAVAILABLE")
 		return
@@ -260,11 +258,11 @@ func (handler *browserProjectionHandler) commands(w http.ResponseWriter, r *http
 }
 
 func (handler *browserProjectionHandler) fills(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok || !validOptionalQuery(r, []string{"productId", "accountId", "instrumentId", "lineageId"}, w) {
 		return
 	}
-	items, err := handler.listCommands(r.Context(), principal, mode, r.URL.Query().Get("productId"))
+	items, err := handler.listCommands(r.Context(), principal, r.URL.Query().Get("productId"))
 	if err != nil {
 		projectionError(w, http.StatusServiceUnavailable, "FILL_PROJECTION_UNAVAILABLE")
 		return
@@ -291,11 +289,11 @@ func (handler *browserProjectionHandler) fills(w http.ResponseWriter, r *http.Re
 }
 
 func (handler *browserProjectionHandler) activity(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok || !validOptionalQuery(r, []string{"kind", "productId", "accountId", "resourceId"}, w) {
 		return
 	}
-	items, err := handler.options.Activity.ListActivity(r.Context(), principal, mode, ActivityQuery{Kind: r.URL.Query().Get("kind"), ProductID: r.URL.Query().Get("productId"), AccountID: r.URL.Query().Get("accountId"), ResourceID: r.URL.Query().Get("resourceId")})
+	items, err := handler.options.Activity.ListActivity(r.Context(), principal, ActivityQuery{Kind: r.URL.Query().Get("kind"), ProductID: r.URL.Query().Get("productId"), AccountID: r.URL.Query().Get("accountId"), ResourceID: r.URL.Query().Get("resourceId")})
 	if err != nil {
 		projectionError(w, http.StatusServiceUnavailable, "ACTIVITY_PROJECTION_UNAVAILABLE")
 		return
@@ -303,7 +301,7 @@ func (handler *browserProjectionHandler) activity(w http.ResponseWriter, r *http
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
-func (handler *browserProjectionHandler) listCommands(ctx context.Context, principal, mode, productID string) ([]orders.Command, error) {
+func (handler *browserProjectionHandler) listCommands(ctx context.Context, principal, productID string) ([]orders.Command, error) {
 	products := []string{productID}
 	if productID == "" {
 		products = []string{"manual"}
@@ -311,12 +309,12 @@ func (handler *browserProjectionHandler) listCommands(ctx context.Context, princ
 	items := make([]orders.Command, 0)
 	seen := make(map[string]struct{})
 	for _, product := range products {
-		projected, err := handler.options.Commands.ListOwned(ctx, principal, orders.Mode(mode), product)
+		projected, err := handler.options.Commands.ListOwned(ctx, principal, product)
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range projected {
-			if item.PrincipalID != principal || string(item.Mode) != mode || item.ProductID != product {
+			if item.PrincipalID != principal || item.ProductID != product {
 				continue
 			}
 			if _, duplicate := seen[item.CommandID]; duplicate {
@@ -335,13 +333,13 @@ func (handler *browserProjectionHandler) listCommands(ctx context.Context, princ
 	return items, nil
 }
 
-func (handler *browserProjectionHandler) identity(w http.ResponseWriter, r *http.Request) (string, string, bool) {
-	principal, mode, err := handler.options.Principal(r)
-	if err != nil || principal == "" || (mode != "test" && mode != "live") {
+func (handler *browserProjectionHandler) identity(w http.ResponseWriter, r *http.Request) (string, bool) {
+	principal, err := handler.options.Principal(r)
+	if err != nil || principal == "" {
 		projectionError(w, http.StatusUnauthorized, "AUTH_REQUIRED")
-		return "", "", false
+		return "", false
 	}
-	return principal, mode, true
+	return principal, true
 }
 
 type CommandProjection struct {
@@ -349,7 +347,6 @@ type CommandProjection struct {
 	AccountID      string           `json:"accountId"`
 	LineageID      string           `json:"lineageId"`
 	ProductID      string           `json:"productId"`
-	Mode           orders.Mode      `json:"mode"`
 	ReservationID  *string          `json:"reservationId"`
 	IdempotencyKey string           `json:"idempotencyKey"`
 	CommandKind    string           `json:"commandKind"`
@@ -377,7 +374,7 @@ type FillProjection struct {
 }
 
 func commandProjection(command orders.Command) CommandProjection {
-	return CommandProjection{CommandID: command.CommandID, AccountID: command.AccountID, LineageID: command.LineageID, ProductID: command.ProductID, Mode: command.Mode, ReservationID: command.ReservationID, IdempotencyKey: command.IdempotencyKey, CommandKind: command.CommandKind, State: command.State, Blockers: append([]orders.Blocker(nil), command.Blockers...), CreatedAt: command.CreatedAt, UpdatedAt: command.UpdatedAt}
+	return CommandProjection{CommandID: command.CommandID, AccountID: command.AccountID, LineageID: command.LineageID, ProductID: command.ProductID, ReservationID: command.ReservationID, IdempotencyKey: command.IdempotencyKey, CommandKind: command.CommandKind, State: command.State, Blockers: append([]orders.Blocker(nil), command.Blockers...), CreatedAt: command.CreatedAt, UpdatedAt: command.UpdatedAt}
 }
 
 func fillProjection(command orders.Command, fill orders.FillEvidence) FillProjection {
@@ -399,9 +396,9 @@ func publishCommandActivityAs(publisher ActivityPublisher, command orders.Comman
 	if publisher == nil {
 		return
 	}
-	_, _ = publisher.Publish(ActivityRecord{PrincipalID: command.PrincipalID, Mode: string(command.Mode), Kind: kind, ProductID: command.ProductID, AccountID: command.AccountID, ResourceID: command.CommandID, Payload: commandProjection(command)})
+	_, _ = publisher.Publish(ActivityRecord{PrincipalID: command.PrincipalID, Kind: kind, ProductID: command.ProductID, AccountID: command.AccountID, ResourceID: command.CommandID, Payload: commandProjection(command)})
 	for _, fill := range command.ExecutionEvidence.Fills {
-		_, _ = publisher.Publish(ActivityRecord{PrincipalID: command.PrincipalID, Mode: string(command.Mode), Kind: "fill.recorded", ProductID: command.ProductID, AccountID: fill.AccountID, ResourceID: fill.FillID, Payload: fillProjection(command, fill)})
+		_, _ = publisher.Publish(ActivityRecord{PrincipalID: command.PrincipalID, Kind: "fill.recorded", ProductID: command.ProductID, AccountID: fill.AccountID, ResourceID: fill.FillID, Payload: fillProjection(command, fill)})
 	}
 }
 

@@ -10,7 +10,7 @@ func TestFundingSupersessionReplayDoesNotRestoreOriginalEntry(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	store := NewMemoryStore()
-	original := Entry{PrincipalID: "principal-a", EntryID: "funding-original", Mode: ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: KindFunding, Amount: "1", Currency: "USDT", OccurredAt: now}
+	original := Entry{PrincipalID: "principal-a", EntryID: "funding-original", ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: KindFunding, Amount: "1", Currency: "USDT", OccurredAt: now}
 	replacement := original
 	replacement.EntryID = "funding-replacement"
 	replacement.Amount = "2"
@@ -33,14 +33,14 @@ func TestFundingSupersessionReplayDoesNotRestoreOriginalEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := restarted.List(ctx, Query{PrincipalID: "principal-a", Mode: ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
+	entries, err := restarted.List(ctx, Query{PrincipalID: "principal-a", ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 || entries[0] != replacement {
 		t.Fatalf("replayed supersession entries=%+v, want replacement only", entries)
 	}
-	snapshot, err := restarted.PnL(ctx, Query{PrincipalID: "principal-a", Mode: ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
+	snapshot, err := restarted.PnL(ctx, Query{PrincipalID: "principal-a", ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
 	if err != nil {
 		t.Fatal(err)
 	}

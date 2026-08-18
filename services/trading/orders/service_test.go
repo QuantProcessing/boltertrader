@@ -30,11 +30,21 @@ func (store *atomicReservationStore) ReserveWithReservation(ctx context.Context,
 	return store.MemoryStore.Reserve(ctx, command)
 }
 
+// newLiveService arms the operator switch, which every test that writes a
+// command now has to do. The switch used to admit a test-mode command with no
+// arming at all, so most of these tests never touched it; with one mode left
+// the switch is the only gate and it starts closed.
+func newLiveService(store Store, gate ReservationGate, now func() time.Time) *Service {
+	service := NewService(store, gate, now)
+	service.SetLiveWritesEnabled(true)
+	return service
+}
+
 func TestServiceReplaysCanonicalEconomicCommandAndRejectsConflict(t *testing.T) {
 	gate := &reservationGate{}
-	service := NewService(NewMemoryStore(), gate, time.Now)
+	service := newLiveService(NewMemoryStore(), gate, time.Now)
 	request := CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "funding",
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "funding",
 		LineageID: "lineage-a", ReservationID: "reservation-a", IdempotencyKey: "open-a",
 		Method: "POST", Path: "/api/v1/commands", CommandKind: "funding.open",
 		Payload: json.RawMessage(`{"quantity":"1","side":"buy"}`),
@@ -60,9 +70,9 @@ func TestServiceReplaysCanonicalEconomicCommandAndRejectsConflict(t *testing.T) 
 func TestServiceDelegatesReservationAndCommandToAtomicStore(t *testing.T) {
 	store := &atomicReservationStore{MemoryStore: NewMemoryStore()}
 	gate := &reservationGate{}
-	service := NewService(store, gate, time.Now)
+	service := newLiveService(store, gate, time.Now)
 	request := CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "manual",
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual",
 		LineageID: "lineage-a", ReservationID: "reservation-a", IdempotencyKey: "place-a",
 		Method: "POST", Path: "/api/v1/products/manual/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{"quantity":"1"}`),
 	}
@@ -70,7 +80,7 @@ func TestServiceDelegatesReservationAndCommandToAtomicStore(t *testing.T) {
 	if err != nil || replay || first.ReservationID == nil || store.calls != 1 || gate.calls != 0 {
 		t.Fatalf("first=%+v replay=%v atomic calls=%d gate calls=%d err=%v", first, replay, store.calls, gate.calls, err)
 	}
-	if store.claim.ReservationID != "reservation-a" || store.claim.PrincipalID != "principal-a" || store.claim.Mode != ModeTest || store.claim.ProductID != "manual" {
+	if store.claim.ReservationID != "reservation-a" || store.claim.PrincipalID != "principal-a" || store.claim.ProductID != "manual" {
 		t.Fatalf("atomic claim=%+v", store.claim)
 	}
 	second, replay, err := service.Create(context.Background(), request)
@@ -79,18 +89,18 @@ func TestServiceDelegatesReservationAndCommandToAtomicStore(t *testing.T) {
 	}
 }
 
-func TestListOwnedFiltersPrincipalModeAndProduct(t *testing.T) {
-	service := NewService(NewMemoryStore(), nil, time.Now)
+func TestListOwnedFiltersPrincipalAndProduct(t *testing.T) {
+	service := newLiveService(NewMemoryStore(), nil, time.Now)
 	for _, request := range []CreateRequest{
-		{PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a", IdempotencyKey: "a", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)},
-		{PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "funding", LineageID: "lineage-b", IdempotencyKey: "b", Method: "POST", Path: "/api/v1/commands", CommandKind: "funding.open", Payload: json.RawMessage(`{}`)},
-		{PrincipalID: "principal-b", Mode: ModeTest, AccountID: "account-b", ProductID: "manual", LineageID: "lineage-c", IdempotencyKey: "c", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)},
+		{PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a", IdempotencyKey: "a", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)},
+		{PrincipalID: "principal-a", AccountID: "account-a", ProductID: "funding", LineageID: "lineage-b", IdempotencyKey: "b", Method: "POST", Path: "/api/v1/commands", CommandKind: "funding.open", Payload: json.RawMessage(`{}`)},
+		{PrincipalID: "principal-b", AccountID: "account-b", ProductID: "manual", LineageID: "lineage-c", IdempotencyKey: "c", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)},
 	} {
 		if _, _, err := service.Create(context.Background(), request); err != nil {
 			t.Fatal(err)
 		}
 	}
-	items, err := service.ListOwned(context.Background(), "principal-a", ModeTest, "manual")
+	items, err := service.ListOwned(context.Background(), "principal-a", "manual")
 	if err != nil || len(items) != 1 || items[0].ProductID != "manual" || items[0].PrincipalID != "principal-a" {
 		t.Fatalf("ListOwned()=%+v err=%v", items, err)
 	}
@@ -98,9 +108,9 @@ func TestListOwnedFiltersPrincipalModeAndProduct(t *testing.T) {
 
 func TestServicePersistsUncertainReconciliationUntilTerminalEvidence(t *testing.T) {
 	store := NewMemoryStore()
-	service := NewService(store, nil, time.Now)
+	service := newLiveService(store, nil, time.Now)
 	command, _, err := service.Create(context.Background(), CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "manual",
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual",
 		LineageID: "lineage-a", IdempotencyKey: "order-a", Method: "POST", Path: "/api/v1/commands",
 		CommandKind: "manual.place", Payload: json.RawMessage(`{"side":"buy"}`),
 	})
@@ -114,23 +124,25 @@ func TestServicePersistsUncertainReconciliationUntilTerminalEvidence(t *testing.
 	if err != nil || uncertain.State != StateUncertain {
 		t.Fatalf("uncertain = %+v, err=%v", uncertain, err)
 	}
-	due, err := service.ClaimDueReconciliation(context.Background(), ModeTest, time.Now().Add(2*time.Second), time.Minute, 10)
+	due, err := service.ClaimDueReconciliation(context.Background(), time.Now().Add(2*time.Second), time.Minute, 10)
 	if err != nil || len(due) != 1 || due[0].CommandID != command.CommandID {
 		t.Fatalf("due = %+v, err=%v", due, err)
 	}
 	if _, err := service.Transition(context.Background(), TransitionRequest{CommandID: command.CommandID, State: StateFilled}); err != nil {
 		t.Fatal(err)
 	}
-	due, err = service.ClaimDueReconciliation(context.Background(), ModeTest, time.Now().Add(2*time.Minute), time.Minute, 10)
+	due, err = service.ClaimDueReconciliation(context.Background(), time.Now().Add(2*time.Minute), time.Minute, 10)
 	if err != nil || len(due) != 0 {
 		t.Fatalf("terminal due = %+v, err=%v", due, err)
 	}
 }
 
-func TestServiceDeniesLiveCommandsUnlessExplicitlyEnabled(t *testing.T) {
+// TestServiceDeniesCommandsUnlessLiveWritesEnabled is the one test here that
+// must build its service unarmed: it owns the switch itself.
+func TestServiceDeniesCommandsUnlessLiveWritesEnabled(t *testing.T) {
 	service := NewService(NewMemoryStore(), nil, time.Now)
 	_, _, err := service.Create(context.Background(), CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeLive, AccountID: "account-a", ProductID: "manual",
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual",
 		LineageID: "lineage-a", IdempotencyKey: "live-a", Method: "POST", Path: "/api/v1/commands",
 		CommandKind: "manual.place", Payload: json.RawMessage(`{"side":"buy"}`),
 	})
@@ -139,7 +151,7 @@ func TestServiceDeniesLiveCommandsUnlessExplicitlyEnabled(t *testing.T) {
 	}
 	service.SetLiveWritesEnabled(true)
 	if _, _, err := service.Create(context.Background(), CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeLive, AccountID: "account-a", ProductID: "manual",
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual",
 		LineageID: "lineage-a", IdempotencyKey: "live-b", Method: "POST", Path: "/api/v1/commands",
 		CommandKind: "manual.place", Payload: json.RawMessage(`{"side":"buy"}`),
 	}); err != nil {
@@ -148,8 +160,8 @@ func TestServiceDeniesLiveCommandsUnlessExplicitlyEnabled(t *testing.T) {
 }
 
 func TestServiceRejectsTerminalStateRegression(t *testing.T) {
-	service := NewService(NewMemoryStore(), nil, time.Now)
-	command, _, err := service.Create(context.Background(), CreateRequest{PrincipalID: "p", Mode: ModeTest, AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "k", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)})
+	service := newLiveService(NewMemoryStore(), nil, time.Now)
+	command, _, err := service.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "k", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,17 +173,22 @@ func TestServiceRejectsTerminalStateRegression(t *testing.T) {
 	}
 }
 
-func TestServiceFencesCommandReadsByPrincipalAndMode(t *testing.T) {
-	service := NewService(NewMemoryStore(), nil, time.Now)
-	command, _, err := service.Create(context.Background(), CreateRequest{PrincipalID: "p", Mode: ModeTest, AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "k", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)})
+// TestServiceFencesCommandReadsByPrincipalAndMode had a second case: the right
+// principal reading its own command under the other mode, which GetOwned
+// refused. The read fenced on principal and mode together; with one mode left
+// the principal is the whole fence, so the clause went from GetOwned and the
+// case went from here.
+func TestServiceFencesCommandReadsByPrincipal(t *testing.T) {
+	service := newLiveService(NewMemoryStore(), nil, time.Now)
+	command, _, err := service.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "k", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.GetOwned(context.Background(), "other", ModeTest, command.CommandID); !errors.Is(err, ErrNotFound) {
+	if _, err := service.GetOwned(context.Background(), "other", command.CommandID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-principal read err=%v", err)
 	}
-	if _, err := service.GetOwned(context.Background(), "p", ModeLive, command.CommandID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-mode read err=%v", err)
+	if _, err := service.GetOwned(context.Background(), "p", command.CommandID); err != nil {
+		t.Fatalf("owner read err=%v", err)
 	}
 }
 
@@ -180,7 +197,7 @@ func TestFreshServicesGenerateDistinctCommandIDs(t *testing.T) {
 	create := func(service *Service, key string) Command {
 		t.Helper()
 		item, replay, err := service.Create(context.Background(), CreateRequest{
-			PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
+			PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
 			IdempotencyKey: key, Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`),
 		})
 		if err != nil || replay {
@@ -188,8 +205,8 @@ func TestFreshServicesGenerateDistinctCommandIDs(t *testing.T) {
 		}
 		return item
 	}
-	first := create(NewService(store, nil, time.Now), "first")
-	second := create(NewService(store, nil, time.Now), "second")
+	first := create(newLiveService(store, nil, time.Now), "first")
+	second := create(newLiveService(store, nil, time.Now), "second")
 	if first.CommandID == second.CommandID {
 		t.Fatalf("fresh services generated colliding command id %q", first.CommandID)
 	}

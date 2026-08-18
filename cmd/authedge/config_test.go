@@ -12,21 +12,17 @@ import (
 // variable-backed paths are proven against the same bytes.
 const testBootstrapHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
-// writeModeScopedToken writes an opaque token into a directory named for the
-// mode, which is the layout readProtectedToken insists on.
-func writeModeScopedToken(t *testing.T, mode, name string) string {
+// writeProtectedToken writes an opaque token into a 0600 file, which is the
+// layout readProtectedToken insists on.
+func writeProtectedToken(t *testing.T, name string) string {
 	t.Helper()
-	return writeModeScopedFile(t, mode, name, strings.Repeat("a", 48))
+	return writeProtectedFile(t, name, strings.Repeat("a", 48))
 }
 
-// writeModeScopedFile is the same layout with the contents chosen by the caller.
-func writeModeScopedFile(t *testing.T, mode, name, contents string) string {
+// writeProtectedFile is the same layout with the contents chosen by the caller.
+func writeProtectedFile(t *testing.T, name, contents string) string {
 	t.Helper()
-	directory := filepath.Join(t.TempDir(), mode)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		t.Fatalf("create token directory: %v", err)
-	}
-	path := filepath.Join(directory, name)
+	path := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
 	}
@@ -40,16 +36,15 @@ func setValidAuthEdgeEnv(t *testing.T) {
 	for _, name := range []string{inlineTradingTokenEnv, inlineGatewayTokenEnv, inlineBootstrapPasswdEnv} {
 		t.Setenv(name, "")
 	}
-	t.Setenv(modeEnv, "test")
-	t.Setenv(databaseEnv, "bolter_authedge_test")
-	t.Setenv(databaseRoleEnv, "bolter_authedge_test")
+	t.Setenv(databaseEnv, "bolter_authedge")
+	t.Setenv(databaseRoleEnv, "bolter_authedge")
 	t.Setenv(bootstrapUsernameEnv, "operator")
 	t.Setenv(bootstrapPasswordHashEnv, testBootstrapHash)
 	t.Setenv(bootstrapPasswordHashFileEnv, "")
 	t.Setenv(tradingURLEnv, "http://127.0.0.1:18092")
 	t.Setenv(gatewayURLEnv, "http://127.0.0.1:18080")
-	t.Setenv(tradingTokenFileEnv, writeModeScopedToken(t, "test", "trading.token"))
-	t.Setenv(gatewayTokenFileEnv, writeModeScopedToken(t, "test", "gateway.token"))
+	t.Setenv(tradingTokenFileEnv, writeProtectedToken(t, "trading.token"))
+	t.Setenv(gatewayTokenFileEnv, writeProtectedToken(t, "gateway.token"))
 	t.Setenv(allowNonLoopbackEnv, "")
 	t.Setenv(allowPlaintextEnv, "")
 }
@@ -232,7 +227,7 @@ func TestAuthEdgeAcceptsTLSUpstreamsWithoutAnOptIn(t *testing.T) {
 func TestAuthEdgeLoadsBootstrapHashFromAFile(t *testing.T) {
 	setValidAuthEdgeEnv(t)
 	t.Setenv(bootstrapPasswordHashEnv, "")
-	t.Setenv(bootstrapPasswordHashFileEnv, writeModeScopedFile(t, "test", "bootstrap_password_hash", testBootstrapHash))
+	t.Setenv(bootstrapPasswordHashFileEnv, writeProtectedFile(t, "bootstrap_password_hash", testBootstrapHash))
 
 	cfg, err := load()
 	if err != nil {
@@ -246,7 +241,7 @@ func TestAuthEdgeLoadsBootstrapHashFromAFile(t *testing.T) {
 
 func TestAuthEdgeRejectsBootstrapHashFromBothSources(t *testing.T) {
 	setValidAuthEdgeEnv(t)
-	t.Setenv(bootstrapPasswordHashFileEnv, writeModeScopedFile(t, "test", "bootstrap_password_hash", testBootstrapHash))
+	t.Setenv(bootstrapPasswordHashFileEnv, writeProtectedFile(t, "bootstrap_password_hash", testBootstrapHash))
 
 	// Same value in both places here, so the failure cannot be blamed on a
 	// mismatch: it is the ambiguity itself that is refused, because the next
@@ -260,10 +255,10 @@ func TestAuthEdgeRejectsBootstrapHashFromBothSources(t *testing.T) {
 	}
 }
 
-// The file gets the same treatment as the two service tokens: 0600, and parented
-// by a directory named for the mode. A hash readable by every process on the
-// host is a hash worth offline-cracking, and a test hash reachable from a live
-// process is an operator authenticated against the wrong identity store.
+// The file gets the same treatment as the two service tokens: 0600, owner-only.
+// A hash readable by every process on the host is a hash worth offline-cracking,
+// and the operator who left it 0644 would never learn that from a login that
+// still worked.
 func TestAuthEdgeRejectsAnUnprotectedBootstrapHashFile(t *testing.T) {
 	setValidAuthEdgeEnv(t)
 	t.Setenv(bootstrapPasswordHashEnv, "")
@@ -276,7 +271,7 @@ func TestAuthEdgeRejectsAnUnprotectedBootstrapHashFile(t *testing.T) {
 
 	_, err := load()
 	if err == nil || !strings.Contains(err.Error(), bootstrapPasswordHashFileEnv) {
-		t.Fatalf("expected the unscoped 0644 hash file to be rejected by name, got: %v", err)
+		t.Fatalf("expected the 0644 hash file to be rejected by name, got: %v", err)
 	}
 }
 
@@ -288,10 +283,42 @@ func TestAuthEdgeNamesTheFileWhenItsContentsAreNotABcryptHash(t *testing.T) {
 	t.Setenv(bootstrapPasswordHashEnv, "")
 	// Long enough and printable enough to clear readProtectedToken, so the only
 	// thing left to reject it is bcrypt.
-	t.Setenv(bootstrapPasswordHashFileEnv, writeModeScopedFile(t, "test", "bootstrap_password_hash", strings.Repeat("z", 60)))
+	t.Setenv(bootstrapPasswordHashFileEnv, writeProtectedFile(t, "bootstrap_password_hash", strings.Repeat("z", 60)))
 
 	_, err := load()
 	if err == nil || !strings.Contains(err.Error(), bootstrapPasswordHashFileEnv) {
 		t.Fatalf("expected the hash file to be named as the bad source, got: %v", err)
+	}
+}
+
+// The Secure flag used to be derived from the mode, and deriving it is exactly
+// what this process cannot do: it terminates plaintext HTTP whether or not a
+// TLS proxy sits in front of it. So the operator asserts it, and both ways of
+// getting that wrong have to fail loudly. Defaulting on would break every
+// loopback login — a browser drops a Secure cookie handed to it over http, and
+// the symptom is a login form that clears itself and does nothing.
+func TestAuthEdgeSecureCookieIsOptInAndUnambiguous(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "false": false, "true": true, "TRUE": true} {
+		t.Run("value="+value, func(t *testing.T) {
+			setValidAuthEdgeEnv(t)
+			t.Setenv(secureCookieEnv, value)
+			cfg, err := load()
+			if err != nil {
+				t.Fatalf("%s=%q rejected: %v", secureCookieEnv, value, err)
+			}
+			defer cfg.clear()
+			if cfg.SecureCookie != want {
+				t.Fatalf("%s=%q gave SecureCookie=%v, want %v", secureCookieEnv, value, cfg.SecureCookie, want)
+			}
+		})
+	}
+
+	// "yes" is the shape of an operator who believes they have opted in. Reading
+	// it as false would hand a session cookie to a browser over a link the
+	// operator had just said was TLS-terminated.
+	setValidAuthEdgeEnv(t)
+	t.Setenv(secureCookieEnv, "yes")
+	if _, err := load(); err == nil || !strings.Contains(err.Error(), secureCookieEnv) {
+		t.Fatalf("ambiguous opt-in accepted: %v", err)
 	}
 }

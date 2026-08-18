@@ -176,7 +176,6 @@ type RuntimeView struct {
 
 type AuthorityRequest struct {
 	Operation            AuthorityOperation
-	Mode                 string
 	AccountID            string
 	OperationID          string
 	ExpectedRevision     int64
@@ -312,45 +311,30 @@ func (handler *InternalHandler) register() {
 }
 
 func (handler *InternalHandler) applyDesired(w http.ResponseWriter, r *http.Request) {
-	mode := r.Header.Get("X-Bolter-Mode")
-	if mode != "test" && mode != "live" {
-		handler.writeError(w, r, http.StatusBadRequest, "MODE_ATTESTATION_REQUIRED", false)
-		return
-	}
 	var desired DesiredApplyRequest
 	if err := decodeStrictJSON(w, r, handler.bodyLimit, &desired); err != nil || desired.validate(r.PathValue("accountId"), r.PathValue("operationId")) != nil {
 		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
 		return
 	}
 	handler.execute(w, r, http.StatusAccepted, AuthorityRequest{
-		Operation: AuthorityApplyDesired, Mode: mode, AccountID: desired.AccountID,
+		Operation: AuthorityApplyDesired, AccountID: desired.AccountID,
 		OperationID: desired.OperationID, DesiredApply: &desired,
 	})
 }
 
 func (handler *InternalHandler) retireDesired(w http.ResponseWriter, r *http.Request) {
-	mode := r.Header.Get("X-Bolter-Mode")
-	if mode != "test" && mode != "live" {
-		handler.writeError(w, r, http.StatusBadRequest, "MODE_ATTESTATION_REQUIRED", false)
-		return
-	}
 	var retirement RetireRequest
 	if err := decodeStrictJSON(w, r, handler.bodyLimit, &retirement); err != nil || retirement.validate(r.PathValue("accountId"), r.PathValue("operationId")) != nil {
 		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
 		return
 	}
 	handler.execute(w, r, http.StatusAccepted, AuthorityRequest{
-		Operation: AuthorityRetireDesired, Mode: mode, AccountID: retirement.AccountID,
+		Operation: AuthorityRetireDesired, AccountID: retirement.AccountID,
 		OperationID: retirement.OperationID, Retirement: &retirement,
 	})
 }
 
 func (handler *InternalHandler) finalizeRotation(w http.ResponseWriter, r *http.Request) {
-	mode := r.Header.Get("X-Bolter-Mode")
-	if mode != "test" && mode != "live" {
-		handler.writeError(w, r, http.StatusBadRequest, "MODE_ATTESTATION_REQUIRED", false)
-		return
-	}
 	var finalization RotationFinalizationRequest
 	if err := decodeStrictJSON(w, r, handler.bodyLimit, &finalization); err != nil ||
 		finalization.validate(r.PathValue("accountId"), r.PathValue("operationId")) != nil || len(r.URL.Query()) != 0 {
@@ -358,7 +342,7 @@ func (handler *InternalHandler) finalizeRotation(w http.ResponseWriter, r *http.
 		return
 	}
 	handler.execute(w, r, http.StatusOK, AuthorityRequest{
-		Operation: AuthorityFinalizeRotation, Mode: mode, AccountID: finalization.AccountID,
+		Operation: AuthorityFinalizeRotation, AccountID: finalization.AccountID,
 		OperationID: finalization.OperationID, RotationFinalization: &finalization,
 	})
 }

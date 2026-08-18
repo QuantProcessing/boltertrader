@@ -30,13 +30,13 @@ func NewMemoryIdentityStore(identities ...Identity) *MemoryIdentityStore {
 
 func (store *MemoryIdentityStore) Put(identity Identity) {
 	store.mu.Lock()
-	store.identities[identity.Mode+"\x00"+identity.Username] = identity
+	store.identities[identity.Username] = identity
 	store.mu.Unlock()
 }
 
-func (store *MemoryIdentityStore) FindByUsername(_ context.Context, mode, username string) (Identity, error) {
+func (store *MemoryIdentityStore) FindByUsername(_ context.Context, username string) (Identity, error) {
 	store.mu.RLock()
-	identity, ok := store.identities[mode+"\x00"+username]
+	identity, ok := store.identities[username]
 	store.mu.RUnlock()
 	if !ok {
 		return Identity{}, ErrNotFound

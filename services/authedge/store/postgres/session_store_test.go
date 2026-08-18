@@ -38,7 +38,12 @@ func TestMigrationsStoreOnlyDigestsAndHashes(t *testing.T) {
 		"token_digest",
 		"csrf_digest",
 		"expires_at",
-		"check (mode in ('test', 'live'))",
+		// This used to read `check (mode in ('test', 'live'))`, and the identity
+		// table's uniqueness was `(mode, username)` — one name could sign in twice,
+		// once per mode. One mode is left, so the name itself is the scope, and
+		// that is what has to hold: two rows sharing a username would make a
+		// sign-in resolve to whichever principal the planner reached first.
+		"unique (username)",
 	} {
 		if !strings.Contains(schema, required) {
 			t.Errorf("schema missing %q", required)

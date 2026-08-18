@@ -28,7 +28,6 @@ import (
 
 	tradingapp "github.com/QuantProcessing/boltertrader/services/trading/app"
 	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
-	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/servicetoken"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -53,18 +52,17 @@ func run(ctx context.Context) error {
 	}
 	defer database.Close()
 
-	gatewayClient, err := tradinggateway.NewClientForMode(cfg.GatewayURL, cfg.AllowNonLoopbackUpstream, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil,
+	gatewayClient, err := tradinggateway.NewClient(cfg.GatewayURL, cfg.AllowNonLoopbackUpstream, cfg.GatewayToken, cfg.LivePrivateWritesEnabled, nil,
 		tradinggateway.WithAuthorityPlane(cfg.GatewayInternalURL, cfg.AllowNonLoopbackUpstream, cfg.GatewayInternalToken))
 	if err != nil {
 		return err
 	}
-	authenticator, err := servicetoken.New(cfg.ServiceToken, cfg.Mode)
+	authenticator, err := servicetoken.New(cfg.ServiceToken)
 	if err != nil {
 		return err
 	}
 
 	service, err := tradingapp.New(tradingapp.Config{
-		Mode:                     cfg.Mode,
 		LivePrivateWritesEnabled: cfg.LivePrivateWritesEnabled,
 		ManualPreviewSigningKey:  cfg.ManualPreviewSigningKey,
 	}, tradingapp.Dependencies{

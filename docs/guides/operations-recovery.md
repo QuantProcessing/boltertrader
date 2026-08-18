@@ -36,7 +36,7 @@ order: everything below a failure tends to fail for the same reason.
 | --- | --- |
 | `docker` | The daemon responds |
 | `.env.stack` | Present and non-empty |
-| `credentials` | Seven files, mode `0600`, in `.secrets/<mode>` |
+| `credentials` | Seven files, mode `0600`, in `.secrets/stack` |
 | `credential store` | Present and writable by the uid the gateway runs as |
 | `postgres` | The port accepts a connection |
 | `postgres roles` | Six roles, three databases, writer membership granted |

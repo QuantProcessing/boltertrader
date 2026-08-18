@@ -39,41 +39,42 @@ func TestManagerAuthorityReadsPropagatesConfiguredCatalogFailure(t *testing.T) {
 	}
 }
 
+// This used to run twice, once per runtime mode, because the catalog was the
+// one surface that had to publish the same profiles either way. There is one
+// mode now, so the loop is gone and what it was guarding — that the catalog
+// enumerates venues with no account behind them, and reports none of them ready
+// — is asserted once.
 func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) {
-	for _, mode := range []account.RuntimeMode{account.RuntimeModeTest, account.RuntimeModeLive} {
-		t.Run(string(mode), func(t *testing.T) {
-			authority, err := newGatewayAuthority(context.Background(), newMemoryDesiredStore(), newAuthorityManager(t, mode, newAuthorityLifecycle()), mode)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogVenues})
-			if err != nil {
-				t.Fatal(err)
-			}
-			venues, ok := response.Body.([]authorityVenue)
-			if !ok || len(venues) == 0 {
-				t.Fatalf("venues=%T %+v", response.Body, response.Body)
-			}
-			seen := make(map[string]struct{}, len(venues))
-			for _, venue := range venues {
-				if venue.Environment != string(exchange.EnvironmentLive) || venue.Ready {
-					t.Fatalf("mode=%s venue=%+v", mode, venue)
-				}
-				key := venue.Venue + "\x00" + venue.Environment
-				if _, duplicate := seen[key]; duplicate {
-					t.Fatalf("duplicate venue identity %q", key)
-				}
-				seen[key] = struct{}{}
-			}
-			instrumentsResponse, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogInstruments})
-			if err != nil {
-				t.Fatal(err)
-			}
-			instruments, ok := instrumentsResponse.Body.(authorityCatalogInstruments)
-			if !ok || instruments.Revision == "" || instruments.ObservedAt.IsZero() || len(instruments.Instruments) != 0 {
-				t.Fatalf("instruments=%T %+v", instrumentsResponse.Body, instrumentsResponse.Body)
-			}
-		})
+	authority, err := newGatewayAuthority(context.Background(), newMemoryDesiredStore(), newAuthorityManager(t, newAuthorityLifecycle()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogVenues})
+	if err != nil {
+		t.Fatal(err)
+	}
+	venues, ok := response.Body.([]authorityVenue)
+	if !ok || len(venues) == 0 {
+		t.Fatalf("venues=%T %+v", response.Body, response.Body)
+	}
+	seen := make(map[string]struct{}, len(venues))
+	for _, venue := range venues {
+		if venue.Environment != string(exchange.EnvironmentLive) || venue.Ready {
+			t.Fatalf("venue=%+v", venue)
+		}
+		key := venue.Venue + "\x00" + venue.Environment
+		if _, duplicate := seen[key]; duplicate {
+			t.Fatalf("duplicate venue identity %q", key)
+		}
+		seen[key] = struct{}{}
+	}
+	instrumentsResponse, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogInstruments})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instruments, ok := instrumentsResponse.Body.(authorityCatalogInstruments)
+	if !ok || instruments.Revision == "" || instruments.ObservedAt.IsZero() || len(instruments.Instruments) != 0 {
+		t.Fatalf("instruments=%T %+v", instrumentsResponse.Body, instrumentsResponse.Body)
 	}
 }
 
@@ -419,7 +420,7 @@ func (client *fakeAuthorityPerp) FundingRateHistory(_ context.Context, request e
 
 func TestGatewayAuthorityProjectsConfiguredCatalogAndMarketData(t *testing.T) {
 	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, newAuthorityLifecycle()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +461,7 @@ func TestGatewayAuthorityProjectsConfiguredCatalogAndMarketData(t *testing.T) {
 }
 
 func TestMigrationValidationPublishesStaticTestCatalogWithoutPrivateRuntime(t *testing.T) {
-	authority := validationSnapshotAuthority{mode: account.RuntimeModeTest}
+	authority := validationSnapshotAuthority{}
 	venuesResponse, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogVenues})
 	if err != nil {
 		t.Fatal(err)
@@ -499,7 +500,7 @@ func TestMigrationValidationPublishesStaticTestCatalogWithoutPrivateRuntime(t *t
 
 func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs(t *testing.T) {
 	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, newAuthorityLifecycle()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +583,7 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 
 func TestGatewayAuthorityRejectsUnavailableMarketDataProjection(t *testing.T) {
 	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, newAuthorityLifecycle()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +619,6 @@ func TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells(
 	accounts := &fakeAuthorityAccounts{}
 	reads := managerAuthorityReads{
 		manager: accounts,
-		mode:    account.RuntimeModeTest,
 		board: newTestFundingBoardSource(t, exchange.FundingBoardEntry{
 			Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 			Rate:          decimal.RequireFromString("-0.00042"),
@@ -669,7 +669,7 @@ func TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells(
 // venue is down" is a conclusion an operator would trade on.
 func TestGatewayAuthorityFundingBoardWithoutSourceIsUnavailable(t *testing.T) {
 	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, newAuthorityLifecycle()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,8 +701,8 @@ type constantFundingFactory struct{ entry exchange.FundingBoardEntry }
 func (factory constantFundingFactory) Build(profile routeprofile.Profile) (fundingboard.Connector, error) {
 	return constantFundingConnector{
 		scope: exchange.CatalogScope{
-			Venue:       exchange.Venue(profile.Venue),
-			Product:     exchange.Product(profile.Product),
+			Venue:   exchange.Venue(profile.Venue),
+			Product: exchange.Product(profile.Product),
 			// The profile no longer carries an environment: every route is live.
 			// The scope field stays because a snapshot is labelled with the venue
 			// it came from and callers compare that label against their request.
@@ -735,7 +735,7 @@ func (constantFundingConnector) Close() error { return nil }
 // plausible number in the wrong place rather than as a visible gap.
 func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t *testing.T) {
 	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, newAuthorityLifecycle()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +822,7 @@ func (relabelingFundingReads) FundingHistory(context.Context, authorityFundingHi
 func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 	ctx := context.Background()
 	desiredStore := newMemoryDesiredStore()
-	authority, err := newGatewayAuthority(ctx, desiredStore, newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(ctx, desiredStore, newAuthorityManager(t, newAuthorityLifecycle()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +832,7 @@ func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, ok := statusResponse.Body.(authorityRuntimeStatus)
-	if !ok || status.Mode != account.RuntimeModeTest || len(status.Accounts) != 0 {
+	if !ok || len(status.Accounts) != 0 {
 		t.Fatalf("status=%T %+v", statusResponse.Body, statusResponse.Body)
 	}
 	readinessResponse, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityRuntimeReadiness})
@@ -858,7 +858,7 @@ func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, ok = statusResponse.Body.(authorityRuntimeStatus)
-	if !ok || status.Mode != account.RuntimeModeTest || len(status.Accounts) != 1 {
+	if !ok || len(status.Accounts) != 1 {
 		t.Fatalf("active status=%T %+v", statusResponse.Body, statusResponse.Body)
 	}
 }
@@ -866,7 +866,7 @@ func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 func TestGatewayAuthorityRuntimeListAndStatusJSONOmitSecretReference(t *testing.T) {
 	ctx := context.Background()
 	desiredStore := newMemoryDesiredStore()
-	authority, err := newGatewayAuthority(ctx, desiredStore, newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(ctx, desiredStore, newAuthorityManager(t, newAuthorityLifecycle()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -981,8 +981,8 @@ func TestGatewayAuthorityRestoresActiveAndRotatingAccounts(t *testing.T) {
 		RotationFence: &store.RotationFence{ID: "rotate-1", State: store.RotationArmed, FromCredentialVersion: 1, ToCredentialVersion: 2, FromRuntimeGeneration: 1, ToRuntimeGeneration: 2, ArmedAt: time.Unix(1, 0)},
 	}
 	lifecycle := newAuthorityLifecycle()
-	manager := newAuthorityManager(t, account.RuntimeModeTest, lifecycle)
-	if _, err := newGatewayAuthority(ctx, desiredStore, manager, account.RuntimeModeTest); err != nil {
+	manager := newAuthorityManager(t, lifecycle)
+	if _, err := newGatewayAuthority(ctx, desiredStore, manager); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	if got, err := manager.Runtime("active"); err != nil || !got.Ready {
@@ -1057,7 +1057,7 @@ func authorityDesiredRuntime(t *testing.T, refValue string) account.DesiredRunti
 		t.Fatal(err)
 	}
 	return account.DesiredRuntime{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live", Mode: account.RuntimeModeTest,
+		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live",
 		SecretRef: ref, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 		RequestedState: account.RuntimeStateActive,
 	}
@@ -1112,7 +1112,7 @@ func (lifecycle *authorityLifecycle) Blockers(context.Context, domain.AccountID)
 
 func opaqueRefValue(ref secret.OpaqueRef) string { return ref.ProviderRef().RawForProvider() }
 
-func newAuthorityManager(t *testing.T, mode account.RuntimeMode, lifecycle account.RuntimeLifecycle) *account.Manager {
+func newAuthorityManager(t *testing.T, lifecycle account.RuntimeLifecycle) *account.Manager {
 	t.Helper()
 	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
 	if err != nil {
@@ -1120,7 +1120,7 @@ func newAuthorityManager(t *testing.T, mode account.RuntimeMode, lifecycle accou
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: mode, Lifecycle: lifecycle,
+		HTTPClient: &http.Client{}, Lifecycle: lifecycle,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1320,7 +1320,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		HTTPClient: &http.Client{}, RuntimeGroupBuilder: authorityCandidateBuilder{},
 		CredentialResolver: authorityCredentialResolver{}, Lifecycle: newAuthorityLifecycle(),
 	})
 	if err != nil {
@@ -1328,7 +1328,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	snapshotStore := newSnapshotAuthorityStore()
-	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1339,7 +1339,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	const retireOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"
 	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	apply := httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: applyOperationID,
+		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: applyOperationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
 			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
@@ -1350,7 +1350,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 		t.Fatal(err)
 	}
 	retire := httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityRetireDesired, Mode: "test", AccountID: "account-a", OperationID: retireOperationID,
+		Operation: httpapi.AuthorityRetireDesired, AccountID: "account-a", OperationID: retireOperationID,
 		Retirement: &httpapi.RetireRequest{
 			OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1,
 		},
@@ -1380,8 +1380,8 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	if !errors.Is(manager.CheckWriteFence(account.WriteFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}), account.ErrStaleWriteFence) {
 		t.Fatal("retired account still passed write fence")
 	}
-	restartedManager := newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle())
-	restarted, err := newGatewayAuthority(context.Background(), snapshotStore, restartedManager, account.RuntimeModeTest)
+	restartedManager := newAuthorityManager(t, newAuthorityLifecycle())
+	restarted, err := newGatewayAuthority(context.Background(), snapshotStore, restartedManager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1421,7 +1421,7 @@ func TestProductionRuntimeLifecycleAllowsSnapshotRetirementWithoutInjectedCallba
 	}
 	lifecycle := &productionRuntimeLifecycle{}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
-		GatewayCatalog: gatewayCatalog, HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest,
+		GatewayCatalog: gatewayCatalog, HTTPClient: &http.Client{},
 		RuntimeGroupBuilder: authorityCandidateBuilder{}, CredentialResolver: authorityCredentialResolver{},
 		Lifecycle: lifecycle,
 	})
@@ -1433,14 +1433,14 @@ func TestProductionRuntimeLifecycleAllowsSnapshotRetirementWithoutInjectedCallba
 		t.Fatal(err)
 	}
 	store := newSnapshotAuthorityStore()
-	authority, err := newGatewayAuthority(context.Background(), store, manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), store, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const applyOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445d01"
 	const retireOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445d02"
 	if _, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: applyOperationID,
+		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: applyOperationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
 			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1,
@@ -1451,7 +1451,7 @@ func TestProductionRuntimeLifecycleAllowsSnapshotRetirementWithoutInjectedCallba
 		t.Fatalf("apply: %v", err)
 	}
 	response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityRetireDesired, Mode: "test", AccountID: "account-a", OperationID: retireOperationID,
+		Operation: httpapi.AuthorityRetireDesired, AccountID: "account-a", OperationID: retireOperationID,
 		Retirement: &httpapi.RetireRequest{
 			OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 2,
 			RuntimeGeneration: 1, CredentialVersion: 1,
@@ -1540,7 +1540,7 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		HTTPClient: &http.Client{}, RuntimeGroupBuilder: authorityCandidateBuilder{},
 		CredentialResolver: authorityCredentialResolver{}, Lifecycle: newAuthorityLifecycle(),
 	})
 	if err != nil {
@@ -1548,14 +1548,14 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	snapshotStore := newSnapshotAuthorityStore()
-	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
 	apply := func(operationID string, revision, generation, credentialVersion int64, secretRef string) {
 		t.Helper()
 		_, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
-			Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+			Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 			DesiredApply: &httpapi.DesiredApplyRequest{
 				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
 				DesiredStateRevision: revision, RuntimeGeneration: generation, CredentialVersion: credentialVersion, RequestedState: "active",
@@ -1572,7 +1572,7 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 	apply(activeOperationID, 2, 2, 2, "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
 
 	request := httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityFinalizeRotation, Mode: "test", AccountID: "account-a", OperationID: activeOperationID,
+		Operation: httpapi.AuthorityFinalizeRotation, AccountID: "account-a", OperationID: activeOperationID,
 		RotationFinalization: &httpapi.RotationFinalizationRequest{
 			OperationID: activeOperationID, AccountID: "account-a",
 			ExpectedActiveFence:   httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
@@ -1609,7 +1609,7 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 			t.Fatalf("replay proof=%+v first=%+v", proof, first)
 		}
 	}
-	if snapshotStore.rotationCommits != 1 || snapshotStore.rotationRequest == nil || snapshotStore.rotationRequest.Scope != authoritySecretScope(account.RuntimeModeTest) {
+	if snapshotStore.rotationCommits != 1 || snapshotStore.rotationRequest == nil || snapshotStore.rotationRequest.Scope != authoritySecretScope() {
 		t.Fatalf("commits=%d request=%+v", snapshotStore.rotationCommits, snapshotStore.rotationRequest)
 	}
 
@@ -1641,7 +1641,7 @@ func TestAuthoritySnapshotApplyPromotesOnlyAfterDurableCAS(t *testing.T) {
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		HTTPClient: &http.Client{}, RuntimeGroupBuilder: authorityCandidateBuilder{},
 		CredentialResolver: authorityCredentialResolver{},
 	})
 	if err != nil {
@@ -1649,7 +1649,7 @@ func TestAuthoritySnapshotApplyPromotesOnlyAfterDurableCAS(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	snapshotStore := newSnapshotAuthorityStore()
-	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1683,7 +1683,7 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		HTTPClient: &http.Client{}, RuntimeGroupBuilder: authorityCandidateBuilder{},
 		CredentialResolver: authorityCredentialResolver{},
 	})
 	if err != nil {
@@ -1691,7 +1691,7 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	snapshotStore := newSnapshotAuthorityStore()
-	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1702,7 +1702,6 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	request := httpapi.AuthorityRequest{
 		Operation:   httpapi.AuthorityApplyDesired,
-		Mode:        "test",
 		AccountID:   "account-a",
 		OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
@@ -1745,7 +1744,7 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		HTTPClient: &http.Client{}, RuntimeGroupBuilder: authorityCandidateBuilder{},
 		CredentialResolver: authorityCredentialResolver{},
 	})
 	if err != nil {
@@ -1753,14 +1752,14 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	snapshotStore := newSnapshotAuthorityStore()
-	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
 	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
 			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
@@ -1869,7 +1868,10 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 		}
 		return account.Status{Resource: account.Resource{ReadReady: true, Reason: account.ErrLiveWriteDisabled.Error()}}, nil
 	}
-	authority.mode = account.RuntimeModeLive
+	// The authority used to be switched to live mode here, because the rule
+	// under test — a route whose only complaint is the live-write switch stays
+	// active — was written as "live mode AND that reason". Only the reason is
+	// left to arrange now, and the stub above already carries it.
 	liveDenied, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -1888,14 +1890,14 @@ func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		HTTPClient: &http.Client{}, RuntimeGroupBuilder: authorityCandidateBuilder{},
 		CredentialResolver: authorityStaticCredentialResolver{bundle: []byte(`{"schemaVersion":1,"venue":"lighter","authKind":"lighter_signer","metadata":{"accountIndex":0,"keyIndex":0},"secrets":{"privateKey":"key"}}`)},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
-	authority, err := newGatewayAuthority(context.Background(), newSnapshotAuthorityStore(), manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), newSnapshotAuthorityStore(), manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1904,7 +1906,7 @@ func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.
 	}
 	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
 	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
 			OperationID: operationID, AccountID: "account-a", Venue: "lighter", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
@@ -1931,7 +1933,7 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 	}
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest,
+		HTTPClient:          &http.Client{},
 		RuntimeGroupBuilder: authorityFailingCandidateBuilder{failGeneration: 2}, CredentialResolver: authorityCredentialResolver{},
 	})
 	if err != nil {
@@ -1939,13 +1941,13 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	snapshotStore := newSnapshotAuthorityStore()
-	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := func(operationID string, revision, generation int64) httpapi.AuthorityRequest {
 		return httpapi.AuthorityRequest{
-			Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+			Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 			DesiredApply: &httpapi.DesiredApplyRequest{
 				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
 				SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: revision,
@@ -1988,7 +1990,7 @@ func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *t
 		}
 		manager, err := account.NewManager(context.Background(), nil, account.Options{
 			Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
-			HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+			HTTPClient: &http.Client{}, RuntimeGroupBuilder: authorityCandidateBuilder{},
 			CredentialResolver: resolver,
 		})
 		if err != nil {
@@ -1998,7 +2000,7 @@ func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *t
 		return manager
 	}
 	request := httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a",
+		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a",
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33",
 		DesiredApply: &httpapi.DesiredApplyRequest{
 			OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
@@ -2008,7 +2010,7 @@ func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *t
 		},
 	}
 	snapshotStore := newSnapshotAuthorityStore()
-	firstAuthority, err := newGatewayAuthority(context.Background(), snapshotStore, newManager(t, authorityCredentialResolver{}), account.RuntimeModeTest)
+	firstAuthority, err := newGatewayAuthority(context.Background(), snapshotStore, newManager(t, authorityCredentialResolver{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2020,7 +2022,7 @@ func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *t
 	}
 
 	restartedManager := newManager(t, &authorityFailOnceCredentialResolver{failures: 1})
-	restartedAuthority, err := newGatewayAuthority(context.Background(), snapshotStore, restartedManager, account.RuntimeModeTest)
+	restartedAuthority, err := newGatewayAuthority(context.Background(), snapshotStore, restartedManager)
 	if err != nil {
 		t.Fatal(err)
 	}

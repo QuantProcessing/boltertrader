@@ -6,14 +6,12 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 const (
-	modeEnv                  = "BT_MODE"
 	listenAddrEnv            = "BT_AUTHEDGE_LISTEN_ADDR"
 	databaseEnv              = "BT_AUTHEDGE_DATABASE"
 	databaseRoleEnv          = "BT_AUTHEDGE_DATABASE_ROLE"
@@ -29,6 +27,7 @@ const (
 	gatewayTokenFileEnv = "BT_GATEWAY_TOKEN_FILE"
 	allowNonLoopbackEnv = "BT_AUTHEDGE_ALLOW_NON_LOOPBACK_LISTEN"
 	allowPlaintextEnv   = "BT_AUTHEDGE_ALLOW_NON_LOOPBACK_UPSTREAM"
+	secureCookieEnv     = "BT_AUTHEDGE_SECURE_COOKIE"
 
 	inlineTradingTokenEnv    = "BT_TRADING_SERVICE_TOKEN"
 	inlineGatewayTokenEnv    = "BT_GATEWAY_TOKEN"
@@ -36,7 +35,6 @@ const (
 )
 
 type config struct {
-	Mode                   string
 	ListenAddr             string
 	DatabaseName           string
 	DatabaseRole           string
@@ -52,6 +50,13 @@ type config struct {
 	// same process; a deployment where one is loopback and the other is not does
 	// not exist, and two flags would only offer a way to half-configure it.
 	AllowNonLoopbackUpstream bool
+	// SecureCookie marks the session cookie Secure. It defaults off because this
+	// process has no TLS of its own — a browser would drop a Secure cookie
+	// handed to it over the plaintext http the edge actually speaks, and the
+	// failure would look like "login does nothing". Behind a TLS-terminating
+	// proxy the flag is correct and the operator is the only one who knows that,
+	// the same way they know whether a non-loopback bind faces the network.
+	SecureCookie bool
 }
 
 // load reads the process's configuration from the environment and refuses to
@@ -66,7 +71,6 @@ func load() (config, error) {
 		}
 	}
 	cfg := config{
-		Mode:                  strings.TrimSpace(os.Getenv(modeEnv)),
 		ListenAddr:            getenv(listenAddrEnv, "127.0.0.1:18091"),
 		DatabaseName:          strings.TrimSpace(os.Getenv(databaseEnv)),
 		DatabaseRole:          strings.TrimSpace(os.Getenv(databaseRoleEnv)),
@@ -75,9 +79,6 @@ func load() (config, error) {
 		BootstrapPasswordHash: strings.TrimSpace(os.Getenv(bootstrapPasswordHashEnv)),
 		TradingURL:            strings.TrimSpace(os.Getenv(tradingURLEnv)),
 		GatewayURL:            strings.TrimSpace(os.Getenv(gatewayURLEnv)),
-	}
-	if cfg.Mode != "test" && cfg.Mode != "live" {
-		return config{}, fmt.Errorf("%s must be test or live", modeEnv)
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(allowNonLoopbackEnv))) {
 	case "", "false":
@@ -93,6 +94,13 @@ func load() (config, error) {
 	default:
 		return config{}, fmt.Errorf("%s must be true or false", allowPlaintextEnv)
 	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(secureCookieEnv))) {
+	case "", "false":
+	case "true":
+		cfg.SecureCookie = true
+	default:
+		return config{}, fmt.Errorf("%s must be true or false", secureCookieEnv)
+	}
 	// This edge speaks plaintext HTTP and hands out a session cookie. On a
 	// routable address that cookie is readable by anyone on the path, so the
 	// bind is checked before anything else can make the process useful. A
@@ -102,9 +110,10 @@ func load() (config, error) {
 	if err := validateListenAddr(cfg.ListenAddr, cfg.AllowNonLoopbackListen); err != nil {
 		return config{}, err
 	}
-	// The database is named for the mode it holds. A live process pointed at the
-	// test database would authenticate live operators against test identities.
-	wantDatabase := "bolter_authedge_" + cfg.Mode
+	// The database name is pinned rather than accepted as given. Nothing else
+	// checks it, so a typo would authenticate operators against whatever schema
+	// happened to answer.
+	const wantDatabase = "bolter_authedge"
 	if cfg.DatabaseName != wantDatabase || cfg.DatabaseRole != wantDatabase {
 		return config{}, fmt.Errorf("%s and %s must both be %s", databaseEnv, databaseRoleEnv, wantDatabase)
 	}
@@ -129,7 +138,7 @@ func load() (config, error) {
 		if cfg.BootstrapPasswordHash != "" {
 			return config{}, fmt.Errorf("set %s or %s, not both", bootstrapPasswordHashEnv, bootstrapPasswordHashFileEnv)
 		}
-		hash, err := readProtectedToken(path, bootstrapPasswordHashFileEnv, cfg.Mode)
+		hash, err := readProtectedToken(path, bootstrapPasswordHashFileEnv)
 		if err != nil {
 			return config{}, err
 		}
@@ -160,7 +169,7 @@ func load() (config, error) {
 		{gatewayTokenFileEnv, &cfg.GatewayToken},
 	}
 	for _, secret := range secrets {
-		value, err := readProtectedToken(os.Getenv(secret.env), secret.env, cfg.Mode)
+		value, err := readProtectedToken(os.Getenv(secret.env), secret.env)
 		if err != nil {
 			cfg.clear()
 			return config{}, err
@@ -206,16 +215,19 @@ func validateUpstreamURL(envName, rawURL string, allowNonLoopback bool) error {
 }
 
 // readProtectedToken enforces the same file discipline the trading service
-// uses: a regular 0600 file, scoped to a directory named for the mode, holding
-// opaque printable bytes. The mode-scoped path is what stops a live process
-// from silently starting with test credentials that happen to be readable.
-func readProtectedToken(path, envName, mode string) ([]byte, error) {
+// uses: a regular 0600 file holding opaque printable bytes.
+//
+// The path used to have to sit in a directory named for the mode as well, which
+// is what stopped a live process from starting on test credentials that
+// happened to be readable. There is one set of credentials now and nothing for
+// that check to discriminate between, so what is left is the part that was
+// always doing the real work: a secret this process will spend must be a file
+// only its owner can read, never a value someone can pull out of a process
+// listing.
+func readProtectedToken(path, envName string) ([]byte, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, fmt.Errorf("%s is required", envName)
-	}
-	if filepath.Base(filepath.Dir(filepath.Clean(path))) != mode {
-		return nil, fmt.Errorf("%s must be scoped to %s %s", envName, modeEnv, mode)
 	}
 	info, err := os.Lstat(path)
 	if err != nil {

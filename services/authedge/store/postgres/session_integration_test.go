@@ -13,13 +13,13 @@ func TestSessionSurvivesLosingEveryConnection(t *testing.T) {
 	database, reopen := openIntegrationDatabase(t)
 	ctx := context.Background()
 	identities := NewIdentityStore(database)
-	if err := identities.Upsert(ctx, session.Identity{PrincipalID: "principal-a", Mode: "test", Username: "operator", PasswordHash: "hash-a"}); err != nil {
+	if err := identities.Upsert(ctx, session.Identity{PrincipalID: "principal-a", Username: "operator", PasswordHash: "hash-a"}); err != nil {
 		t.Fatal(err)
 	}
 	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
 	stored := session.StoredSession{
 		TokenDigest: "token-digest-a",
-		Principal:   session.Principal{ID: "principal-a", Mode: "test", Username: "operator"},
+		Principal:   session.Principal{ID: "principal-a", Username: "operator"},
 		CSRFDigest:  "csrf-digest-a",
 		ExpiresAt:   expires,
 	}
@@ -44,11 +44,11 @@ func TestSessionSurvivesLosingEveryConnection(t *testing.T) {
 func TestSessionDeletionIsFinal(t *testing.T) {
 	database, _ := openIntegrationDatabase(t)
 	ctx := context.Background()
-	if err := NewIdentityStore(database).Upsert(ctx, session.Identity{PrincipalID: "principal-a", Mode: "test", Username: "operator", PasswordHash: "hash-a"}); err != nil {
+	if err := NewIdentityStore(database).Upsert(ctx, session.Identity{PrincipalID: "principal-a", Username: "operator", PasswordHash: "hash-a"}); err != nil {
 		t.Fatal(err)
 	}
 	sessions := NewSessionStore(database)
-	if err := sessions.Save(ctx, session.StoredSession{TokenDigest: "token-digest-a", Principal: session.Principal{ID: "principal-a", Mode: "test", Username: "operator"}, CSRFDigest: "csrf-digest-a", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+	if err := sessions.Save(ctx, session.StoredSession{TokenDigest: "token-digest-a", Principal: session.Principal{ID: "principal-a", Username: "operator"}, CSRFDigest: "csrf-digest-a", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := sessions.Delete(ctx, "token-digest-a"); err != nil {
@@ -66,37 +66,60 @@ func TestDisabledIdentityIsIndistinguishableFromAbsent(t *testing.T) {
 	database, _ := openIntegrationDatabase(t)
 	ctx := context.Background()
 	identities := NewIdentityStore(database)
-	if err := identities.Upsert(ctx, session.Identity{PrincipalID: "principal-a", Mode: "test", Username: "operator", PasswordHash: "hash-a"}); err != nil {
+	if err := identities.Upsert(ctx, session.Identity{PrincipalID: "principal-a", Username: "operator", PasswordHash: "hash-a"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.ExecContext(ctx, `UPDATE identities SET disabled_at = now() WHERE username = 'operator'`); err != nil {
 		t.Fatal(err)
 	}
-	_, disabledErr := identities.FindByUsername(ctx, "test", "operator")
-	_, absentErr := identities.FindByUsername(ctx, "test", "nobody")
+	_, disabledErr := identities.FindByUsername(ctx, "operator")
+	_, absentErr := identities.FindByUsername(ctx, "nobody")
 	if !errors.Is(disabledErr, session.ErrNotFound) || !errors.Is(absentErr, session.ErrNotFound) {
 		t.Fatalf("disabled=%v absent=%v", disabledErr, absentErr)
 	}
 }
 
-func TestIdentityIsScopedByMode(t *testing.T) {
+// The username is the whole identity key now that mode is gone, so a second
+// upsert of the same username is a rotation rather than a second row. The auth
+// edge seeds the bootstrap operator on every start and depends on exactly that:
+// a rotated hash has to displace the stored one, or the old password keeps
+// working. Re-enabling is part of the same statement for the same reason — an
+// operator who re-seeds an identity has said it should work.
+func TestIdentityUpsertRotatesRatherThanDuplicates(t *testing.T) {
 	database, _ := openIntegrationDatabase(t)
 	ctx := context.Background()
 	identities := NewIdentityStore(database)
 	for _, identity := range []session.Identity{
-		{PrincipalID: "principal-test", Mode: "test", Username: "operator", PasswordHash: "hash-test"},
-		{PrincipalID: "principal-live", Mode: "live", Username: "operator", PasswordHash: "hash-live"},
+		{PrincipalID: "principal-old", Username: "operator", PasswordHash: "hash-old"},
+		{PrincipalID: "principal-new", Username: "operator", PasswordHash: "hash-new"},
 	} {
 		if err := identities.Upsert(ctx, identity); err != nil {
 			t.Fatal(err)
 		}
 	}
-	found, err := identities.FindByUsername(ctx, "live", "operator")
+	var rows int
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM identities WHERE username = 'operator'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("rows=%d want=1", rows)
+	}
+	found, err := identities.FindByUsername(ctx, "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if found.PrincipalID != "principal-live" || found.PasswordHash != "hash-live" {
+	if found.PrincipalID != "principal-new" || found.PasswordHash != "hash-new" {
 		t.Fatalf("found=%+v", found)
+	}
+
+	if _, err := database.ExecContext(ctx, `UPDATE identities SET disabled_at = now() WHERE username = 'operator'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := identities.Upsert(ctx, session.Identity{PrincipalID: "principal-new", Username: "operator", PasswordHash: "hash-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identities.FindByUsername(ctx, "operator"); err != nil {
+		t.Fatalf("re-seeded identity: %v", err)
 	}
 }
 

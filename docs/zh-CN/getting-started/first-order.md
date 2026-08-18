@@ -27,7 +27,7 @@ auth edge。正因如此，会话 cookie 才能保持 `HttpOnly` 与 `SameSite=S
 ## 2. 登录
 
 使用 bootstrap operator——默认是 `operator`——以及首次 `make up` 打印过一次的
-密码。它也在 `.secrets/test/bootstrap_password` 里。
+密码。它也在 `.secrets/stack/bootstrap_password` 里。
 
 登录后，顶部 header 会带上四个路由：**Trade**、**Portfolio**、**Activity**、
 **Settings**。

@@ -91,11 +91,11 @@ it.
 
 There is no environment in a route profile. Each row used to expand into one
 profile per environment the venue offered — a venue with both a demo endpoint
-and a testnet produced three — and the registry folded those back into a mode so
-that a route was never a guess about which set of credentials it meant. The
-endpoints those extra profiles pointed at are gone, so a row is now exactly one
-profile and its ID carries no environment segment: `binance.spot.v1`,
-`nado.perp.usdt0.v1`.
+and a testnet produced three — and the registry keyed them under a coarser
+deployment axis, a mode, so that a route was never a guess about which set of
+credentials it meant. The endpoints those extra profiles pointed at are gone,
+and the mode axis with them, so a row is now exactly one profile and its ID
+carries no environment segment: `binance.spot.v1`, `nado.perp.usdt0.v1`.
 
 ## 6. Gateway construction
 

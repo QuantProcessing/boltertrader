@@ -22,7 +22,7 @@
 -- Gateway roles.
 --
 -- The gateway is the one service that verifies its own authority topology:
--- gateway/authority.GatewayV7 names these four roles, and VerifyRuntimeCatalog
+-- gateway/authority.GatewayV8 names these four roles, and VerifyRuntimeCatalog
 -- reads the catalog back at each start and refuses to serve if the cluster
 -- disagrees. The names are therefore a contract rather than a convention, and
 -- each property below is load-bearing for a specific check.
@@ -32,26 +32,26 @@
 -- process authenticates as it, and the grant would error if the role were
 -- missing. NOLOGIN because a login role nothing uses is a login role whose use
 -- nobody would notice.
-CREATE ROLE bolter_platform_test_admin NOLOGIN;
+CREATE ROLE bolter_platform_admin NOLOGIN;
 
 -- The writer is a privilege container, never a connection. VerifyRuntimeCatalog
 -- fails when it finds WriterConnect true, so this role must not be able to
 -- reach the database in its own right; the runtime reaches the writer's grants
 -- by membership instead.
-CREATE ROLE bolter_gateway_test_writer NOLOGIN;
+CREATE ROLE bolter_gateway_writer NOLOGIN;
 
 -- The migrator owns the database, which is what lets the serving role own
 -- nothing it could drop. LOGIN is required because nothing in the repository
 -- issues SET ROLE or SET SESSION AUTHORIZATION: cmd/gateway-migrate has to
 -- arrive as this role, not become it.
-CREATE ROLE bolter_gateway_test_migrator LOGIN INHERIT;
+CREATE ROLE bolter_gateway_migrator LOGIN INHERIT;
 
 -- The serving identity. INHERIT is not decoration: CollectPostgresRuntimeCatalog
 -- reads pg_roles.rolinherit alongside pg_has_role(...,'MEMBER'), and a NOINHERIT
 -- runtime would hold the writer membership without any of its privileges — the
 -- membership check would pass while every effective-privilege comparison failed.
-CREATE ROLE bolter_gateway_test LOGIN INHERIT;
-GRANT bolter_gateway_test_writer TO bolter_gateway_test;
+CREATE ROLE bolter_gateway LOGIN INHERIT;
+GRANT bolter_gateway_writer TO bolter_gateway;
 
 -- ---------------------------------------------------------------------------
 -- Trading and auth-edge roles.
@@ -63,19 +63,21 @@ GRANT bolter_gateway_test_writer TO bolter_gateway_test;
 -- privilege topology nothing verifies — it would drift silently, which is worse
 -- than not having it. Their identities are still pinned in Go: cmd/trading and
 -- cmd/authedge each refuse to start unless database and role are exactly
--- `bolter_<service>_<mode>`, so a live process cannot open test data.
+-- `bolter_<service>`. Nothing else checks the name, so a typo would silently
+-- point a service at whatever schema happened to answer — which was worth
+-- refusing before there was one set of databases and is worth refusing now.
 -- ---------------------------------------------------------------------------
 
-CREATE ROLE bolter_trading_test LOGIN INHERIT;
-CREATE ROLE bolter_authedge_test LOGIN INHERIT;
+CREATE ROLE bolter_trading LOGIN INHERIT;
+CREATE ROLE bolter_authedge LOGIN INHERIT;
 
 -- ---------------------------------------------------------------------------
 -- Databases.
 -- ---------------------------------------------------------------------------
 
-CREATE DATABASE bolter_gateway_test OWNER bolter_gateway_test_migrator;
-CREATE DATABASE bolter_trading_test OWNER bolter_trading_test;
-CREATE DATABASE bolter_authedge_test OWNER bolter_authedge_test;
+CREATE DATABASE bolter_gateway OWNER bolter_gateway_migrator;
+CREATE DATABASE bolter_trading OWNER bolter_trading;
+CREATE DATABASE bolter_authedge OWNER bolter_authedge;
 
 -- No privilege on the gateway database is granted here. Its entire ACL — schema
 -- ownership, CONNECT, schema USAGE, and every object grant — is applied by
@@ -88,12 +90,12 @@ CREATE DATABASE bolter_authedge_test OWNER bolter_authedge_test;
 -- made here. Revoking from PUBLIC does not disturb the owner: ownership is not
 -- an ACL entry, so the role owning the database and the schema keeps full
 -- rights over both and can still create its own tables.
-\connect bolter_trading_test
-ALTER SCHEMA public OWNER TO bolter_trading_test;
-REVOKE CONNECT ON DATABASE bolter_trading_test FROM PUBLIC;
+\connect bolter_trading
+ALTER SCHEMA public OWNER TO bolter_trading;
+REVOKE CONNECT ON DATABASE bolter_trading FROM PUBLIC;
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 
-\connect bolter_authedge_test
-ALTER SCHEMA public OWNER TO bolter_authedge_test;
-REVOKE CONNECT ON DATABASE bolter_authedge_test FROM PUBLIC;
+\connect bolter_authedge
+ALTER SCHEMA public OWNER TO bolter_authedge;
+REVOKE CONNECT ON DATABASE bolter_authedge FROM PUBLIC;
 REVOKE ALL ON SCHEMA public FROM PUBLIC;

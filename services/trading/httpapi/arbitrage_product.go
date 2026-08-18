@@ -51,7 +51,6 @@ type arbitragePreviewRequest struct {
 	Quantity    string              `json:"quantity"`
 	OrderType   string              `json:"orderType"`
 	TimeInForce string              `json:"timeInForce,omitempty"`
-	Mode        string              `json:"mode"`
 }
 
 type arbitrageCommandRequest struct {
@@ -80,7 +79,6 @@ type arbitrageLegAuthority struct {
 
 type arbitragePreviewAuthority struct {
 	PrincipalID     string                  `json:"principalId"`
-	Mode            string                  `json:"mode"`
 	Request         arbitragePreviewRequest `json:"request"`
 	Long            arbitrageLegAuthority   `json:"long"`
 	Short           arbitrageLegAuthority   `json:"short"`
@@ -196,8 +194,8 @@ type arbitrageLegOrder struct {
 // interchangeable in fact either: arbitrage's MAC covers an extra domain label,
 // so a token sealed by one opener is refused by the other.
 type arbitragePreviewCodec interface {
-	SealPreview(principal string, mode orders.Mode, payload []byte) (string, error)
-	OpenPreview(principal string, mode orders.Mode, token string) ([]byte, error)
+	SealPreview(principal string, payload []byte) (string, error)
+	OpenPreview(principal string, token string) ([]byte, error)
 	PreviewNow() time.Time
 }
 
@@ -231,7 +229,7 @@ func registerArbitrageProductRoutes(mux *http.ServeMux, trading *tradingHandler)
 // caller's simply fails the principal-scoped read and leaves the venue
 // unreachable, so the parameter cannot be used to discover anything.
 func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok {
 		return
 	}
@@ -249,7 +247,7 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	reachable := handler.reachableVenues(r, principal, mode, snapshot)
+	reachable := handler.reachableVenues(r, principal, snapshot)
 
 	// Group the board by underlying, then pick the extremes: the venue paying
 	// the most is the one to be short on, the venue paying the least is the one
@@ -415,7 +413,7 @@ type reachableVenue struct {
 // not-ready accounts drop out silently here — the route reports them as
 // unreachable rather than as errors, because an operator with three accounts
 // asking about a twelve-venue board is the normal case, not a fault.
-func (handler *arbitrageProductHandler) reachableVenues(r *http.Request, principal, mode string, snapshot catalog.Snapshot) map[venueKey]reachableVenue {
+func (handler *arbitrageProductHandler) reachableVenues(r *http.Request, principal string, snapshot catalog.Snapshot) map[venueKey]reachableVenue {
 	reachable := map[venueKey]reachableVenue{}
 	authority := handler.trading.options.ManualAccounts
 	if authority == nil {
@@ -453,7 +451,7 @@ func (handler *arbitrageProductHandler) reachableVenues(r *http.Request, princip
 /* --- Preview -------------------------------------------------------------- */
 
 func (handler *arbitrageProductHandler) createPreview(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok || !handler.trading.authorizeMutation(w, r) {
 		return
 	}
@@ -461,11 +459,11 @@ func (handler *arbitrageProductHandler) createPreview(w http.ResponseWriter, r *
 	if !decodeTrading(w, r, &request) {
 		return
 	}
-	if request.Mode != mode || validateArbitragePreview(request) != nil {
+	if validateArbitragePreview(request) != nil {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
-	authority, snapshot, resolved := handler.resolveAuthority(w, r, principal, mode, request)
+	authority, snapshot, resolved := handler.resolveAuthority(w, r, principal, request)
 	if !resolved {
 		return
 	}
@@ -480,13 +478,12 @@ func (handler *arbitrageProductHandler) createPreview(w http.ResponseWriter, r *
 		return
 	}
 	authority.PrincipalID = principal
-	authority.Mode = mode
 	authority.Request = request
 	authority.CatalogRevision = snapshot.Revision
 	authority.IssuedAt = now
 	authority.ExpiresAt = now.Add(arbitragePreviewTTL)
 	canonical, _ := json.Marshal(authority)
-	previewID, err := codec.SealPreview(principal, orders.Mode(mode), canonical)
+	previewID, err := codec.SealPreview(principal, canonical)
 	if err != nil {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
@@ -501,7 +498,7 @@ func (handler *arbitrageProductHandler) createPreview(w http.ResponseWriter, r *
 
 func validateArbitragePreview(request arbitragePreviewRequest) error {
 	quantity, err := decimal.NewFromString(request.Quantity)
-	if err != nil || !quantity.IsPositive() || (request.Mode != "test" && request.Mode != "live") {
+	if err != nil || !quantity.IsPositive() {
 		return orders.ErrNotFound
 	}
 	if request.Long.AccountID == "" || request.Long.InstrumentID == "" || request.Short.AccountID == "" || request.Short.InstrumentID == "" {
@@ -534,7 +531,7 @@ func validateArbitragePreview(request arbitragePreviewRequest) error {
 // they stand right now. It runs on the preview and again on the command: the
 // preview seals what it found, and the command refuses to spend a seal whose
 // facts have moved.
-func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, r *http.Request, principal, mode string, request arbitragePreviewRequest) (arbitragePreviewAuthority, catalog.Snapshot, bool) {
+func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, r *http.Request, principal string, request arbitragePreviewRequest) (arbitragePreviewAuthority, catalog.Snapshot, bool) {
 	if handler.trading.options.ManualAccounts == nil {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
@@ -562,22 +559,6 @@ func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, 
 		if !routed || route.Product != arbitrageProduct {
 			tradingError(w, http.StatusNotFound, "NOT_FOUND")
 			return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
-		}
-		if mode == string(orders.ModeTest) {
-			legRequest := manualPreviewRequest{
-				AccountID: side.request.AccountID, InstrumentID: side.request.InstrumentID,
-				Side: arbitrage.OpenSide(side.leg), OrderType: strings.ToLower(request.OrderType),
-				Quantity: request.Quantity, LimitPrice: side.request.LimitPrice, Mode: mode,
-			}
-			allowed, notionalErr := manualTestNotionalAllowed(r.Context(), legRequest, route, handler.trading.options.ManualMarketData)
-			if notionalErr != nil {
-				tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
-				return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
-			}
-			if !allowed {
-				tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
-				return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
-			}
 		}
 		*side.target = arbitrageLegAuthority{
 			AccountID: account.ID, InstrumentID: side.request.InstrumentID, LimitPrice: side.request.LimitPrice,
@@ -740,7 +721,7 @@ func dailyFundingRate(rate string, intervalHours int64) (decimal.Decimal, bool) 
 /* --- Commands ------------------------------------------------------------- */
 
 func (handler *arbitrageProductHandler) createCommand(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok || !handler.trading.authorizeMutation(w, r) {
 		return
 	}
@@ -758,32 +739,28 @@ func (handler *arbitrageProductHandler) createCommand(w http.ResponseWriter, r *
 			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 			return
 		}
-		handler.cancelLeg(w, r, principal, mode, request)
+		handler.cancelLeg(w, r, principal, request)
 		return
 	case "close":
 		if request.PreviewID != "" || request.OrderID != "" {
 			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 			return
 		}
-		handler.closePair(w, r, principal, mode, request)
+		handler.closePair(w, r, principal, request)
 		return
 	case "open":
 		if request.PreviewID == "" || request.OrderID != "" {
 			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 			return
 		}
-		handler.openPair(w, r, principal, mode, request)
+		handler.openPair(w, r, principal, request)
 		return
 	default:
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 	}
 }
 
-func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.Request, principal, mode string, request arbitrageCommandRequest) {
-	if mode == string(orders.ModeLive) {
-		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
-		return
-	}
+func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.Request, principal string, request arbitrageCommandRequest) {
 	if !handler.trading.options.Arbitrage.Ready() {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
@@ -793,14 +770,14 @@ func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	payload, err := codec.OpenPreview(principal, orders.Mode(mode), request.PreviewID)
+	payload, err := codec.OpenPreview(principal, request.PreviewID)
 	if err != nil {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
 	var sealed arbitragePreviewAuthority
 	now := codec.PreviewNow()
-	if json.Unmarshal(payload, &sealed) != nil || sealed.PrincipalID != principal || sealed.Mode != mode || sealed.Request.Mode != mode ||
+	if json.Unmarshal(payload, &sealed) != nil || sealed.PrincipalID != principal ||
 		validateArbitragePreview(sealed.Request) != nil || !arbitrageLegSealed(sealed.Long) || !arbitrageLegSealed(sealed.Short) ||
 		sealed.CatalogRevision == "" || sealed.IssuedAt.IsZero() || sealed.ExpiresAt.IsZero() ||
 		sealed.ExpiresAt.Sub(sealed.IssuedAt) != arbitragePreviewTTL || now.Before(sealed.IssuedAt) || !now.Before(sealed.ExpiresAt) {
@@ -811,7 +788,7 @@ func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.
 	// them. A rotated credential, a withdrawn route or a re-published catalog
 	// between preview and confirmation all land here as a refusal rather than as
 	// a fence violation at the venue.
-	current, snapshot, resolved := handler.resolveAuthority(w, r, principal, mode, sealed.Request)
+	current, snapshot, resolved := handler.resolveAuthority(w, r, principal, sealed.Request)
 	if !resolved {
 		return
 	}
@@ -831,7 +808,7 @@ func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.
 			OrderType: orderType, LimitPrice: sealed.Short.LimitPrice, TimeInForce: sealed.Request.TimeInForce,
 		},
 	}
-	handler.submitLegs(w, r, principal, mode, request, legs)
+	handler.submitLegs(w, r, principal, request, legs)
 }
 
 func arbitrageLegSealed(leg arbitrageLegAuthority) bool {
@@ -848,11 +825,11 @@ func arbitrageLegSealed(leg arbitrageLegAuthority) bool {
 // read as "nothing was placed". Nothing here unwinds a leg: a filled leg whose
 // sibling never made it is a directional position, and deciding what to do with
 // one is a person's job.
-func (handler *arbitrageProductHandler) submitLegs(w http.ResponseWriter, r *http.Request, principal, mode string, request arbitrageCommandRequest, legs []arbitrageLegOrder) {
+func (handler *arbitrageProductHandler) submitLegs(w http.ResponseWriter, r *http.Request, principal string, request arbitrageCommandRequest, legs []arbitrageLegOrder) {
 	execution := arbitrageExecution{LineageID: request.LineageID, Legs: []arbitrage.LegView{}, Failures: []arbitrageLegFailure{}}
 	replayed := 0
 	for index, order := range legs {
-		command, replay, err := handler.placeLeg(r, principal, mode, request.LineageID, request.IdempotencyKey, order)
+		command, replay, err := handler.placeLeg(r, principal, request.LineageID, request.IdempotencyKey, order)
 		if err != nil {
 			// Nothing durable exists for the first leg yet, so the whole request
 			// can still be reported as refused with its real cause.
@@ -896,7 +873,7 @@ func (handler *arbitrageProductHandler) submitLegs(w http.ResponseWriter, r *htt
 // command. Without the suffix the second leg would replay the first one's
 // command — the order service keys idempotency by principal and key alone — and
 // a two-leg hedge would quietly become one leg placed twice.
-func (handler *arbitrageProductHandler) placeLeg(r *http.Request, principal, mode, lineageID, idempotencyKey string, order arbitrageLegOrder) (orders.Command, bool, error) {
+func (handler *arbitrageProductHandler) placeLeg(r *http.Request, principal, lineageID, idempotencyKey string, order arbitrageLegOrder) (orders.Command, bool, error) {
 	side := arbitrage.OpenSide(order.Leg)
 	if order.ReduceOnly {
 		side = arbitrage.ReduceSide(order.Leg)
@@ -916,7 +893,7 @@ func (handler *arbitrageProductHandler) placeLeg(r *http.Request, principal, mod
 	}
 	suffix := ":" + string(order.Leg)
 	reservation, err := handler.trading.options.Reservations.Create(r.Context(), reservations.CreateRequest{
-		PrincipalID: principal, Mode: reservations.Mode(mode), ProductID: arbitrage.ProductID, Kind: kind,
+		PrincipalID: principal, ProductID: arbitrage.ProductID, Kind: kind,
 		Scope: reservations.NettingScope{
 			AccountID: order.Authority.AccountID, Venue: order.Authority.Venue,
 			InstrumentID: order.Authority.InstrumentID, VenueEnvironment: order.Authority.VenueEnvironment,
@@ -929,7 +906,7 @@ func (handler *arbitrageProductHandler) placeLeg(r *http.Request, principal, mod
 	command, replay, err := handler.trading.options.Commands.Create(r.Context(), orders.CreateRequest{
 		PrincipalID: principal, AccountID: order.Authority.AccountID, ProductID: arbitrage.ProductID, LineageID: lineageID,
 		ReservationID: reservation.ReservationID, IdempotencyKey: idempotencyKey + suffix, Method: r.Method, Path: r.URL.Path,
-		CommandKind: arbitrage.CommandKindPlace, Mode: orders.Mode(mode), Payload: payload,
+		CommandKind: arbitrage.CommandKindPlace, Payload: payload,
 	})
 	if err != nil {
 		return orders.Command{}, false, err
@@ -951,16 +928,12 @@ func (handler *arbitrageProductHandler) placeLeg(r *http.Request, principal, mod
 // the remedy for a partially open pair: the operator closes the leg that filled
 // and the request is complete. Fewer than two legs is therefore a normal
 // outcome, not a degraded one.
-func (handler *arbitrageProductHandler) closePair(w http.ResponseWriter, r *http.Request, principal, mode string, request arbitrageCommandRequest) {
-	if mode == string(orders.ModeLive) {
-		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
-		return
-	}
+func (handler *arbitrageProductHandler) closePair(w http.ResponseWriter, r *http.Request, principal string, request arbitrageCommandRequest) {
 	if !handler.trading.options.Arbitrage.Ready() {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	commands, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, orders.Mode(mode), arbitrage.ProductID)
+	commands, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, arbitrage.ProductID)
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -973,7 +946,7 @@ func (handler *arbitrageProductHandler) closePair(w http.ResponseWriter, r *http
 		handler.resumeClose(w, r, request, replayed)
 		return
 	}
-	positions, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, portfolio.Mode(mode), "", arbitrage.ProductID)
+	positions, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, "", arbitrage.ProductID)
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -1007,7 +980,7 @@ func (handler *arbitrageProductHandler) closePair(w http.ResponseWriter, r *http
 		if !owned {
 			continue
 		}
-		authority, ready := handler.closeAuthority(r, principal, mode, position, snapshot)
+		authority, ready := handler.closeAuthority(r, principal, position, snapshot)
 		if !ready {
 			tradingError(w, http.StatusNotFound, "NOT_FOUND")
 			return
@@ -1025,7 +998,7 @@ func (handler *arbitrageProductHandler) closePair(w http.ResponseWriter, r *http
 	slices.SortStableFunc(legs, func(left, right arbitrageLegOrder) int {
 		return strings.Compare(string(left.Leg), string(right.Leg))
 	})
-	handler.submitLegs(w, r, principal, mode, request, legs)
+	handler.submitLegs(w, r, principal, request, legs)
 }
 
 // arbitrageCounterOf names the sibling for a closing leg. The intent requires
@@ -1041,7 +1014,7 @@ func arbitrageCounterOf(openings map[string]arbitrage.LegView, leg arbitrage.Leg
 	return arbitrageLegAuthority{AccountID: leg.AccountID, InstrumentID: leg.InstrumentID}
 }
 
-func (handler *arbitrageProductHandler) closeAuthority(r *http.Request, principal, mode string, position portfolio.Position, snapshot catalog.Snapshot) (arbitrageLegAuthority, bool) {
+func (handler *arbitrageProductHandler) closeAuthority(r *http.Request, principal string, position portfolio.Position, snapshot catalog.Snapshot) (arbitrageLegAuthority, bool) {
 	if handler.trading.options.ManualAccounts == nil {
 		return arbitrageLegAuthority{}, false
 	}
@@ -1113,16 +1086,12 @@ func (handler *arbitrageProductHandler) resumeClose(w http.ResponseWriter, r *ht
 // A resting leg cannot be closed: a reduce-only order against a position that
 // has not opened yet is refused by the venue. Cancel is therefore not a
 // duplicate of close but the other half of the remedy for a stuck pair.
-func (handler *arbitrageProductHandler) cancelLeg(w http.ResponseWriter, r *http.Request, principal, mode string, request arbitrageCommandRequest) {
-	if mode == string(orders.ModeLive) {
-		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
-		return
-	}
+func (handler *arbitrageProductHandler) cancelLeg(w http.ResponseWriter, r *http.Request, principal string, request arbitrageCommandRequest) {
 	if !handler.trading.options.Arbitrage.Ready() {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	command, err := handler.trading.options.Commands.GetOwned(r.Context(), principal, orders.Mode(mode), request.OrderID)
+	command, err := handler.trading.options.Commands.GetOwned(r.Context(), principal, request.OrderID)
 	if err != nil || command.ProductID != arbitrage.ProductID || command.LineageID != request.LineageID {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -1149,22 +1118,22 @@ func (handler *arbitrageProductHandler) cancelLeg(w http.ResponseWriter, r *http
 // off a PnL snapshot, because a snapshot demands all four attribution fields and
 // a hedge legitimately spans two accounts and two instruments.
 func (handler *arbitrageProductHandler) positions(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok {
 		return
 	}
-	commands, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, orders.Mode(mode), arbitrage.ProductID)
+	commands, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, arbitrage.ProductID)
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
 	}
-	held, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, portfolio.Mode(mode), "", arbitrage.ProductID)
+	held, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, "", arbitrage.ProductID)
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
 	}
 	entries, err := handler.trading.options.Ledger.List(r.Context(), ledger.Query{
-		PrincipalID: principal, Mode: ledger.Mode(mode), ProductID: arbitrage.ProductID,
+		PrincipalID: principal, ProductID: arbitrage.ProductID,
 	})
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")

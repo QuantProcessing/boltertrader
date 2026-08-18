@@ -16,7 +16,7 @@ carries, together:
 
 | Part | What it holds |
 | --- | --- |
-| Identity | Venue, venue environment, mode, display name |
+| Identity | Venue, venue environment, native environment, display name |
 | Credentials | A reference into the secret store — never the material |
 | Routes | One or more product routes, each bound to a route profile |
 | Revisions | Desired-state revision, runtime generation, credential version |
@@ -71,10 +71,10 @@ An account does not have a product. Its **routes** do.
 
 Each route names a product, a settlement asset, a route profile, and the state
 the operator wants it in. The profile is resolved through the route-profile
-registry under the account's mode, and validation is a three-way agreement: the
-profile's product, settlement asset, and native environment must each match the
-account's own. A route that resolves but disagrees is rejected, because a route
-profile is exactly the thing that decides where a signed request goes.
+registry by venue and profile ID, and validation is a two-way agreement: the
+profile's product and settlement asset must each match the route's own. A route
+that resolves but disagrees is rejected, because a route profile is exactly the
+thing that decides where a signed request goes.
 
 This is why an account may hold several routes at once — a venue that settles
 perps in more than one asset needs one route per settlement — and why an account
@@ -82,10 +82,14 @@ in `creating`, `active`, or `rotating` must carry at least one active route. An
 account with no way to reach a venue is not in any of those states; it is
 `disabled` with extra steps.
 
-The mode boundary is absolute in the same way. `test` covers demo and testnet,
-`live` covers live, and a process running in one cannot resolve a profile
-belonging to the other. It is not a permission check that could be granted — the
-profile is simply not in that registry.
+There used to be a second boundary, absolute in the same way: a mode. `test`
+covered demo and testnet, `live` covered live, and a process running in one
+could not resolve a profile belonging to the other. Both non-production tiers
+are gone, so the boundary has one side and no longer separates anything. What
+remains of it is a validation rather than a partition — an account read back
+from storage whose venue environment or native environment is not `live` is
+rejected, because those columns are just strings and a row written before the
+endpoints were removed must not be silently routed at the live venue.
 
 ## Instruments are a projection, not a pass-through
 

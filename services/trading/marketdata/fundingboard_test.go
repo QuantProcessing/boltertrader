@@ -16,7 +16,6 @@ func (fn boardSourceFunc) FetchFundingBoard(ctx context.Context) (BoardSnapshot,
 
 func healthyBoard(observedAt time.Time) BoardSnapshot {
 	return BoardSnapshot{
-		Mode:       "test",
 		ObservedAt: observedAt,
 		Venues: []BoardVenue{
 			{
@@ -175,7 +174,6 @@ func TestValidateBoardKeepsStaleColumnsAndRefusesIncoherentOnes(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*BoardSnapshot){
-		"no mode":              func(board *BoardSnapshot) { board.Mode = "" },
 		"no observation":       func(board *BoardSnapshot) { board.ObservedAt = time.Time{} },
 		"future dated":         func(board *BoardSnapshot) { board.ObservedAt = now.Add(time.Minute) },
 		"no columns":           func(board *BoardSnapshot) { board.Venues = nil },

@@ -21,7 +21,7 @@ func TestPostgresPortfolioAndLedgerSeparatePrincipalCollisionsAcrossRestart(t *t
 	ledgerService := ledger.NewService(NewLedgerStore(database), func() time.Time { return now })
 	fill := portfolio.Fill{
 		PrincipalID: "principal-a", FillID: "shared-fill", CommandID: "command-a", LineageID: "shared-lineage", ProductID: "funding",
-		Mode: portfolio.ModeTest, AccountID: "shared-account", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy,
+		AccountID: "shared-account", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy,
 		Quantity: "1", Price: "100", Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now,
 	}
 	for _, principal := range []string{"principal-a", "principal-b"} {
@@ -30,14 +30,14 @@ func TestPostgresPortfolioAndLedgerSeparatePrincipalCollisionsAcrossRestart(t *t
 		if _, _, err := projection.ApplyFill(ctx, fill); err != nil {
 			t.Fatal(err)
 		}
-		if err := ledgerService.Record(ctx, ledger.Entry{PrincipalID: principal, EntryID: "shared-entry", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding, Amount: map[string]string{"principal-a": "1", "principal-b": "2"}[principal], Currency: "USDT", OccurredAt: now}); err != nil {
+		if err := ledgerService.Record(ctx, ledger.Entry{PrincipalID: principal, EntryID: "shared-entry", ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding, Amount: map[string]string{"principal-a": "1", "principal-b": "2"}[principal], Currency: "USDT", OccurredAt: now}); err != nil {
 			t.Fatal(err)
 		}
-		if err := ledgerService.SetUnrealized(ctx, ledger.Unrealized{PrincipalID: principal, Mode: ledger.ModeTest, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT", Amount: map[string]string{"principal-a": "3", "principal-b": "4"}[principal], Currency: "USDT", AsOf: now}); err != nil {
+		if err := ledgerService.SetUnrealized(ctx, ledger.Unrealized{PrincipalID: principal, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT", Amount: map[string]string{"principal-a": "3", "principal-b": "4"}[principal], Currency: "USDT", AsOf: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := projection.ApplyMark("principal-a", portfolio.ModeTest, "shared-account", "funding", "shared-lineage", "BTC-USDT", "120", now.Add(time.Minute)); err != nil {
+	if _, err := projection.ApplyMark("principal-a", "shared-account", "funding", "shared-lineage", "BTC-USDT", "120", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Close(); err != nil {
@@ -47,7 +47,7 @@ func TestPostgresPortfolioAndLedgerSeparatePrincipalCollisionsAcrossRestart(t *t
 	projection = portfolio.NewPersistentProjection(NewPortfolioStore(database))
 	ledgerService = ledger.NewService(NewLedgerStore(database), func() time.Time { return now })
 	for _, principal := range []string{"principal-a", "principal-b"} {
-		positions, err := projection.ListContext(ctx, principal, portfolio.ModeTest, "shared-account", "funding")
+		positions, err := projection.ListContext(ctx, principal, "shared-account", "funding")
 		if err != nil || len(positions) != 1 || positions[0].PrincipalID != principal {
 			t.Fatalf("principal=%s positions=%+v err=%v", principal, positions, err)
 		}
@@ -55,11 +55,11 @@ func TestPostgresPortfolioAndLedgerSeparatePrincipalCollisionsAcrossRestart(t *t
 		if positions[0].MarkPrice != wantMark {
 			t.Fatalf("principal=%s mark=%s want=%s", principal, positions[0].MarkPrice, wantMark)
 		}
-		entries, err := ledgerService.List(ctx, ledger.Query{PrincipalID: principal, Mode: ledger.ModeTest, ProductID: "funding", LineageID: "shared-lineage"})
+		entries, err := ledgerService.List(ctx, ledger.Query{PrincipalID: principal, ProductID: "funding", LineageID: "shared-lineage"})
 		if err != nil || len(entries) != 1 || entries[0].PrincipalID != principal {
 			t.Fatalf("principal=%s entries=%+v err=%v", principal, entries, err)
 		}
-		snapshot, err := ledgerService.PnL(ctx, ledger.Query{PrincipalID: principal, Mode: ledger.ModeTest, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"})
+		snapshot, err := ledgerService.PnL(ctx, ledger.Query{PrincipalID: principal, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"})
 		wantNet := map[string]string{"principal-a": "4", "principal-b": "6"}[principal]
 		if err != nil || snapshot.NetPnL != wantNet {
 			t.Fatalf("principal=%s pnl=%+v err=%v", principal, snapshot, err)

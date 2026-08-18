@@ -9,11 +9,7 @@ import (
 
 func writeToken(t *testing.T, dir, name string, mode os.FileMode) string {
 	t.Helper()
-	modeDir := filepath.Join(dir, "test")
-	if err := os.MkdirAll(modeDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(modeDir, name)
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(strings.Repeat("t", 40)), mode); err != nil {
 		t.Fatal(err)
 	}
@@ -24,10 +20,9 @@ func validEnv(t *testing.T) map[string]string {
 	t.Helper()
 	dir := t.TempDir()
 	return map[string]string{
-		modeEnv:              "test",
 		listenAddrEnv:        "127.0.0.1:18092",
-		databaseEnv:          "bolter_trading_test",
-		databaseRoleEnv:      "bolter_trading_test",
+		databaseEnv:          "bolter_trading",
+		databaseRoleEnv:      "bolter_trading",
 		gatewayURLEnv:        "http://127.0.0.1:18080",
 		serviceTokenFileEnv:  writeToken(t, dir, "service.token", 0o600),
 		gatewayTokenFileEnv:  writeToken(t, dir, "gateway.token", 0o600),
@@ -37,7 +32,7 @@ func validEnv(t *testing.T) map[string]string {
 
 func applyEnv(t *testing.T, env map[string]string) {
 	t.Helper()
-	for _, name := range []string{modeEnv, listenAddrEnv, databaseEnv, databaseRoleEnv, databaseHostEnv, gatewayURLEnv, serviceTokenFileEnv, gatewayTokenFileEnv, previewSigningKeyEnv, livePrivateWritesEnv, allowNonLoopbackEnv, allowPlaintextEnv, inlinePreviewKeyEnv, inlineServiceTokenEnv, inlineGatewayTokenName} {
+	for _, name := range []string{listenAddrEnv, databaseEnv, databaseRoleEnv, databaseHostEnv, gatewayURLEnv, serviceTokenFileEnv, gatewayTokenFileEnv, previewSigningKeyEnv, livePrivateWritesEnv, allowNonLoopbackEnv, allowPlaintextEnv, inlinePreviewKeyEnv, inlineServiceTokenEnv, inlineGatewayTokenName} {
 		t.Setenv(name, "")
 		os.Unsetenv(name)
 	}
@@ -198,42 +193,45 @@ func TestLoadRequiresProtectedSecretFiles(t *testing.T) {
 		t.Fatalf("world-readable token accepted: %v", err)
 	}
 
-	// A secret file outside a directory named for the mode is how a live process
-	// ends up quietly running on test credentials.
-	unscoped := filepath.Join(t.TempDir(), "service.token")
-	if err := os.WriteFile(unscoped, []byte(strings.Repeat("t", 40)), 0o600); err != nil {
+	// A symlink is the way around every other check here: the mode bits that get
+	// inspected are the link's, not the target's, and the operator who pointed
+	// one at a 0644 file would see a process that started cleanly. Lstat plus a
+	// regular-file requirement is what makes the permission check mean anything.
+	//
+	// This case used to assert something else — that a token outside a directory
+	// named for the mode was refused, which is what stopped a live process from
+	// starting on test credentials. There is one set of credentials now.
+	linked := filepath.Join(t.TempDir(), "service.token")
+	if err := os.Symlink(writeToken(t, dir, "target.token", 0o600), linked); err != nil {
 		t.Fatal(err)
 	}
 	env = validEnv(t)
-	env[serviceTokenFileEnv] = unscoped
+	env[serviceTokenFileEnv] = linked
 	applyEnv(t, env)
-	if _, err := load(); err == nil || !strings.Contains(err.Error(), "scoped to") {
-		t.Fatalf("unscoped token accepted: %v", err)
+	if _, err := load(); err == nil || !strings.Contains(err.Error(), "regular non-symlink file") {
+		t.Fatalf("symlinked token accepted: %v", err)
 	}
 }
 
-// The database is named for the mode it holds, and the name is the only check
-// available before the first write.
-func TestLoadRequiresAModeScopedDatabase(t *testing.T) {
-	for _, name := range []string{"bolter_trading_live", "bolter_platform_test", ""} {
+// The database name is pinned rather than accepted as given, and it is the only
+// check available before the first write.
+func TestLoadRequiresTheTradingDatabase(t *testing.T) {
+	for _, name := range []string{"bolter_trading_test", "bolter_platform", ""} {
 		env := validEnv(t)
 		env[databaseEnv] = name
 		applyEnv(t, env)
-		if _, err := load(); err == nil || !strings.Contains(err.Error(), "bolter_trading_test") {
+		if _, err := load(); err == nil || !strings.Contains(err.Error(), "bolter_trading") {
 			t.Fatalf("database %q accepted: %v", name, err)
 		}
 	}
 }
 
-func TestLoadRequiresLiveModeForLiveWrites(t *testing.T) {
+// The flag is the only thing standing between this process and an order that
+// spends real money, so an operator who misspells their intent has to be told.
+// Reading "yes" as false would leave them believing writes were armed; reading
+// it as true would arm them on a word the switch never accepted.
+func TestLoadRejectsAnAmbiguousLiveWriteFlag(t *testing.T) {
 	env := validEnv(t)
-	env[livePrivateWritesEnv] = "true"
-	applyEnv(t, env)
-	if _, err := load(); err == nil || !strings.Contains(err.Error(), livePrivateWritesEnv) {
-		t.Fatalf("live writes accepted under test mode: %v", err)
-	}
-
-	env = validEnv(t)
 	env[livePrivateWritesEnv] = "yes"
 	applyEnv(t, env)
 	if _, err := load(); err == nil || !strings.Contains(err.Error(), "must be true or false") {

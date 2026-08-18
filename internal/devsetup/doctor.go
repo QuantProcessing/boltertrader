@@ -81,7 +81,7 @@ func Diagnose(ctx context.Context, root string) ([]Check, error) {
 	}
 	add(Check{Name: EnvStackName, Status: Pass, Detail: envPath})
 
-	checks = append(checks, checkCredentials(filepath.Join(root, SecretDirName, Mode))...)
+	checks = append(checks, checkCredentials(filepath.Join(root, SecretDirName, StackDirName))...)
 	add(checkSecretStore(filepath.Join(root, SecretDirName, SecretStoreDirName)))
 
 	postgresPort := valueOr(values, postgresPortVar, defaultPostgresPort)
@@ -92,8 +92,8 @@ func Diagnose(ctx context.Context, root string) ([]Check, error) {
 		add(Check{Name: "postgres roles", Status: Skip, Detail: "postgres is not reachable"})
 	}
 
-	add(checkGateway(ctx, valueOr(values, gatewayPortVar, defaultGatewayPort), filepath.Join(root, SecretDirName, Mode, GatewayAuthTokenFile)))
-	add(checkTrading(ctx, valueOr(values, tradingPortVar, defaultTradingPort), filepath.Join(root, SecretDirName, Mode, TradingServiceTokenFile)))
+	add(checkGateway(ctx, valueOr(values, gatewayPortVar, defaultGatewayPort), filepath.Join(root, SecretDirName, StackDirName, GatewayAuthTokenFile)))
+	add(checkTrading(ctx, valueOr(values, tradingPortVar, defaultTradingPort), filepath.Join(root, SecretDirName, StackDirName, TradingServiceTokenFile)))
 	add(checkAuthEdge(ctx, valueOr(values, authEdgePortVar, defaultAuthEdgePort)))
 	add(checkWeb(ctx, valueOr(values, webPortVar, defaultWebPort)))
 	return checks, nil
@@ -344,8 +344,8 @@ func checkClusterInventory(ctx context.Context, port string) Check {
 
 	var missing []string
 	for _, role := range []string{
-		"bolter_platform_test_admin", "bolter_gateway_test_writer", "bolter_gateway_test_migrator",
-		"bolter_gateway_test", "bolter_trading_test", "bolter_authedge_test",
+		"bolter_platform_admin", "bolter_gateway_writer", "bolter_gateway_migrator",
+		"bolter_gateway", "bolter_trading", "bolter_authedge",
 	} {
 		var present bool
 		if err := connection.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role).Scan(&present); err != nil {
@@ -355,7 +355,7 @@ func checkClusterInventory(ctx context.Context, port string) Check {
 			missing = append(missing, "role "+role)
 		}
 	}
-	for _, database := range []string{"bolter_gateway_test", "bolter_trading_test", "bolter_authedge_test"} {
+	for _, database := range []string{"bolter_gateway", "bolter_trading", "bolter_authedge"} {
 		var present bool
 		if err := connection.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", database).Scan(&present); err != nil {
 			return Check{Name: "postgres roles", Status: Fail, Detail: "querying pg_database: " + firstLine(err.Error())}
@@ -366,15 +366,15 @@ func checkClusterInventory(ctx context.Context, port string) Check {
 	}
 	if len(missing) == 0 {
 		// The membership, not just the two roles. The gateway's serving identity
-		// reaches its tables only through bolter_gateway_test_writer, so a grant
+		// reaches its tables only through bolter_gateway_writer, so a grant
 		// that did not happen produces two roles that both exist and a runtime
 		// that is denied on every write.
 		var member bool
-		if err := connection.QueryRow(ctx, "SELECT pg_has_role('bolter_gateway_test', 'bolter_gateway_test_writer', 'MEMBER')").Scan(&member); err != nil {
+		if err := connection.QueryRow(ctx, "SELECT pg_has_role('bolter_gateway', 'bolter_gateway_writer', 'MEMBER')").Scan(&member); err != nil {
 			return Check{Name: "postgres roles", Status: Fail, Detail: "checking role membership: " + firstLine(err.Error())}
 		}
 		if !member {
-			missing = append(missing, "bolter_gateway_test's membership in bolter_gateway_test_writer")
+			missing = append(missing, "bolter_gateway's membership in bolter_gateway_writer")
 		}
 	}
 	if len(missing) > 0 {
@@ -389,35 +389,24 @@ func checkClusterInventory(ctx context.Context, port string) Check {
 	return Check{Name: "postgres roles", Status: Pass, Detail: "6 roles, 3 databases, writer membership granted"}
 }
 
-// gatewayModeHeader is the attestation the Gateway requires on every route. It
-// is restated here rather than imported because the Gateway declares it in a
-// package main; api/exchange-gateway/v1/internal-openapi.yaml is the document
-// that keeps the copies honest.
-const gatewayModeHeader = "X-Bolter-Mode"
-
 // checkGateway probes the same readiness endpoint the container's own
-// healthcheck calls, and needs two things on the request rather than one.
+// healthcheck calls, and the bearer token on it is not decoration: readiness
+// sits behind the same auth as every other /v1 route, so an unauthenticated
+// probe gets a flat 401 from a Gateway that is perfectly healthy, and this check
+// reported that as a stack failure. The token is the capability plane's, because
+// /v1/health/ready is a capability-plane route — the authority plane's port is
+// deliberately not published to this host at all.
 //
-// The mode attestation is the obvious one: the Gateway wraps every route in that
-// check and answers 409 without it, health included. Mode is this package's
-// constant rather than a read of the Gateway's YAML because it is already the
-// value `make up` writes the whole stack around — the secret directory's name,
-// BT_MODE in compose, and the Gateway's own default all come out of it.
-//
-// The bearer token is the less obvious one, and its absence is not a quiet
-// degradation: readiness sits behind the same auth as every other /v1 route, so
-// an unauthenticated probe gets a flat 401 from a Gateway that is perfectly
-// healthy, and this check reported that as a stack failure. The token is the
-// capability plane's, because /v1/health/ready is a capability-plane route —
-// the authority plane's port is deliberately not published to this host at all.
+// This request used to carry a mode attestation too, under X-Bolter-Mode, which
+// the Gateway required on every route and answered 409 without. There is one
+// mode now and the header is gone from both ends.
 func checkGateway(ctx context.Context, port, tokenPath string) Check {
 	token, err := os.ReadFile(tokenPath)
 	if err != nil {
 		return Check{Name: "gateway", Status: Skip, Detail: "no auth token to authenticate with", Fix: "run `make up`"}
 	}
 	status, err := probeHTTP(ctx, "http://127.0.0.1:"+port+"/v1/health/ready", map[string]string{
-		gatewayModeHeader: Mode,
-		"Authorization":   "Bearer " + strings.TrimSpace(string(token)),
+		"Authorization": "Bearer " + strings.TrimSpace(string(token)),
 	})
 	if err != nil {
 		return Check{

@@ -22,7 +22,6 @@ type File struct {
 
 type ServerConfig struct {
 	StartupProfile StartupProfile `yaml:"startup_profile,omitempty" json:"startup_profile"`
-	Mode           string         `yaml:"mode" json:"mode"`
 	Listen         string         `yaml:"listen" json:"listen"`
 	// The two listeners carry two different planes and are configured
 	// independently: `listen` serves /v1, the capability plane every caller may
@@ -155,10 +154,6 @@ func LoadYAML(data []byte) (File, error) {
 		Server:   raw.Server,
 		Postgres: raw.Postgres,
 	}
-	file.Server.Mode = strings.ToLower(strings.TrimSpace(file.Server.Mode))
-	if file.Server.Mode == "" {
-		file.Server.Mode = "test"
-	}
 	file.Server.StartupProfile = StartupProfile(strings.ToLower(strings.TrimSpace(string(file.Server.StartupProfile))))
 	if file.Server.StartupProfile == "" {
 		file.Server.StartupProfile = StartupProfileNormal
@@ -172,9 +167,6 @@ func LoadYAML(data []byte) (File, error) {
 func (file File) Validate() error {
 	if file.Server.StartupProfile != "" && file.Server.StartupProfile != StartupProfileNormal && file.Server.StartupProfile != StartupProfileMigrationValidation {
 		return fmt.Errorf("server startup_profile must be normal or migration-validation")
-	}
-	if file.Server.Mode != "" && file.Server.Mode != "test" && file.Server.Mode != "live" {
-		return fmt.Errorf("server mode must be test or live")
 	}
 	if strings.TrimSpace(file.Server.Listen) == "" {
 		return fmt.Errorf("server listen is required")
@@ -213,7 +205,6 @@ func (file File) Hash() (string, error) {
 	sanitized := hashFile{
 		Server: hashServer{
 			StartupProfile:                 file.Server.StartupProfile,
-			Mode:                           file.Server.Mode,
 			Listen:                         file.Server.Listen,
 			AllowNonLoopbackListen:         file.Server.AllowNonLoopbackListen,
 			AuthTokenRef:                   file.Server.AuthTokenRef.Fingerprint(),
@@ -242,7 +233,6 @@ func (file File) GoString() string { return file.String() }
 func (file File) MarshalJSON() ([]byte, error) {
 	server := map[string]any{
 		"startup_profile":           file.Server.StartupProfile,
-		"mode":                      file.Server.Mode,
 		"listen":                    file.Server.Listen,
 		"allow_non_loopback_listen": file.Server.AllowNonLoopbackListen,
 		"auth_token_ref":            "redacted",
@@ -282,7 +272,6 @@ type hashFile struct {
 }
 type hashServer struct {
 	StartupProfile                 StartupProfile `json:"startup_profile"`
-	Mode                           string         `json:"mode"`
 	Listen                         string         `json:"listen"`
 	AllowNonLoopbackListen         bool           `json:"allow_non_loopback_listen"`
 	AuthTokenRef                   string         `json:"auth_token_ref"`

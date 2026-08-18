@@ -11,7 +11,7 @@ func TestDelayedFillCannotRegressMarkObservationOrdering(t *testing.T) {
 	base := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	projection := NewProjection()
 	fill := Fill{PrincipalID: "principal-a",
-		FillID: "fill-initial", CommandID: "command-initial", LineageID: "lineage-a", ProductID: "funding", Mode: ModeTest,
+		FillID: "fill-initial", CommandID: "command-initial", LineageID: "lineage-a", ProductID: "funding",
 		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy, Quantity: "1", Price: "100",
 		Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: base,
 	}
@@ -19,7 +19,7 @@ func TestDelayedFillCannotRegressMarkObservationOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 	newestMarkAt := base.Add(4 * time.Minute)
-	if _, err := projection.ApplyMark("principal-a", ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "120", newestMarkAt); err != nil {
+	if _, err := projection.ApplyMark("principal-a", "account-a", "funding", "lineage-a", "BTC-USDT", "120", newestMarkAt); err != nil {
 		t.Fatal(err)
 	}
 
@@ -30,7 +30,7 @@ func TestDelayedFillCannotRegressMarkObservationOrdering(t *testing.T) {
 	if _, _, err := projection.ApplyFill(ctx, delayed); err != nil {
 		t.Fatal(err)
 	}
-	position, err := projection.ApplyMark("principal-a", ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "90", base.Add(2*time.Minute))
+	position, err := projection.ApplyMark("principal-a", "account-a", "funding", "lineage-a", "BTC-USDT", "90", base.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

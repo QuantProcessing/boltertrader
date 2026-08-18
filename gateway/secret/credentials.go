@@ -8,14 +8,10 @@ import (
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
-type Mode = secretstore.Mode
-
-const (
-	ModeTest      = secretstore.ModeTest
-	ModeLive      = secretstore.ModeLive
-	TestNamespace = "boltertrader/test"
-	LiveNamespace = "boltertrader/live"
-)
+// Namespace is the one namespace credential material lives under. It is
+// re-exported here so callers that already depend on this package do not have to
+// reach into secretstore for a single constant.
+const Namespace = secretstore.Namespace
 
 type Code string
 
@@ -45,7 +41,6 @@ func IsCode(err error, code Code) bool {
 }
 
 type Config struct {
-	Mode       Mode
 	Namespace  string
 	KeyVersion string
 }
@@ -58,8 +53,8 @@ type Scope = secretstore.Scope
 type CredentialWriter = secretstore.CredentialWriter
 
 // Store writes credential material into a provider under one frozen scope. The
-// scope is fixed at construction so a test-mode store can never address live
-// material, whatever the caller passes later.
+// scope is fixed at construction so a caller that later passes a namespace or
+// key version the store was not built for cannot reach material under it.
 type Store struct {
 	provider secretstore.CredentialWriter
 	scope    secretstore.Scope
@@ -69,7 +64,7 @@ func NewStore(config Config, provider secretstore.CredentialWriter) (*Store, err
 	if provider == nil {
 		return nil, coded(CodeUnavailable)
 	}
-	scope := secretstore.Scope{Mode: config.Mode, Namespace: config.Namespace, KeyVersion: config.KeyVersion}
+	scope := secretstore.Scope{Namespace: config.Namespace, KeyVersion: config.KeyVersion}
 	if err := scope.Validate(); err != nil {
 		if config.KeyVersion != "v1" {
 			return nil, coded(CodeKeyVersionUnsupported)

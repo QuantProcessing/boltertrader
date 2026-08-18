@@ -10,7 +10,7 @@ ALTER TABLE gateway_runtime_snapshots
 
 ALTER TABLE gateway_retired_secret_refs
     ADD CONSTRAINT gateway_retired_secret_refs_finalization_account
-    UNIQUE (mode, namespace, secret_ref, account_id);
+    UNIQUE (namespace, secret_ref, account_id);
 
 CREATE TABLE gateway_rotation_finalizations (
     operation_id UUID PRIMARY KEY REFERENCES gateway_desired_operations(operation_id),
@@ -26,7 +26,6 @@ CREATE TABLE gateway_rotation_finalizations (
     expected_retiring_credential_version BIGINT NOT NULL CHECK (expected_retiring_credential_version > 0),
     retired_secret_ref TEXT NOT NULL,
     tombstone_revision BIGINT NOT NULL CHECK (tombstone_revision = expected_active_desired_state_revision),
-    mode TEXT NOT NULL CHECK (mode IN ('test','live')),
     namespace TEXT NOT NULL,
     key_version TEXT NOT NULL CHECK (key_version = 'v1'),
     retiring_state TEXT NOT NULL CHECK (retiring_state IN ('retired')),
@@ -43,8 +42,8 @@ CREATE TABLE gateway_rotation_finalizations (
         REFERENCES gateway_retiring_generations(account_id, snapshot_id),
     FOREIGN KEY (retiring_snapshot_id, account_id, expected_retiring_desired_state_revision, expected_retiring_runtime_generation, expected_retiring_credential_version, retired_secret_ref)
         REFERENCES gateway_runtime_snapshots(snapshot_id, account_id, desired_state_revision, runtime_generation, credential_version, secret_ref),
-    FOREIGN KEY (mode, namespace, retired_secret_ref, account_id)
-        REFERENCES gateway_retired_secret_refs(mode, namespace, secret_ref, account_id)
+    FOREIGN KEY (namespace, retired_secret_ref, account_id)
+        REFERENCES gateway_retired_secret_refs(namespace, secret_ref, account_id)
 );
 
 CREATE INDEX gateway_rotation_finalizations_recovery

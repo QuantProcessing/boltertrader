@@ -341,9 +341,8 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 		return nil, ErrCandidateFailed
 	}
 	if manager.runtimeStore != nil {
-		mode := secretstore.Mode(manager.runtimeMode)
 		retired, err := manager.runtimeStore.IsSecretReferenceRetired(ctx, secretstore.Scope{
-			Mode: mode, Namespace: "boltertrader/" + string(mode), KeyVersion: "v1",
+			Namespace: secretstore.Namespace, KeyVersion: "v1",
 		}, pending.SecretRef)
 		if err != nil {
 			return nil, ErrCandidateFailed
@@ -837,7 +836,7 @@ func (manager *Manager) publishControlPlaneRuntime(snapshot store.DesiredSnapsho
 	}
 	desired := DesiredRuntime{
 		AccountID: snapshot.AccountID, Venue: snapshot.Venue, VenueEnvironment: snapshot.NativeEnvironment,
-		Mode: manager.runtimeMode, SecretRef: ref,
+		SecretRef:            ref,
 		DesiredStateRevision: snapshot.Fence.DesiredStateRevision, RuntimeGeneration: snapshot.Fence.RuntimeGeneration,
 		CredentialVersion: snapshot.Fence.CredentialVersion, RequestedState: RuntimeStateActive,
 	}
@@ -1091,7 +1090,7 @@ func (manager *Manager) recordRuntimeRestoreFailure(snapshot store.DesiredSnapsh
 	}
 	desired := DesiredRuntime{
 		AccountID: snapshot.AccountID, Venue: snapshot.Venue, VenueEnvironment: snapshot.NativeEnvironment,
-		Mode: manager.runtimeMode, SecretRef: ref,
+		SecretRef:            ref,
 		DesiredStateRevision: snapshot.Fence.DesiredStateRevision, RuntimeGeneration: snapshot.Fence.RuntimeGeneration,
 		CredentialVersion: snapshot.Fence.CredentialVersion, RequestedState: RuntimeStateActive,
 	}

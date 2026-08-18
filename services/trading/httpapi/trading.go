@@ -23,10 +23,6 @@ type ManualExecutor interface {
 	Ready() bool
 }
 
-type ManualMarketAuthority interface {
-	Get(context.Context, marketdata.Query) (marketdata.Fact, error)
-}
-
 // ArbitrageExecutor is ManualExecutor's shape because the two products dispatch
 // through the same Gateway channel. It is named separately rather than reusing
 // the manual interface so that wiring one product does not silently satisfy the
@@ -54,10 +50,9 @@ type TradingOptions struct {
 	Catalog           *catalog.Projection
 	Manual            ManualExecutor
 	ManualAccounts    ManualAccountAuthority
-	ManualMarketData  ManualMarketAuthority
 	Arbitrage         ArbitrageExecutor
 	FundingBoard      FundingBoardAuthority
-	Principal         func(*http.Request) (principalID, mode string, err error)
+	Principal         func(*http.Request) (principalID string, err error)
 	AuthorizeMutation func(*http.Request) error
 	Activity          ActivityPublisher
 }
@@ -94,11 +89,10 @@ type reservationRequest struct {
 	Quantity        *string                   `json:"quantity"`
 	Notional        *string                   `json:"notional"`
 	Currency        *string                   `json:"currency"`
-	Mode            string                    `json:"mode"`
 }
 
 func (handler *tradingHandler) createReservation(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
@@ -106,8 +100,8 @@ func (handler *tradingHandler) createReservation(w http.ResponseWriter, r *http.
 		return
 	}
 	var request reservationRequest
-	if !decodeTrading(w, r, &request) || request.Mode != mode || request.AccountID != request.NettingScope.AccountID {
-		if request.Mode != mode || request.AccountID != request.NettingScope.AccountID {
+	if !decodeTrading(w, r, &request) || request.AccountID != request.NettingScope.AccountID {
+		if request.AccountID != request.NettingScope.AccountID {
 			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		}
 		return
@@ -123,7 +117,7 @@ func (handler *tradingHandler) createReservation(w http.ResponseWriter, r *http.
 		currency = *request.Currency
 	}
 	created, err := handler.options.Reservations.Create(r.Context(), reservations.CreateRequest{
-		PrincipalID: principal, Mode: reservations.Mode(mode), ProductID: request.ProductID, Kind: request.ReservationKind,
+		PrincipalID: principal, ProductID: request.ProductID, Kind: request.ReservationKind,
 		Scope: request.NettingScope, Quantity: quantity, Notional: notional, Currency: currency, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
 	})
 	if err != nil {
@@ -134,11 +128,11 @@ func (handler *tradingHandler) createReservation(w http.ResponseWriter, r *http.
 }
 
 func (handler *tradingHandler) listReservations(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	items, err := handler.options.Reservations.List(r.Context(), principal, reservations.Mode(mode))
+	items, err := handler.options.Reservations.List(r.Context(), principal)
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -147,14 +141,14 @@ func (handler *tradingHandler) listReservations(w http.ResponseWriter, r *http.R
 }
 
 func (handler *tradingHandler) releaseReservation(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
 	if !handler.authorizeMutation(w, r) {
 		return
 	}
-	item, err := handler.options.Reservations.Release(r.Context(), principal, reservations.Mode(mode), r.PathValue("reservationId"))
+	item, err := handler.options.Reservations.Release(r.Context(), principal, r.PathValue("reservationId"))
 	if err != nil {
 		tradingFailure(w, r, "reservations.release", err)
 		return
@@ -163,12 +157,12 @@ func (handler *tradingHandler) releaseReservation(w http.ResponseWriter, r *http
 }
 
 type commandRequest struct {
-	AccountID, ProductID, LineageID, ReservationID, IdempotencyKey, CommandKind, Mode string
-	Payload                                                                           json.RawMessage `json:"payload"`
+	AccountID, ProductID, LineageID, ReservationID, IdempotencyKey, CommandKind string
+	Payload                                                                     json.RawMessage `json:"payload"`
 }
 
 func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
@@ -179,20 +173,21 @@ func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Requ
 	if !decodeTrading(w, r, &request) {
 		return
 	}
-	if request.Mode != mode || request.IdempotencyKey == "" || request.IdempotencyKey != strings.TrimSpace(r.Header.Get("Idempotency-Key")) {
+	if request.IdempotencyKey == "" || request.IdempotencyKey != strings.TrimSpace(r.Header.Get("Idempotency-Key")) {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
+	// Manual and arbitrage commands are minted by their own routes, which seal
+	// an execution preview first. One arriving here has skipped that, so it is a
+	// malformed request rather than a rejected one. This used to answer 403
+	// LIVE_PRIVATE_WRITE_DISABLED when the command declared live mode, back when
+	// a test command could legitimately take this route.
 	if request.ProductID == "manual" || request.ProductID == "arbitrage" {
-		if request.Mode == string(orders.ModeLive) {
-			tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
-			return
-		}
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
 	command, replay, err := handler.options.Commands.Create(r.Context(), orders.CreateRequest{
-		PrincipalID: principal, Mode: orders.Mode(mode), AccountID: request.AccountID, ProductID: request.ProductID, LineageID: request.LineageID,
+		PrincipalID: principal, AccountID: request.AccountID, ProductID: request.ProductID, LineageID: request.LineageID,
 		ReservationID: request.ReservationID, IdempotencyKey: request.IdempotencyKey, Method: r.Method, Path: r.URL.Path, CommandKind: request.CommandKind, Payload: request.Payload,
 	})
 	if err != nil {
@@ -213,11 +208,11 @@ func resumableManualState(state orders.State) bool {
 }
 
 func (handler *tradingHandler) getCommand(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	command, err := handler.options.Commands.GetOwned(r.Context(), principal, orders.Mode(mode), r.PathValue("commandId"))
+	command, err := handler.options.Commands.GetOwned(r.Context(), principal, r.PathValue("commandId"))
 	if err != nil {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -226,11 +221,11 @@ func (handler *tradingHandler) getCommand(w http.ResponseWriter, r *http.Request
 }
 
 func (handler *tradingHandler) positions(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	items, err := handler.options.Portfolio.ListContext(r.Context(), principal, portfolio.Mode(mode), r.URL.Query().Get("accountId"), r.URL.Query().Get("productId"))
+	items, err := handler.options.Portfolio.ListContext(r.Context(), principal, r.URL.Query().Get("accountId"), r.URL.Query().Get("productId"))
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -239,11 +234,11 @@ func (handler *tradingHandler) positions(w http.ResponseWriter, r *http.Request)
 }
 
 func (handler *tradingHandler) ledgerEntries(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	items, err := handler.options.Ledger.List(r.Context(), ledger.Query{PrincipalID: principal, Mode: ledger.Mode(mode), ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")})
+	items, err := handler.options.Ledger.List(r.Context(), ledger.Query{PrincipalID: principal, ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")})
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -252,11 +247,11 @@ func (handler *tradingHandler) ledgerEntries(w http.ResponseWriter, r *http.Requ
 }
 
 func (handler *tradingHandler) pnl(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.identity(w, r)
+	principal, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	query := ledger.Query{PrincipalID: principal, Mode: ledger.Mode(mode), ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")}
+	query := ledger.Query{PrincipalID: principal, ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")}
 	item, err := handler.options.Ledger.PnL(r.Context(), query)
 	if err != nil {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
@@ -265,13 +260,13 @@ func (handler *tradingHandler) pnl(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": item})
 }
 
-func (handler *tradingHandler) identity(w http.ResponseWriter, r *http.Request) (string, string, bool) {
-	principal, mode, err := handler.options.Principal(r)
-	if err != nil || principal == "" || (mode != "test" && mode != "live") {
+func (handler *tradingHandler) identity(w http.ResponseWriter, r *http.Request) (string, bool) {
+	principal, err := handler.options.Principal(r)
+	if err != nil || principal == "" {
 		tradingError(w, http.StatusUnauthorized, "AUTH_REQUIRED")
-		return "", "", false
+		return "", false
 	}
-	return principal, mode, true
+	return principal, true
 }
 
 func (handler *tradingHandler) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {

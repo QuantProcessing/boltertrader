@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/routeprofile"
-	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 // Environment is the venue endpoint family an account talks to. The demo and
@@ -56,7 +55,6 @@ type Account struct {
 	ID                   string
 	Venue                string
 	VenueEnvironment     Environment
-	Mode                 secretstore.Mode
 	NativeEnvironment    Environment
 	DisplayName          string
 	ProductIDs           []string
@@ -74,19 +72,18 @@ type Account struct {
 }
 
 type PublicAccount struct {
-	ID                   string           `json:"accountId"`
-	Venue                string           `json:"venue"`
-	Mode                 secretstore.Mode `json:"mode"`
-	NativeEnvironment    Environment      `json:"nativeEnvironment"`
-	DisplayName          string           `json:"displayName"`
-	ProductPolicy        []string         `json:"productPolicy"`
-	Routes               []AccountRoute   `json:"routes,omitempty"`
-	Status               State            `json:"status"`
-	DesiredStateRevision int64            `json:"desiredStateRevision"`
-	RuntimeGeneration    int64            `json:"runtimeGeneration"`
-	CredentialVersion    int64            `json:"credentialVersion"`
-	LastValidatedAt      *time.Time       `json:"lastValidatedAt"`
-	UpdatedAt            time.Time        `json:"updatedAt"`
+	ID                   string         `json:"accountId"`
+	Venue                string         `json:"venue"`
+	NativeEnvironment    Environment    `json:"nativeEnvironment"`
+	DisplayName          string         `json:"displayName"`
+	ProductPolicy        []string       `json:"productPolicy"`
+	Routes               []AccountRoute `json:"routes,omitempty"`
+	Status               State          `json:"status"`
+	DesiredStateRevision int64          `json:"desiredStateRevision"`
+	RuntimeGeneration    int64          `json:"runtimeGeneration"`
+	CredentialVersion    int64          `json:"credentialVersion"`
+	LastValidatedAt      *time.Time     `json:"lastValidatedAt"`
+	UpdatedAt            time.Time      `json:"updatedAt"`
 }
 
 func (account Account) Public() PublicAccount {
@@ -95,7 +92,7 @@ func (account Account) Public() PublicAccount {
 		productIDs = account.ProductPolicy
 	}
 	return PublicAccount{
-		ID: account.ID, Venue: account.Venue, Mode: account.Mode, NativeEnvironment: account.NativeEnvironment,
+		ID: account.ID, Venue: account.Venue, NativeEnvironment: account.NativeEnvironment,
 		DisplayName: account.DisplayName, ProductPolicy: append([]string(nil), productIDs...), Routes: append([]AccountRoute(nil), account.Routes...),
 		Status: account.State, DesiredStateRevision: account.DesiredStateRevision,
 		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
@@ -104,7 +101,7 @@ func (account Account) Public() PublicAccount {
 }
 
 func (account Account) Validate() error {
-	if account.ID == "" || account.ID != strings.TrimSpace(account.ID) || account.Venue == "" || account.Mode == "" {
+	if account.ID == "" || account.ID != strings.TrimSpace(account.ID) || account.Venue == "" {
 		return errors.New("account identity is invalid")
 	}
 	// Read back from storage, these are just strings, so a row written before

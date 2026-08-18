@@ -23,7 +23,6 @@ const (
 
 type Options struct {
 	Sessions        *session.Service
-	Mode            string
 	ContractVersion string
 	// Downstream mounts every route this listener does not serve itself and
 	// reports which ones it took.
@@ -48,11 +47,6 @@ func New(options Options) (http.Handler, error) {
 	}
 	if options.ContractVersion != ContractVersion {
 		return nil, httpx.ConfigErr("contract version mismatch")
-	}
-	switch options.Mode {
-	case "test", "live":
-	default:
-		return nil, httpx.ConfigErr("invalid mode")
 	}
 	s := &Server{sessions: options.Sessions, mux: http.NewServeMux()}
 	if err := RegisterAuthRoutes(s.mux, AuthRoutesOptions{Sessions: s.sessions}); err != nil {

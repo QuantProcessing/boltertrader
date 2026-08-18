@@ -51,12 +51,12 @@ func TestReconcilerAppliesAuthoritativeRejectionButRetainsNotAttempted(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
-			commands := NewService(NewMemoryStore(), nil, func() time.Time { return now })
-			command, _, _ := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Mode: ModeTest, Payload: []byte(`{}`)})
+			commands := newLiveService(NewMemoryStore(), nil, func() time.Time { return now })
+			command, _, _ := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Payload: []byte(`{}`)})
 			_, _ = commands.Transition(context.Background(), TransitionRequest{CommandID: command.CommandID, State: StateUncertain, Reason: ReconciliationAmbiguousHandoff, NextAttemptAt: now.Add(time.Second)})
 			now = now.Add(time.Second)
 			gateway := &reconciliationGatewayFixture{results: []HandoffResult{{Outcome: test.outcome}}}
-			runner, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, ModeTest, func() time.Time { return now })
+			runner, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, func() time.Time { return now })
 			_ = runner.RunOnce(context.Background())
 			current, _ := commands.Get(context.Background(), command.CommandID)
 			if current.State != test.want {
@@ -68,8 +68,8 @@ func TestReconcilerAppliesAuthoritativeRejectionButRetainsNotAttempted(t *testin
 
 func TestReconcilerSurvivesRestartAndAdvancesPartialToTerminalEvidence(t *testing.T) {
 	now := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
-	commands := NewService(NewMemoryStore(), nil, func() time.Time { return now })
-	command, _, err := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Mode: ModeTest, Payload: []byte(`{}`)})
+	commands := newLiveService(NewMemoryStore(), nil, func() time.Time { return now })
+	command, _, err := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestReconcilerSurvivesRestartAndAdvancesPartialToTerminalEvidence(t *testin
 	gateway := &reconciliationGatewayFixture{results: []HandoffResult{{Outcome: HandoffAccepted, Evidence: partial}, {Outcome: HandoffAccepted, Evidence: filled}}}
 
 	now = now.Add(5 * time.Second)
-	runner, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, ModeTest, func() time.Time { return now })
+	runner, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, func() time.Time { return now })
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestReconcilerSurvivesRestartAndAdvancesPartialToTerminalEvidence(t *testin
 	}
 
 	now = now.Add(5 * time.Second)
-	restarted, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, ModeTest, func() time.Time { return now })
+	restarted, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, func() time.Time { return now })
 	if err := restarted.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -103,20 +103,20 @@ func TestReconcilerSurvivesRestartAndAdvancesPartialToTerminalEvidence(t *testin
 	if current.State != StateFilled || current.ExecutionEvidence.ResourceVersion != 3 || gateway.calls != 2 {
 		t.Fatalf("terminal command=%+v calls=%d", current, gateway.calls)
 	}
-	if due, _ := commands.ClaimDueReconciliation(context.Background(), ModeTest, now.Add(time.Hour), time.Minute, 10); len(due) != 0 {
+	if due, _ := commands.ClaimDueReconciliation(context.Background(), now.Add(time.Hour), time.Minute, 10); len(due) != 0 {
 		t.Fatalf("terminal reconciliation remained due: %+v", due)
 	}
 }
 
 func TestReconcilerRetainsLookupErrorsWithBoundedBackoff(t *testing.T) {
 	now := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
-	commands := NewService(NewMemoryStore(), nil, func() time.Time { return now })
-	command, _, _ := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Mode: ModeTest, Payload: []byte(`{}`)})
+	commands := newLiveService(NewMemoryStore(), nil, func() time.Time { return now })
+	command, _, _ := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Payload: []byte(`{}`)})
 	base := ExecutionEvidence{CommandID: "gateway-command", GatewayOrderID: "gateway-order", ClientOrderID: "client-order", State: "submitted", ResourceVersion: 1}
 	_, _ = commands.Transition(context.Background(), TransitionRequest{CommandID: command.CommandID, State: StateSubmitted, Evidence: base})
 	now = now.Add(5 * time.Second)
 	gateway := &reconciliationGatewayFixture{errors: []error{errors.New("lookup unavailable")}}
-	runner, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, ModeTest, func() time.Time { return now })
+	runner, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, func() time.Time { return now })
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -124,10 +124,10 @@ func TestReconcilerRetainsLookupErrorsWithBoundedBackoff(t *testing.T) {
 	if current.State != StateUncertain {
 		t.Fatalf("lookup error command=%+v", current)
 	}
-	if due, _ := commands.ClaimDueReconciliation(context.Background(), ModeTest, now.Add(4*time.Second), time.Minute, 10); len(due) != 0 {
+	if due, _ := commands.ClaimDueReconciliation(context.Background(), now.Add(4*time.Second), time.Minute, 10); len(due) != 0 {
 		t.Fatalf("backoff was not enforced: %+v", due)
 	}
-	if due, _ := commands.ClaimDueReconciliation(context.Background(), ModeTest, now.Add(5*time.Second), time.Minute, 10); len(due) != 1 || due[0].Reason != ReconciliationLookupFailed {
+	if due, _ := commands.ClaimDueReconciliation(context.Background(), now.Add(5*time.Second), time.Minute, 10); len(due) != 1 || due[0].Reason != ReconciliationLookupFailed {
 		t.Fatalf("lookup retry=%+v", due)
 	}
 }

@@ -34,7 +34,7 @@ import (
 
 // Client is trading's handle on the Gateway. One instance serves every question
 // trading asks — catalog, market data, accounts, orders, fills — because they
-// all travel under the same mode, and splitting them per topic would mean four
+// all travel to the same Gateway, and splitting them per topic would mean four
 // places that can disagree about which Gateway is real.
 //
 // The Gateway does split, but along one seam only, and not by topic: it serves
@@ -45,14 +45,12 @@ import (
 // single-process deployment and every test fixture does — the split costs
 // nothing and the behaviour is exactly what it was before.
 type Client struct {
-	baseURL            string
-	token              []byte
-	internalBaseURL    string
-	internalToken      []byte
-	httpClient         *http.Client
-	mode               orders.Mode
-	liveWrites         bool
-	requireAttestation bool
+	baseURL         string
+	token           []byte
+	internalBaseURL string
+	internalToken   []byte
+	httpClient      *http.Client
+	liveWrites      bool
 }
 
 // authorityPathPrefix is the whole of the routing rule. It is a property of the
@@ -76,9 +74,6 @@ func (client *Client) originFor(path string) (string, []byte) {
 }
 
 const (
-	// ModeHeader carries the mode attestation both ways: the client states the
-	// mode it believes it is in, and refuses a response that disagrees.
-	ModeHeader             = "X-Bolter-Mode"
 	authorityResponseLimit = 64 << 10
 	// catalogResponseLimit bounds the two catalog reads, which are the only
 	// bulk documents on this client. Everything else it reads is a control-plane
@@ -265,7 +260,6 @@ func (client *Client) Accounts() ManualAccounts { return ManualAccounts{client: 
 type accountRecordView struct {
 	ID                   string             `json:"accountId"`
 	Venue                string             `json:"venue"`
-	Mode                 string             `json:"mode"`
 	NativeEnvironment    string             `json:"nativeEnvironment"`
 	DisplayName          string             `json:"displayName"`
 	ProductPolicy        []string           `json:"productPolicy"`
@@ -455,23 +449,13 @@ type fillCollection struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
-// newClient builds a test-mode client that does not require the Gateway to
-// attest its mode back. Only tests use it: a hand-rolled httptest server has no
-// reason to know about the attestation header, and demanding it there would
-// test the fixture rather than the client.
-func newClient(rawURL string, token []byte, httpClient *http.Client) (*Client, error) {
-	client, err := NewClientForMode(rawURL, false, token, orders.ModeTest, false, httpClient)
-	if client != nil {
-		client.requireAttestation = false
-	}
-	return client, err
-}
-
-// NewClientForMode builds the client trading talks to the Gateway through. It
-// refuses at construction rather than at first call: a token too short to be a
-// service token, a mode that is neither test nor live, live writes claimed
-// under a test mode, or a plaintext origin that is not loopback are all
-// configuration mistakes, and the useful moment to say so is startup.
+// NewClient builds the client trading talks to the Gateway through. It refuses
+// at construction rather than at first call: a token too short to be a service
+// token, or a plaintext origin that is not loopback, are configuration mistakes,
+// and the useful moment to say so is startup.
+//
+// It used to take the mode this process runs in as well, and rejected live
+// writes claimed under a test mode. Both went with the mode axis.
 //
 // allowNonLoopbackPlaintext sits next to the URL it governs because it governs
 // only that URL. It is checked here as well as in the process's own
@@ -481,9 +465,9 @@ func newClient(rawURL string, token []byte, httpClient *http.Client) (*Client, e
 // on an operator-created bridge; what it costs is that it equally permits a
 // genuinely routable origin, which is why it is the caller's assertion to make
 // and never a default.
-func NewClientForMode(rawURL string, allowNonLoopbackPlaintext bool, token []byte, mode orders.Mode, liveWrites bool, httpClient *http.Client, options ...ClientOption) (*Client, error) {
+func NewClient(rawURL string, allowNonLoopbackPlaintext bool, token []byte, liveWrites bool, httpClient *http.Client, options ...ClientOption) (*Client, error) {
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || len(token) < 32 || (mode != orders.ModeTest && mode != orders.ModeLive) || (liveWrites && mode != orders.ModeLive) {
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || len(token) < 32 {
 		return nil, fmt.Errorf("Gateway client configuration is invalid")
 	}
 	if err := checkPlaintextOrigin(parsed, allowNonLoopbackPlaintext); err != nil {
@@ -500,14 +484,12 @@ func NewClientForMode(rawURL string, allowNonLoopbackPlaintext bool, token []byt
 	// an absence. The compose stack overrides it because there the planes are on
 	// two listeners with two tokens.
 	client := &Client{
-		baseURL:            origin,
-		token:              bytes.Clone(token),
-		internalBaseURL:    origin,
-		internalToken:      bytes.Clone(token),
-		httpClient:         httpClient,
-		mode:               mode,
-		liveWrites:         liveWrites,
-		requireAttestation: true,
+		baseURL:         origin,
+		token:           bytes.Clone(token),
+		internalBaseURL: origin,
+		internalToken:   bytes.Clone(token),
+		httpClient:      httpClient,
+		liveWrites:      liveWrites,
 	}
 	for _, option := range options {
 		if err := option(client); err != nil {
@@ -566,7 +548,7 @@ func validRequestedState(state string) bool {
 }
 
 func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
-	if request.Mode != client.mode || (request.Mode == orders.ModeLive && !client.liveWrites) {
+	if !client.liveWrites {
 		return manual.GatewayResult{}, orders.ErrLiveWriteDisabled
 	}
 	intent := orderIntent{
@@ -576,9 +558,9 @@ func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest
 		DesiredStateRevision: uint64(request.DesiredStateRevision), RuntimeGeneration: uint64(request.RuntimeGeneration), CredentialVersion: uint64(request.CredentialVersion),
 	}
 	handoff, err := client.place(ctx, request.CommandID, intent)
-	result := manual.GatewayResult{CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode, State: manualState(handoff.Evidence.State), Handoff: handoff}
+	result := manual.GatewayResult{CommandID: request.CommandID, AccountID: request.AccountID, State: manualState(handoff.Evidence.State), Handoff: handoff}
 	for _, fill := range handoff.Evidence.Fills {
-		result.Fills = append(result.Fills, manual.FillFact{FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID, InstrumentID: fill.InstrumentID, Mode: request.Mode, Side: portfolio.Side(fill.Side), Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt})
+		result.Fills = append(result.Fills, manual.FillFact{FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID, InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side), Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt})
 	}
 	if result.State == manual.GatewayStateDenied {
 		result.DenialCode = "gateway_rejected"
@@ -590,7 +572,7 @@ func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest
 }
 
 func (client *Client) Cancel(ctx context.Context, request manual.GatewayCancelRequest) (manual.GatewayResult, error) {
-	if request.Mode != client.mode || (request.Mode == orders.ModeLive && !client.liveWrites) {
+	if !client.liveWrites {
 		return manual.GatewayResult{}, orders.ErrLiveWriteDisabled
 	}
 	if request.CommandID == "" || request.AccountID == "" || request.InstrumentID == "" || request.GatewayOrderID == "" {
@@ -598,13 +580,13 @@ func (client *Client) Cancel(ctx context.Context, request manual.GatewayCancelRe
 	}
 	handoff, err := client.cancel(ctx, request)
 	result := manual.GatewayResult{
-		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
+		CommandID: request.CommandID, AccountID: request.AccountID,
 		State: manualState(handoff.Evidence.State), Handoff: handoff,
 	}
 	for _, fill := range handoff.Evidence.Fills {
 		result.Fills = append(result.Fills, manual.FillFact{
 			FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID,
-			InstrumentID: fill.InstrumentID, Mode: request.Mode, Side: portfolio.Side(fill.Side),
+			InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side),
 			Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency,
 			SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt,
 		})
@@ -631,7 +613,7 @@ func manualState(state string) manual.GatewayState {
 }
 
 func (client *Client) Handoff(ctx context.Context, command orders.Command) (orders.HandoffResult, error) {
-	if command.Mode != client.mode || (command.Mode == orders.ModeLive && !client.liveWrites) {
+	if !client.liveWrites {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, orders.ErrLiveWriteDisabled
 	}
 	var intent orderIntent
@@ -698,8 +680,8 @@ func (client *Client) Fetch(ctx context.Context) (catalog.Snapshot, error) {
 	}, nil
 }
 
-func (client *Client) ListAccountRuntimes(ctx context.Context, principal, mode, accountID string) ([]tradinghttp.AccountRuntimeProjection, error) {
-	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || mode != string(client.mode) {
+func (client *Client) ListAccountRuntimes(ctx context.Context, principal, accountID string) ([]tradinghttp.AccountRuntimeProjection, error) {
+	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" {
 		return nil, fmt.Errorf("Gateway runtime projection scope is invalid")
 	}
 	var runtime readEnvelope[runtimeProjectionView]
@@ -931,15 +913,11 @@ func (client *Client) readLimit(ctx context.Context, principal, path string, que
 	if principal != "" {
 		request.Header.Set("X-Bolter-Principal", principal)
 	}
-	client.attest(request)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("Gateway read failed")
 	}
 	defer response.Body.Close()
-	if err := client.verifyAttestation(response); err != nil {
-		return err
-	}
 	if response.StatusCode != http.StatusOK {
 		return readStatusError{status: response.StatusCode, code: readErrorCode(response.Body)}
 	}
@@ -985,15 +963,11 @@ func (client *Client) place(ctx context.Context, idempotencyID string, intent or
 	request.Header.Set("Authorization", "Bearer "+string(token))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", idempotencyID)
-	client.attest(request)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway order handoff failed")
 	}
 	defer response.Body.Close()
-	if err := client.verifyAttestation(response); err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, err
-	}
 	if response.StatusCode != http.StatusAccepted {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 		outcome := orders.HandoffOutcomeUnknown
@@ -1034,15 +1008,11 @@ func (client *Client) cancel(ctx context.Context, request manual.GatewayCancelRe
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway cancel request")
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+string(token))
-	client.attest(httpRequest)
 	response, err := client.httpClient.Do(httpRequest)
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel handoff failed")
 	}
 	defer response.Body.Close()
-	if err := client.verifyAttestation(response); err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, err
-	}
 	if response.StatusCode != http.StatusAccepted {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 		outcome := orders.HandoffOutcomeUnknown
@@ -1110,15 +1080,3 @@ func (client *Client) fetchFills(ctx context.Context, gatewayOrderID, accountID,
 	return nil, fmt.Errorf("Gateway fill pagination exceeded %d pages", maxFillPages)
 }
 
-func (client *Client) attest(request *http.Request) {
-	if client.requireAttestation {
-		request.Header.Set(ModeHeader, string(client.mode))
-	}
-}
-
-func (client *Client) verifyAttestation(response *http.Response) error {
-	if client.requireAttestation && response.Header.Get(ModeHeader) != string(client.mode) {
-		return fmt.Errorf("Gateway mode attestation mismatch")
-	}
-	return nil
-}

@@ -1,8 +1,8 @@
 package authority
 
 const (
-	GatewayV8MigrationDigest = "662852a2fa5c3e126cf420e5108e8d1e4c04d2c584a0edecfe833cf9a1dcfc75"
-	GatewayV8Digest          = "07b6851eaec3707e2264526e4472b6175065ac5bd721ab3b209d499c09189b92"
+	GatewayV8MigrationDigest = "86a44cfeec8742cc636fe52316f120015a373eb6193111c78c69c8034400e6dd"
+	GatewayV8Digest          = "9b7f3055cd1d3cead6a7df808bf6c94bd15c2a6fe87bc12892317677a34a686e"
 )
 
 func GatewayV8() Matrix {
@@ -43,10 +43,10 @@ func GatewayV8() Matrix {
 		SchemaVersion:   8,
 		MigrationDigest: GatewayV8MigrationDigest,
 		Roles: RoleTopology{
-			Maintenance: "bolter_platform_test_admin",
-			Migrator:    "bolter_gateway_test_migrator",
-			Runtime:     "bolter_gateway_test",
-			Writer:      "bolter_gateway_test_writer",
+			Maintenance: "bolter_platform_admin",
+			Migrator:    "bolter_gateway_migrator",
+			Runtime:     "bolter_gateway",
+			Writer:      "bolter_gateway_writer",
 		},
 		Objects: objects,
 	}

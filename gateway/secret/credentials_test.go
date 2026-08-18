@@ -15,7 +15,6 @@ type recordingCredentialWriter struct {
 	readinessErr error
 	putRef       secretstore.OpaqueRef
 	putErr       error
-	mode         secretstore.Mode
 	namespace    string
 	keyVersion   string
 	secret       []byte
@@ -46,18 +45,16 @@ func (writer *recordingCredentialWriter) Delete(_ context.Context, scope secrets
 }
 
 func (writer *recordingCredentialWriter) record(scope secretstore.Scope) {
-	writer.mode = scope.Mode
 	writer.namespace = scope.Namespace
 	writer.keyVersion = scope.KeyVersion
 }
 
 const credentialOperationID secretstore.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
 
-func TestCredentialStoreFreezesModeNamespaceAndKeyVersion(t *testing.T) {
+func TestCredentialStoreFreezesNamespaceAndKeyVersion(t *testing.T) {
 	writer := &recordingCredentialWriter{}
 	store, err := secret.NewStore(secret.Config{
-		Mode:       secret.ModeTest,
-		Namespace:  secret.TestNamespace,
+		Namespace:  secret.Namespace,
 		KeyVersion: "v1",
 	}, writer)
 	if err != nil {
@@ -67,25 +64,30 @@ func TestCredentialStoreFreezesModeNamespaceAndKeyVersion(t *testing.T) {
 	if err := store.Readiness(context.Background()); err != nil {
 		t.Fatalf("Readiness: %v", err)
 	}
-	if writer.mode != secret.ModeTest || writer.namespace != secret.TestNamespace || writer.keyVersion != "v1" {
-		t.Fatalf("provider scope = (%q, %q, %q)", writer.mode, writer.namespace, writer.keyVersion)
+	if writer.namespace != secret.Namespace || writer.keyVersion != "v1" {
+		t.Fatalf("provider scope = (%q, %q)", writer.namespace, writer.keyVersion)
 	}
 }
 
-// A test-mode store addressing live material is the failure that loses real
-// money, so the scope mismatch has to be rejected at construction rather than
-// at the first write.
-func TestCredentialStoreRejectsCrossModeNamespaceAndUnsupportedKeyVersion(t *testing.T) {
+// The scope is what decides which storage a credential is written to, so a
+// config the store was not built for has to be refused at construction rather
+// than at the first write, when material is already in hand.
+//
+// This used to be a cross-mode test: there were two namespaces, one per mode,
+// and a store built for one mode naming the other's namespace was the failure
+// that lost real money. One namespace is left, so what remains to enforce is
+// that anything else is refused — and that the key version is still pinned.
+func TestCredentialStoreRejectsForeignNamespaceAndUnsupportedKeyVersion(t *testing.T) {
 	writer := &recordingCredentialWriter{}
 	tests := []struct {
 		name   string
 		config secret.Config
 		code   secret.Code
 	}{
-		{name: "test with live namespace", config: secret.Config{Mode: secret.ModeTest, Namespace: secret.LiveNamespace, KeyVersion: "v1"}, code: secret.CodeKeyMismatch},
-		{name: "live with test namespace", config: secret.Config{Mode: secret.ModeLive, Namespace: secret.TestNamespace, KeyVersion: "v1"}, code: secret.CodeKeyMismatch},
-		{name: "missing version", config: secret.Config{Mode: secret.ModeTest, Namespace: secret.TestNamespace}, code: secret.CodeKeyVersionUnsupported},
-		{name: "unsupported version", config: secret.Config{Mode: secret.ModeLive, Namespace: secret.LiveNamespace, KeyVersion: "v2"}, code: secret.CodeKeyVersionUnsupported},
+		{name: "foreign namespace", config: secret.Config{Namespace: "boltertrader/other", KeyVersion: "v1"}, code: secret.CodeKeyMismatch},
+		{name: "empty namespace", config: secret.Config{KeyVersion: "v1"}, code: secret.CodeKeyMismatch},
+		{name: "missing version", config: secret.Config{Namespace: secret.Namespace}, code: secret.CodeKeyVersionUnsupported},
+		{name: "unsupported version", config: secret.Config{Namespace: secret.Namespace, KeyVersion: "v2"}, code: secret.CodeKeyVersionUnsupported},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -94,7 +96,7 @@ func TestCredentialStoreRejectsCrossModeNamespaceAndUnsupportedKeyVersion(t *tes
 			}
 		})
 	}
-	if _, err := secret.NewStore(secret.Config{Mode: secret.ModeTest, Namespace: secret.TestNamespace, KeyVersion: "v1"}, nil); !secret.IsCode(err, secret.CodeUnavailable) {
+	if _, err := secret.NewStore(secret.Config{Namespace: secret.Namespace, KeyVersion: "v1"}, nil); !secret.IsCode(err, secret.CodeUnavailable) {
 		t.Fatalf("NewStore without a provider = %v", err)
 	}
 }
@@ -102,7 +104,7 @@ func TestCredentialStoreRejectsCrossModeNamespaceAndUnsupportedKeyVersion(t *tes
 func TestCredentialStoreReturnsOnlyOpaqueReferenceAndRedactsProviderErrors(t *testing.T) {
 	const canary = "secret-canary-do-not-log"
 	writer := &recordingCredentialWriter{putRef: secretstore.OpaqueRef(strings.Repeat("A", 43))}
-	store, err := secret.NewStore(secret.Config{Mode: secret.ModeTest, Namespace: secret.TestNamespace, KeyVersion: "v1"}, writer)
+	store, err := secret.NewStore(secret.Config{Namespace: secret.Namespace, KeyVersion: "v1"}, writer)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestCredentialStoreReturnsOnlyOpaqueReferenceAndRedactsProviderErrors(t *te
 	if strings.Contains(rendered, canary) || strings.Contains(rendered, writer.putRef.RawForTrustedBoundary()) {
 		t.Fatalf("reference formatting exposed sensitive material: %s", rendered)
 	}
-	if ref.Namespace() != secret.TestNamespace || ref.KeyVersion() != "v1" || ref.IsZero() {
+	if ref.Namespace() != secret.Namespace || ref.KeyVersion() != "v1" || ref.IsZero() {
 		t.Fatalf("reference metadata = %+v", ref)
 	}
 	if ref.RawForProvider() != writer.putRef.RawForTrustedBoundary() {
@@ -151,7 +153,7 @@ func TestCredentialStoreReturnsOnlyOpaqueReferenceAndRedactsProviderErrors(t *te
 
 func TestCredentialStoreLooksUpOperationsForReplay(t *testing.T) {
 	writer := &recordingCredentialWriter{putRef: secretstore.OpaqueRef(strings.Repeat("B", 43))}
-	store, err := secret.NewStore(secret.Config{Mode: secret.ModeTest, Namespace: secret.TestNamespace, KeyVersion: "v1"}, writer)
+	store, err := secret.NewStore(secret.Config{Namespace: secret.Namespace, KeyVersion: "v1"}, writer)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -186,7 +188,7 @@ func TestCredentialStoreReadinessMapsStableFailureCodesWithoutProviderDetails(t 
 	}
 	for _, test := range tests {
 		writer := &recordingCredentialWriter{readinessErr: test.providerErr}
-		store, err := secret.NewStore(secret.Config{Mode: secret.ModeLive, Namespace: secret.LiveNamespace, KeyVersion: "v1"}, writer)
+		store, err := secret.NewStore(secret.Config{Namespace: secret.Namespace, KeyVersion: "v1"}, writer)
 		if err != nil {
 			t.Fatalf("NewStore: %v", err)
 		}
@@ -202,7 +204,7 @@ func TestCredentialStoreReadinessMapsStableFailureCodesWithoutProviderDetails(t 
 
 func TestCredentialStoreDeleteUsesOpaqueProviderReferenceAndRedactsFailure(t *testing.T) {
 	writer := &recordingCredentialWriter{}
-	store, err := secret.NewStore(secret.Config{Mode: secret.ModeTest, Namespace: secret.TestNamespace, KeyVersion: "v1"}, writer)
+	store, err := secret.NewStore(secret.Config{Namespace: secret.Namespace, KeyVersion: "v1"}, writer)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,13 +22,6 @@ var (
 	ErrInvalidTransition   = errors.New("invalid command state transition")
 )
 
-type Mode string
-
-const (
-	ModeTest Mode = "test"
-	ModeLive Mode = "live"
-)
-
 type State string
 
 const (
@@ -99,7 +92,6 @@ type Command struct {
 	AccountID         string            `json:"accountId"`
 	LineageID         string            `json:"lineageId"`
 	ProductID         string            `json:"productId"`
-	Mode              Mode              `json:"mode"`
 	ReservationID     *string           `json:"reservationId"`
 	IdempotencyKey    string            `json:"idempotencyKey"`
 	Method            string            `json:"-"`
@@ -121,13 +113,11 @@ type Blocker struct {
 type CreateRequest struct {
 	PrincipalID, AccountID, ProductID, LineageID, ReservationID string
 	IdempotencyKey, Method, Path, CommandKind                   string
-	Mode                                                        Mode
 	Payload                                                     json.RawMessage
 }
 
 type ReservationClaim struct {
 	ReservationID, PrincipalID, ProductID string
-	Mode                                  Mode
 }
 
 type ReservationGate interface {
@@ -136,7 +126,6 @@ type ReservationGate interface {
 
 type ReconciliationTask struct {
 	CommandID    string               `json:"commandId"`
-	Mode         Mode                 `json:"mode"`
 	Reason       ReconciliationReason `json:"reason"`
 	NextAttempt  time.Time            `json:"nextAttemptAt"`
 	LeaseUntil   time.Time            `json:"leaseUntil"`
@@ -155,9 +144,9 @@ type Store interface {
 	Reserve(context.Context, Command) (Command, bool, error)
 	Abort(context.Context, string) error
 	Get(context.Context, string) (Command, error)
-	ListOwned(context.Context, string, Mode, string) ([]Command, error)
+	ListOwned(context.Context, string, string) ([]Command, error)
 	Transition(context.Context, TransitionRequest, time.Time) (Command, error)
-	ClaimDue(context.Context, Mode, time.Time, time.Time, int) ([]ReconciliationTask, error)
+	ClaimDue(context.Context, time.Time, time.Time, int) ([]ReconciliationTask, error)
 }
 
 type AtomicReservationStore interface {
@@ -184,22 +173,22 @@ func (service *Service) Get(ctx context.Context, commandID string) (Command, err
 	return service.store.Get(ctx, commandID)
 }
 
-func (service *Service) GetOwned(ctx context.Context, principal string, mode Mode, commandID string) (Command, error) {
+func (service *Service) GetOwned(ctx context.Context, principal string, commandID string) (Command, error) {
 	command, err := service.store.Get(ctx, commandID)
 	if err != nil {
 		return Command{}, err
 	}
-	if command.PrincipalID != principal || command.Mode != mode {
+	if command.PrincipalID != principal {
 		return Command{}, ErrNotFound
 	}
 	return command, nil
 }
 
-func (service *Service) ListOwned(ctx context.Context, principal string, mode Mode, productID string) ([]Command, error) {
-	if principal == "" || (mode != ModeTest && mode != ModeLive) || productID == "" {
+func (service *Service) ListOwned(ctx context.Context, principal string, productID string) ([]Command, error) {
+	if principal == "" || productID == "" {
 		return nil, fmt.Errorf("command ownership fields are required")
 	}
-	return service.store.ListOwned(ctx, principal, mode, productID)
+	return service.store.ListOwned(ctx, principal, productID)
 }
 
 func (service *Service) Create(ctx context.Context, request CreateRequest) (Command, bool, error) {
@@ -207,7 +196,11 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Comm
 	if err != nil {
 		return Command{}, false, err
 	}
-	if request.Mode == ModeLive && !service.live.Load() {
+	// Every command reaches a real venue, so the operator switch is the only
+	// thing between this call and the exchange. It used to also require the
+	// command to declare live mode, back when a test command could be admitted
+	// while the switch was off.
+	if !service.live.Load() {
 		return Command{}, false, ErrLiveWriteDisabled
 	}
 	now := service.now().UTC()
@@ -218,7 +211,7 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Comm
 	command := Command{
 		CommandID: commandID, PrincipalID: request.PrincipalID,
 		AccountID: request.AccountID, LineageID: request.LineageID, ProductID: request.ProductID,
-		Mode: request.Mode, IdempotencyKey: request.IdempotencyKey, Method: strings.ToUpper(request.Method), Path: request.Path,
+		IdempotencyKey: request.IdempotencyKey, Method: strings.ToUpper(request.Method), Path: request.Path,
 		CommandKind: request.CommandKind, State: StateAccepted, Payload: canonical, PayloadHash: hash,
 		Blockers: []Blocker{}, CreatedAt: now, UpdatedAt: now,
 	}
@@ -228,7 +221,7 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Comm
 	}
 	if command.ReservationID != nil && service.gate != nil {
 		claim := ReservationClaim{
-			ReservationID: *command.ReservationID, PrincipalID: command.PrincipalID, Mode: command.Mode, ProductID: command.ProductID,
+			ReservationID: *command.ReservationID, PrincipalID: command.PrincipalID, ProductID: command.ProductID,
 		}
 		if store, ok := service.store.(AtomicReservationStore); ok {
 			return store.ReserveWithReservation(ctx, command, claim)
@@ -240,7 +233,7 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Comm
 	}
 	if command.ReservationID != nil && service.gate != nil {
 		err = service.gate.Consume(ctx, ReservationClaim{
-			ReservationID: *command.ReservationID, PrincipalID: command.PrincipalID, Mode: command.Mode, ProductID: command.ProductID,
+			ReservationID: *command.ReservationID, PrincipalID: command.PrincipalID, ProductID: command.ProductID,
 		})
 		if err != nil {
 			_ = service.store.Abort(ctx, command.CommandID)
@@ -355,20 +348,17 @@ func allowedTransition(from, to State) bool {
 	}
 }
 
-func (service *Service) ClaimDueReconciliation(ctx context.Context, mode Mode, now time.Time, lease time.Duration, limit int) ([]ReconciliationTask, error) {
-	if (mode != ModeTest && mode != ModeLive) || now.IsZero() || lease <= 0 || limit <= 0 || limit > 100 {
+func (service *Service) ClaimDueReconciliation(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]ReconciliationTask, error) {
+	if now.IsZero() || lease <= 0 || limit <= 0 || limit > 100 {
 		return nil, fmt.Errorf("invalid reconciliation claim")
 	}
-	return service.store.ClaimDue(ctx, mode, now, now.Add(lease), limit)
+	return service.store.ClaimDue(ctx, now, now.Add(lease), limit)
 }
 
 func (request CreateRequest) validate() (json.RawMessage, string, error) {
 	if request.PrincipalID == "" || request.AccountID == "" || request.ProductID == "" || request.LineageID == "" ||
 		request.IdempotencyKey == "" || request.Method == "" || request.Path == "" || request.CommandKind == "" {
 		return nil, "", fmt.Errorf("command ownership and idempotency fields are required")
-	}
-	if request.Mode != ModeTest && request.Mode != ModeLive {
-		return nil, "", fmt.Errorf("invalid mode")
 	}
 	var decoded any
 	if len(request.Payload) == 0 || json.Unmarshal(request.Payload, &decoded) != nil {
@@ -398,7 +388,7 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func commandKey(command Command) string {
-	return strings.Join([]string{command.PrincipalID, string(command.Mode), command.Method, command.Path, command.IdempotencyKey}, "\x00")
+	return strings.Join([]string{command.PrincipalID, command.Method, command.Path, command.IdempotencyKey}, "\x00")
 }
 
 func (store *MemoryStore) Reserve(_ context.Context, command Command) (Command, bool, error) {
@@ -440,12 +430,12 @@ func (store *MemoryStore) Get(_ context.Context, id string) (Command, error) {
 	return command, nil
 }
 
-func (store *MemoryStore) ListOwned(_ context.Context, principal string, mode Mode, productID string) ([]Command, error) {
+func (store *MemoryStore) ListOwned(_ context.Context, principal string, productID string) ([]Command, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	items := make([]Command, 0)
 	for _, command := range store.commands {
-		if command.PrincipalID == principal && command.Mode == mode && command.ProductID == productID {
+		if command.PrincipalID == principal && command.ProductID == productID {
 			items = append(items, command)
 		}
 	}
@@ -474,7 +464,7 @@ func (store *MemoryStore) Transition(_ context.Context, request TransitionReques
 	store.commands[request.CommandID] = command
 	if request.State == StateUncertain || request.State == StateSubmitted {
 		task := store.tasks[request.CommandID]
-		task.CommandID, task.Mode, task.Reason, task.NextAttempt, task.LeaseUntil = request.CommandID, command.Mode, request.Reason, request.NextAttemptAt, time.Time{}
+		task.CommandID, task.Reason, task.NextAttempt, task.LeaseUntil = request.CommandID, request.Reason, request.NextAttemptAt, time.Time{}
 		store.tasks[request.CommandID] = task
 	} else {
 		delete(store.tasks, request.CommandID)
@@ -482,12 +472,12 @@ func (store *MemoryStore) Transition(_ context.Context, request TransitionReques
 	return command, nil
 }
 
-func (store *MemoryStore) ClaimDue(_ context.Context, mode Mode, now, leaseUntil time.Time, limit int) ([]ReconciliationTask, error) {
+func (store *MemoryStore) ClaimDue(_ context.Context, now, leaseUntil time.Time, limit int) ([]ReconciliationTask, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	result := make([]ReconciliationTask, 0, limit)
 	for id, task := range store.tasks {
-		if task.Mode != mode || task.NextAttempt.After(now) || task.LeaseUntil.After(now) {
+		if task.NextAttempt.After(now) || task.LeaseUntil.After(now) {
 			continue
 		}
 		task.LeaseUntil, task.AttemptCount = leaseUntil, task.AttemptCount+1

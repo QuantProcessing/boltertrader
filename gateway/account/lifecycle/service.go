@@ -52,7 +52,6 @@ type Options struct {
 	ID          func() string
 	OperationID func() secretstore.OperationID
 	Gateway     GatewayDesiredClient
-	Mode        secretstore.Mode
 	Hooks       LifecycleHooks
 }
 
@@ -64,7 +63,6 @@ type Service struct {
 	id          func() string
 	operationID func() secretstore.OperationID
 	gateway     GatewayDesiredClient
-	mode        secretstore.Mode
 	Hooks       LifecycleHooks
 }
 
@@ -85,10 +83,7 @@ func New(options Options) (*Service, error) {
 	if options.OperationID == nil {
 		options.OperationID = func() secretstore.OperationID { return secretstore.OperationID(uuid.NewString()) }
 	}
-	if options.Mode == "" {
-		options.Mode = secretstore.ModeTest
-	}
-	return &Service{store: options.Store, secrets: options.Secrets, audit: options.Audit, now: options.Now, id: options.ID, operationID: options.OperationID, gateway: options.Gateway, mode: options.Mode, Hooks: options.Hooks}, nil
+	return &Service{store: options.Store, secrets: options.Secrets, audit: options.Audit, now: options.Now, id: options.ID, operationID: options.OperationID, gateway: options.Gateway, Hooks: options.Hooks}, nil
 }
 
 func (service *Service) Create(ctx context.Context, request CreateRequest, principalID string, idempotencyKey ...string) (Account, error) {

@@ -35,7 +35,7 @@ type lifecycleExecutor interface {
 }
 
 const lifecycleAccountSelect = `
-	SELECT account_id, venue, venue_environment, mode, display_name, product_ids,
+	SELECT account_id, venue, venue_environment, display_name, product_ids,
 	       COALESCE(secret_ref, ''), COALESCE(previous_secret_ref, ''),
 	       desired_state_revision, runtime_generation, credential_version, requested_state,
 	       rotation_fence_id, rotation_fence_state,
@@ -45,7 +45,7 @@ const lifecycleAccountSelect = `
 	FROM gateway_desired_accounts`
 
 const lifecycleOperationSelect = `
-	SELECT operation_id, principal_id, account_id, mode, kind, state,
+	SELECT operation_id, principal_id, account_id, kind, state,
 	       idempotency_key_digest, request_digest,
 	       target_desired_state_revision, target_runtime_generation, target_credential_version,
 	       COALESCE(rotation_cleanup_tombstone_revision, 0), rotation_cleanup_completed_at,
@@ -200,8 +200,8 @@ func (store *AccountLifecycleStore) GetCredentialOperation(ctx context.Context, 
 
 func (store *AccountLifecycleStore) FindCredentialOperation(ctx context.Context, lookup lifecycle.OperationLookup) (lifecycle.CredentialOperation, error) {
 	operation, err := scanLifecycleOperation(store.pool.QueryRow(ctx, lifecycleOperationSelect+`
-		WHERE mode = $1 AND principal_id = $2 AND kind = $3 AND idempotency_key_digest = $4`,
-		lookup.Mode, lookup.PrincipalID, lookup.Kind, lookup.IdempotencyKeyDigest))
+		WHERE principal_id = $1 AND kind = $2 AND idempotency_key_digest = $3`,
+		lookup.PrincipalID, lookup.Kind, lookup.IdempotencyKeyDigest))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lifecycle.CredentialOperation{}, lifecycle.ErrNotFound
 	}
@@ -447,7 +447,7 @@ func insertLifecycleAccount(ctx context.Context, executor lifecycleExecutor, acc
 		return err
 	}
 	args := []any{
-		account.ID, account.Venue, account.VenueEnvironment, account.Mode, account.DisplayName, products,
+		account.ID, account.Venue, account.VenueEnvironment, account.DisplayName, products,
 		account.SecretRef, account.PreviousSecretRef,
 		account.DesiredStateRevision, account.RuntimeGeneration, account.CredentialVersion, account.State,
 	}
@@ -455,15 +455,15 @@ func insertLifecycleAccount(ctx context.Context, executor lifecycleExecutor, acc
 	args = append(args, account.LastValidatedAt, account.UpdatedAt)
 	if _, err := executor.Exec(ctx, `
 		INSERT INTO gateway_desired_accounts
-			(account_id, venue, venue_environment, mode, display_name, product_ids,
+			(account_id, venue, venue_environment, display_name, product_ids,
 			 secret_ref, previous_secret_ref,
 			 desired_state_revision, runtime_generation, credential_version, requested_state,
 			 rotation_fence_id, rotation_fence_state,
 			 rotation_from_credential_version, rotation_to_credential_version,
 			 rotation_from_runtime_generation, rotation_to_runtime_generation, rotation_armed_at,
 			 last_validated_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''),
-		        $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`, args...); err != nil {
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''),
+		        $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`, args...); err != nil {
 		return redactErr("insert lifecycle account", err)
 	}
 	return nil
@@ -476,7 +476,7 @@ func updateLifecycleAccount(ctx context.Context, executor lifecycleExecutor, id 
 	}
 	args := []any{
 		id, expected,
-		account.Venue, account.VenueEnvironment, account.Mode, account.DisplayName, products,
+		account.Venue, account.VenueEnvironment, account.DisplayName, products,
 		account.SecretRef, account.PreviousSecretRef,
 		account.DesiredStateRevision, account.RuntimeGeneration, account.CredentialVersion, account.State,
 	}
@@ -487,15 +487,15 @@ func updateLifecycleAccount(ctx context.Context, executor lifecycleExecutor, id 
 	// terminal marker behind would describe a fence that no longer exists.
 	tag, err := executor.Exec(ctx, `
 		UPDATE gateway_desired_accounts
-		SET venue = $3, venue_environment = $4, mode = $5, display_name = $6, product_ids = $7,
-		    secret_ref = NULLIF($8, ''), previous_secret_ref = NULLIF($9, ''),
-		    desired_state_revision = $10, runtime_generation = $11, credential_version = $12,
-		    requested_state = $13,
-		    rotation_fence_id = $14, rotation_fence_state = $15,
-		    rotation_from_credential_version = $16, rotation_to_credential_version = $17,
-		    rotation_from_runtime_generation = $18, rotation_to_runtime_generation = $19,
-		    rotation_armed_at = $20, rotation_released_at = NULL, rotation_blocked_reason = NULL,
-		    last_validated_at = $21, updated_at = $22
+		SET venue = $3, venue_environment = $4, display_name = $5, product_ids = $6,
+		    secret_ref = NULLIF($7, ''), previous_secret_ref = NULLIF($8, ''),
+		    desired_state_revision = $9, runtime_generation = $10, credential_version = $11,
+		    requested_state = $12,
+		    rotation_fence_id = $13, rotation_fence_state = $14,
+		    rotation_from_credential_version = $15, rotation_to_credential_version = $16,
+		    rotation_from_runtime_generation = $17, rotation_to_runtime_generation = $18,
+		    rotation_armed_at = $19, rotation_released_at = NULL, rotation_blocked_reason = NULL,
+		    last_validated_at = $20, updated_at = $21
 		WHERE account_id = $1 AND desired_state_revision = $2`, args...)
 	if err != nil {
 		return false, redactErr("update lifecycle account", err)
@@ -550,14 +550,14 @@ func loadLifecycleRoutes(ctx context.Context, executor lifecycleExecutor, accoun
 func insertLifecycleOperation(ctx context.Context, executor lifecycleExecutor, operation lifecycle.CredentialOperation) error {
 	if _, err := executor.Exec(ctx, `
 		INSERT INTO gateway_credential_operations
-			(operation_id, principal_id, account_id, mode, kind, state,
+			(operation_id, principal_id, account_id, kind, state,
 			 idempotency_key_digest, request_digest,
 			 target_desired_state_revision, target_runtime_generation, target_credential_version,
 			 rotation_cleanup_tombstone_revision, rotation_cleanup_completed_at,
 			 secret_ref, stable_error_code, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-		        NULLIF($12, 0::bigint), $13, NULLIF($14, ''), NULLIF($15, ''), $16, $17)`,
-		string(operation.ID), operation.PrincipalID, operation.AccountID, operation.Mode, operation.Kind, operation.State,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		        NULLIF($11, 0::bigint), $12, NULLIF($13, ''), NULLIF($14, ''), $15, $16)`,
+		string(operation.ID), operation.PrincipalID, operation.AccountID, operation.Kind, operation.State,
 		operation.IdempotencyKeyDigest, operation.RequestDigest,
 		operation.TargetDesiredStateRevision, operation.TargetRuntimeGeneration, operation.TargetCredentialVersion,
 		operation.RotationCleanupTombstoneRevision, nullableLifecycleTime(operation.RotationCleanupCompletedAt),
@@ -574,7 +574,7 @@ func scanLifecycleAccount(row interface{ Scan(...any) error }) (lifecycle.Accoun
 	var fromCredential, toCredential, fromRuntime, toRuntime sql.NullInt64
 	var armedAt, validatedAt sql.NullTime
 	if err := row.Scan(
-		&account.ID, &account.Venue, &account.VenueEnvironment, &account.Mode, &account.DisplayName, &products,
+		&account.ID, &account.Venue, &account.VenueEnvironment, &account.DisplayName, &products,
 		&account.SecretRef, &account.PreviousSecretRef,
 		&account.DesiredStateRevision, &account.RuntimeGeneration, &account.CredentialVersion, &account.State,
 		&fenceID, &fenceState, &fromCredential, &toCredential, &fromRuntime, &toRuntime, &armedAt,
@@ -616,7 +616,7 @@ func scanLifecycleOperation(row interface{ Scan(...any) error }) (lifecycle.Cred
 	var operation lifecycle.CredentialOperation
 	var cleanupCompletedAt sql.NullTime
 	if err := row.Scan(
-		&operation.ID, &operation.PrincipalID, &operation.AccountID, &operation.Mode, &operation.Kind, &operation.State,
+		&operation.ID, &operation.PrincipalID, &operation.AccountID, &operation.Kind, &operation.State,
 		&operation.IdempotencyKeyDigest, &operation.RequestDigest,
 		&operation.TargetDesiredStateRevision, &operation.TargetRuntimeGeneration, &operation.TargetCredentialVersion,
 		&operation.RotationCleanupTombstoneRevision, &cleanupCompletedAt,
@@ -668,12 +668,6 @@ func encodeLifecycleProductIDs(account lifecycle.Account) ([]byte, error) {
 }
 
 func normalizeLifecycleAccount(account lifecycle.Account) lifecycle.Account {
-	if account.Mode == "" {
-		account.Mode = secretstore.ModeTest
-		if account.VenueEnvironment == lifecycle.EnvironmentLive {
-			account.Mode = secretstore.ModeLive
-		}
-	}
 	if account.NativeEnvironment == "" {
 		account.NativeEnvironment = account.VenueEnvironment
 	}

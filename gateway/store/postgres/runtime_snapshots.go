@@ -556,9 +556,9 @@ func (postgresStore *Store) FinalizeRotation(ctx context.Context, request storep
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM gateway_retired_secret_refs
-			WHERE mode=$1 AND namespace=$2 AND secret_ref=$3
+			WHERE namespace=$1 AND secret_ref=$2
 		)
-	`, request.Scope.Mode, request.Scope.Namespace, retiring.SecretRef.RawForTrustedBoundary()).Scan(&tombstoned); err != nil {
+	`, request.Scope.Namespace, retiring.SecretRef.RawForTrustedBoundary()).Scan(&tombstoned); err != nil {
 		return storepkg.RotationFinalizationResult{}, redactErr("check retiring rotation reference", err)
 	}
 	if tombstoned {
@@ -581,9 +581,9 @@ func (postgresStore *Store) FinalizeRotation(ctx context.Context, request storep
 	completedAt := time.Now().UTC()
 	tombstoneRevision := request.ExpectedActiveFence.DesiredStateRevision
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO gateway_retired_secret_refs(mode,namespace,secret_ref,account_id,tombstone_revision,created_at)
-		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING
-	`, request.Scope.Mode, request.Scope.Namespace, retiring.SecretRef.RawForTrustedBoundary(), request.AccountID, tombstoneRevision, completedAt)
+		INSERT INTO gateway_retired_secret_refs(namespace,secret_ref,account_id,tombstone_revision,created_at)
+		VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING
+	`, request.Scope.Namespace, retiring.SecretRef.RawForTrustedBoundary(), request.AccountID, tombstoneRevision, completedAt)
 	if err != nil {
 		return storepkg.RotationFinalizationResult{}, redactErr("tombstone retiring rotation reference", err)
 	}
@@ -605,13 +605,13 @@ func (postgresStore *Store) FinalizeRotation(ctx context.Context, request storep
 			operation_id,account_id,request_digest,active_snapshot_id,retiring_snapshot_id,
 			expected_active_desired_state_revision,expected_active_runtime_generation,expected_active_credential_version,
 			expected_retiring_desired_state_revision,expected_retiring_runtime_generation,expected_retiring_credential_version,
-			retired_secret_ref,tombstone_revision,mode,namespace,key_version,
+			retired_secret_ref,tombstone_revision,namespace,key_version,
 			retiring_state,secret_reference_state,completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'retired','tombstoned',$17)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'retired','tombstoned',$16)
 	`, request.OperationID.String(), request.AccountID, digest, active.SnapshotID, retiring.SnapshotID,
 		request.ExpectedActiveFence.DesiredStateRevision, request.ExpectedActiveFence.RuntimeGeneration, request.ExpectedActiveFence.CredentialVersion,
 		request.ExpectedRetiringFence.DesiredStateRevision, request.ExpectedRetiringFence.RuntimeGeneration, request.ExpectedRetiringFence.CredentialVersion,
-		retiring.SecretRef.RawForTrustedBoundary(), tombstoneRevision, request.Scope.Mode, request.Scope.Namespace, request.Scope.KeyVersion, completedAt); err != nil {
+		retiring.SecretRef.RawForTrustedBoundary(), tombstoneRevision, request.Scope.Namespace, request.Scope.KeyVersion, completedAt); err != nil {
 		return storepkg.RotationFinalizationResult{}, redactErr("record rotation finalization", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -627,19 +627,18 @@ func (postgresStore *Store) FinalizeRotation(ctx context.Context, request storep
 func loadRotationFinalization(ctx context.Context, querier snapshotQuerier, request storepkg.RotationFinalizationRequest, digest string) (storepkg.RotationFinalizationResult, error) {
 	var result storepkg.RotationFinalizationResult
 	var operationID, storedDigest string
-	var mode secretstore.Mode
 	var namespace, keyVersion string
 	err := querier.QueryRow(ctx, `
 		SELECT operation_id::text,account_id,request_digest,
 		       expected_active_desired_state_revision,expected_active_runtime_generation,expected_active_credential_version,
 		       expected_retiring_desired_state_revision,expected_retiring_runtime_generation,expected_retiring_credential_version,
-		       tombstone_revision,mode,namespace,key_version,retiring_state,secret_reference_state,completed_at
+		       tombstone_revision,namespace,key_version,retiring_state,secret_reference_state,completed_at
 		FROM gateway_rotation_finalizations WHERE operation_id=$1
 	`, request.OperationID.String()).Scan(
 		&operationID, &result.AccountID, &storedDigest,
 		&result.ActiveFence.DesiredStateRevision, &result.ActiveFence.RuntimeGeneration, &result.ActiveFence.CredentialVersion,
 		&result.RetiringFence.DesiredStateRevision, &result.RetiringFence.RuntimeGeneration, &result.RetiringFence.CredentialVersion,
-		&result.TombstoneRevision, &mode, &namespace, &keyVersion, &result.RetiringState, &result.SecretReferenceState, &result.CompletedAt)
+		&result.TombstoneRevision, &namespace, &keyVersion, &result.RetiringState, &result.SecretReferenceState, &result.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return storepkg.RotationFinalizationResult{}, storepkg.ErrNotFound
 	}
@@ -656,7 +655,7 @@ func loadRotationFinalization(ctx context.Context, querier snapshotQuerier, requ
 	result.CompletedAt = result.CompletedAt.UTC()
 	if storedDigest != digest || result.OperationID != request.OperationID || result.AccountID != request.AccountID ||
 		result.ActiveFence != request.ExpectedActiveFence || result.RetiringFence != request.ExpectedRetiringFence ||
-		result.TombstoneRevision != request.ExpectedActiveFence.DesiredStateRevision || mode != request.Scope.Mode ||
+		result.TombstoneRevision != request.ExpectedActiveFence.DesiredStateRevision ||
 		namespace != request.Scope.Namespace || keyVersion != request.Scope.KeyVersion ||
 		result.RetiringState != "retired" || result.SecretReferenceState != "tombstoned" {
 		return storepkg.RotationFinalizationResult{}, storepkg.ErrOperationConflict
@@ -777,13 +776,13 @@ func (postgresStore *Store) RetireAccount(ctx context.Context, request storepkg.
 		return storepkg.RetirementResult{}, redactErr("retire account generations", err)
 	}
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO gateway_retired_secret_refs(mode,namespace,secret_ref,account_id,tombstone_revision,created_at)
-		SELECT $1,$2,secret_ref,$3,$4,$5
-		FROM (SELECT DISTINCT secret_ref FROM gateway_runtime_snapshots WHERE account_id=$3) retired_refs
-		ON CONFLICT (mode,namespace,secret_ref) DO UPDATE SET
+		INSERT INTO gateway_retired_secret_refs(namespace,secret_ref,account_id,tombstone_revision,created_at)
+		SELECT $1,secret_ref,$2,$3,$4
+		FROM (SELECT DISTINCT secret_ref FROM gateway_runtime_snapshots WHERE account_id=$2) retired_refs
+		ON CONFLICT (namespace,secret_ref) DO UPDATE SET
 			tombstone_revision=GREATEST(gateway_retired_secret_refs.tombstone_revision,EXCLUDED.tombstone_revision)
 		WHERE gateway_retired_secret_refs.account_id=EXCLUDED.account_id
-	`, request.Scope.Mode, request.Scope.Namespace, request.AccountID, request.TombstoneRevision, completedAt)
+	`, request.Scope.Namespace, request.AccountID, request.TombstoneRevision, completedAt)
 	if err != nil {
 		return storepkg.RetirementResult{}, redactErr("tombstone account references", err)
 	}
@@ -800,11 +799,11 @@ func (postgresStore *Store) RetireAccount(ctx context.Context, request storepkg.
 		INSERT INTO gateway_account_retirements(
 			operation_id,account_id,request_digest,expected_desired_state_revision,
 			expected_runtime_generation,expected_credential_version,tombstone_revision,
-			mode,namespace,state,completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'tombstoned',$10)
+			namespace,state,completed_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'tombstoned',$9)
 	`, request.OperationID.String(), request.AccountID, digest, request.ExpectedActiveFence.DesiredStateRevision,
 		request.ExpectedActiveFence.RuntimeGeneration, request.ExpectedActiveFence.CredentialVersion,
-		request.TombstoneRevision, request.Scope.Mode, request.Scope.Namespace, completedAt); err != nil {
+		request.TombstoneRevision, request.Scope.Namespace, completedAt); err != nil {
 		return storepkg.RetirementResult{}, redactErr("record account retirement", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -856,16 +855,16 @@ func (postgresStore *Store) TombstoneSecretReference(ctx context.Context, reques
 	}
 	createdAt := time.Now().UTC()
 	_, err := postgresStore.pool.Exec(ctx, `
-		INSERT INTO gateway_retired_secret_refs(mode,namespace,secret_ref,account_id,tombstone_revision,created_at)
-		VALUES ($1,$2,$3,$4,$5,$6)
-		ON CONFLICT (mode,namespace,secret_ref) DO NOTHING
-	`, request.Scope.Mode, request.Scope.Namespace, request.SecretRef.RawForTrustedBoundary(), request.AccountID, request.TombstoneRevision, createdAt)
+		INSERT INTO gateway_retired_secret_refs(namespace,secret_ref,account_id,tombstone_revision,created_at)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (namespace,secret_ref) DO NOTHING
+	`, request.Scope.Namespace, request.SecretRef.RawForTrustedBoundary(), request.AccountID, request.TombstoneRevision, createdAt)
 	if err != nil {
 		return storepkg.Tombstone{}, redactErr("tombstone secret reference", err)
 	}
 	var result storepkg.Tombstone
 	result.TombstoneRequest = request
-	if err := postgresStore.pool.QueryRow(ctx, `SELECT account_id,tombstone_revision,created_at FROM gateway_retired_secret_refs WHERE mode=$1 AND namespace=$2 AND secret_ref=$3`, request.Scope.Mode, request.Scope.Namespace, request.SecretRef.RawForTrustedBoundary()).Scan(&result.AccountID, &result.TombstoneRevision, &result.CreatedAt); err != nil {
+	if err := postgresStore.pool.QueryRow(ctx, `SELECT account_id,tombstone_revision,created_at FROM gateway_retired_secret_refs WHERE namespace=$1 AND secret_ref=$2`, request.Scope.Namespace, request.SecretRef.RawForTrustedBoundary()).Scan(&result.AccountID, &result.TombstoneRevision, &result.CreatedAt); err != nil {
 		return storepkg.Tombstone{}, redactErr("load secret tombstone", err)
 	}
 	if result.AccountID != request.AccountID || result.TombstoneRevision != request.TombstoneRevision {
@@ -879,7 +878,7 @@ func (postgresStore *Store) IsSecretReferenceRetired(ctx context.Context, scope 
 		return false, err
 	}
 	var retired bool
-	if err := postgresStore.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_retired_secret_refs WHERE mode=$1 AND namespace=$2 AND secret_ref=$3)`, scope.Mode, scope.Namespace, reference.RawForTrustedBoundary()).Scan(&retired); err != nil {
+	if err := postgresStore.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway_retired_secret_refs WHERE namespace=$1 AND secret_ref=$2)`, scope.Namespace, reference.RawForTrustedBoundary()).Scan(&retired); err != nil {
 		return false, redactErr("check retired secret reference", err)
 	}
 	return retired, nil

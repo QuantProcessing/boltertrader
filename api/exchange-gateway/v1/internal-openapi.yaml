@@ -27,19 +27,19 @@ paths:
   /internal/v1/accounts/desired/{accountId}/operations/{operationId}:
     put:
       operationId: applyDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}, {$ref: '#/components/parameters/ModeAttestation'}]
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
       requestBody: {$ref: '#/components/requestBodies/DesiredApply'}
       responses: {'200': {$ref: '#/components/responses/RuntimeView'}, '202': {$ref: '#/components/responses/RuntimeView'}, '409': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/desired/{accountId}/retirements/{operationId}:
     put:
       operationId: retireDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}, {$ref: '#/components/parameters/ModeAttestation'}]
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
       requestBody: {$ref: '#/components/requestBodies/RetireAccount'}
       responses: {'200': {$ref: '#/components/responses/RuntimeView'}, '202': {$ref: '#/components/responses/RuntimeView'}, '409': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}:
     put:
       operationId: finalizeDesiredAccountRotation
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}, {$ref: '#/components/parameters/ModeAttestation'}]
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
       requestBody: {$ref: '#/components/requestBodies/RotationFinalization'}
       responses: {'200': {$ref: '#/components/responses/RotationFinalizationProof'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/runtime:
@@ -71,12 +71,9 @@ paths:
 components:
   securitySchemes:
     gatewayAdapterAuth: {type: http, scheme: bearer}
-  headers:
-    ModeAttestation: {description: Gateway process mode attestation, schema: {type: string, enum: [test, live]}}
   parameters:
     AccountID: {name: accountId, in: path, required: true, schema: {type: string, minLength: 1}}
     OperationID: {name: operationId, in: path, required: true, schema: {type: string, format: uuid}}
-    ModeAttestation: {name: X-Bolter-Mode, in: header, required: true, schema: {type: string, enum: [test, live]}}
   requestBodies:
     DesiredApply: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredApplyRequest'}}}}
     RetireAccount: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RetireRequest'}}}}
@@ -84,7 +81,6 @@ components:
   responses:
     RuntimeStatus:
       description: detailed runtime status
-      headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}
       content:
         application/json:
           schema:
@@ -94,7 +90,6 @@ components:
             properties: {data: {$ref: '#/components/schemas/RuntimeStatus'}}
     RuntimeReadiness:
       description: runtime readiness derived from authoritative runtime accounts
-      headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}
       content:
         application/json:
           schema:
@@ -102,11 +97,10 @@ components:
             additionalProperties: false
             required: [data]
             properties: {data: {$ref: '#/components/schemas/RuntimeReadiness'}}
-    DesiredRuntime: {description: redacted desired runtime, headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}
-    DesiredAccounts: {description: desired accounts, headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}}
+    DesiredRuntime: {description: redacted desired runtime, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}
+    DesiredAccounts: {description: desired accounts, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}}
     RuntimeView:
       description: redacted runtime truth
-      headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}
       content:
         application/json:
           schema:
@@ -116,7 +110,6 @@ components:
             properties: {data: {$ref: '#/components/schemas/RuntimeView'}}
     RotationFinalizationProof:
       description: durable redacted rotation finalization proof
-      headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}
       content:
         application/json:
           schema:
@@ -124,8 +117,8 @@ components:
             additionalProperties: false
             required: [data]
             properties: {data: {$ref: '#/components/schemas/RotationFinalizationProof'}}
-    RuntimeFacts: {description: redacted product-agnostic authority facts, headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}, content: {application/json: {schema: {type: object}}}}
-    Error: {description: stable redacted error, headers: {X-Bolter-Mode: {$ref: '#/components/headers/ModeAttestation'}}, content: {application/json: {schema: {$ref: '#/components/schemas/InternalErrorEnvelope'}}}}
+    RuntimeFacts: {description: redacted product-agnostic authority facts, content: {application/json: {schema: {type: object}}}}
+    Error: {description: stable redacted error, content: {application/json: {schema: {$ref: '#/components/schemas/InternalErrorEnvelope'}}}}
   schemas:
     RuntimeStatus:
       type: object
@@ -353,7 +346,7 @@ components:
           additionalProperties: false
           required: [code, message, requestId, retryable]
           properties:
-            code: {type: string, enum: [ACCOUNT_RUNTIME_BLOCKED, CANDIDATE_NOT_READY, DESIRED_ACCOUNT_NOT_FOUND, DESIRED_STATE_REVISION_CONFLICT, GATEWAY_ADAPTER_AUTH_REQUIRED, HANDOFF_DRAIN_BLOCKED, IF_MATCH_REQUIRED, IF_NONE_MATCH_REQUIRED, INTERNAL_ERROR, INVALID_ACCOUNT_TRANSITION, LIVE_PRIVATE_WRITE_DISABLED, MODE_ATTESTATION_REQUIRED, OPERATION_ID_CONFLICT, PROMOTION_FENCE_CONFLICT, RETIRED_SECRET_REFERENCE, RUNTIME_MODE_MISMATCH, STALE_RUNTIME_FENCE, VALIDATION_ERROR]}
+            code: {type: string, enum: [ACCOUNT_RUNTIME_BLOCKED, CANDIDATE_NOT_READY, DESIRED_ACCOUNT_NOT_FOUND, DESIRED_STATE_REVISION_CONFLICT, GATEWAY_ADAPTER_AUTH_REQUIRED, HANDOFF_DRAIN_BLOCKED, IF_MATCH_REQUIRED, IF_NONE_MATCH_REQUIRED, INTERNAL_ERROR, INVALID_ACCOUNT_TRANSITION, LIVE_PRIVATE_WRITE_DISABLED, OPERATION_ID_CONFLICT, PROMOTION_FENCE_CONFLICT, RETIRED_SECRET_REFERENCE, STALE_RUNTIME_FENCE, VALIDATION_ERROR]}
             message: {type: string}
             requestId: {type: string}
             retryable: {type: boolean}

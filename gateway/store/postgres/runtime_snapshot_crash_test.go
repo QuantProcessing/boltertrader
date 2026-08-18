@@ -23,7 +23,7 @@ func TestRotationFinalizationRequestValidatesAdjacentFencesAndDigestExcludesOper
 		OperationID: firstOperation, AccountID: retiringFence.AccountID,
 		ExpectedActiveFence:   domain.AccountFence{AccountID: retiringFence.AccountID, DesiredStateRevision: 5, RuntimeGeneration: 8, CredentialVersion: 10},
 		ExpectedRetiringFence: retiringFence,
-		Scope:                 secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:                 secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 	firstDigest, err := request.CanonicalDigest()
 	if err != nil {
@@ -141,7 +141,7 @@ func TestRuntimeRetirementIsAtomicReplayableAndRejectsUnresolvedHandoff(t *testi
 	request := storepkg.RetirementRequest{
 		OperationID: operationID, AccountID: snapshot.AccountID, ExpectedActiveFence: snapshot.Fence,
 		TombstoneRevision: snapshot.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 	commandID := uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c64")
 	handoffID := uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c65")
@@ -200,7 +200,7 @@ func TestConcurrentIdenticalRetirementsReturnSameCommittedProof(t *testing.T) {
 	request := storepkg.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 
 	blocker, err := postgresStore.pool.Begin(ctx)
@@ -254,7 +254,7 @@ func TestRetiredAccountRejectsFreshPendingSnapshot(t *testing.T) {
 	if _, err := postgresStore.RetireAccount(ctx, storepkg.RetirementRequest{
 		OperationID: retireOperation, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestRetirementAndPendingPreparationNeverPublishContradictoryHeads(t *testin
 		if _, err := postgresStore.RetireAccount(ctx, storepkg.RetirementRequest{
 			OperationID: retireOperation, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 			TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-			Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+			Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -350,7 +350,7 @@ func TestRetirementAndPendingPreparationNeverPublishContradictoryHeads(t *testin
 			_, err := postgresStore.RetireAccount(ctx, storepkg.RetirementRequest{
 				OperationID: retireOperation, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 				TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-				Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+				Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 			})
 			retired <- err
 		}()
@@ -383,7 +383,7 @@ func TestPromotionRejectsPendingSnapshotClearedByRetirement(t *testing.T) {
 	if _, err := postgresStore.RetireAccount(ctx, storepkg.RetirementRequest{
 		OperationID: retireOperation, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -481,8 +481,20 @@ func TestRotationFinalizationIsAtomicReplayableAndLeavesActiveHeadUnchanged(t *t
 	if err != nil || lookedUp != first {
 		t.Fatalf("finalization lookup=%+v err=%v first=%+v", lookedUp, err, first)
 	}
+	// The proof is bound to the exact request that produced it, so a replay
+	// carrying a different one must conflict rather than hand back a stored
+	// result that answers a question nobody asked. Note this is the same
+	// mutation the wrongFences case above makes: before finalization it fails
+	// the fence lookup, after finalization the digest comparison gets there
+	// first.
+	//
+	// The varied field used to be the scope — a live-namespace request replayed
+	// against a proof written under the test namespace. Only one namespace is
+	// left and Validate refuses every other, so the scope can no longer differ
+	// and still reach this comparison.
 	changedRequest := request
-	changedRequest.Scope = secretstore.Scope{Mode: secretstore.ModeLive, Namespace: "boltertrader/live", KeyVersion: "v1"}
+	changedRequest.ExpectedActiveFence.DesiredStateRevision++
+	changedRequest.ExpectedRetiringFence.DesiredStateRevision++
 	if _, err := postgresStore.FinalizeRotation(ctx, changedRequest); !errors.Is(err, storepkg.ErrOperationConflict) {
 		t.Fatalf("changed request replay err=%v", err)
 	}
@@ -828,7 +840,7 @@ func TestRotationFinalizationProofRejectsMismatchedAndCrossAccountRows(t *testin
 	secondActive, _ := preparePromotedRotationForAccount(t, ctx, postgresStore, "account-proof-two",
 		"018f47a8-2578-7d3c-9d7d-5e4f4a445e05", "018f47a8-2578-7d3c-9d7d-5e4f4a445e06",
 		"018f47a8-2578-7d3c-9d7d-5e4f4a445e07", "018f47a8-2578-7d3c-9d7d-5e4f4a445e08")
-	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+	scope := secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"}
 	if _, err := postgresStore.TombstoneSecretReference(ctx, storepkg.TombstoneRequest{
 		Scope: scope, SecretRef: firstRetiring.SecretRef, AccountID: firstRetiring.AccountID,
 		TombstoneRevision: firstActive.Fence.DesiredStateRevision,
@@ -844,14 +856,14 @@ func TestRotationFinalizationProofRejectsMismatchedAndCrossAccountRows(t *testin
 				operation_id,account_id,request_digest,active_snapshot_id,retiring_snapshot_id,
 				expected_active_desired_state_revision,expected_active_runtime_generation,expected_active_credential_version,
 				expected_retiring_desired_state_revision,expected_retiring_runtime_generation,expected_retiring_credential_version,
-				retired_secret_ref,tombstone_revision,mode,namespace,key_version,
+				retired_secret_ref,tombstone_revision,namespace,key_version,
 				retiring_state,secret_reference_state,completed_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'retired','tombstoned',now())
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'retired','tombstoned',now())
 		`, operationID.String(), accountID, strings.Repeat("a", 64), activeID, retiringID,
 			activeFence.DesiredStateRevision, activeFence.RuntimeGeneration, activeFence.CredentialVersion,
 			retiringFence.DesiredStateRevision, retiringFence.RuntimeGeneration, retiringFence.CredentialVersion,
 			firstRetiring.SecretRef.RawForTrustedBoundary(), activeFence.DesiredStateRevision,
-			scope.Mode, scope.Namespace, scope.KeyVersion)
+			scope.Namespace, scope.KeyVersion)
 		return err
 	}
 	if err := insertProof(secondActive.OperationID, firstActive.AccountID, firstActive.SnapshotID, firstRetiring.SnapshotID, firstActive.Fence, firstRetiring.Fence); err == nil {
@@ -923,7 +935,7 @@ func rotationFinalizationRequest(active, retiring storepkg.DesiredSnapshot) stor
 	return storepkg.RotationFinalizationRequest{
 		OperationID: active.OperationID, AccountID: active.AccountID,
 		ExpectedActiveFence: active.Fence, ExpectedRetiringFence: retiring.Fence,
-		Scope: secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope: secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 }
 

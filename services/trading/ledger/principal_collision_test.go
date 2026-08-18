@@ -10,7 +10,7 @@ func TestServiceSeparatesIdenticalEconomicIdentityAcrossPrincipals(t *testing.T)
 	service := NewService(NewMemoryStore(), time.Now)
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	entry := Entry{
-		PrincipalID: "principal-a", EntryID: "shared-entry", Mode: ModeTest, ProductID: "funding", LineageID: "shared-lineage",
+		PrincipalID: "principal-a", EntryID: "shared-entry", ProductID: "funding", LineageID: "shared-lineage",
 		AccountID: "shared-account", InstrumentID: "BTC-USDT", Kind: KindFunding, Amount: "1", Currency: "USDT", OccurredAt: now,
 	}
 	if err := service.Record(context.Background(), entry); err != nil {
@@ -22,18 +22,18 @@ func TestServiceSeparatesIdenticalEconomicIdentityAcrossPrincipals(t *testing.T)
 	}
 	for principal, amount := range map[string]string{"principal-a": "3", "principal-b": "4"} {
 		if err := service.SetUnrealized(context.Background(), Unrealized{
-			PrincipalID: principal, Mode: ModeTest, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account",
+			PrincipalID: principal, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account",
 			InstrumentID: "BTC-USDT", Amount: amount, Currency: "USDT", AsOf: now,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	a, err := service.PnL(context.Background(), Query{PrincipalID: "principal-a", Mode: ModeTest, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"})
+	a, err := service.PnL(context.Background(), Query{PrincipalID: "principal-a", ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := service.PnL(context.Background(), Query{PrincipalID: "principal-b", Mode: ModeTest, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"})
+	b, err := service.PnL(context.Background(), Query{PrincipalID: "principal-b", ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,21 +50,21 @@ func TestFundingSupersessionCannotRemoveAnotherPrincipalsIdenticalEntryID(t *tes
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	for _, principal := range []string{"principal-a", "principal-b"} {
 		if err := service.Record(context.Background(), Entry{
-			PrincipalID: principal, EntryID: "shared-original", Mode: ModeTest, ProductID: "funding", LineageID: "shared-lineage",
+			PrincipalID: principal, EntryID: "shared-original", ProductID: "funding", LineageID: "shared-lineage",
 			AccountID: "shared-account", InstrumentID: "BTC-USDT", Kind: KindFunding, Amount: "1", Currency: "USDT", OccurredAt: now,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	replacement := Entry{
-		PrincipalID: "principal-a", EntryID: "shared-replacement", Mode: ModeTest, ProductID: "funding", LineageID: "shared-lineage",
+		PrincipalID: "principal-a", EntryID: "shared-replacement", ProductID: "funding", LineageID: "shared-lineage",
 		AccountID: "shared-account", InstrumentID: "BTC-USDT", Kind: KindFunding, Amount: "2", Currency: "USDT", OccurredAt: now.Add(time.Minute),
 	}
 	if err := service.SupersedeFunding(context.Background(), "shared-original", replacement); err != nil {
 		t.Fatal(err)
 	}
-	a, _ := service.List(context.Background(), Query{PrincipalID: "principal-a", Mode: ModeTest})
-	b, _ := service.List(context.Background(), Query{PrincipalID: "principal-b", Mode: ModeTest})
+	a, _ := service.List(context.Background(), Query{PrincipalID: "principal-a"})
+	b, _ := service.List(context.Background(), Query{PrincipalID: "principal-b"})
 	if len(a) != 1 || a[0].EntryID != "shared-replacement" {
 		t.Fatalf("principal-a entries=%+v", a)
 	}
@@ -75,11 +75,11 @@ func TestFundingSupersessionCannotRemoveAnotherPrincipalsIdenticalEntryID(t *tes
 
 func TestServiceRejectsPrincipalFreeReadAndUnrealizedScopes(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
-	if _, err := service.List(context.Background(), Query{Mode: ModeTest}); err == nil {
+	if _, err := service.List(context.Background(), Query{}); err == nil {
 		t.Fatal("principal-free ledger list accepted")
 	}
 	if err := service.SetUnrealized(context.Background(), Unrealized{
-		Mode: ModeTest, ProductID: "funding", LineageID: "lineage", AccountID: "account", InstrumentID: "BTC-USDT",
+		ProductID: "funding", LineageID: "lineage", AccountID: "account", InstrumentID: "BTC-USDT",
 		Amount: "1", Currency: "USDT", AsOf: time.Now(),
 	}); err == nil {
 		t.Fatal("principal-free unrealized scope accepted")

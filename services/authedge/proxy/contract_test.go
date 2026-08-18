@@ -91,9 +91,9 @@ func TestForwardedRoutesDoNotShadowOwnedRoutes(t *testing.T) {
 		mux.HandleFunc(pattern, func(http.ResponseWriter, *http.Request) {})
 	}
 	proxy, err := New(Options{
-		Trading:  Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken, ModeHeader: TradingModeHeader},
-		Gateway:  Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken, ModeHeader: GatewayModeHeader},
-		Sessions: &fakeSessions{principal: session.Principal{ID: "browser-session", Mode: "test"}},
+		Trading:  Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken},
+		Gateway:  Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken},
+		Sessions: &fakeSessions{principal: session.Principal{ID: "browser-session"}},
 	})
 	if err != nil {
 		t.Fatal(err)

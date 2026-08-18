@@ -16,18 +16,13 @@ import (
 
 type Side string
 
-type Mode string
-
 const (
 	SideBuy  Side = "buy"
 	SideSell Side = "sell"
-	ModeTest Mode = "test"
-	ModeLive Mode = "live"
 )
 
 type Fill struct {
 	PrincipalID, FillID, CommandID, LineageID, ProductID, AccountID, InstrumentID string
-	Mode                                                                          Mode
 	Side                                                                          Side
 	Quantity, Price, Fee, FeeCurrency, SettlementCurrency                         string
 	OccurredAt                                                                    time.Time
@@ -49,7 +44,6 @@ type Position struct {
 	PrincipalID        string    `json:"-"`
 	LineageID          string    `json:"lineageId"`
 	ProductID          string    `json:"productId"`
-	Mode               Mode      `json:"mode"`
 	AccountID          string    `json:"accountId"`
 	InstrumentID       string    `json:"instrumentId"`
 	SettlementCurrency string    `json:"settlementCurrency"`
@@ -81,9 +75,9 @@ type Projection struct {
 
 type Store interface {
 	ApplyFill(context.Context, Fill, func(Position) (Position, FillResult, error)) (Position, FillResult, error)
-	ApplyMark(context.Context, string, Mode, string, string, string, string, func(Position) (Position, error)) (Position, error)
+	ApplyMark(context.Context, string, string, string, string, string, func(Position) (Position, error)) (Position, error)
 	Upsert(context.Context, Position) error
-	List(context.Context, string, Mode, string, string) ([]Position, error)
+	List(context.Context, string, string, string) ([]Position, error)
 }
 
 func NewProjection() *Projection {
@@ -117,9 +111,9 @@ func (projection *Projection) ApplyFill(ctx context.Context, fill Fill) (Positio
 		if recorded.fingerprint != FillFingerprint(fill) {
 			return Position{}, FillResult{}, fmt.Errorf("%w: %s", ErrFillConflict, fill.FillID)
 		}
-		return projection.positions[positionKey(fill.PrincipalID, string(fill.Mode), fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)].Position, recorded.result, nil
+		return projection.positions[positionKey(fill.PrincipalID, fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)].Position, recorded.result, nil
 	}
-	key := positionKey(fill.PrincipalID, string(fill.Mode), fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)
+	key := positionKey(fill.PrincipalID, fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)
 	position, result, err := applyFill(projection.positions[key], fill, quantity, price, fee)
 	if err != nil {
 		return Position{}, FillResult{}, err
@@ -138,7 +132,7 @@ func applyFill(state positionState, fill Fill, quantity, price, fee decimal.Deci
 		return Position{}, FillResult{}, ErrCurrencyMismatch
 	}
 	state.SettlementCurrency = fill.SettlementCurrency
-	state.PrincipalID, state.LineageID, state.ProductID, state.Mode, state.AccountID, state.InstrumentID = fill.PrincipalID, fill.LineageID, fill.ProductID, fill.Mode, fill.AccountID, fill.InstrumentID
+	state.PrincipalID, state.LineageID, state.ProductID, state.AccountID, state.InstrumentID = fill.PrincipalID, fill.LineageID, fill.ProductID, fill.AccountID, fill.InstrumentID
 	signed := quantity
 	if fill.Side == SideSell {
 		signed = signed.Neg()
@@ -196,29 +190,28 @@ func stateFromPosition(position Position) (positionState, error) {
 func FillFingerprint(fill Fill) string {
 	payload, _ := json.Marshal(struct {
 		PrincipalID, FillID, CommandID, LineageID, ProductID, AccountID, InstrumentID string
-		Mode                                                                          Mode
 		Side                                                                          Side
 		Quantity, Price, Fee, FeeCurrency, SettlementCurrency                         string
 		OccurredAt                                                                    time.Time
 	}{
 		fill.PrincipalID, fill.FillID, fill.CommandID, fill.LineageID, fill.ProductID, fill.AccountID, fill.InstrumentID,
-		fill.Mode, fill.Side, fill.Quantity, fill.Price, fill.Fee, fill.FeeCurrency, fill.SettlementCurrency, fill.OccurredAt.UTC(),
+		fill.Side, fill.Quantity, fill.Price, fill.Fee, fill.FeeCurrency, fill.SettlementCurrency, fill.OccurredAt.UTC(),
 	})
 	hash := sha256.Sum256(payload)
 	return hex.EncodeToString(hash[:])
 }
 
-func (projection *Projection) ApplyMark(principalID string, mode Mode, accountID, productID, lineageID, instrumentID, mark string, asOf time.Time) (Position, error) {
-	return projection.ApplyMarkContext(context.Background(), principalID, mode, accountID, productID, lineageID, instrumentID, mark, asOf)
+func (projection *Projection) ApplyMark(principalID string, accountID, productID, lineageID, instrumentID, mark string, asOf time.Time) (Position, error) {
+	return projection.ApplyMarkContext(context.Background(), principalID, accountID, productID, lineageID, instrumentID, mark, asOf)
 }
 
-func (projection *Projection) ApplyMarkContext(ctx context.Context, principalID string, mode Mode, accountID, productID, lineageID, instrumentID, mark string, asOf time.Time) (Position, error) {
+func (projection *Projection) ApplyMarkContext(ctx context.Context, principalID string, accountID, productID, lineageID, instrumentID, mark string, asOf time.Time) (Position, error) {
 	price, err := decimal.NewFromString(mark)
 	if err != nil || principalID == "" || price.IsNegative() || asOf.IsZero() {
 		return Position{}, fmt.Errorf("mark price must be a non-negative decimal")
 	}
 	if projection.store != nil {
-		return projection.store.ApplyMark(ctx, principalID, mode, accountID, productID, lineageID, instrumentID, func(current Position) (Position, error) {
+		return projection.store.ApplyMark(ctx, principalID, accountID, productID, lineageID, instrumentID, func(current Position) (Position, error) {
 			if unchanged, handled, monotonicErr := preserveMonotonicMark(current, price, asOf); handled {
 				return unchanged, monotonicErr
 			}
@@ -236,7 +229,7 @@ func (projection *Projection) ApplyMarkContext(ctx context.Context, principalID 
 	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
-	key := positionKey(principalID, string(mode), accountID, productID, lineageID, instrumentID)
+	key := positionKey(principalID, accountID, productID, lineageID, instrumentID)
 	state, ok := projection.positions[key]
 	if !ok {
 		return Position{}, fmt.Errorf("position not found")
@@ -263,16 +256,16 @@ func preserveMonotonicMark(current Position, price decimal.Decimal, asOf time.Ti
 	return current, true, nil
 }
 
-func (projection *Projection) ListContext(ctx context.Context, principalID string, mode Mode, accountID, productID string) ([]Position, error) {
+func (projection *Projection) ListContext(ctx context.Context, principalID string, accountID, productID string) ([]Position, error) {
 	if projection.store != nil {
-		return projection.store.List(ctx, principalID, mode, accountID, productID)
+		return projection.store.List(ctx, principalID, accountID, productID)
 	}
-	return projection.List(principalID, mode, accountID, productID), nil
+	return projection.List(principalID, accountID, productID), nil
 }
 
-func (projection *Projection) List(principalID string, mode Mode, accountID, productID string) []Position {
+func (projection *Projection) List(principalID string, accountID, productID string) []Position {
 	if projection.store != nil {
-		items, err := projection.store.List(context.Background(), principalID, mode, accountID, productID)
+		items, err := projection.store.List(context.Background(), principalID, accountID, productID)
 		if err != nil {
 			return nil
 		}
@@ -282,7 +275,7 @@ func (projection *Projection) List(principalID string, mode Mode, accountID, pro
 	defer projection.mu.Unlock()
 	result := make([]Position, 0)
 	for _, state := range projection.positions {
-		if state.PrincipalID == principalID && state.Mode == mode && (accountID == "" || state.AccountID == accountID) && (productID == "" || state.ProductID == productID) {
+		if state.PrincipalID == principalID && (accountID == "" || state.AccountID == accountID) && (productID == "" || state.ProductID == productID) {
 			result = append(result, state.Position)
 		}
 	}
@@ -302,7 +295,7 @@ func (state *positionState) refresh() {
 }
 
 func validateFill(fill Fill) (decimal.Decimal, decimal.Decimal, decimal.Decimal, error) {
-	if fill.PrincipalID == "" || fill.FillID == "" || fill.CommandID == "" || fill.LineageID == "" || fill.ProductID == "" || fill.AccountID == "" || fill.InstrumentID == "" || fill.FeeCurrency == "" || fill.SettlementCurrency == "" || fill.OccurredAt.IsZero() || (fill.Mode != ModeTest && fill.Mode != ModeLive) {
+	if fill.PrincipalID == "" || fill.FillID == "" || fill.CommandID == "" || fill.LineageID == "" || fill.ProductID == "" || fill.AccountID == "" || fill.InstrumentID == "" || fill.FeeCurrency == "" || fill.SettlementCurrency == "" || fill.OccurredAt.IsZero() {
 		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("fill attribution is incomplete")
 	}
 	if fill.Side != SideBuy && fill.Side != SideSell {

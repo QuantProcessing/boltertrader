@@ -21,9 +21,9 @@ func TestPositionsReturnsInternalErrorWhenPortfolioRepositoryFails(t *testing.T)
 	mux := http.NewServeMux()
 	err := RegisterTradingRoutes(mux, TradingOptions{
 		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
-		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
 		Portfolio:    portfolio.NewPersistentProjection(store), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
 	if err != nil {
@@ -49,14 +49,14 @@ func TestTradingReadsSeparateExactAccountingTupleAcrossPrincipals(t *testing.T) 
 	for _, principal := range []string{"principal-a", "principal-b"} {
 		fill := portfolio.Fill{
 			PrincipalID: principal, FillID: "shared-fill", CommandID: "command-" + principal, LineageID: "shared-lineage", ProductID: "manual",
-			Mode: portfolio.ModeTest, AccountID: "shared-account", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy,
+			AccountID: "shared-account", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy,
 			Quantity: map[string]string{"principal-a": "1", "principal-b": "2"}[principal], Price: "100", Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now,
 		}
 		if _, _, err := positions.ApplyFill(context.Background(), fill); err != nil {
 			t.Fatal(err)
 		}
 		if err := ledgerService.Record(context.Background(), ledger.Entry{
-			PrincipalID: principal, EntryID: "shared-entry", Mode: ledger.ModeTest, ProductID: "manual", LineageID: "shared-lineage",
+			PrincipalID: principal, EntryID: "shared-entry", ProductID: "manual", LineageID: "shared-lineage",
 			AccountID: "shared-account", InstrumentID: "BTC-USDT", Kind: ledger.KindRealizedPnL,
 			Amount: map[string]string{"principal-a": "1", "principal-b": "2"}[principal], Currency: "USDT", OccurredAt: now,
 		}); err != nil {
@@ -68,9 +68,9 @@ func TestTradingReadsSeparateExactAccountingTupleAcrossPrincipals(t *testing.T) 
 	mux := http.NewServeMux()
 	if err := RegisterTradingRoutes(mux, TradingOptions{
 		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
-		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
 		Portfolio:    positions, Ledger: ledgerService,
-		Principal:         func(*http.Request) (string, string, error) { return currentPrincipal, "test", nil },
+		Principal:         func(*http.Request) (string, error) { return currentPrincipal, nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	}); err != nil {
 		t.Fatal(err)
@@ -105,11 +105,11 @@ type portfolioListFailureStore struct {
 func (*portfolioListFailureStore) ApplyFill(context.Context, portfolio.Fill, func(portfolio.Position) (portfolio.Position, portfolio.FillResult, error)) (portfolio.Position, portfolio.FillResult, error) {
 	return portfolio.Position{}, portfolio.FillResult{}, nil
 }
-func (*portfolioListFailureStore) ApplyMark(context.Context, string, portfolio.Mode, string, string, string, string, func(portfolio.Position) (portfolio.Position, error)) (portfolio.Position, error) {
+func (*portfolioListFailureStore) ApplyMark(context.Context, string, string, string, string, string, func(portfolio.Position) (portfolio.Position, error)) (portfolio.Position, error) {
 	return portfolio.Position{}, nil
 }
 func (*portfolioListFailureStore) Upsert(context.Context, portfolio.Position) error { return nil }
-func (store *portfolioListFailureStore) List(ctx context.Context, _ string, _ portfolio.Mode, _, _ string) ([]portfolio.Position, error) {
+func (store *portfolioListFailureStore) List(ctx context.Context, _ string, _, _ string) ([]portfolio.Position, error) {
 	store.context = ctx
 	return nil, store.err
 }
@@ -118,15 +118,15 @@ func TestTradingRoutesRejectUnknownFieldsAndCreateReservation(t *testing.T) {
 	mux := http.NewServeMux()
 	err := RegisterTradingRoutes(mux, TradingOptions{
 		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
-		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
 		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"mode":"test","unknown":true}`
+	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"unknown":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "reserve-a")
 	response := httptest.NewRecorder()
@@ -134,7 +134,7 @@ func TestTradingRoutesRejectUnknownFieldsAndCreateReservation(t *testing.T) {
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
 		t.Fatalf("unknown field response=%d %s", response.Code, response.Body.String())
 	}
-	body = `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"mode":"test"}`
+	body = `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null}`
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "reserve-a")
 	response = httptest.NewRecorder()
@@ -149,9 +149,9 @@ func TestTradingRoutesRequireExactlyOneReservationSizing(t *testing.T) {
 	mux := http.NewServeMux()
 	err := RegisterTradingRoutes(mux, TradingOptions{
 		Reservations: reservationService,
-		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
 		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
 	if err != nil {
@@ -159,7 +159,7 @@ func TestTradingRoutesRequireExactlyOneReservationSizing(t *testing.T) {
 	}
 
 	scope := `"nettingScope":{"accountId":"account-long","venue":"venue-a","instrumentId":"btc-a","positionMode":null,"settlementScope":null,"venueEnvironment":"live"}`
-	both := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":"0.5","notional":"50","currency":"USDT","mode":"test"}`
+	both := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":"0.5","notional":"50","currency":"USDT"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(both))
 	request.Header.Set("Idempotency-Key", "close-long-both")
 	response := httptest.NewRecorder()
@@ -168,7 +168,7 @@ func TestTradingRoutesRequireExactlyOneReservationSizing(t *testing.T) {
 		t.Fatalf("quantity and notional together=%d body=%s", response.Code, response.Body.String())
 	}
 
-	neither := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":null,"notional":null,"currency":"USDT","mode":"test"}`
+	neither := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":null,"notional":null,"currency":"USDT"}`
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(neither))
 	request.Header.Set("Idempotency-Key", "close-long-neither")
 	response = httptest.NewRecorder()
@@ -177,7 +177,7 @@ func TestTradingRoutesRequireExactlyOneReservationSizing(t *testing.T) {
 		t.Fatalf("neither quantity nor notional=%d body=%s", response.Code, response.Body.String())
 	}
 
-	notionalOnly := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":null,"notional":"50","currency":"USDT","mode":"test"}`
+	notionalOnly := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":null,"notional":"50","currency":"USDT"}`
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(notionalOnly))
 	request.Header.Set("Idempotency-Key", "close-long-notional")
 	response = httptest.NewRecorder()
@@ -185,7 +185,7 @@ func TestTradingRoutesRequireExactlyOneReservationSizing(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("notional-only reservation=%d body=%s", response.Code, response.Body.String())
 	}
-	items, err := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
+	items, err := reservationService.List(context.Background(), "principal-a")
 	if err != nil || len(items) != 1 || items[0].Quantity != nil || items[0].Notional == nil || *items[0].Notional != "50" || items[0].Currency == nil || *items[0].Currency != "USDT" {
 		t.Fatalf("persisted reservations=%+v err=%v", items, err)
 	}
@@ -197,9 +197,9 @@ func TestTradingMutationRejectsMissingCSRFAheadOfSideEffects(t *testing.T) {
 	mux := http.NewServeMux()
 	err := RegisterTradingRoutes(mux, TradingOptions{
 		Reservations: reservationsService,
-		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
 		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		Principal: func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error {
 			if !allow {
 				return errMissingCSRF
@@ -210,7 +210,7 @@ func TestTradingMutationRejectsMissingCSRFAheadOfSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"mode":"test"}`
+	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "reserve-csrf")
 	response := httptest.NewRecorder()
@@ -230,13 +230,13 @@ func TestTradingMutationRejectsMissingCSRFAheadOfSideEffects(t *testing.T) {
 
 func TestTradingCSRFProtectsCommandsButNotReservationReads(t *testing.T) {
 	commandStore := orders.NewMemoryStore()
-	commandService := orders.NewService(commandStore, nil, time.Now)
+	commandService := newCommandService(commandStore, nil, time.Now)
 	mux := http.NewServeMux()
 	err := RegisterTradingRoutes(mux, TradingOptions{
 		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
 		Commands:     commandService,
 		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return errMissingCSRF },
 	})
 	if err != nil {
@@ -249,7 +249,7 @@ func TestTradingCSRFProtectsCommandsButNotReservationReads(t *testing.T) {
 		t.Fatalf("list without csrf=%d body=%s", listResponse.Code, listResponse.Body.String())
 	}
 
-	commandBody := `{"accountId":"account-a","productId":"manual","lineageId":"lineage-a","reservationId":"","idempotencyKey":"command-csrf","commandKind":"place","mode":"test","payload":{}}`
+	commandBody := `{"accountId":"account-a","productId":"manual","lineageId":"lineage-a","reservationId":"","idempotencyKey":"command-csrf","commandKind":"place","payload":{}}`
 	commandRequest := httptest.NewRequest(http.MethodPost, "/api/v1/commands", strings.NewReader(commandBody))
 	commandRequest.Header.Set("Idempotency-Key", "command-csrf")
 	commandResponse := httptest.NewRecorder()
@@ -263,9 +263,9 @@ func TestTradingCSRFProtectsCommandsButNotReservationReads(t *testing.T) {
 }
 
 func TestCommandDetailUsesRedactedBrowserProjection(t *testing.T) {
-	commandService := orders.NewService(orders.NewMemoryStore(), nil, time.Now)
+	commandService := newCommandService(orders.NewMemoryStore(), nil, time.Now)
 	command, _, err := commandService.Create(context.Background(), orders.CreateRequest{
-		PrincipalID: "principal-a", Mode: orders.ModeTest, AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
 		IdempotencyKey: "command-detail", Method: http.MethodPost, Path: "/api/v1/commands", CommandKind: "order.place", Payload: []byte(`{"private":"payload"}`),
 	})
 	if err != nil {
@@ -281,7 +281,7 @@ func TestCommandDetailUsesRedactedBrowserProjection(t *testing.T) {
 	if err := RegisterTradingRoutes(mux, TradingOptions{
 		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now), Commands: commandService,
 		Portfolio: portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
+		Principal: func(*http.Request) (string, error) { return "principal-a", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestCommandDetailUsesRedactedBrowserProjection(t *testing.T) {
 }
 
 func TestGenericCommandRouteRejectsManualBeforePersistenceAndGatewayHandoff(t *testing.T) {
-	commandService := orders.NewService(orders.NewMemoryStore(), nil, time.Now)
+	commandService := newCommandService(orders.NewMemoryStore(), nil, time.Now)
 	portfolioProjection := portfolio.NewProjection()
 	ledgerService := ledger.NewService(ledger.NewMemoryStore(), time.Now)
 	gateway := &manualGatewayFixture{}
@@ -309,14 +309,14 @@ func TestGenericCommandRouteRejectsManualBeforePersistenceAndGatewayHandoff(t *t
 		Portfolio:         portfolioProjection,
 		Ledger:            ledgerService,
 		Manual:            manual.NewGatewayService(commandService, portfolioProjection, ledgerService, gateway, time.Now),
-		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	commandBody := `{"accountId":"account-a","productId":"manual","lineageId":"lineage-a","reservationId":"","idempotencyKey":"manual-fill-1","commandKind":"manual.place","mode":"test","payload":{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market"}}`
+	commandBody := `{"accountId":"account-a","productId":"manual","lineageId":"lineage-a","reservationId":"","idempotencyKey":"manual-fill-1","commandKind":"manual.place","payload":{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market"}}`
 	commandRequest := httptest.NewRequest(http.MethodPost, "/api/v1/commands", strings.NewReader(commandBody))
 	commandRequest.Header.Set("Idempotency-Key", "manual-fill-1")
 	commandResponse := httptest.NewRecorder()
@@ -348,10 +348,9 @@ func (fixture *manualGatewayFixture) Execute(_ context.Context, request manual.G
 	return manual.GatewayResult{
 		CommandID: request.CommandID,
 		AccountID: request.AccountID,
-		Mode:      request.Mode,
 		State:     manual.GatewayStateFilled,
 		Fills: []manual.FillFact{{
-			FillID: "gateway-fill-1", CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
+			FillID: "gateway-fill-1", CommandID: request.CommandID, AccountID: request.AccountID,
 			InstrumentID: request.InstrumentID, Side: portfolio.Side(request.Side), Quantity: request.Quantity,
 			Price: "100", Fee: "1.5", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC),
 		}},
@@ -365,7 +364,7 @@ func (fixture *manualGatewayFixture) Cancel(_ context.Context, request manual.Ga
 		ClientOrderID: "client-order-1", State: "canceled", ResourceVersion: 2,
 	}
 	return manual.GatewayResult{
-		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
+		CommandID: request.CommandID, AccountID: request.AccountID,
 		State: manual.GatewayStateCanceled, Handoff: orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence},
 	}, nil
 }
@@ -375,3 +374,33 @@ func (fixture *manualGatewayFixture) Cancel(_ context.Context, request manual.Ga
 // injected authorizer is a refusal, which is what keeps this surface free of
 // the auth edge's session vocabulary.
 var errMissingCSRF = errors.New("missing csrf token")
+
+// newCommandService builds the command service these routes write through, with
+// live writes armed.
+//
+// Admission used to be a disjunction: a command was accepted if the service ran
+// in test mode *or* the operator had armed live writes, so a test that never
+// touched the switch still got to place orders. One mode is left, the switch is
+// the only gate, and it starts closed — every construction here has to arm it
+// or the first write comes back LIVE_PRIVATE_WRITE_DISABLED. The switch itself
+// is covered where it lives, in orders, manual, and the gateway client; nothing
+// on this surface asserts against it, so there is no reason to leave one of
+// these deliberately unarmed.
+func newCommandService(store orders.Store, gate orders.ReservationGate, now func() time.Time) *orders.Service {
+	service := orders.NewService(store, gate, now)
+	service.SetLiveWritesEnabled(true)
+	return service
+}
+
+// newManualService builds the manual product service with execution admitted.
+//
+// The command service above is not the only gate an order passes: manual keeps
+// its own switch, and app.go arms both from the same config flag. Arming one and
+// not the other stops the write one layer further down with the identical code,
+// which reads like the first switch never took.
+func newManualService(commands *orders.Service, positions *portfolio.Projection, ledgerService *ledger.Service, gateway manual.Gateway, now func() time.Time, previewKey []byte) *manual.Service {
+	service := manual.NewGatewayServiceWithPreviewKey(commands, positions, ledgerService, gateway, now, previewKey)
+	// Only a nil receiver can fail this, and it was just constructed.
+	_ = service.SetExecutionAdmission(true)
+	return service
+}

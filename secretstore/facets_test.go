@@ -4,12 +4,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 func TestFilesystemFacetsExposeOnlyTheirContractMethods(t *testing.T) {
-	provider := newTestProvider(t, secretstore.ModeTest)
+	provider := newTestProvider(t)
 	methods := func(value any) []string {
 		typeOf := reflect.TypeOf(value)
 		result := make([]string, typeOf.NumMethod())

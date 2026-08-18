@@ -17,7 +17,6 @@ func TestServiceSingleUserLifecycleAndExpiry(t *testing.T) {
 	service, err := New(Options{
 		Username:     "owner",
 		PasswordHash: passwordHash,
-		Mode:         "test",
 		TTL:          time.Hour,
 		Now:          func() time.Time { return now },
 	})
@@ -32,7 +31,7 @@ func TestServiceSingleUserLifecycleAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
-	if login.Principal.ID != DefaultPrincipalID || login.Principal.Mode != "test" {
+	if login.Principal.ID != DefaultPrincipalID {
 		t.Fatalf("principal = %#v", login.Principal)
 	}
 	if login.Session.Token == "" || login.Session.CSRFToken == "" || login.Session.Token == login.Session.CSRFToken {
@@ -74,13 +73,11 @@ func TestNewRejectsIncompleteOrUnsafeOptions(t *testing.T) {
 	valid := Options{
 		Username:     "owner",
 		PasswordHash: passwordHash,
-		Mode:         "test",
 		TTL:          time.Hour,
 	}
 	for name, mutate := range map[string]func(*Options){
 		"username":      func(options *Options) { options.Username = "" },
 		"password hash": func(options *Options) { options.PasswordHash = "" },
-		"mode":          func(options *Options) { options.Mode = "demo" },
 		"ttl":           func(options *Options) { options.TTL = 0 },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -96,7 +93,7 @@ func TestNewRejectsIncompleteOrUnsafeOptions(t *testing.T) {
 func TestServicePersistsOnlyDigestsAcrossInstances(t *testing.T) {
 	passwordHash, _ := HashPassword("password verifier")
 	store := NewMemoryStore()
-	options := Options{Username: "owner", PasswordHash: passwordHash, Mode: "test", TTL: time.Hour, Store: store}
+	options := Options{Username: "owner", PasswordHash: passwordHash, TTL: time.Hour, Store: store}
 	first, err := New(options)
 	if err != nil {
 		t.Fatal(err)
@@ -120,8 +117,8 @@ func TestServicePersistsOnlyDigestsAcrossInstances(t *testing.T) {
 func TestServiceAuthenticatesPersistedIdentity(t *testing.T) {
 	configuredHash, _ := HashPassword("unused bootstrap password")
 	persistedHash, _ := HashPassword("persisted password")
-	identities := NewMemoryIdentityStore(Identity{PrincipalID: "principal_1", Username: "persisted-owner", PasswordHash: persistedHash, Mode: "test"})
-	service, err := New(Options{Username: "bootstrap", PasswordHash: configuredHash, Mode: "test", TTL: time.Hour, Identities: identities})
+	identities := NewMemoryIdentityStore(Identity{PrincipalID: "principal_1", Username: "persisted-owner", PasswordHash: persistedHash})
+	service, err := New(Options{Username: "bootstrap", PasswordHash: configuredHash, TTL: time.Hour, Identities: identities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,13 +136,13 @@ func TestServiceAuthenticatesPersistedIdentity(t *testing.T) {
 
 type failingIdentityStore struct{}
 
-func (failingIdentityStore) FindByUsername(context.Context, string, string) (Identity, error) {
+func (failingIdentityStore) FindByUsername(context.Context, string) (Identity, error) {
 	return Identity{}, errors.New("database unavailable with private detail")
 }
 
 func TestServiceDistinguishesIdentityStoreFailureFromBadCredentials(t *testing.T) {
 	hash, _ := HashPassword("bootstrap password")
-	service, err := New(Options{Username: "bootstrap", PasswordHash: hash, Mode: "test", TTL: time.Hour, Identities: failingIdentityStore{}})
+	service, err := New(Options{Username: "bootstrap", PasswordHash: hash, TTL: time.Hour, Identities: failingIdentityStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}

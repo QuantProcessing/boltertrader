@@ -3,14 +3,12 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
-	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
@@ -22,8 +20,8 @@ type manualProductHandler struct {
 }
 
 type manualPreviewRequest struct {
-	AccountID, InstrumentID, Side, OrderType, Quantity, LimitPrice, TimeInForce, Mode string
-	ReduceOnly                                                                        bool
+	AccountID, InstrumentID, Side, OrderType, Quantity, LimitPrice, TimeInForce string
+	ReduceOnly                                                                  bool
 }
 
 type manualPreview struct {
@@ -40,7 +38,6 @@ type manualCommandRequest struct {
 
 type manualPreviewAuthority struct {
 	PrincipalID      string               `json:"principalId"`
-	Mode             string               `json:"mode"`
 	Request          manualPreviewRequest `json:"request"`
 	AccountFence     manualAccountFence   `json:"accountFence"`
 	CatalogRevision  string               `json:"catalogRevision"`
@@ -113,13 +110,12 @@ type ManualAccountAuthority interface {
 }
 
 type manualPreviewCodec interface {
-	SealPreview(principal string, mode orders.Mode, payload []byte) (string, error)
-	OpenPreview(principal string, mode orders.Mode, token string) ([]byte, error)
+	SealPreview(principal string, payload []byte) (string, error)
+	OpenPreview(principal string, token string) ([]byte, error)
 	PreviewNow() time.Time
 }
 
 const manualPreviewTTL = 30 * time.Second
-const manualTestMaxNotional int64 = 100
 
 func registerManualProductRoutes(mux *http.ServeMux, trading *tradingHandler) {
 	handler := &manualProductHandler{trading: trading}
@@ -131,7 +127,7 @@ func registerManualProductRoutes(mux *http.ServeMux, trading *tradingHandler) {
 }
 
 func (handler *manualProductHandler) venues(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := handler.trading.identity(w, r); !ok {
+	if _, ok := handler.trading.identity(w, r); !ok {
 		return
 	}
 	snapshot, err := handler.trading.options.Catalog.Snapshot(r.Context())
@@ -143,7 +139,7 @@ func (handler *manualProductHandler) venues(w http.ResponseWriter, r *http.Reque
 }
 
 func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok || !handler.trading.authorizeMutation(w, r) {
 		return
 	}
@@ -151,7 +147,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 	if !decodeTrading(w, r, &request) {
 		return
 	}
-	if request.Mode != mode || validateManualPreview(request) != nil {
+	if validateManualPreview(request) != nil {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
@@ -174,17 +170,6 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
-	if mode == string(orders.ModeTest) {
-		allowed, err := manualTestNotionalAllowed(r.Context(), request, authority, handler.trading.options.ManualMarketData)
-		if err != nil {
-			tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
-			return
-		}
-		if !allowed {
-			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
-			return
-		}
-	}
 	codec, ok := handler.trading.options.Manual.(manualPreviewCodec)
 	if !ok {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
@@ -196,7 +181,6 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		return
 	}
 	authority.PrincipalID = principal
-	authority.Mode = mode
 	authority.Request = request
 	authority.AccountFence = manualAccountFence{
 		AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
@@ -206,7 +190,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 	authority.IssuedAt = now
 	authority.ExpiresAt = now.Add(manualPreviewTTL)
 	canonical, _ := json.Marshal(authority)
-	previewID, err := codec.SealPreview(principal, orders.Mode(mode), canonical)
+	previewID, err := codec.SealPreview(principal, canonical)
 	if err != nil {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
@@ -217,7 +201,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 
 func validateManualPreview(request manualPreviewRequest) error {
 	quantity, quantityErr := decimal.NewFromString(request.Quantity)
-	if request.AccountID == "" || request.InstrumentID == "" || (request.Side != "buy" && request.Side != "sell") || quantityErr != nil || !quantity.IsPositive() || (request.Mode != "test" && request.Mode != "live") {
+	if request.AccountID == "" || request.InstrumentID == "" || (request.Side != "buy" && request.Side != "sell") || quantityErr != nil || !quantity.IsPositive() {
 		return orders.ErrNotFound
 	}
 	switch strings.ToLower(request.OrderType) {
@@ -237,7 +221,7 @@ func validateManualPreview(request manualPreviewRequest) error {
 }
 
 func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok || !handler.trading.authorizeMutation(w, r) {
 		return
 	}
@@ -255,14 +239,14 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 			return
 		}
-		handler.cancelCommand(w, r, principal, mode, request)
+		handler.cancelCommand(w, r, principal, request)
 		return
 	case "close":
 		if request.PreviewID != "" || request.OrderID != "" {
 			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 			return
 		}
-		handler.closePosition(w, r, principal, mode, request)
+		handler.closePosition(w, r, principal, request)
 		return
 	case "place":
 		if request.PreviewID == "" || request.OrderID != "" {
@@ -278,14 +262,14 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	payload, err := codec.OpenPreview(principal, orders.Mode(mode), request.PreviewID)
+	payload, err := codec.OpenPreview(principal, request.PreviewID)
 	if err != nil {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
 	var authority manualPreviewAuthority
 	now := codec.PreviewNow()
-	if json.Unmarshal(payload, &authority) != nil || authority.PrincipalID != principal || authority.Mode != mode || authority.Request.Mode != mode ||
+	if json.Unmarshal(payload, &authority) != nil || authority.PrincipalID != principal ||
 		validateManualPreview(authority.Request) != nil || authority.Venue == "" || authority.VenueEnvironment == "" || authority.CatalogRevision == "" ||
 		authority.IssuedAt.IsZero() || authority.ExpiresAt.IsZero() || authority.ExpiresAt.Sub(authority.IssuedAt) != manualPreviewTTL || now.Before(authority.IssuedAt) || !now.Before(authority.ExpiresAt) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
@@ -310,31 +294,16 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
-	if mode == string(orders.ModeTest) {
-		allowed, err := manualTestNotionalAllowed(r.Context(), authority.Request, currentRoute, handler.trading.options.ManualMarketData)
-		if err != nil {
-			tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
-			return
-		}
-		if !allowed {
-			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
-			return
-		}
-	}
 	preview := manualPreview{PreviewID: request.PreviewID, manualPreviewRequest: authority.Request, PrincipalID: principal}
-	handler.submitPlace(w, r, principal, mode, request, preview, authority)
+	handler.submitPlace(w, r, principal, request, preview, authority)
 }
 
-func (handler *manualProductHandler) cancelCommand(w http.ResponseWriter, r *http.Request, principal, mode string, request manualCommandRequest) {
-	if mode == string(orders.ModeLive) {
-		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
-		return
-	}
+func (handler *manualProductHandler) cancelCommand(w http.ResponseWriter, r *http.Request, principal string, request manualCommandRequest) {
 	if !handler.trading.options.Manual.Ready() {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	command, err := handler.trading.options.Commands.GetOwned(r.Context(), principal, orders.Mode(mode), request.OrderID)
+	command, err := handler.trading.options.Commands.GetOwned(r.Context(), principal, request.OrderID)
 	if err != nil || command.ProductID != "manual" || command.LineageID != request.LineageID {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -352,12 +321,8 @@ func (handler *manualProductHandler) cancelCommand(w http.ResponseWriter, r *htt
 	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": command})
 }
 
-func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *http.Request, principal, mode string, request manualCommandRequest) {
-	if mode == string(orders.ModeLive) {
-		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
-		return
-	}
-	commands, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, orders.Mode(mode), "manual")
+func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *http.Request, principal string, request manualCommandRequest) {
+	commands, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, "manual")
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -387,7 +352,7 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": command})
 		return
 	}
-	positions, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, portfolio.Mode(mode), "", "manual")
+	positions, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, "", "manual")
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -431,25 +396,14 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 	}
 	closeRequest := manualPreviewRequest{
 		AccountID: position.AccountID, InstrumentID: position.InstrumentID, Side: side,
-		OrderType: "market", Quantity: quantity.Abs().String(), ReduceOnly: true, Mode: mode,
-	}
-	if mode == string(orders.ModeTest) {
-		allowed, err := manualTestNotionalAllowed(r.Context(), closeRequest, authority, handler.trading.options.ManualMarketData)
-		if err != nil {
-			tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
-			return
-		}
-		if !allowed {
-			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
-			return
-		}
+		OrderType: "market", Quantity: quantity.Abs().String(), ReduceOnly: true,
 	}
 	authority.AccountFence = manualAccountFence{
 		AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
 		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
 	}
 	preview := manualPreview{manualPreviewRequest: closeRequest, PrincipalID: principal}
-	handler.submitPlace(w, r, principal, mode, request, preview, authority)
+	handler.submitPlace(w, r, principal, request, preview, authority)
 }
 
 func manualPositionOwned(commands []orders.Command, position portfolio.Position) bool {
@@ -466,11 +420,7 @@ func manualPositionOwned(commands []orders.Command, position portfolio.Position)
 	return false
 }
 
-func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.Request, principal, mode string, request manualCommandRequest, preview manualPreview, authority manualPreviewAuthority) {
-	if mode == string(orders.ModeLive) {
-		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
-		return
-	}
+func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.Request, principal string, request manualCommandRequest, preview manualPreview, authority manualPreviewAuthority) {
 	if !handler.trading.options.Manual.Ready() {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
@@ -489,7 +439,7 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 		kind = reservations.KindClose
 	}
 	reservation, err := handler.trading.options.Reservations.Create(r.Context(), reservations.CreateRequest{
-		PrincipalID: principal, Mode: reservations.Mode(mode), ProductID: "manual", Kind: kind,
+		PrincipalID: principal, ProductID: "manual", Kind: kind,
 		Scope: reservations.NettingScope{
 			AccountID: preview.AccountID, Venue: authority.Venue, InstrumentID: preview.InstrumentID, VenueEnvironment: authority.VenueEnvironment,
 		},
@@ -502,7 +452,7 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 	command, replay, err := handler.trading.options.Commands.Create(r.Context(), orders.CreateRequest{
 		PrincipalID: principal, AccountID: preview.AccountID, ProductID: "manual", LineageID: request.LineageID,
 		ReservationID: reservation.ReservationID, IdempotencyKey: request.IdempotencyKey, Method: r.Method, Path: r.URL.Path,
-		CommandKind: "manual.place", Mode: orders.Mode(mode), Payload: intentPayload,
+		CommandKind: "manual.place", Payload: intentPayload,
 	})
 	if err != nil {
 		tradingFailure(w, r, "manual.place.command", err)
@@ -587,32 +537,6 @@ func manualAccountRoute(account ManualAccount, product, settlement string) (stri
 	return fallback, fallback != ""
 }
 
-func manualTestNotionalAllowed(ctx context.Context, request manualPreviewRequest, authority manualPreviewAuthority, source ManualMarketAuthority) (bool, error) {
-	quantity, err := decimal.NewFromString(request.Quantity)
-	if err != nil || !quantity.IsPositive() {
-		return false, nil
-	}
-	if source == nil {
-		return false, fmt.Errorf("manual market-data authority is unavailable")
-	}
-	fact, err := source.Get(ctx, marketdata.Query{
-		Venue: authority.Venue, Environment: authority.VenueEnvironment,
-		Product: authority.Product, InstrumentID: request.InstrumentID,
-	})
-	if err != nil {
-		return false, err
-	}
-	priceText := fact.BestAsk
-	if request.Side == "sell" {
-		priceText = fact.BestBid
-	}
-	price, err := decimal.NewFromString(priceText)
-	if err != nil || !price.IsPositive() {
-		return false, nil
-	}
-	return !quantity.Mul(price).GreaterThan(decimal.NewFromInt(manualTestMaxNotional)), nil
-}
-
 // manualAccountReady reports whether an account can carry a manual order.
 //
 // Mode is not one of the conditions, and the account's environment is no longer
@@ -639,11 +563,11 @@ func manualAccountMatches(account ManualAccount, fence manualAccountFence) bool 
 }
 
 func (handler *manualProductHandler) listOrders(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok {
 		return
 	}
-	items, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, orders.Mode(mode), "manual")
+	items, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, "manual")
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
@@ -652,12 +576,12 @@ func (handler *manualProductHandler) listOrders(w http.ResponseWriter, r *http.R
 }
 
 func (handler *manualProductHandler) getOrder(w http.ResponseWriter, r *http.Request) {
-	principal, mode, ok := handler.trading.identity(w, r)
+	principal, ok := handler.trading.identity(w, r)
 	if !ok {
 		return
 	}
 	id := r.PathValue("orderId")
-	command, err := handler.trading.options.Commands.GetOwned(r.Context(), principal, orders.Mode(mode), id)
+	command, err := handler.trading.options.Commands.GetOwned(r.Context(), principal, id)
 	if err != nil || command.ProductID != "manual" {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return

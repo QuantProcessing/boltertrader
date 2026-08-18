@@ -21,13 +21,11 @@ type Event struct {
 	ObservedAt time.Time       `json:"observedAt"`
 	Payload    json.RawMessage `json:"payload"`
 	principal  string
-	mode       string
 }
 
 type watcher struct {
 	updates   chan Event
 	principal string
-	mode      string
 	scoped    bool
 }
 
@@ -49,17 +47,17 @@ func NewHub(capacity int, now func() time.Time) (*Hub, error) {
 }
 
 func (hub *Hub) Publish(kind string, payload any) (Event, error) {
-	return hub.publish("", "", kind, payload)
+	return hub.publish("", kind, payload)
 }
 
-func (hub *Hub) PublishScoped(principal, mode, kind string, payload any) (Event, error) {
-	if strings.TrimSpace(principal) == "" || (mode != "test" && mode != "live") {
+func (hub *Hub) PublishScoped(principal, kind string, payload any) (Event, error) {
+	if strings.TrimSpace(principal) == "" {
 		return Event{}, fmt.Errorf("realtime event scope is required")
 	}
-	return hub.publish(principal, mode, kind, payload)
+	return hub.publish(principal, kind, payload)
 }
 
-func (hub *Hub) publish(principal, mode, kind string, payload any) (Event, error) {
+func (hub *Hub) publish(principal, kind string, payload any) (Event, error) {
 	if strings.TrimSpace(kind) == "" {
 		return Event{}, fmt.Errorf("realtime event kind is required")
 	}
@@ -72,14 +70,14 @@ func (hub *Hub) publish(principal, mode, kind string, payload any) (Event, error
 	hub.next++
 	event := Event{
 		EventID: fmt.Sprintf("event-%d", hub.next), Sequence: hub.next, Cursor: encodeCursor(hub.next),
-		Kind: kind, ObservedAt: hub.now().UTC(), Payload: encoded, principal: principal, mode: mode,
+		Kind: kind, ObservedAt: hub.now().UTC(), Payload: encoded, principal: principal,
 	}
 	hub.events = append(hub.events, event)
 	if len(hub.events) > hub.capacity {
 		hub.events = append([]Event(nil), hub.events[len(hub.events)-hub.capacity:]...)
 	}
 	for _, watcher := range hub.watchers {
-		if watcher.scoped && !visibleTo(event, watcher.principal, watcher.mode) {
+		if watcher.scoped && !visibleTo(event, watcher.principal) {
 			continue
 		}
 		select {
@@ -91,17 +89,17 @@ func (hub *Hub) publish(principal, mode, kind string, payload any) (Event, error
 }
 
 func (hub *Hub) Replay(cursor string) ([]Event, error) {
-	return hub.replay(cursor, "", "", false)
+	return hub.replay(cursor, "", false)
 }
 
-func (hub *Hub) ReplayScoped(cursor, principal, mode string) ([]Event, error) {
-	if strings.TrimSpace(principal) == "" || (mode != "test" && mode != "live") {
+func (hub *Hub) ReplayScoped(cursor, principal string) ([]Event, error) {
+	if strings.TrimSpace(principal) == "" {
 		return nil, fmt.Errorf("realtime replay scope is required")
 	}
-	return hub.replay(cursor, principal, mode, true)
+	return hub.replay(cursor, principal, true)
 }
 
-func (hub *Hub) replay(cursor, principal, mode string, scoped bool) ([]Event, error) {
+func (hub *Hub) replay(cursor, principal string, scoped bool) ([]Event, error) {
 	hub.mu.RLock()
 	defer hub.mu.RUnlock()
 	sequence, err := decodeCursor(cursor)
@@ -123,7 +121,7 @@ func (hub *Hub) replay(cursor, principal, mode string, scoped bool) ([]Event, er
 	}
 	events := make([]Event, 0, len(hub.events))
 	for _, event := range hub.events {
-		if event.Sequence > sequence && (!scoped || visibleTo(event, principal, mode)) {
+		if event.Sequence > sequence && (!scoped || visibleTo(event, principal)) {
 			events = append(events, cloneEvent(event))
 		}
 	}
@@ -131,19 +129,19 @@ func (hub *Hub) replay(cursor, principal, mode string, scoped bool) ([]Event, er
 }
 
 func (hub *Hub) Subscribe(buffer int) (<-chan Event, func()) {
-	return hub.subscribe(buffer, "", "", false)
+	return hub.subscribe(buffer, "", false)
 }
 
-func (hub *Hub) SubscribeScoped(buffer int, principal, mode string) (<-chan Event, func()) {
-	if strings.TrimSpace(principal) == "" || (mode != "test" && mode != "live") {
+func (hub *Hub) SubscribeScoped(buffer int, principal string) (<-chan Event, func()) {
+	if strings.TrimSpace(principal) == "" {
 		updates := make(chan Event)
 		close(updates)
 		return updates, func() {}
 	}
-	return hub.subscribe(buffer, principal, mode, true)
+	return hub.subscribe(buffer, principal, true)
 }
 
-func (hub *Hub) subscribe(buffer int, principal, mode string, scoped bool) (<-chan Event, func()) {
+func (hub *Hub) subscribe(buffer int, principal string, scoped bool) (<-chan Event, func()) {
 	if buffer <= 0 {
 		buffer = 1
 	}
@@ -151,7 +149,7 @@ func (hub *Hub) subscribe(buffer int, principal, mode string, scoped bool) (<-ch
 	hub.watcher++
 	id := hub.watcher
 	updates := make(chan Event, buffer)
-	hub.watchers[id] = watcher{updates: updates, principal: principal, mode: mode, scoped: scoped}
+	hub.watchers[id] = watcher{updates: updates, principal: principal, scoped: scoped}
 	hub.mu.Unlock()
 	var once sync.Once
 	return updates, func() {
@@ -165,8 +163,8 @@ func (hub *Hub) subscribe(buffer int, principal, mode string, scoped bool) (<-ch
 	}
 }
 
-func visibleTo(event Event, principal, mode string) bool {
-	return (event.principal == "" && event.mode == "") || (event.principal == principal && event.mode == mode)
+func visibleTo(event Event, principal string) bool {
+	return event.principal == "" || event.principal == principal
 }
 
 func encodeCursor(sequence uint64) string {

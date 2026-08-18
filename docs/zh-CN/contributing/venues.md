@@ -78,10 +78,10 @@ Bundle 的解码是严格的：schema 版本、声明的 venue、声明的 kind 
 在别处是 `USDT`、`USDC` 或 `USDT0`，而且它是这一行**身份的一部分**，不是它的一个细节。
 
 route profile 里没有环境这一维。每一行过去会按该 venue 提供的环境各展开一个 profile——一个
-既有 demo endpoint 又有 testnet 的 venue 会展开成三个——注册表再把它们折回一个 mode，于是
-一条 route 永远不是一次「它指的是哪套凭证」的猜测。那些多出来的 profile 所指向的 endpoint
-已经没有了，所以现在一行恰好就是一个 profile，它的 ID 也不带环境段：`binance.spot.v1`、
-`nado.perp.usdt0.v1`。
+既有 demo endpoint 又有 testnet 的 venue 会展开成三个——注册表再把它们挂在一条更粗的部署轴
+（mode）下，于是一条 route 永远不是一次「它指的是哪套凭证」的猜测。那些多出来的 profile 所
+指向的 endpoint 已经没有了，那条 mode 轴也随之消失，所以现在一行恰好就是一个 profile，它的
+ID 也不带环境段：`binance.spot.v1`、`nado.perp.usdt0.v1`。
 
 ## 6. Gateway 构造
 

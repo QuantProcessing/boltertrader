@@ -14,7 +14,7 @@ make up
 
 依次发生三件事：
 
-1. `go run ./internal/devsetup/cmd/bootstrap` 把栈的凭证生成到 `.secrets/test/`，
+1. `go run ./internal/devsetup/cmd/bootstrap` 把栈的凭证生成到 `.secrets/stack/`，
    并写出 `.env.stack`。重复执行是幂等的。
 2. `docker compose --env-file .env.stack -f compose.yaml up -d --build --wait`
    构建并启动容器，最多等待 180 秒的健康检查。
@@ -22,8 +22,8 @@ make up
 
 首跑——且只有生成它的那一次——bootstrap 会打印 bootstrap operator 的用户名与
 密码。那是它唯一一次以可读形式出现：栈只保存 bcrypt 哈希。同一个值也会以 `0600`
-写入 `.secrets/test/bootstrap_password`。要重置它，删除
-`.secrets/test/bootstrap_password_hash` 后再次 `make up`。
+写入 `.secrets/stack/bootstrap_password`。要重置它，删除
+`.secrets/stack/bootstrap_password_hash` 后再次 `make up`。
 
 默认用户名是 `operator`，可用 `BT_BOOTSTRAP_USERNAME` 覆盖。
 
@@ -77,7 +77,7 @@ make doctor
 `skip` 不等于通过。它表示这项检查因为所依赖的东西已经失败而无法运行——
 「postgres 挂了所以下游全都没测」与「下游检查都通过了」是两个不同的答案。
 
-gateway 与 trading 探针是带认证的：它们从 `.secrets/test/` 读取生成的服务令牌，
+gateway 与 trading 探针是带认证的：它们从 `.secrets/stack/` 读取生成的服务令牌，
 再调用各自的 readiness 端点。auth edge 探针期望无会话时 `/api/v1/me` 返回
 `401`，因为那才是正确答案。
 
@@ -108,7 +108,7 @@ make down-hard
 
 - **PostgreSQL** 保存 gateway 的 account、catalog 与持久订单；trading 服务的命令
   账本与 projection；以及 auth edge 的会话。三个数据库，各有一个属主角色，任何服务都不读另一个的表。
-- **`.secrets/test/`** 保存服务令牌、凭证库主密钥、gateway 的 DSN，以及 bootstrap
+- **`.secrets/stack/`** 保存服务令牌、凭证库主密钥、gateway 的 DSN，以及 bootstrap
   密码与其哈希。目录 `0700`，每个文件 `0600`。
 - **`.secrets/store/`** 是 gateway 的加密 venue 凭证库。它是一个 bind mount，也是
   整套栈里唯一一个被服务写入的路径。

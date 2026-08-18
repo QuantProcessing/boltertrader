@@ -33,7 +33,6 @@ var (
 type Options struct {
 	Username     string
 	PasswordHash string
-	Mode         string
 	TTL          time.Duration
 	CookieSecure bool
 	Now          func() time.Time
@@ -43,7 +42,6 @@ type Options struct {
 
 type Principal struct {
 	ID       string `json:"id"`
-	Mode     string `json:"mode"`
 	Username string `json:"username"`
 }
 
@@ -75,17 +73,15 @@ type Identity struct {
 	PrincipalID  string
 	Username     string
 	PasswordHash string
-	Mode         string
 }
 
 type IdentityStore interface {
-	FindByUsername(context.Context, string, string) (Identity, error)
+	FindByUsername(context.Context, string) (Identity, error)
 }
 
 type Service struct {
 	username     string
 	passwordHash string
-	mode         string
 	ttl          time.Duration
 	cookieSecure bool
 	now          func() time.Time
@@ -113,9 +109,6 @@ func New(options Options) (*Service, error) {
 	if _, err := bcrypt.Cost([]byte(options.PasswordHash)); err != nil {
 		return nil, fmt.Errorf("password hash must be a bcrypt hash")
 	}
-	if options.Mode != "test" && options.Mode != "live" {
-		return nil, fmt.Errorf("invalid mode %q", options.Mode)
-	}
 	if options.TTL <= 0 {
 		return nil, fmt.Errorf("ttl must be positive")
 	}
@@ -128,7 +121,7 @@ func New(options Options) (*Service, error) {
 		store = NewMemoryStore()
 	}
 	return &Service{
-		username: username, passwordHash: options.PasswordHash, mode: options.Mode,
+		username: username, passwordHash: options.PasswordHash,
 		ttl: options.TTL, cookieSecure: options.CookieSecure, now: now,
 		store: store, identities: options.Identities,
 	}, nil
@@ -140,7 +133,7 @@ func (service *Service) Login(ctx context.Context, username, password string) (R
 	configuredUsername := service.username
 	hash := service.passwordHash
 	if service.identities != nil {
-		identity, err := service.identities.FindByUsername(ctx, service.mode, requestedUsername)
+		identity, err := service.identities.FindByUsername(ctx, requestedUsername)
 		switch {
 		case err == nil:
 			configuredUsername, hash, principalID = identity.Username, identity.PasswordHash, identity.PrincipalID
@@ -164,7 +157,7 @@ func (service *Service) Login(ctx context.Context, username, password string) (R
 	}
 	csrf := csrfToken(token)
 	expiresAt := service.now().Add(service.ttl).UTC()
-	principal := Principal{ID: principalID, Mode: service.mode, Username: configuredUsername}
+	principal := Principal{ID: principalID, Username: configuredUsername}
 	if err := service.store.Save(ctx, StoredSession{
 		TokenDigest: digest(token), Principal: principal, CSRFDigest: digest(csrf), ExpiresAt: expiresAt,
 	}); err != nil {

@@ -2,7 +2,7 @@ package authority
 
 const (
 	PlatformV15MigrationDigest = "04c83b6dbf84ec1aaef90786893d82cb20b7e0a3fd3bb52947e5d8a735364da9"
-	PlatformV15Digest          = "8b97ccb94b33e20eb76ddea364b43fa982825a729b90d4acae63b098fb268c28"
+	PlatformV15Digest          = "7dd5d676d557de7fad6d8fd4db11012c59c2758f23cfcabb8bc8c4e2741bf6c9"
 )
 
 func PlatformV15() Matrix {
@@ -70,10 +70,10 @@ func PlatformV15() Matrix {
 		SchemaVersion:   15,
 		MigrationDigest: PlatformV15MigrationDigest,
 		Roles: RoleTopology{
-			Maintenance: "bolter_platform_test_admin",
-			Migrator:    "bolter_platform_test_migrator",
-			Runtime:     "bolter_platform_test",
-			Writer:      "bolter_platform_test_writer",
+			Maintenance: "bolter_platform_admin",
+			Migrator:    "bolter_platform_migrator",
+			Runtime:     "bolter_platform",
+			Writer:      "bolter_platform_writer",
 		},
 		Objects: objects,
 	}

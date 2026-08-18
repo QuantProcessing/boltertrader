@@ -27,13 +27,19 @@ import (
 // from a protected file rather than as paths, so this package never touches the
 // filesystem and a test can build one without one.
 type Config struct {
-	Mode              string
 	ListenAddr        string
 	BootstrapUsername string
 	// BootstrapPasswordHash is a bcrypt hash. The plaintext never reaches this
 	// process in any form.
 	BootstrapPasswordHash string
 	SessionTTL            time.Duration
+	// SecureCookie marks the session cookie Secure. It used to be derived from
+	// the mode — live meant a real deployment behind TLS, test meant loopback
+	// plaintext — and with one mode left there is nothing to derive it from:
+	// this process terminates plaintext HTTP either way and cannot see the
+	// scheme the browser used. So the operator asserts it, the same way they
+	// assert the two non-loopback allowances.
+	SecureCookie bool
 
 	TradingURL   string
 	TradingToken []byte
@@ -65,7 +71,6 @@ func New(cfg Config, database *sql.DB) (*App, error) {
 	}
 	handler, err := httpapi.New(httpapi.Options{
 		Sessions:        sessions,
-		Mode:            cfg.Mode,
 		ContractVersion: httpapi.ContractVersion,
 		Downstream:      forwarder.Register,
 	})
@@ -98,7 +103,6 @@ func newSessionService(cfg Config, database *sql.DB) (*session.Service, error) {
 			PrincipalID:  session.DefaultPrincipalID,
 			Username:     cfg.BootstrapUsername,
 			PasswordHash: cfg.BootstrapPasswordHash,
-			Mode:         cfg.Mode,
 		}
 		if err := persistent.Upsert(context.Background(), identity); err != nil {
 			return nil, fmt.Errorf("seed bootstrap identity: %w", err)
@@ -112,11 +116,11 @@ func newSessionService(cfg Config, database *sql.DB) (*session.Service, error) {
 	return session.New(session.Options{
 		Username:     cfg.BootstrapUsername,
 		PasswordHash: cfg.BootstrapPasswordHash,
-		Mode:         cfg.Mode,
 		TTL:          ttl,
-		// A cookie sent over plaintext in live is a session handed to anyone on
-		// the path; in test the edge runs on loopback http and could not set one.
-		CookieSecure: cfg.Mode == "live",
+		// A cookie sent over plaintext is a session handed to anyone on the
+		// path, and this process cannot tell whether it is behind TLS. See
+		// Config.SecureCookie for why the operator decides.
+		CookieSecure: cfg.SecureCookie,
 		Store:        store,
 		Identities:   identities,
 	})
@@ -132,8 +136,8 @@ func newProxy(cfg Config, sessions *session.Service) (*proxy.Proxy, error) {
 		return nil, fmt.Errorf("parse gateway URL: %w", err)
 	}
 	return proxy.New(proxy.Options{
-		Trading:  proxy.Upstream{BaseURL: tradingURL, Token: string(cfg.TradingToken), ModeHeader: proxy.TradingModeHeader},
-		Gateway:  proxy.Upstream{BaseURL: gatewayURL, Token: string(cfg.GatewayToken), ModeHeader: proxy.GatewayModeHeader},
+		Trading:  proxy.Upstream{BaseURL: tradingURL, Token: string(cfg.TradingToken)},
+		Gateway:  proxy.Upstream{BaseURL: gatewayURL, Token: string(cfg.GatewayToken)},
 		Sessions: sessions,
 	})
 }

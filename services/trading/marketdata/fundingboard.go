@@ -29,8 +29,10 @@ const (
 // before configuring any account at all. Reusing Fact would mean either an
 // empty board on a fresh install or a board whose cells silently require
 // credentials.
+// The board used to lead with the mode it was assembled under, so a browser
+// could not draw a test board against a live account. One mode is left, and the
+// Gateway no longer sends the field.
 type BoardSnapshot struct {
-	Mode       string       `json:"mode"`
 	ObservedAt time.Time    `json:"observedAt"`
 	Venues     []BoardVenue `json:"venues"`
 }
@@ -197,9 +199,6 @@ func (service *BoardService) BudgetStatus() BudgetStatus {
 // complain about a tenth. A future-dated board is still refused: that is not
 // staleness but a claim we have no way to reconcile.
 func validateBoard(snapshot BoardSnapshot, now time.Time) error {
-	if strings.TrimSpace(snapshot.Mode) == "" {
-		return fmt.Errorf("Gateway funding-board mode is missing")
-	}
 	if snapshot.ObservedAt.IsZero() {
 		return fmt.Errorf("Gateway funding-board observation time is missing")
 	}

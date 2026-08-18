@@ -19,7 +19,7 @@ func TestRefRejectsLiteralValuesAndRedactsEveryFormattingPath(t *testing.T) {
 		}
 	}
 
-	ref, err := secret.ParseRef("env://BINANCE_DEMO_API_SECRET")
+	ref, err := secret.ParseRef("env://BINANCE_SECRET_KEY")
 	if err != nil {
 		t.Fatalf("ParseRef env: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestRefRejectsLiteralValuesAndRedactsEveryFormattingPath(t *testing.T) {
 		fmt.Sprintf("%+v", ref),
 		fmt.Sprintf("%#v", ref),
 	} {
-		if strings.Contains(formatted, "BINANCE_DEMO_API_SECRET") || strings.Contains(formatted, canary) {
+		if strings.Contains(formatted, "BINANCE_SECRET_KEY") || strings.Contains(formatted, canary) {
 			t.Fatalf("formatted ref leaked sensitive content: %q", formatted)
 		}
 		if !strings.Contains(formatted, "redacted") {
@@ -50,7 +50,7 @@ func TestRefRejectsLiteralValuesAndRedactsEveryFormattingPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json marshal ref: %v", err)
 	}
-	if strings.Contains(string(payload), "BINANCE_DEMO_API_SECRET") || strings.Contains(string(payload), "env://") {
+	if strings.Contains(string(payload), "BINANCE_SECRET_KEY") || strings.Contains(string(payload), "env://") {
 		t.Fatalf("json ref leaked ref material: %s", payload)
 	}
 	if !strings.Contains(string(payload), "redacted") {
@@ -73,9 +73,15 @@ func (resolver *recordingCredentialResolver) Resolve(_ context.Context, scope se
 	return []byte("credential-canary"), nil
 }
 
-func TestScopedCredentialResolverUsesOnlyModeScopedOpaqueReferences(t *testing.T) {
+// A resolver is built around one scope and must present that scope to the
+// provider unchanged: a reference minted under different storage would
+// otherwise be resolved against this provider's key.
+//
+// The scope used to carry the mode as well, and the name recorded that the
+// references were mode-scoped. The mode is gone; the scoping is not.
+func TestScopedCredentialResolverUsesOnlyScopedOpaqueReferences(t *testing.T) {
 	underlying := &recordingCredentialResolver{}
-	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+	scope := secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"}
 	resolver, err := secret.NewScopedCredentialResolver(underlying, scope)
 	if err != nil {
 		t.Fatal(err)

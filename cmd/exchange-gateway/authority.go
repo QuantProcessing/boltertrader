@@ -36,18 +36,16 @@ type gatewayAuthority struct {
 	manager     *account.Manager
 	routeStatus func(domain.AccountID, string, string) (account.Status, error)
 	reads       authorityReadSource
-	mode        account.RuntimeMode
 	now         func() time.Time
 }
 
 type validationSnapshotAuthority struct {
 	snapshots store.RuntimeSnapshotStore
-	mode      account.RuntimeMode
 }
 
 func (authority validationSnapshotAuthority) Execute(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
 	views := func(states []store.RuntimeState) []httpapi.RuntimeView {
-		projector := gatewayAuthority{snapshots: authority.snapshots, mode: authority.mode}
+		projector := gatewayAuthority{snapshots: authority.snapshots}
 		result := make([]httpapi.RuntimeView, 0, len(states))
 		for _, state := range states {
 			result = append(result, projector.runtimeView(state))
@@ -60,7 +58,7 @@ func (authority validationSnapshotAuthority) Execute(ctx context.Context, reques
 		if err != nil {
 			return httpapi.AuthorityResponse{}, authorityError(err)
 		}
-		return httpapi.AuthorityResponse{Body: map[string]any{"mode": authority.mode, "accounts": views(states)}}, nil
+		return httpapi.AuthorityResponse{Body: map[string]any{"accounts": views(states)}}, nil
 	case httpapi.AuthorityGetRuntimeAccount, httpapi.AuthorityGetDesired:
 		state, err := authority.snapshots.LoadRuntimeState(ctx, domain.AccountID(request.AccountID))
 		if err != nil {
@@ -111,7 +109,6 @@ type authorityCatalogInstruments struct {
 }
 
 type authorityRuntimeStatus struct {
-	Mode     account.RuntimeMode             `json:"mode"`
 	Accounts []authorityPublicRuntimeAccount `json:"accounts"`
 }
 
@@ -249,7 +246,6 @@ type authorityFundingPoint struct {
 // accounts either sees an empty board or sees one and cannot tell which cells
 // required credentials.
 type authorityFundingBoard struct {
-	Mode       string                  `json:"mode"`
 	ObservedAt time.Time               `json:"observedAt"`
 	Venues     []authorityFundingVenue `json:"venues"`
 }
@@ -415,7 +411,6 @@ type authorityMultiCapabilitySource interface {
 
 type managerAuthorityReads struct {
 	manager  authorityAccountSource
-	mode     account.RuntimeMode
 	profiles *routeprofile.Registry
 	// board serves the funding matrix from public endpoints. It is deliberately
 	// beside manager rather than behind it: every other read on this type walks
@@ -571,14 +566,11 @@ func withFundingBoard(board *fundingboard.Source) authorityOption {
 	return func(reads *managerAuthorityReads) { reads.board = board }
 }
 
-func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateStore, manager *account.Manager, mode account.RuntimeMode, options ...authorityOption) (*gatewayAuthority, error) {
+func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateStore, manager *account.Manager, options ...authorityOption) (*gatewayAuthority, error) {
 	if ctx == nil || desiredStore == nil || manager == nil {
 		return nil, errors.New("gateway authority dependencies are incomplete")
 	}
-	if mode == "" {
-		mode = account.RuntimeModeTest
-	}
-	reads := managerAuthorityReads{manager: manager, mode: mode, profiles: routeprofile.DefaultRegistry(), now: time.Now}
+	reads := managerAuthorityReads{manager: manager, profiles: routeprofile.DefaultRegistry(), now: time.Now}
 	for _, option := range options {
 		if option != nil {
 			option(&reads)
@@ -587,7 +579,7 @@ func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateSto
 	authority := &gatewayAuthority{
 		store: desiredStore, manager: manager, routeStatus: manager.RouteStatus,
 		reads: reads,
-		mode:  mode, now: time.Now,
+		now:   time.Now,
 	}
 	if snapshots, ok := desiredStore.(store.RuntimeSnapshotStore); ok {
 		authority.snapshots = snapshots
@@ -605,7 +597,7 @@ func (authority *gatewayAuthority) ApplySnapshot(ctx context.Context, desired st
 	if ctx == nil || authority.snapshots == nil {
 		return store.PromotionResult{}, errors.New("runtime snapshot authority is unavailable")
 	}
-	retired, err := authority.snapshots.IsSecretReferenceRetired(ctx, authoritySecretScope(authority.mode), desired.SecretRef)
+	retired, err := authority.snapshots.IsSecretReferenceRetired(ctx, authoritySecretScope(), desired.SecretRef)
 	if err != nil {
 		return store.PromotionResult{}, err
 	}
@@ -703,7 +695,7 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 			response.Body, err = authority.reads.Runtime(request.AccountID)
 		}
 	case httpapi.AuthorityRuntimeStatus:
-		response.Body = authorityRuntimeStatus{Mode: authority.mode, Accounts: authorityPublicRuntimes(authority.manager.Runtimes())}
+		response.Body = authorityRuntimeStatus{Accounts: authorityPublicRuntimes(authority.manager.Runtimes())}
 	case httpapi.AuthorityRuntimeReadiness:
 		response.Body = httpapi.RuntimeReadiness{Ready: authority.manager.RuntimeReady()}
 	case httpapi.AuthorityCatalogVenues:
@@ -750,7 +742,7 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		}
 	case httpapi.AuthorityFundingBoard:
 		// No query to validate and no identity to echo back: the board is the
-		// whole table for the gateway's mode, so there is nothing a caller could
+		// whole table this gateway can reach, so there is nothing a caller could
 		// ask for that would make one column right and another wrong.
 		response.Body, err = authority.reads.FundingBoard(ctx)
 	case httpapi.AuthorityFundingHistory:
@@ -805,7 +797,7 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 }
 
 func (authority *gatewayAuthority) retireDesired(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	if request.Retirement == nil || request.Mode != string(authority.mode) || request.AccountID != request.Retirement.AccountID || request.OperationID != request.Retirement.OperationID || request.Retirement.DesiredStateRevision < 2 {
+	if request.Retirement == nil || request.AccountID != request.Retirement.AccountID || request.OperationID != request.Retirement.OperationID || request.Retirement.DesiredStateRevision < 2 {
 		return httpapi.AuthorityResponse{}, errors.New("runtime retirement request is invalid")
 	}
 	operationID, err := secretstore.ParseOperationID(request.OperationID)
@@ -820,7 +812,7 @@ func (authority *gatewayAuthority) retireDesired(ctx context.Context, request ht
 			RuntimeGeneration: uint64(request.Retirement.RuntimeGeneration), CredentialVersion: uint64(request.Retirement.CredentialVersion),
 		},
 		TombstoneRevision: uint64(request.Retirement.DesiredStateRevision),
-		Scope:             authoritySecretScope(authority.mode),
+		Scope:             authoritySecretScope(),
 	}
 	result, err := authority.manager.RetireRuntime(ctx, retirement)
 	if err != nil {
@@ -837,7 +829,7 @@ func (authority *gatewayAuthority) retireDesired(ctx context.Context, request ht
 }
 
 func (authority *gatewayAuthority) finalizeRotation(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	if request.RotationFinalization == nil || request.Mode != string(authority.mode) ||
+	if request.RotationFinalization == nil ||
 		request.AccountID != request.RotationFinalization.AccountID || request.OperationID != request.RotationFinalization.OperationID {
 		return httpapi.AuthorityResponse{}, errors.New("rotation finalization request is invalid")
 	}
@@ -857,7 +849,7 @@ func (authority *gatewayAuthority) finalizeRotation(ctx context.Context, request
 	finalization := store.RotationFinalizationRequest{
 		OperationID: operationID, AccountID: accountID,
 		ExpectedActiveFence: activeFence, ExpectedRetiringFence: retiringFence,
-		Scope: authoritySecretScope(authority.mode),
+		Scope: authoritySecretScope(),
 	}
 	if err := finalization.Validate(); err != nil {
 		return httpapi.AuthorityResponse{}, err
@@ -908,13 +900,16 @@ func rotationFinalizationResultMatches(request store.RotationFinalizationRequest
 		result.RetiringState == "retired" && result.SecretReferenceState == "tombstoned" && !result.CompletedAt.IsZero()
 }
 
-func authoritySecretScope(mode account.RuntimeMode) secretstore.Scope {
-	secretMode := secretstore.Mode(mode)
-	return secretstore.Scope{Mode: secretMode, Namespace: "boltertrader/" + string(secretMode), KeyVersion: "v1"}
+// authoritySecretScope is the single scope this gateway addresses. It used to
+// take the runtime mode, which picked one of two namespaces; there is one
+// namespace now, so the scope is a constant and no caller can name material the
+// provider would then refuse to serve.
+func authoritySecretScope() secretstore.Scope {
+	return secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"}
 }
 
 func (authority *gatewayAuthority) applyDesired(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	if request.DesiredApply == nil || request.Mode != string(authority.mode) || request.AccountID != request.DesiredApply.AccountID || request.OperationID != request.DesiredApply.OperationID {
+	if request.DesiredApply == nil || request.AccountID != request.DesiredApply.AccountID || request.OperationID != request.DesiredApply.OperationID {
 		return httpapi.AuthorityResponse{}, errors.New("desired runtime request is invalid")
 	}
 	desired, err := desiredSnapshot(*request.DesiredApply)
@@ -1159,7 +1154,11 @@ func (authority *gatewayAuthority) activeRouteLifecycleState(accountID domain.Ac
 		return false, "runtime_status_unavailable"
 	}
 	ready := status.ReadReady && status.WriteReady
-	if authority.mode == account.RuntimeModeLive && status.ReadReady && status.Reason == account.ErrLiveWriteDisabled.Error() {
+	// A route whose only complaint is the live-write switch is still active: the
+	// operator turned writes off, the venue did not turn us away. This used to
+	// also require the runtime to be in live mode, back when a test runtime
+	// could report the same reason for an entirely different cause.
+	if status.ReadReady && status.Reason == account.ErrLiveWriteDisabled.Error() {
 		ready = true
 	}
 	if ready {
@@ -1368,11 +1367,6 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 		return authorityFundingBoard{}, err
 	}
 	board := authorityFundingBoard{
-		// The board itself no longer carries a mode: every column is live. The
-		// field stays on the wire because it names the gateway the reader is
-		// talking to, not the endpoints the columns came from, and that axis
-		// outlives this change.
-		Mode:       string(reads.mode),
 		ObservedAt: snapshot.ObservedAt,
 		Venues:     make([]authorityFundingVenue, 0, len(snapshot.Venues)),
 	}
@@ -1806,7 +1800,7 @@ func (authority *gatewayAuthority) runtimeDesired(desired store.DesiredAccount, 
 	}
 	return account.DesiredRuntime{
 		AccountID: desired.AccountID, Venue: desired.Venue, VenueEnvironment: desired.VenueEnvironment,
-		Mode: authority.mode, SecretRef: ref, DesiredStateRevision: uint64(desired.DesiredStateRevision),
+		SecretRef: ref, DesiredStateRevision: uint64(desired.DesiredStateRevision),
 		RuntimeGeneration: uint64(desired.RuntimeGeneration), CredentialVersion: uint64(desired.CredentialVersion),
 		RequestedState: state, RotationFence: rotationFence,
 	}, nil
@@ -1857,8 +1851,6 @@ func authorityError(err error) error {
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "RETIRED_SECRET_REFERENCE"}
 	case errors.Is(err, account.ErrRuntimeBlocked):
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "ACCOUNT_RUNTIME_BLOCKED"}
-	case errors.Is(err, account.ErrRuntimeModeMismatch):
-		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "RUNTIME_MODE_MISMATCH"}
 	case errors.Is(err, account.ErrLiveWriteDisabled):
 		return httpapi.AuthorityError{Status: http.StatusForbidden, Code: "LIVE_PRIVATE_WRITE_DISABLED"}
 	case errors.Is(err, fundingboard.ErrBoardUnavailable):

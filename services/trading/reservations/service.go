@@ -23,13 +23,6 @@ var (
 	ErrIdempotencyConflict = errors.New("reservation idempotency conflict")
 )
 
-type Mode string
-
-const (
-	ModeTest Mode = "test"
-	ModeLive Mode = "live"
-)
-
 type Kind string
 
 const (
@@ -58,7 +51,7 @@ type NettingScope struct {
 	VenueEnvironment string  `json:"venueEnvironment"`
 }
 
-func (scope NettingScope) key(mode Mode) string {
+func (scope NettingScope) key() string {
 	position, settlement := "", ""
 	if scope.PositionMode != nil {
 		position = *scope.PositionMode
@@ -66,7 +59,7 @@ func (scope NettingScope) key(mode Mode) string {
 	if scope.SettlementScope != nil {
 		settlement = *scope.SettlementScope
 	}
-	return strings.Join([]string{string(mode), scope.AccountID, scope.Venue, scope.InstrumentID, position, settlement, scope.VenueEnvironment}, "\x00")
+	return strings.Join([]string{scope.AccountID, scope.Venue, scope.InstrumentID, position, settlement, scope.VenueEnvironment}, "\x00")
 }
 
 type Reservation struct {
@@ -74,7 +67,6 @@ type Reservation struct {
 	IdempotencyKey string       `json:"-"`
 	PayloadHash    string       `json:"-"`
 	PrincipalID    string       `json:"-"`
-	Mode           Mode         `json:"mode"`
 	ProductID      string       `json:"productId"`
 	Kind           Kind         `json:"reservationKind"`
 	Scope          NettingScope `json:"nettingScope"`
@@ -90,7 +82,6 @@ type Reservation struct {
 
 type CreateRequest struct {
 	PrincipalID    string
-	Mode           Mode
 	ProductID      string
 	Kind           Kind
 	Scope          NettingScope
@@ -104,7 +95,6 @@ type CreateRequest struct {
 type ConsumeRequest struct {
 	ReservationID string
 	PrincipalID   string
-	Mode          Mode
 	ProductID     string
 }
 
@@ -112,7 +102,7 @@ type Store interface {
 	Create(context.Context, Reservation) (Reservation, error)
 	Get(context.Context, string) (Reservation, error)
 	SetStatus(context.Context, string, Status, time.Time) (Reservation, error)
-	List(context.Context, string, Mode) ([]Reservation, error)
+	List(context.Context, string) ([]Reservation, error)
 }
 
 type Service struct {
@@ -139,7 +129,7 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Rese
 	reservation := Reservation{
 		ReservationID:  reservationID,
 		IdempotencyKey: request.IdempotencyKey, PayloadHash: request.hash(),
-		PrincipalID: request.PrincipalID, Mode: request.Mode, ProductID: request.ProductID,
+		PrincipalID: request.PrincipalID, ProductID: request.ProductID,
 		Kind: request.Kind, Scope: request.Scope, Status: StatusHeld, ExpiresAt: request.ExpiresAt,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -162,12 +152,12 @@ func newReservationID() (string, error) {
 	return "reservation_" + hex.EncodeToString(entropy[:]), nil
 }
 
-func (service *Service) Release(ctx context.Context, principal string, mode Mode, id string) (Reservation, error) {
+func (service *Service) Release(ctx context.Context, principal string, id string) (Reservation, error) {
 	reservation, err := service.store.Get(ctx, id)
 	if err != nil {
 		return Reservation{}, err
 	}
-	if reservation.PrincipalID != principal || reservation.Mode != mode {
+	if reservation.PrincipalID != principal {
 		return Reservation{}, ErrOwnership
 	}
 	if reservation.Status != StatusHeld {
@@ -181,7 +171,7 @@ func (service *Service) Consume(ctx context.Context, request ConsumeRequest) (Re
 	if err != nil {
 		return Reservation{}, err
 	}
-	if reservation.PrincipalID != request.PrincipalID || reservation.Mode != request.Mode || reservation.ProductID != request.ProductID {
+	if reservation.PrincipalID != request.PrincipalID || reservation.ProductID != request.ProductID {
 		return Reservation{}, ErrOwnership
 	}
 	if reservation.Status != StatusHeld {
@@ -190,16 +180,13 @@ func (service *Service) Consume(ctx context.Context, request ConsumeRequest) (Re
 	return service.store.SetStatus(ctx, reservation.ReservationID, StatusConsumed, service.now().UTC())
 }
 
-func (service *Service) List(ctx context.Context, principal string, mode Mode) ([]Reservation, error) {
-	return service.store.List(ctx, principal, mode)
+func (service *Service) List(ctx context.Context, principal string) ([]Reservation, error) {
+	return service.store.List(ctx, principal)
 }
 
 func (request CreateRequest) validate() error {
 	if strings.TrimSpace(request.PrincipalID) == "" || strings.TrimSpace(request.ProductID) == "" || strings.TrimSpace(request.IdempotencyKey) == "" {
 		return fmt.Errorf("principal and product are required")
-	}
-	if request.Mode != ModeTest && request.Mode != ModeLive {
-		return fmt.Errorf("invalid mode")
 	}
 	switch request.Kind {
 	case KindOpen, KindClose, KindHedge, KindTransfer:
@@ -215,9 +202,11 @@ func (request CreateRequest) validate() error {
 	// arrives here as a wire string, and nothing else under services/ depends
 	// on the exchange layer.
 	//
-	// The mode-versus-environment cross-check that used to follow went with
-	// them. It refused a Test reservation naming a live venue, which is now the
-	// only reservation anyone can make.
+	// A reservation used to also declare a mode, checked here against the same
+	// enum and then cross-checked against this environment so that a Test
+	// reservation could not name a live venue. Both went when the mode axis did:
+	// a live venue is the only venue there is, so the cross-check had one
+	// satisfiable answer and the enum had one member.
 	if request.Scope.VenueEnvironment != "live" {
 		return fmt.Errorf("invalid venue environment")
 	}
@@ -270,7 +259,7 @@ func NewMemoryStore() *MemoryStore {
 func (store *MemoryStore) Create(_ context.Context, reservation Reservation) (Reservation, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	idempotencyKey := strings.Join([]string{reservation.PrincipalID, string(reservation.Mode), reservation.IdempotencyKey}, "\x00")
+	idempotencyKey := strings.Join([]string{reservation.PrincipalID, reservation.IdempotencyKey}, "\x00")
 	if id := store.keys[idempotencyKey]; id != "" {
 		existing := store.records[id]
 		if existing.PayloadHash != reservation.PayloadHash {
@@ -278,7 +267,7 @@ func (store *MemoryStore) Create(_ context.Context, reservation Reservation) (Re
 		}
 		return existing, nil
 	}
-	key := reservation.Scope.key(reservation.Mode)
+	key := reservation.Scope.key()
 	if id := store.scopes[key]; id != "" {
 		if existing := store.records[id]; existing.Status == StatusHeld {
 			return Reservation{}, ErrScopeOwned
@@ -312,12 +301,12 @@ func (store *MemoryStore) SetStatus(_ context.Context, id string, status Status,
 	return reservation, nil
 }
 
-func (store *MemoryStore) List(_ context.Context, principal string, mode Mode) ([]Reservation, error) {
+func (store *MemoryStore) List(_ context.Context, principal string) ([]Reservation, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	result := make([]Reservation, 0)
 	for _, reservation := range store.records {
-		if reservation.PrincipalID == principal && reservation.Mode == mode {
+		if reservation.PrincipalID == principal {
 			result = append(result, reservation)
 		}
 	}

@@ -11,22 +11,22 @@ import (
 
 func testToken() []byte { return []byte(strings.Repeat("t", 32)) }
 
+// New also used to take the mode this process runs in and reject anything but
+// "test" or "live", which is why this test once had three cases. Token length
+// is the whole configuration now.
 func TestNewRejectsWeakConfiguration(t *testing.T) {
-	if _, err := New([]byte(strings.Repeat("t", 31)), "test"); err == nil {
+	if _, err := New([]byte(strings.Repeat("t", 31))); err == nil {
 		t.Fatal("short token accepted")
 	}
-	if _, err := New(testToken(), "paper"); err == nil {
-		t.Fatal("unknown mode accepted")
-	}
-	if _, err := New(testToken(), "live"); err != nil {
-		t.Fatalf("live mode rejected: %v", err)
+	if _, err := New(testToken()); err != nil {
+		t.Fatalf("32-byte token rejected: %v", err)
 	}
 }
 
 // A browser can reach the service's routes but cannot hold the service token.
 // Every request without it must be refused before any handler sees it.
 func TestWrapRequiresServiceToken(t *testing.T) {
-	authenticator, err := New(testToken(), "test")
+	authenticator, err := New(testToken())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,45 +48,43 @@ func TestWrapRequiresServiceToken(t *testing.T) {
 }
 
 func TestWrapAcceptsTrustedCallerIdentity(t *testing.T) {
-	authenticator, err := New(testToken(), "test")
+	authenticator, err := New(testToken())
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/positions", nil)
 	request.Header.Set("Authorization", "bearer "+string(testToken()))
 	request.Header.Set(PrincipalHeader, "principal-1")
-	request.Header.Set(ModeHeader, "test")
 
-	var principal, mode string
+	var principal string
 	var identityErr error
 	authenticator.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		principal, mode, identityErr = authenticator.Principal(r)
+		principal, identityErr = authenticator.Principal(r)
 	})).ServeHTTP(httptest.NewRecorder(), request)
 
-	if identityErr != nil || principal != "principal-1" || mode != "test" {
-		t.Fatalf("principal=%q mode=%q err=%v", principal, mode, identityErr)
+	if identityErr != nil || principal != "principal-1" {
+		t.Fatalf("principal=%q err=%v", principal, identityErr)
 	}
 }
 
-// The identity headers are authority only because the token gates them. A
-// request that carries them without the token must not merely be refused — the
-// headers must be gone, so that nothing downstream of a future misconfigured
-// proxy can read them as identity.
-func TestWrapStripsIdentityHeadersFromUntrustedRequests(t *testing.T) {
-	authenticator, err := New(testToken(), "test")
+// The identity header is authority only because the token gates it. A request
+// that carries it without the token must not merely be refused — the header
+// must be gone, so that nothing downstream of a future misconfigured proxy can
+// read it as identity.
+func TestWrapStripsIdentityHeaderFromUntrustedRequests(t *testing.T) {
+	authenticator, err := New(testToken())
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/positions", nil)
 	request.Header.Set(PrincipalHeader, "attacker")
-	request.Header.Set(ModeHeader, "live")
 
 	authenticator.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("unauthenticated request reached the handler")
 	})).ServeHTTP(httptest.NewRecorder(), request)
 
-	if request.Header.Get(PrincipalHeader) != "" || request.Header.Get(ModeHeader) != "" {
-		t.Fatalf("identity headers survived: principal=%q mode=%q", request.Header.Get(PrincipalHeader), request.Header.Get(ModeHeader))
+	if request.Header.Get(PrincipalHeader) != "" {
+		t.Fatalf("identity header survived: principal=%q", request.Header.Get(PrincipalHeader))
 	}
 }
 
@@ -94,15 +92,16 @@ func TestWrapStripsIdentityHeadersFromUntrustedRequests(t *testing.T) {
 // answers 401 for its own reasons. What must not happen is the identity being
 // honoured anyway.
 func TestPrincipalRejectsUnusableIdentity(t *testing.T) {
-	authenticator, err := New(testToken(), "test")
+	authenticator, err := New(testToken())
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Two more cases lived here: a principal with no mode header, and one whose
+	// mode disagreed with this process. Both were about the second identity
+	// header, and a principal that named a mode is now just a principal.
 	for name, headers := range map[string]map[string]string{
-		"absent":       {},
-		"blank":        {PrincipalHeader: "   ", ModeHeader: "test"},
-		"missing mode": {PrincipalHeader: "principal-1"},
-		"crossed mode": {PrincipalHeader: "principal-1", ModeHeader: "live"},
+		"absent": {},
+		"blank":  {PrincipalHeader: "   "},
 	} {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", nil)
 		request.Header.Set("Authorization", "Bearer "+string(testToken()))
@@ -112,7 +111,7 @@ func TestPrincipalRejectsUnusableIdentity(t *testing.T) {
 		served := false
 		authenticator.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			served = true
-			if _, _, err := authenticator.Principal(r); err == nil {
+			if _, err := authenticator.Principal(r); err == nil {
 				t.Fatalf("%s: identity accepted", name)
 			}
 			if err := authenticator.AuthorizeMutation(r); err == nil {
@@ -132,20 +131,19 @@ func TestPrincipalRejectsUnusableIdentity(t *testing.T) {
 // request that never passed through Wrap therefore has no identity at all, even
 // if it carries the headers.
 func TestPrincipalIgnoresHeadersOutsideWrap(t *testing.T) {
-	authenticator, err := New(testToken(), "test")
+	authenticator, err := New(testToken())
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/positions", nil)
 	request.Header.Set(PrincipalHeader, "attacker")
-	request.Header.Set(ModeHeader, "test")
-	if _, _, err := authenticator.Principal(request); err == nil {
+	if _, err := authenticator.Principal(request); err == nil {
 		t.Fatal("header identity honoured without the middleware")
 	}
 }
 
 func TestAuthenticatorRedactsToken(t *testing.T) {
-	authenticator, err := New(testToken(), "test")
+	authenticator, err := New(testToken())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +162,7 @@ func TestAuthenticatorRedactsToken(t *testing.T) {
 // the shapes here means P2-4d's wiring cannot discover a mismatch at the point
 // where it is hardest to change.
 func TestAuthenticatorFitsTheTradingAssembly(t *testing.T) {
-	authenticator, err := New(testToken(), "test")
+	authenticator, err := New(testToken())
 	if err != nil {
 		t.Fatal(err)
 	}

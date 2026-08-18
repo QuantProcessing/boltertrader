@@ -23,6 +23,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/observability"
 	"github.com/QuantProcessing/boltertrader/gateway/process"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 func TestOperationalHTTPExposesMetricsAndObservesGatewayCommands(t *testing.T) {
@@ -144,7 +145,7 @@ func (source *metricAccountSourceStub) RouteStatus(accountID domain.AccountID, p
 }
 
 func TestDefaultAccountManagerBuilderSupportsDynamicOnlyRuntime(t *testing.T) {
-	builder := defaultBuildAccountManager(nil, nil, authorityCredentialResolver{}, account.RuntimeModeTest)
+	builder := defaultBuildAccountManager(nil, nil, authorityCredentialResolver{})
 	built, err := builder(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -161,33 +162,13 @@ func TestDefaultAccountManagerBuilderSupportsDynamicOnlyRuntime(t *testing.T) {
 	}
 }
 
-func TestModeAttestedHandlerRejectsMissingAndMismatchedModes(t *testing.T) {
-	calls := 0
-	handler := modeAttestedHandler("live", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	for _, mode := range []string{"", "test"} {
-		request := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
-		request.Header.Set(gatewayModeHeader, mode)
-		request.Header.Set("X-Request-ID", "mode-request")
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusConflict || response.Header().Get(gatewayModeHeader) != "live" ||
-			response.Header().Get("Content-Type") != "application/json" ||
-			!strings.Contains(response.Body.String(), `"code":"MODE_ATTESTATION_REQUIRED"`) ||
-			!strings.Contains(response.Body.String(), `"requestId":"mode-request"`) || calls != 0 {
-			t.Fatalf("mode=%q status=%d attestation=%q calls=%d", mode, response.Code, response.Header().Get(gatewayModeHeader), calls)
-		}
-	}
-	request := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
-	request.Header.Set(gatewayModeHeader, "live")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent || calls != 1 {
-		t.Fatalf("matched status=%d calls=%d", response.Code, calls)
-	}
-}
+// The gateway used to wrap both handlers in a mode attestation: it answered
+// with its own mode header and refused any request that named a different one,
+// so a client pointed at the test gateway could not silently place orders
+// against the live one. There is one gateway now and nothing to confuse it
+// with, so the wrapper, the X-Bolter-Mode header, and the
+// MODE_ATTESTATION_REQUIRED code it produced are all gone, along with the test
+// that covered them.
 
 func TestRunRequiresConfigFlagAndLoadsStrictConfigBeforeStart(t *testing.T) {
 	dir := t.TempDir()
@@ -277,7 +258,6 @@ func TestRunStartsSeparateAuthenticatedInternalAuthorityListener(t *testing.T) {
 		},
 		wait: func(ctx context.Context, service *process.Service) error {
 			unauthorizedRequest, _ := http.NewRequest(http.MethodGet, "http://"+internalAddress+"/internal/v1/runtime/status", nil)
-			unauthorizedRequest.Header.Set(gatewayModeHeader, "test")
 			unauthorized, err := http.DefaultClient.Do(unauthorizedRequest)
 			if err != nil {
 				t.Fatal(err)
@@ -288,7 +268,6 @@ func TestRunStartsSeparateAuthenticatedInternalAuthorityListener(t *testing.T) {
 			}
 			request, _ := http.NewRequest(http.MethodGet, "http://"+internalAddress+"/internal/v1/runtime/status", nil)
 			request.Header.Set("Authorization", "Bearer gateway-adapter-token")
-			request.Header.Set(gatewayModeHeader, "test")
 			response, err := http.DefaultClient.Do(request)
 			if err != nil {
 				t.Fatal(err)
@@ -343,8 +322,15 @@ func TestAllowedEnvRefsExcludeExchangeCredentials(t *testing.T) {
 	}
 }
 
-func TestDefaultDatabaseIdentityValidatorRejectsUnknownMode(t *testing.T) {
-	err := defaultValidateDatabaseIdentity(nil, account.RuntimeMode("unknown"))(t.Context(), fakePool{})
+// The validator used to take the runtime mode and derive the expected database
+// name from it, so this test fed it an unrecognised mode to prove it failed
+// closed rather than guessing a name. There is one database now and its name is
+// a constant, so what is left to prove is the other half the test always
+// carried: whatever the validator refuses, it says so without quoting the DSN
+// it was handed. fakePool is not a *pgxpool.Pool, which is the cheapest way to
+// reach a refusal without a live connection.
+func TestDefaultDatabaseIdentityValidatorFailsClosedWithoutLeakingDSN(t *testing.T) {
+	err := defaultValidateDatabaseIdentity(nil)(t.Context(), fakePool{})
 	if err == nil || strings.Contains(err.Error(), "postgres://") {
 		t.Fatalf("identity validation error = %v", err)
 	}
@@ -356,11 +342,11 @@ func TestConnectedDatabaseIdentityRequiresExactDerivedDatabaseAndRole(t *testing
 		role     string
 		wantErr  bool
 	}{
-		{database: "bolter_gateway_test", role: "bolter_gateway_test"},
-		{database: "other", role: "bolter_gateway_test", wantErr: true},
-		{database: "bolter_gateway_test", role: "elevated", wantErr: true},
+		{database: "bolter_gateway", role: "bolter_gateway"},
+		{database: "other", role: "bolter_gateway", wantErr: true},
+		{database: "bolter_gateway", role: "elevated", wantErr: true},
 	} {
-		err := validateConnectedDatabaseIdentity(test.database, test.role, "bolter_gateway_test")
+		err := validateConnectedDatabaseIdentity(test.database, test.role, "bolter_gateway")
 		if (err != nil) != test.wantErr {
 			t.Fatalf("database=%q role=%q err=%v", test.database, test.role, err)
 		}
@@ -444,9 +430,14 @@ func TestMigrationValidationSkipsPrivateRuntimeConstruction(t *testing.T) {
 	}
 }
 
-func TestProductionGatewayCredentialResolverUsesModeScopedFilesystemProvider(t *testing.T) {
+// The resolver used to take the runtime mode and refuse any namespace that did
+// not belong to it, which is what stopped a test-mode gateway from reading the
+// live namespace's material. There is one namespace now, so the refusal is
+// simpler and stricter: anything other than secretstore.Namespace is rejected,
+// including the two mode-scoped names this gateway used to accept.
+func TestProductionGatewayCredentialResolverRefusesForeignNamespace(t *testing.T) {
 	root := t.TempDir()
-	keyFile := filepath.Join(root, "credentials", "test", "secret-store-master.key")
+	keyFile := filepath.Join(root, "credentials", "secret-store-master.key")
 	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -455,13 +446,13 @@ func TestProductionGatewayCredentialResolverUsesModeScopedFilesystemProvider(t *
 	}
 	t.Setenv("BT_SECRET_KEY_SOURCE", "file")
 	t.Setenv("BT_SECRET_STORE_DIR", filepath.Join(root, "secret-store"))
-	t.Setenv("BT_SECRET_STORE_NAMESPACE", "boltertrader/test")
+	t.Setenv("BT_SECRET_STORE_NAMESPACE", secretstore.Namespace)
 	t.Setenv("BT_SECRET_MASTER_KEY_VERSION", "v1")
 	t.Setenv("BT_SECRET_MASTER_KEY_FILE", keyFile)
 	t.Setenv("BT_SECRET_KEYCHAIN_SERVICE", "")
 	t.Setenv("BT_SECRET_KEYCHAIN_ACCOUNT", "")
 
-	provider, resolver, err := newGatewayCredentialResolver(account.RuntimeModeTest)
+	provider, resolver, err := newGatewayCredentialResolver()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,9 +461,9 @@ func TestProductionGatewayCredentialResolverUsesModeScopedFilesystemProvider(t *
 		t.Fatal(err)
 	}
 
-	t.Setenv("BT_SECRET_STORE_NAMESPACE", "boltertrader/live")
-	if _, _, err := newGatewayCredentialResolver(account.RuntimeModeTest); err == nil {
-		t.Fatal("cross-mode credential resolver configuration succeeded")
+	t.Setenv("BT_SECRET_STORE_NAMESPACE", secretstore.Namespace+"/live")
+	if _, _, err := newGatewayCredentialResolver(); err == nil {
+		t.Fatal("foreign namespace credential resolver configuration succeeded")
 	}
 }
 

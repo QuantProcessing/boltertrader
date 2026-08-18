@@ -13,7 +13,7 @@ func TestPostgresLedgerAppendReplaySurvivesDatabaseRestartWithSubMicrosecondTime
 	database, reopen := openIntegrationDatabase(t)
 	ctx := context.Background()
 	occurredAt := time.Date(2026, 8, 8, 12, 0, 0, 789, time.FixedZone("test", 8*60*60))
-	entry := ledger.Entry{PrincipalID: "principal-a", EntryID: "append-replay", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding, Amount: "1", Currency: "USDT", OccurredAt: occurredAt}
+	entry := ledger.Entry{PrincipalID: "principal-a", EntryID: "append-replay", ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding, Amount: "1", Currency: "USDT", OccurredAt: occurredAt}
 
 	if err := NewLedgerStore(database).Append(ctx, entry); err != nil {
 		t.Fatal(err)
@@ -26,7 +26,7 @@ func TestPostgresLedgerAppendReplaySurvivesDatabaseRestartWithSubMicrosecondTime
 	if err := NewLedgerStore(database).Append(ctx, entry); err != nil {
 		t.Fatalf("append replay after restart: %v", err)
 	}
-	entries, err := NewLedgerStore(database).Entries(ctx, ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-a"})
+	entries, err := NewLedgerStore(database).Entries(ctx, ledger.Query{PrincipalID: "principal-a", ProductID: "funding", LineageID: "lineage-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestPostgresFundingSupersessionReplaySurvivesDatabaseRestart(t *testing.T) 
 	database, reopen := openIntegrationDatabase(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 8, 12, 0, 0, 789, time.FixedZone("test", 8*60*60))
-	original := ledger.Entry{PrincipalID: "principal-a", EntryID: "funding-original", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding, Amount: "1", Currency: "USDT", OccurredAt: now}
+	original := ledger.Entry{PrincipalID: "principal-a", EntryID: "funding-original", ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding, Amount: "1", Currency: "USDT", OccurredAt: now}
 	replacement := original
 	replacement.EntryID = "funding-replacement"
 	replacement.Amount = "2"
@@ -65,15 +65,15 @@ func TestPostgresFundingSupersessionReplaySurvivesDatabaseRestart(t *testing.T) 
 	if err := service.SupersedeFunding(ctx, original.EntryID, replacement); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := service.List(ctx, ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
+	entries, err := service.List(ctx, ledger.Query{PrincipalID: "principal-a", ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantOccurredAt := replacement.OccurredAt.UTC().Truncate(time.Microsecond)
-	if len(entries) != 1 || entries[0].EntryID != replacement.EntryID || entries[0].Mode != replacement.Mode || entries[0].ProductID != replacement.ProductID || entries[0].LineageID != replacement.LineageID || entries[0].AccountID != replacement.AccountID || entries[0].InstrumentID != replacement.InstrumentID || entries[0].Kind != replacement.Kind || entries[0].Amount != replacement.Amount || entries[0].Currency != replacement.Currency || !entries[0].OccurredAt.Equal(wantOccurredAt) {
+	if len(entries) != 1 || entries[0].EntryID != replacement.EntryID || entries[0].ProductID != replacement.ProductID || entries[0].LineageID != replacement.LineageID || entries[0].AccountID != replacement.AccountID || entries[0].InstrumentID != replacement.InstrumentID || entries[0].Kind != replacement.Kind || entries[0].Amount != replacement.Amount || entries[0].Currency != replacement.Currency || !entries[0].OccurredAt.Equal(wantOccurredAt) {
 		t.Fatalf("restarted supersession entries=%+v, want replacement only", entries)
 	}
-	snapshot, err := service.PnL(ctx, ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
+	snapshot, err := service.PnL(ctx, ledger.Query{PrincipalID: "principal-a", ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestPostgresMarkObservationSurvivesDelayedFillAndDatabaseRestart(t *testing
 	base := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	projection := portfolio.NewPersistentProjection(NewPortfolioStore(database))
 	fill := portfolio.Fill{PrincipalID: "principal-a",
-		FillID: "fill-initial", CommandID: "command-initial", LineageID: "lineage-a", ProductID: "funding", Mode: portfolio.ModeTest,
+		FillID: "fill-initial", CommandID: "command-initial", LineageID: "lineage-a", ProductID: "funding",
 		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy, Quantity: "1", Price: "100",
 		Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: base,
 	}
@@ -96,7 +96,7 @@ func TestPostgresMarkObservationSurvivesDelayedFillAndDatabaseRestart(t *testing
 		t.Fatal(err)
 	}
 	newestMarkAt := base.Add(4 * time.Minute)
-	if _, err := projection.ApplyMark("principal-a", portfolio.ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "120", newestMarkAt); err != nil {
+	if _, err := projection.ApplyMark("principal-a", "account-a", "funding", "lineage-a", "BTC-USDT", "120", newestMarkAt); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Close(); err != nil {
@@ -118,7 +118,7 @@ func TestPostgresMarkObservationSurvivesDelayedFillAndDatabaseRestart(t *testing
 
 	database = reopen()
 	projection = portfolio.NewPersistentProjection(NewPortfolioStore(database))
-	position, err := projection.ApplyMark("principal-a", portfolio.ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "90", base.Add(2*time.Minute))
+	position, err := projection.ApplyMark("principal-a", "account-a", "funding", "lineage-a", "BTC-USDT", "90", base.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

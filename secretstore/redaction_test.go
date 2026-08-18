@@ -12,8 +12,8 @@ import (
 )
 
 func TestProviderFailuresDoNotExposeStorageOrCredentialMaterial(t *testing.T) {
-	provider := newTestProvider(t, secretstore.ModeTest)
-	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+	provider := newTestProvider(t)
+	scope := testScope()
 	op, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
 	ref, err := provider.Writer().Put(context.Background(), scope, op, []byte("plaintext-canary"))
 	if err != nil {
@@ -23,7 +23,7 @@ func TestProviderFailuresDoNotExposeStorageOrCredentialMaterial(t *testing.T) {
 	if !errors.Is(conflict, secretstore.ErrOperationConflict) {
 		t.Fatalf("conflict=%v", conflict)
 	}
-	metadata := filepath.Join(provider.StateDir(), "test", "metadata.json")
+	metadata := filepath.Join(provider.StateDir(), "metadata.json")
 	if err := os.WriteFile(metadata, []byte(`{"version":2}`), 0o600); err != nil {
 		t.Fatal(err)
 	}

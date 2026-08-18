@@ -49,7 +49,7 @@ func (store *MemoryStore) BeginCredentialOperation(_ context.Context, expectedRe
 		if existing.AccountID == operation.AccountID && credentialOperationRecoverable(existing.State) {
 			return ErrRevisionConflict
 		}
-		if operationLookupMatches(existing, OperationLookup{Mode: operation.Mode, PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
+		if operationLookupMatches(existing, OperationLookup{PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
 			return ErrAlreadyExists
 		}
 	}
@@ -91,7 +91,7 @@ func (store *MemoryStore) CreateDraft(_ context.Context, account Account, operat
 		return ErrInvalidTransition
 	}
 	for _, existing := range store.operations {
-		if operationLookupMatches(existing, OperationLookup{Mode: operation.Mode, PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
+		if operationLookupMatches(existing, OperationLookup{PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
 			return ErrAlreadyExists
 		}
 	}
@@ -281,7 +281,7 @@ func (store *MemoryStore) ListRecoverableCredentialOperations(_ context.Context,
 }
 
 func operationLookupMatches(operation CredentialOperation, lookup OperationLookup) bool {
-	return operation.Mode == lookup.Mode && operation.PrincipalID == lookup.PrincipalID && operation.Kind == lookup.Kind && operation.IdempotencyKeyDigest == lookup.IdempotencyKeyDigest
+	return operation.PrincipalID == lookup.PrincipalID && operation.Kind == lookup.Kind && operation.IdempotencyKeyDigest == lookup.IdempotencyKeyDigest
 }
 
 func credentialOperationRecoverable(state OperationState) bool {

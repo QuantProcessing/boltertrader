@@ -37,7 +37,7 @@ func (authority *recordingAuthority) last() httpapi.AuthorityRequest {
 
 func newClient(t *testing.T, authority httpapi.InternalAuthority) *authorityclient.Client {
 	t.Helper()
-	client, err := authorityclient.New(authority, secretstore.ModeTest)
+	client, err := authorityclient.New(authority)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -46,7 +46,7 @@ func newClient(t *testing.T, authority httpapi.InternalAuthority) *authorityclie
 
 func validAccount() lifecycle.Account {
 	return lifecycle.Account{
-		ID: accountID, Venue: "binance", Mode: secretstore.ModeTest,
+		ID: accountID, Venue: "binance",
 		VenueEnvironment:  lifecycle.EnvironmentLive,
 		NativeEnvironment: lifecycle.EnvironmentLive, DisplayName: "Primary",
 		ProductPolicy: []string{"manual"}, ProductIDs: []string{"manual"},
@@ -85,7 +85,7 @@ func TestApplyDesiredCarriesTheWholeDesiredSnapshotAndReducesTheRuntimeView(t *t
 	}
 
 	request := authority.last()
-	if request.Operation != httpapi.AuthorityApplyDesired || request.Mode != "test" ||
+	if request.Operation != httpapi.AuthorityApplyDesired ||
 		request.AccountID != accountID || request.OperationID != string(operationID) {
 		t.Fatalf("request envelope = %+v", request)
 	}
@@ -219,12 +219,6 @@ func TestClientRejectsRequestsTheAuthorityMustNeverSee(t *testing.T) {
 	tests := map[string]func(*authorityclient.Client) error{
 		"unparseable operation": func(client *authorityclient.Client) error {
 			_, err := client.ApplyDesired(t.Context(), lifecycle.DesiredApply{OperationID: "operation-1", Account: validAccount()})
-			return err
-		},
-		"account from another mode": func(client *authorityclient.Client) error {
-			account := validAccount()
-			account.Mode = secretstore.ModeLive
-			_, err := client.ApplyDesired(t.Context(), lifecycle.DesiredApply{OperationID: operationID, Account: account})
 			return err
 		},
 		"account that does not validate": func(client *authorityclient.Client) error {
@@ -464,13 +458,12 @@ func TestFinalizeRotationOnlyReturnsAProofThatAnswersTheRequest(t *testing.T) {
 	}
 }
 
-func TestNewRefusesAnUnusableAuthorityOrMode(t *testing.T) {
-	if _, err := authorityclient.New(nil, secretstore.ModeTest); err == nil {
+// New used to refuse an unrecognised mode as well: the mode was the only thing
+// keeping a test-mode client from addressing live accounts, so it could not be
+// allowed to default. There is one kind of account left, so the authority is
+// all that remains to check.
+func TestNewRefusesAnUnusableAuthority(t *testing.T) {
+	if _, err := authorityclient.New(nil); err == nil {
 		t.Fatal("New accepted a nil authority")
-	}
-	// The mode is the only thing keeping a test-mode client from addressing live
-	// accounts, so an unrecognised one cannot be allowed to default.
-	if _, err := authorityclient.New(&recordingAuthority{}, secretstore.Mode("staging")); err == nil {
-		t.Fatal("New accepted an unknown mode")
 	}
 }

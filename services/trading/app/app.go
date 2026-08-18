@@ -52,12 +52,10 @@ type RuntimeRouteProbe interface {
 // a larger config passes down the fields that mean something here and keeps the
 // rest.
 type Config struct {
-	// Mode fences every write: a command declared under one mode is refused by
-	// a service running the other.
-	Mode string
-	// LivePrivateWritesEnabled must be paired with a live Mode. It is a second,
-	// separate switch so that running live and *writing* live are two decisions
-	// rather than one.
+	// LivePrivateWritesEnabled arms private writes. Every command reaches a real
+	// venue, so this is the only switch between an accepted command and the
+	// exchange. It used to also have to be paired with a live Mode, back when a
+	// service could run under a test mode that fenced writes on its own.
 	LivePrivateWritesEnabled bool
 	// ManualPreviewSigningKey seals execution previews. New zeroes it before
 	// returning, so the caller's copy does not outlive the call.
@@ -66,18 +64,6 @@ type Config struct {
 	// migration-validation startup has no business issuing Gateway writes, and
 	// the reconciler is the one component that would do so unprompted.
 	ReconcilerDisabled bool
-}
-
-func (cfg Config) validate() error {
-	switch cfg.Mode {
-	case "test", "live":
-	default:
-		return fmt.Errorf("trading mode is invalid")
-	}
-	if cfg.LivePrivateWritesEnabled && cfg.Mode != "live" {
-		return fmt.Errorf("trading live private writes require live mode")
-	}
-	return nil
 }
 
 // Dependencies names everything the trading service cannot decide for itself.
@@ -106,7 +92,7 @@ type Dependencies struct {
 	// is asking, and may they write". The backend reads a session cookie; the
 	// trading binary reads a service token plus an identity header. No handler
 	// in this service knows which.
-	Principal         func(*http.Request) (principalID, mode string, err error)
+	Principal         func(*http.Request) (principalID string, err error)
 	Authenticate      func(*http.Request) (principalID string, err error)
 	AuthorizeMutation func(*http.Request) error
 }
@@ -149,9 +135,6 @@ const (
 // degrading: a trading service missing its command store or its principal
 // resolver would answer requests wrongly instead of not at all.
 func New(cfg Config, dependencies Dependencies) (*Service, error) {
-	if err := cfg.validate(); err != nil {
-		return nil, err
-	}
 	if dependencies.ManualGateway == nil {
 		return nil, fmt.Errorf("trading Manual Gateway dependency is required")
 	}
@@ -265,7 +248,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	commandService.SetLiveWritesEnabled(cfg.LivePrivateWritesEnabled)
 	ledgerService := ledger.NewService(ledgerStore, now)
 	manualService := manual.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, dependencies.ManualGateway, now, cfg.ManualPreviewSigningKey)
-	if err := manualService.SetExecutionAdmission(orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled); err != nil {
+	if err := manualService.SetExecutionAdmission(cfg.LivePrivateWritesEnabled); err != nil {
 		return nil, err
 	}
 	// Arbitrage takes the same signing key and the same Gateway channel: a hedge
@@ -274,7 +257,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	// The two products cannot open each other's previews despite the shared key —
 	// arbitrage's MAC covers an extra domain label for exactly that reason.
 	arbitrageService := arbitrage.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, dependencies.ManualGateway, now, cfg.ManualPreviewSigningKey)
-	if err := arbitrageService.SetExecutionAdmission(orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled); err != nil {
+	if err := arbitrageService.SetExecutionAdmission(cfg.LivePrivateWritesEnabled); err != nil {
 		return nil, err
 	}
 	for index := range cfg.ManualPreviewSigningKey {
@@ -284,7 +267,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 
 	var reconciler *orders.Reconciler
 	if !cfg.ReconcilerDisabled && dependencies.ReconciliationGateway != nil {
-		reconciler, err = orders.NewReconciler(commandService, dependencies.ReconciliationGateway, reconciliationDispatcher{manual: manualService, arbitrage: arbitrageService}, orders.Mode(cfg.Mode), now)
+		reconciler, err = orders.NewReconciler(commandService, dependencies.ReconciliationGateway, reconciliationDispatcher{manual: manualService, arbitrage: arbitrageService}, now)
 		if err != nil {
 			return nil, err
 		}
@@ -300,7 +283,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 			Trading: &httpapi.TradingOptions{
 				Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection,
 				Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService,
-				ManualAccounts: manualAccounts, ManualMarketData: marketService,
+				ManualAccounts: manualAccounts,
 				Arbitrage: arbitrageService, FundingBoard: boardService,
 				Principal: dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
 				Activity: activityLog,
@@ -475,7 +458,7 @@ func (unavailableFundingHistorySource) FetchFundingHistory(context.Context, mark
 type reservationGate struct{ service *reservations.Service }
 
 func (gate reservationGate) Consume(ctx context.Context, claim orders.ReservationClaim) error {
-	_, err := gate.service.Consume(ctx, reservations.ConsumeRequest{ReservationID: claim.ReservationID, PrincipalID: claim.PrincipalID, ProductID: claim.ProductID, Mode: reservations.Mode(claim.Mode)})
+	_, err := gate.service.Consume(ctx, reservations.ConsumeRequest{ReservationID: claim.ReservationID, PrincipalID: claim.PrincipalID, ProductID: claim.ProductID})
 	return err
 }
 

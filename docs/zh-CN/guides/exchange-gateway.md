@@ -152,7 +152,7 @@ mark price 使用有界等待得到的首个 mark stream 事件，因为统一 e
 全新安装上就可读的原因。它们仍然是带认证的（内部监听器有自己的 bearer
 token），也仍然拒绝吐出 native symbol、native ID 或原始交易所错误。
 
-看板是当前 mode 下的整张表，一次返回：按 venue、product 与结算资产各占一列，
+看板是整张表，一次返回：按 venue、product 与结算资产各占一列，
 每列带着自己的费率、结算周期，以及该交易所到底提不提供历史。它不收任何参数，
 因为调用方问不出任何一种「让这一列对、让那一列错」的问题。读不出来的列会降级
 成一个带原因的不可用列，而不是让整个响应失败——一家交易所连不上，不该把另外
@@ -242,13 +242,13 @@ availability。
 make up
 ```
 
-它会在 `.secrets/test/` 下生成栈的凭证、把变量写入 `.env.stack`、启动全部服务，
+它会在 `.secrets/stack/` 下生成栈的凭证、把变量写入 `.env.stack`、启动全部服务，
 最后执行 `make doctor`。该命令是幂等的：再次运行会复用已有凭证。出问题时用
 `make doctor` 定位，用 `make logs` 查看全部服务日志。
 
 不需要手工复制任何文件，也不能把 secret 明文写入 `.env.stack`、image、build
 argument 或 `docker/gateway.docker.yaml`。Bearer token 和 Gateway PostgreSQL DSN
-以 0600 保存在 `.secrets/test/` 下的文件里，`.env.stack` 只保存指向它们的路径。
+以 0600 保存在 `.secrets/stack/` 下的文件里，`.env.stack` 只保存指向它们的路径。
 两者通过 Docker secrets 到达 Gateway，挂载点为
 `/run/secrets/GATEWAY_AUTH_TOKEN` 与 `/run/secrets/GATEWAY_POSTGRES_DSN`。
 

@@ -27,7 +27,7 @@ func TestGatewayFillPaginationRejectsNonAdjacentCursorCycle(t *testing.T) {
 		_, _ = w.Write([]byte(responses[r.URL.Query().Get("pagination.cursor")]))
 	}))
 	defer server.Close()
-	adapter, err := newClient(server.URL, []byte(token), server.Client())
+	adapter, err := NewClient(server.URL, false, []byte(token), false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestGatewayFillPaginationHasFinitePageBound(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"items":[],"next_cursor":%q}`, next)
 	}))
 	defer server.Close()
-	adapter, err := newClient(server.URL, []byte(token), server.Client())
+	adapter, err := NewClient(server.URL, false, []byte(token), false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -31,7 +31,7 @@ Any route redirects to `/login` until there is a session.
 ## 2. Sign in
 
 Use the bootstrap operator — `operator` by default — and the password printed
-once by the first `make up`. It is also in `.secrets/test/bootstrap_password`.
+once by the first `make up`. It is also in `.secrets/stack/bootstrap_password`.
 
 After sign-in the header carries the four routes: **Trade**, **Portfolio**,
 **Activity**, **Settings**.

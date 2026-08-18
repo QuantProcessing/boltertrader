@@ -63,16 +63,16 @@ Gateway 的这些路由也是唯一会改变路径的：`/api/v1/accounts` 在�
 `X-Bolter-Principal-Mode`、`X-Bolter-Mode` 和 `Cookie`。这些恰好是 edge 即将自己断言的头，
 所以发送它们的浏览器必须无法影响它们。剥离是无条件的——不取决于值看起来是否可疑。
 
+那两个 mode 头留在清单上，尽管已经没有任何东西再断言它们了。当初有两种 mode 时，上游正是
+靠它们得知一次请求属于哪一种；今天还带着它们抵达的请求只可能是有人在探测，万一哪个上游
+以后又长出同名的头，它也绝不能存活到被当作授权来读。
+
 **按允许清单原样传递。** `Accept`、`Content-Type`、`Idempotency-Key`、`If-Match`、
 `Last-Event-ID` 和 `X-Request-Id`。仅此而已。用允许清单而不是拒绝清单，是因为没人想到过的
 头不应该默认就能抵达上游。
 
 **出站时注入。** `Authorization: Bearer <服务令牌>`、带已认证 principal ID 的
-`X-Bolter-Principal`、该上游的 mode 头，以及调用方没提供时补上的 `X-Request-Id`。
-
-Mode 头的名字每个上游各不相同——trading 读 `X-Bolter-Principal-Mode`，gateway 读
-`X-Bolter-Mode`——由这条路由的上游决定用哪个名字。把 trading 的名字发给 gateway，会让一次
-本应带 mode 担保的写变成无担保，所以这个名字是上游的属性，而不是一个常量。
+`X-Bolter-Principal`，以及调用方没提供时补上的 `X-Request-Id`。
 
 返回方向上，逐跳头会被移除，`Set-Cookie` 也会。任何上游都不允许在浏览器里设置 cookie。
 只有 edge 会，而且只为会话。
@@ -91,7 +91,7 @@ Mode 头的名字每个上游各不相同——trading 读 `X-Bolter-Principal-M
 进程里。
 
 它不做会话之外的授权。某个 principal 能否触及某个 account 或某个 product，由拥有它的那个
-服务决定，依据是 edge 担保的 principal 与 mode。
+服务决定，依据是 edge 担保的 principal。
 
 ## 验证
 

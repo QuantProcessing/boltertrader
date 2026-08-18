@@ -18,21 +18,20 @@ type Reconciler struct {
 	commands   *Service
 	gateway    ReconciliationGateway
 	dispatcher ReconciliationDispatcher
-	mode       Mode
 	now        func() time.Time
 	interval   time.Duration
 	lease      time.Duration
 	onSettled  func(Command)
 }
 
-func NewReconciler(commands *Service, gateway ReconciliationGateway, dispatcher ReconciliationDispatcher, mode Mode, now func() time.Time) (*Reconciler, error) {
-	if commands == nil || gateway == nil || dispatcher == nil || (mode != ModeTest && mode != ModeLive) {
+func NewReconciler(commands *Service, gateway ReconciliationGateway, dispatcher ReconciliationDispatcher, now func() time.Time) (*Reconciler, error) {
+	if commands == nil || gateway == nil || dispatcher == nil {
 		return nil, fmt.Errorf("reconciliation dependencies are required")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Reconciler{commands: commands, gateway: gateway, dispatcher: dispatcher, mode: mode, now: now, interval: time.Second, lease: 15 * time.Second}, nil
+	return &Reconciler{commands: commands, gateway: gateway, dispatcher: dispatcher, now: now, interval: time.Second, lease: 15 * time.Second}, nil
 }
 
 // SetSettlementObserver registers a callback invoked whenever reconciliation
@@ -65,7 +64,7 @@ func (runner *Reconciler) Run(ctx context.Context) {
 
 func (runner *Reconciler) RunOnce(ctx context.Context) error {
 	now := runner.now().UTC()
-	tasks, err := runner.commands.ClaimDueReconciliation(ctx, runner.mode, now, runner.lease, 20)
+	tasks, err := runner.commands.ClaimDueReconciliation(ctx, now, runner.lease, 20)
 	if err != nil {
 		return err
 	}

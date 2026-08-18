@@ -20,12 +20,11 @@ CREATE TABLE schema_migrations (
 
 CREATE TABLE identities (
     principal_id text PRIMARY KEY,
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     username text NOT NULL,
     password_hash text NOT NULL,
     disabled_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (mode, username)
+    UNIQUE (username)
 );
 
 -- Only digests are stored. A leaked table must not yield a usable session
@@ -33,7 +32,6 @@ CREATE TABLE identities (
 CREATE TABLE sessions (
     token_digest text PRIMARY KEY,
     principal_id text NOT NULL REFERENCES identities(principal_id),
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     username text NOT NULL,
     csrf_digest text NOT NULL,
     expires_at timestamptz NOT NULL,

@@ -22,13 +22,11 @@ var (
 	ErrOperationConflict = errors.New("SECRET_STORE_OPERATION_CONFLICT")
 	ErrSecretNotFound    = errors.New("SECRET_STORE_NOT_FOUND")
 	ErrIntegrity         = errors.New("SECRET_STORE_INTEGRITY_FAILURE")
-	ErrModeKeyReuse      = errors.New("SECRET_STORE_MODE_KEY_REUSE")
 	ErrUnavailable       = errors.New("SECRET_STORE_UNAVAILABLE")
 )
 
 type FilesystemConfig struct {
 	StateDir  string
-	Mode      Mode
 	KeySource KeySource
 	Now       func() time.Time
 	Random    io.Reader
@@ -36,7 +34,6 @@ type FilesystemConfig struct {
 
 type FilesystemProvider struct {
 	stateDir string
-	mode     Mode
 	key      []byte
 	aead     cipher.AEAD
 	now      func() time.Time
@@ -61,7 +58,7 @@ type providerMetadata struct {
 }
 
 func NewFilesystemProvider(config FilesystemConfig) (*FilesystemProvider, error) {
-	if !filepath.IsAbs(config.StateDir) || config.KeySource == nil || (config.Mode != ModeTest && config.Mode != ModeLive) {
+	if !filepath.IsAbs(config.StateDir) || config.KeySource == nil {
 		return nil, ErrUnavailable
 	}
 	key, err := config.KeySource.Load(context.Background())
@@ -82,7 +79,7 @@ func NewFilesystemProvider(config FilesystemConfig) (*FilesystemProvider, error)
 		clear(key)
 		return nil, ErrUnavailable
 	}
-	provider := &FilesystemProvider{stateDir: filepath.Clean(config.StateDir), mode: config.Mode, key: key, aead: aead, now: config.Now, random: config.Random}
+	provider := &FilesystemProvider{stateDir: filepath.Clean(config.StateDir), key: key, aead: aead, now: config.Now, random: config.Random}
 	if provider.now == nil {
 		provider.now = time.Now
 	}
@@ -155,7 +152,7 @@ func (provider *FilesystemProvider) check(ctx context.Context, scope Scope) erro
 	if err := ctx.Err(); err != nil {
 		return ErrUnavailable
 	}
-	if err := scope.Validate(); err != nil || scope.Mode != provider.mode {
+	if err := scope.Validate(); err != nil {
 		return ErrInvalidScope
 	}
 	return provider.verifyMetadata()
@@ -264,40 +261,18 @@ func (provider *FilesystemProvider) readEnvelope(ref OpaqueRef) (envelopeV1, err
 
 func (provider *FilesystemProvider) objectPath(ref OpaqueRef) string {
 	sum := sha256.Sum256([]byte(ref.RawForTrustedBoundary()))
-	return filepath.Join(provider.stateDir, string(provider.mode), "objects", hex.EncodeToString(sum[:])+".json")
+	return filepath.Join(provider.stateDir, "objects", hex.EncodeToString(sum[:])+".json")
 }
 
 func (provider *FilesystemProvider) bootstrap() error {
 	if err := ensureDirectory(provider.stateDir); err != nil {
 		return err
 	}
-	modeDir := filepath.Join(provider.stateDir, string(provider.mode))
-	if err := ensureDirectory(modeDir); err != nil {
-		return err
-	}
-	if err := ensureDirectory(filepath.Join(modeDir, "objects")); err != nil {
+	if err := ensureDirectory(filepath.Join(provider.stateDir, "objects")); err != nil {
 		return err
 	}
 	check := keyedValue(provider.key, "boltertrader-secret-store-key-check-v1")
-	other := ModeTest
-	if provider.mode == ModeTest {
-		other = ModeLive
-	}
-	if data, err := os.ReadFile(filepath.Join(provider.stateDir, string(other), "metadata.json")); err == nil {
-		var metadata providerMetadata
-		if json.Unmarshal(data, &metadata) != nil || metadata.Version != 1 || metadata.Check == "" {
-			clear(data)
-			return ErrIntegrity
-		}
-		if hmac.Equal([]byte(metadata.Check), []byte(check)) {
-			clear(data)
-			return ErrModeKeyReuse
-		}
-		clear(data)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return ErrUnavailable
-	}
-	path := filepath.Join(modeDir, "metadata.json")
+	path := filepath.Join(provider.stateDir, "metadata.json")
 	if data, err := os.ReadFile(path); err == nil {
 		defer clear(data)
 		var metadata providerMetadata
@@ -312,7 +287,7 @@ func (provider *FilesystemProvider) bootstrap() error {
 }
 
 func (provider *FilesystemProvider) verifyMetadata() error {
-	data, err := os.ReadFile(filepath.Join(provider.stateDir, string(provider.mode), "metadata.json"))
+	data, err := os.ReadFile(filepath.Join(provider.stateDir, "metadata.json"))
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -332,7 +307,7 @@ func validOperationID(operation OperationID) bool {
 
 func deriveReference(key []byte, scope Scope, operation OperationID) OpaqueRef {
 	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte("boltertrader-secret-ref-v1\x00" + string(scope.Mode) + "\x00" + scope.Namespace + "\x00" + scope.KeyVersion + "\x00" + string(operation)))
+	_, _ = mac.Write([]byte("boltertrader-secret-ref-v1\x00" + scope.Namespace + "\x00" + scope.KeyVersion + "\x00" + string(operation)))
 	return OpaqueRef(base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
 }
 
@@ -350,7 +325,7 @@ func keyedValue(key []byte, label string) string {
 }
 
 func envelopeAAD(scope Scope, ref OpaqueRef, digest string) []byte {
-	return []byte("boltertrader-secret-envelope-v1\x00" + string(scope.Mode) + "\x00" + scope.Namespace + "\x00" + scope.KeyVersion + "\x00" + ref.RawForTrustedBoundary() + "\x00" + digest)
+	return []byte("boltertrader-secret-envelope-v1\x00" + scope.Namespace + "\x00" + scope.KeyVersion + "\x00" + ref.RawForTrustedBoundary() + "\x00" + digest)
 }
 
 func ensureDirectory(path string) error {

@@ -48,8 +48,8 @@ func run(ctx context.Context) error {
 	defer database.Close()
 
 	app, err := authedgeapp.New(authedgeapp.Config{
-		Mode:                  cfg.Mode,
 		ListenAddr:            cfg.ListenAddr,
+		SecureCookie:          cfg.SecureCookie,
 		BootstrapUsername:     cfg.BootstrapUsername,
 		BootstrapPasswordHash: cfg.BootstrapPasswordHash,
 		TradingURL:            cfg.TradingURL,

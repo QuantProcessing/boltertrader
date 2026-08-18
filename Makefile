@@ -96,10 +96,11 @@ doctor:
 # credentials, so none of them needs `make up` to have run and none of them
 # touches the stack an operator has up. Each one bootstraps a throwaway root with
 # the same generator `make up` uses — rather than writing token files in shell —
-# because the services validate what they read: the parent directory has to be
-# named for BT_MODE, the mode has to be 0600, and the bootstrap hash has to parse
-# as bcrypt. A placeholder of the wrong shape fails inside a container at startup,
-# which is the least legible place for it to fail.
+# because the services validate what they read: a token has to be a regular
+# non-symlink file at mode 0600, long enough and printable enough to be a service
+# token, and the bootstrap hash has to parse as bcrypt. A placeholder of the wrong
+# shape fails inside a container at startup, which is the least legible place for
+# it to fail.
 #
 # Every published port is overridden to 0 in the environment, where they beat the
 # generated .env.stack, so the kernel assigns them: that is what makes these
@@ -115,7 +116,7 @@ compose-dsn:
 	case "$$endpoint" in 127.0.0.1:*) ;; *) echo "active Compose project did not publish PostgreSQL on loopback" >&2; exit 1;; esac; \
 	port=$${endpoint##*:}; \
 	case "$$port" in *[!0-9]*|'') echo "active Compose project returned an invalid PostgreSQL port" >&2; exit 1;; esac; \
-	printf 'postgres://bolter_gateway_test_migrator@127.0.0.1:%s/bolter_gateway_test?sslmode=disable\n' "$$port"
+	printf 'postgres://bolter_gateway_migrator@127.0.0.1:%s/bolter_gateway?sslmode=disable\n' "$$port"
 
 # No password appears in that DSN, and none is missing: the cluster runs under
 # trust authentication on a port published only to 127.0.0.1, which is what lets
@@ -173,7 +174,7 @@ test-compose-smoke:
 	$$compose up -d --no-build --wait --wait-timeout 180; \
 	$$compose exec -T gateway /usr/local/bin/exchange-gateway-docker-support health -config /etc/boltertrader/gateway.yaml -kind live; \
 	$$compose exec -T gateway /usr/local/bin/exchange-gateway-docker-support health -config /etc/boltertrader/gateway.yaml -kind ready; \
-	account_count=$$($$compose exec -T postgres psql -U bolter_gateway_test_migrator -d bolter_gateway_test -tAc 'SELECT count(*) FROM gateway_accounts' | tr -d '[:space:]'); \
+	account_count=$$($$compose exec -T postgres psql -U bolter_gateway_migrator -d bolter_gateway -tAc 'SELECT count(*) FROM gateway_accounts' | tr -d '[:space:]'); \
 	test "$$account_count" = "0"; \
 	for service in authedge trading gateway; do \
 		id=$$($$compose ps -q "$$service"); \
@@ -196,11 +197,11 @@ test-compose-persistence:
 	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0 WEB_PORT=0; \
 	compose="docker compose --env-file $$tmp/.env.stack -f compose.yaml -p $$project"; \
 	$$compose up -d --wait --wait-timeout 120 postgres; \
-	$$compose exec -T postgres psql -U bolter_gateway_test_migrator -d bolter_gateway_test -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS compose_persistence_probe (value text PRIMARY KEY)' -c "INSERT INTO compose_persistence_probe(value) VALUES ('$$sentinel')"; \
+	$$compose exec -T postgres psql -U bolter_gateway_migrator -d bolter_gateway -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS compose_persistence_probe (value text PRIMARY KEY)' -c "INSERT INTO compose_persistence_probe(value) VALUES ('$$sentinel')"; \
 	$$compose up -d --force-recreate --no-deps --wait --wait-timeout 120 postgres; \
-	observed=$$($$compose exec -T postgres psql -U bolter_gateway_test_migrator -d bolter_gateway_test -tAc "SELECT value FROM compose_persistence_probe WHERE value = '$$sentinel'" | tr -d '[:space:]'); \
+	observed=$$($$compose exec -T postgres psql -U bolter_gateway_migrator -d bolter_gateway -tAc "SELECT value FROM compose_persistence_probe WHERE value = '$$sentinel'" | tr -d '[:space:]'); \
 	test "$$observed" = "$$sentinel"; \
-	$$compose exec -T postgres psql -U bolter_gateway_test_migrator -d bolter_gateway_test -c 'DROP TABLE compose_persistence_probe' >/dev/null; \
+	$$compose exec -T postgres psql -U bolter_gateway_migrator -d bolter_gateway -c 'DROP TABLE compose_persistence_probe' >/dev/null; \
 	$$compose down --volumes --remove-orphans >/dev/null; \
 	rm -rf "$$tmp"; \
 	trap - EXIT INT TERM
@@ -216,7 +217,7 @@ test-compose-postgres:
 	$$compose up -d --no-build --wait --wait-timeout 120 postgres gateway-migrate; \
 	endpoint=$$($$compose port postgres 5432); \
 	case "$$endpoint" in 127.0.0.1:*) ;; *) echo "ephemeral project did not publish PostgreSQL on loopback" >&2; exit 1;; esac; \
-	dsn="postgres://bolter_gateway_test_migrator@127.0.0.1:$${endpoint##*:}/bolter_gateway_test?sslmode=disable"; \
+	dsn="postgres://bolter_gateway_migrator@127.0.0.1:$${endpoint##*:}/bolter_gateway?sslmode=disable"; \
 	GATEWAY_TEST_POSTGRES_DSN="$$dsn" go test ./gateway/store/postgres/... -run 'Test(Migrate|CommandStore|AuditStore|AccountOwnership|RegisterAccount).*RealPostgres' -count=1; \
 	GATEWAY_TEST_POSTGRES_DSN="$$dsn" go test ./gateway/order/... -run '^TestCoordinatorRealPostgresProcessCrashWindows$$$$' -count=1; \
 	$$compose down --volumes --remove-orphans >/dev/null; \

@@ -42,10 +42,16 @@ Environment 那一段只有一个合法取值。它曾经也收 `demo` 与 `test
 `nado.perp.usdt0.v1` 的 ID 命名。**Route** 是绑定了某个账户凭证的 profile，而 **route ID** 在
 一次写入里点名它。
 
-**Mode（模式）** 是一个部署属性，不是市场属性。它曾经比 environment 粗：`test` 覆盖 `demo` 与
-`testnet`，`live` 覆盖 `live`，而跑在其中一种模式下的进程解析不出另一种的 profile。非生产那
-一层没有了之后，route profile 根本不再携带 mode。留下来的，是一个部署所用的数据库、密钥命名
-空间与 principal 上的 `test` 或 `live` 标签。
+**Mode（模式）** 曾经是一个部署属性、不是市场属性，现在它已经没有了。它比 environment 粗：
+`test` 覆盖 `demo` 与 `testnet`，`live` 覆盖 `live`，而跑在其中一种模式下的进程解析不出另
+一种的 profile。非生产那一层被删掉之后，这一对里有一边再没有东西可命名了，所以这条轴是被
+整个删除的，而不是留下一个只剩单值的轴：数据库、密钥命名空间与 principal 都去掉了那个标签，
+服务之间用来担保 mode 的那两个头也不复存在。
+
+**Live 写开关** `BT_LIVE_PRIVATE_WRITES_ENABLED` 是它在运维上的替代物。它不是一种 mode：
+它不改变一条 route 通往哪家交易所、也不改变一次写用哪套凭证，而且它的另一侧空无一物。
+关着时，每一次私有写都以 `LIVE_PRIVATE_WRITE_DISABLED` 被拒。开着时，一次写就是真金白银
+地发往真实交易所。
 
 ## Product 行
 

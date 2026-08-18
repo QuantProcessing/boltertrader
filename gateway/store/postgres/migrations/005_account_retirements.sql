@@ -6,7 +6,6 @@ CREATE TABLE gateway_account_retirements (
     expected_runtime_generation BIGINT NOT NULL CHECK (expected_runtime_generation > 0),
     expected_credential_version BIGINT NOT NULL CHECK (expected_credential_version > 0),
     tombstone_revision BIGINT NOT NULL CHECK (tombstone_revision = expected_desired_state_revision + 1),
-    mode TEXT NOT NULL CHECK (mode IN ('test','live')),
     namespace TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('tombstoned')),
     completed_at TIMESTAMPTZ NOT NULL

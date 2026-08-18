@@ -12,7 +12,7 @@ func TestProjectionMaintainsProductAttributedPositionAndRealizedPnL(t *testing.T
 	projection := NewProjection()
 	base := Fill{PrincipalID: "principal-a",
 		FillID: "fill-1", CommandID: "command-1", LineageID: "lineage-a", ProductID: "manual",
-		Mode: ModeTest, AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy,
+		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy,
 		Quantity: "2", Price: "100", Fee: "1", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Now(),
 	}
 	position, result, err := projection.ApplyFill(context.Background(), base)
@@ -41,7 +41,7 @@ func TestProjectionMaintainsProductAttributedPositionAndRealizedPnL(t *testing.T
 	if _, _, err := projection.ApplyFill(context.Background(), mismatched); !errors.Is(err, ErrCurrencyMismatch) {
 		t.Fatalf("settlement mismatch error=%v, want ErrCurrencyMismatch", err)
 	}
-	marked, err := projection.ApplyMark("principal-a", ModeTest, "account-a", "manual", "lineage-a", "BTC-USDT", "105", time.Now())
+	marked, err := projection.ApplyMark("principal-a", "account-a", "manual", "lineage-a", "BTC-USDT", "105", time.Now())
 	if err != nil || marked.UnrealizedPnL != "5" {
 		t.Fatalf("marked=%+v err=%v", marked, err)
 	}
@@ -50,30 +50,16 @@ func TestProjectionMaintainsProductAttributedPositionAndRealizedPnL(t *testing.T
 	}
 }
 
-func TestProjectionSeparatesIdenticalOwnershipAcrossModes(t *testing.T) {
-	projection := NewProjection()
-	fill := Fill{PrincipalID: "principal-a",
-		FillID: "test-fill", CommandID: "test-command", LineageID: "lineage-a", ProductID: "manual", Mode: ModeTest,
-		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy, Quantity: "1", Price: "100", Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Now(),
-	}
-	if _, _, err := projection.ApplyFill(context.Background(), fill); err != nil {
-		t.Fatal(err)
-	}
-	fill.FillID, fill.CommandID, fill.Mode, fill.Price = "live-fill", "live-command", ModeLive, "200"
-	if _, _, err := projection.ApplyFill(context.Background(), fill); err != nil {
-		t.Fatal(err)
-	}
-	testPositions := projection.List("principal-a", ModeTest, "account-a", "manual")
-	livePositions := projection.List("principal-a", ModeLive, "account-a", "manual")
-	if len(testPositions) != 1 || len(livePositions) != 1 || testPositions[0].AverageEntryPrice != "100" || livePositions[0].AverageEntryPrice != "200" {
-		t.Fatalf("test=%+v live=%+v", testPositions, livePositions)
-	}
-}
-
+// TestProjectionSeparatesIdenticalOwnershipAcrossModes used to sit here. The
+// position key carried a mode, and that test proved two fills identical in
+// every other coordinate landed on separate positions when the modes differed.
+// The mode left the key with the axis; the sibling assertion for the principal
+// coordinate lives in TestProjectionSeparatesIdenticalEconomicIdentityAcrossPrincipals
+// and still covers the property this file cared about.
 func TestProjectionRejectsConflictingFillReplay(t *testing.T) {
 	projection := NewProjection()
 	fill := Fill{PrincipalID: "principal-a",
-		FillID: "fill-1", CommandID: "command-1", LineageID: "lineage-a", ProductID: "manual", Mode: ModeTest,
+		FillID: "fill-1", CommandID: "command-1", LineageID: "lineage-a", ProductID: "manual",
 		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy, Quantity: "1", Price: "100",
 		Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Now().UTC(),
 	}
@@ -90,24 +76,24 @@ func TestProjectionDoesNotRegressMarkFromOlderObservation(t *testing.T) {
 	now := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	projection := NewProjection()
 	fill := Fill{PrincipalID: "principal-a",
-		FillID: "fill-mark", CommandID: "command-mark", LineageID: "lineage-a", ProductID: "funding", Mode: ModeTest,
+		FillID: "fill-mark", CommandID: "command-mark", LineageID: "lineage-a", ProductID: "funding",
 		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy, Quantity: "1", Price: "100",
 		Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now,
 	}
 	if _, _, err := projection.ApplyFill(context.Background(), fill); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := projection.ApplyMark("principal-a", ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "120", now.Add(2*time.Minute)); err != nil {
+	if _, err := projection.ApplyMark("principal-a", "account-a", "funding", "lineage-a", "BTC-USDT", "120", now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	position, err := projection.ApplyMark("principal-a", ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "90", now.Add(time.Minute))
+	position, err := projection.ApplyMark("principal-a", "account-a", "funding", "lineage-a", "BTC-USDT", "90", now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if position.MarkPrice != "120" || position.UnrealizedPnL != "20" || !position.UpdatedAt.Equal(now.Add(2*time.Minute)) {
 		t.Fatalf("older mark regressed position=%+v", position)
 	}
-	if _, err := projection.ApplyMark("principal-a", ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "121", now.Add(2*time.Minute)); !errors.Is(err, ErrMarkConflict) {
+	if _, err := projection.ApplyMark("principal-a", "account-a", "funding", "lineage-a", "BTC-USDT", "121", now.Add(2*time.Minute)); !errors.Is(err, ErrMarkConflict) {
 		t.Fatalf("conflicting same-revision mark error=%v, want ErrMarkConflict", err)
 	}
 }
@@ -115,7 +101,7 @@ func TestProjectionDoesNotRegressMarkFromOlderObservation(t *testing.T) {
 func TestPersistentProjectionAccumulatesAfterRestartWithoutReapplyingFills(t *testing.T) {
 	store := newRestartStore()
 	base := Fill{PrincipalID: "principal-a",
-		FillID: "fill-1", CommandID: "command-1", LineageID: "lineage-a", ProductID: "manual", Mode: ModeTest,
+		FillID: "fill-1", CommandID: "command-1", LineageID: "lineage-a", ProductID: "manual",
 		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy, Quantity: "2", Price: "100",
 		Fee: "1", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Now().UTC(),
 	}
@@ -143,11 +129,11 @@ func TestPersistentProjectionAccumulatesAfterRestartWithoutReapplyingFills(t *te
 	if position.Quantity != "3" || position.AverageEntryPrice != "133.3333333333333333" {
 		t.Fatalf("replayed fill changed position=%+v", position)
 	}
-	positions := replayed.List("principal-a", ModeTest, "account-a", "manual")
+	positions := replayed.List("principal-a", "account-a", "manual")
 	if len(positions) != 1 || positions[0].Quantity != "3" {
 		t.Fatalf("restart positions=%+v", positions)
 	}
-	marked, err := replayed.ApplyMark("principal-a", ModeTest, "account-a", "manual", "lineage-a", "BTC-USDT", "133.3333333333333333", base.OccurredAt.Add(time.Minute))
+	marked, err := replayed.ApplyMark("principal-a", "account-a", "manual", "lineage-a", "BTC-USDT", "133.3333333333333333", base.OccurredAt.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +165,7 @@ func newRestartStore() *restartStore {
 func (store *restartStore) ApplyFill(_ context.Context, fill Fill, reduce func(Position) (Position, FillResult, error)) (Position, FillResult, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	key := positionKey(fill.PrincipalID, string(fill.Mode), fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)
+	key := positionKey(fill.PrincipalID, fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)
 	fillKey := positionKey(fill.PrincipalID, fill.FillID)
 	if recorded, ok := store.fills[fillKey]; ok {
 		if recorded.hash != FillFingerprint(fill) {
@@ -196,10 +182,10 @@ func (store *restartStore) ApplyFill(_ context.Context, fill Fill, reduce func(P
 	return position, result, nil
 }
 
-func (store *restartStore) ApplyMark(_ context.Context, principalID string, mode Mode, accountID, productID, lineageID, instrumentID string, reduce func(Position) (Position, error)) (Position, error) {
+func (store *restartStore) ApplyMark(_ context.Context, principalID string, accountID, productID, lineageID, instrumentID string, reduce func(Position) (Position, error)) (Position, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	key := positionKey(principalID, string(mode), accountID, productID, lineageID, instrumentID)
+	key := positionKey(principalID, accountID, productID, lineageID, instrumentID)
 	position, ok := store.positions[key]
 	if !ok {
 		return Position{}, errors.New("position not found")
@@ -215,16 +201,16 @@ func (store *restartStore) ApplyMark(_ context.Context, principalID string, mode
 func (store *restartStore) Upsert(_ context.Context, item Position) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.positions[positionKey(item.PrincipalID, string(item.Mode), item.AccountID, item.ProductID, item.LineageID, item.InstrumentID)] = item
+	store.positions[positionKey(item.PrincipalID, item.AccountID, item.ProductID, item.LineageID, item.InstrumentID)] = item
 	return nil
 }
 
-func (store *restartStore) List(_ context.Context, principalID string, mode Mode, accountID, productID string) ([]Position, error) {
+func (store *restartStore) List(_ context.Context, principalID string, accountID, productID string) ([]Position, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	items := make([]Position, 0)
 	for _, item := range store.positions {
-		if item.PrincipalID == principalID && item.Mode == mode && (accountID == "" || item.AccountID == accountID) && (productID == "" || item.ProductID == productID) {
+		if item.PrincipalID == principalID && (accountID == "" || item.AccountID == accountID) && (productID == "" || item.ProductID == productID) {
 			items = append(items, item)
 		}
 	}
@@ -239,11 +225,11 @@ type failingListStore struct {
 func (store *failingListStore) ApplyFill(context.Context, Fill, func(Position) (Position, FillResult, error)) (Position, FillResult, error) {
 	return Position{}, FillResult{}, nil
 }
-func (store *failingListStore) ApplyMark(context.Context, string, Mode, string, string, string, string, func(Position) (Position, error)) (Position, error) {
+func (store *failingListStore) ApplyMark(context.Context, string, string, string, string, string, func(Position) (Position, error)) (Position, error) {
 	return Position{}, nil
 }
 func (store *failingListStore) Upsert(context.Context, Position) error { return nil }
-func (store *failingListStore) List(ctx context.Context, _ string, _ Mode, _, _ string) ([]Position, error) {
+func (store *failingListStore) List(ctx context.Context, _ string, _, _ string) ([]Position, error) {
 	store.context = ctx
 	return nil, store.err
 }
@@ -255,7 +241,7 @@ func TestPersistentProjectionListContextPreservesRepositoryFailureAndContext(t *
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request"), "request-42")
 
-	items, err := projection.ListContext(ctx, "principal-a", ModeTest, "account-a", "manual")
+	items, err := projection.ListContext(ctx, "principal-a", "account-a", "manual")
 	if !errors.Is(err, cause) || items != nil {
 		t.Fatalf("ListContext() items=%v err=%v, want repository cause", items, err)
 	}

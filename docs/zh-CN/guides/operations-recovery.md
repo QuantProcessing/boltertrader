@@ -32,7 +32,7 @@ Doctor 按固定顺序跑一组检查，而这个顺序就是排查顺序：某�
 | --- | --- |
 | `docker` | 守护进程有响应 |
 | `.env.stack` | 存在且非空 |
-| `credentials` | 七个文件，权限 `0600`，位于 `.secrets/<mode>` |
+| `credentials` | 七个文件，权限 `0600`，位于 `.secrets/stack` |
 | `credential store` | 存在，且对 gateway 运行所用的 uid 可写 |
 | `postgres` | 端口可以接受连接 |
 | `postgres roles` | 六个角色、三个数据库、writer 成员资格已授予 |

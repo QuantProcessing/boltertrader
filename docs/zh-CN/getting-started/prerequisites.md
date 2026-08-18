@@ -55,7 +55,7 @@ COMPOSE = docker compose --env-file .env.stack -f compose.yaml
 容器里。`.env.stack` 由 `make up` 生成，只含端口、uid 和指向密钥文件的路径，并被
 Git 忽略。不要把两者合并，也不要在手工执行 compose 时省掉这个 flag。
 
-生成的凭证位于 `.secrets/test/`，目录 `0700`，每个文件 `0600`。它们被 Git 忽略，
+生成的凭证位于 `.secrets/stack/`，目录 `0700`，每个文件 `0600`。它们被 Git 忽略，
 缺失时由 `make up` 重新生成。
 
 ## Account 与凭证

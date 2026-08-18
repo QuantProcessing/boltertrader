@@ -3,8 +3,9 @@
 #
 # `make up` brings this up and the browser opens ${WEB_PORT}; the MVP loop can
 # also be driven against the auth edge directly on ${AUTHEDGE_PORT}.
-# Everything here is the test-mode stack; nothing in this file is a template for
-# a deployment. Four properties are load-bearing and each is explained where it
+# Everything here is a local development stack; nothing in this file is a
+# template for a deployment. Four properties are load-bearing and each is
+# explained where it
 # appears: every published port is bound to 127.0.0.1, secrets arrive as
 # bind-mounted 0600 files rather than compose `secrets:`, the migrators run to
 # completion before the services they serve start, and no container runs with
@@ -48,19 +49,20 @@ x-hardening: &hardening
   healthcheck:
     disable: true
 
-# Secrets are bind-mounted, not declared as compose `secrets:`. That is a
-# deliberate reversal of the obvious choice, forced by the services themselves:
-# readProtectedToken in cmd/trading and cmd/authedge requires the token file's
-# parent directory to be named for BT_MODE, and compose mounts every secret at
-# /run/secrets/<NAME>, whose parent is always literally `secrets`. The mode-scoped
-# path is what stops a live process from starting on test credentials, so the
-# mount moved rather than the check.
+# Secrets reach trading and the auth edge as a bind-mounted directory rather than
+# through compose's own `secrets:`, which is used just below for the gateway. The
+# rule that forced that split was readProtectedToken's: it required the token
+# file's parent directory to be named for BT_MODE, and compose mounts every
+# secret at /run/secrets/<NAME>, whose parent is always literally `secrets`. That
+# check is gone with the mode axis, and the two mechanisms would now be
+# interchangeable here — the bind mount stays because it is one line for the
+# seven files those two services name, against seven more declarations below.
 #
-# The same function also requires mode 0600, which a container only satisfies if
+# readProtectedToken still requires mode 0600, which a container only satisfies if
 # it runs as the uid that owns the file on the host — hence `user:` below. This
 # mount is read-only, so a compromised service cannot rewrite its own token.
 x-secrets: &secrets
-  - "${BT_SECRET_DIR:-./.secrets}/test:/etc/boltertrader/secrets/test:ro"
+  - "${BT_SECRET_DIR:-./.secrets}/stack:/etc/boltertrader/secrets/stack:ro"
 
 services:
   # ---------------------------------------------------------------------------
@@ -84,7 +86,7 @@ services:
       # password — see openDatabase in cmd/trading and cmd/authedge, which build
       # postgres://<role>@<host>/<db> and deliberately hold no credential they
       # could log. That is only defensible because the sole published port is
-      # bound to 127.0.0.1 below and the cluster holds nothing but test data.
+      # bound to 127.0.0.1 below and nothing outside this host can reach it.
       POSTGRES_HOST_AUTH_METHOD: trust
       # Without this the postmaster on some hosts dies at startup with
       # "postmaster became multithreaded during startup" before it logs anything
@@ -112,7 +114,7 @@ services:
       # pg_isready does not validate the user or database it is given — libpq
       # reports a reachable server as PQPING_OK regardless — so these two flags
       # only shape the log line, and the TCP gate above is what orders the stack.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bolter_gateway_test_migrator -d bolter_gateway_test"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bolter_gateway_migrator -d bolter_gateway"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -141,7 +143,7 @@ services:
     # cmd/gateway-migrate hard-codes all three of these and exits with
     # CROSS_MODE_DATABASE_IDENTITY on any other combination, so they are restated
     # rather than parameterised — a variable here could only ever be wrong.
-    command: ["-service", "gateway_test", "-database", "bolter_gateway_test", "-role", "bolter_gateway_test_migrator"]
+    command: ["-service", "gateway_test", "-database", "bolter_gateway", "-role", "bolter_gateway_migrator"]
     environment:
       # The gateway migrator connects by libpq service name, not a DSN, so the
       # host and port live in this file rather than in a flag.
@@ -158,7 +160,7 @@ services:
     image: *image
     build: *build
     entrypoint: ["/usr/local/bin/trading-migrate"]
-    command: ["-database", "bolter_trading_test", "-role", "bolter_trading_test", "-host", "postgres:5432"]
+    command: ["-database", "bolter_trading", "-role", "bolter_trading", "-host", "postgres:5432"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,7 +171,7 @@ services:
     image: *image
     build: *build
     entrypoint: ["/usr/local/bin/authedge-migrate"]
-    command: ["-database", "bolter_authedge_test", "-role", "bolter_authedge_test", "-host", "postgres:5432"]
+    command: ["-database", "bolter_authedge", "-role", "bolter_authedge", "-host", "postgres:5432"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -196,10 +198,10 @@ services:
     # rather than as "no store", and refuses to start.
     environment:
       BT_SECRET_KEY_SOURCE: file
-      BT_SECRET_MASTER_KEY_FILE: /etc/boltertrader/secrets/test/secret_master_key
+      BT_SECRET_MASTER_KEY_FILE: /etc/boltertrader/secrets/stack/secret_master_key
       BT_SECRET_MASTER_KEY_VERSION: v1
       BT_SECRET_STORE_DIR: /var/lib/boltertrader/secretstore
-      BT_SECRET_STORE_NAMESPACE: boltertrader/test
+      BT_SECRET_STORE_NAMESPACE: boltertrader
     # Written out rather than composed from *secrets: YAML merge keys cannot
     # append to a sequence. The store is the one writable path in the stack —
     # read_only above governs the image layer, not a bind mount declared rw —
@@ -207,7 +209,7 @@ services:
     # creates those owned by root while every service here runs as the host uid.
     volumes:
       - "${GATEWAY_CONFIG_FILE:-./docker/gateway.docker.yaml}:/etc/boltertrader/gateway.yaml:ro"
-      - "${BT_SECRET_DIR:-./.secrets}/test:/etc/boltertrader/secrets/test:ro"
+      - "${BT_SECRET_DIR:-./.secrets}/stack:/etc/boltertrader/secrets/stack:ro"
       - "${BT_SECRET_DIR:-./.secrets}/store:/var/lib/boltertrader/secretstore:rw"
     secrets:
       - GATEWAY_AUTH_TOKEN
@@ -226,10 +228,14 @@ services:
         condition: service_completed_successfully
     healthcheck:
       # An exec probe, because distroless has no shell for CMD-SHELL and no curl
-      # to call. The shim is the probe for a second reason as well: the Gateway
-      # wraps health in the same mode attestation as every other route and
-      # answers 409 without it, and the shim reads the mode out of the config
-      # below rather than being told it here.
+      # to call. The shim is the probe for a second reason as well: readiness
+      # sits behind the same auth as every other /v1 route and answers 401
+      # without a token, and the shim reads that token out of the config below
+      # through the Gateway's own loader rather than being handed it here.
+      #
+      # The probe used to carry a mode attestation too, which the Gateway
+      # required on every route and answered 409 without. There is one mode now
+      # and the header is gone from both ends.
       test: ["CMD", "/usr/local/bin/exchange-gateway-docker-support", "health", "-config", "/etc/boltertrader/gateway.yaml", "-kind", "ready"]
       interval: 10s
       timeout: 3s
@@ -246,15 +252,14 @@ services:
     build: *build
     entrypoint: ["/usr/local/bin/trading"]
     environment:
-      BT_MODE: test
       # 0.0.0.0 inside the container, with the opt-in that cmd/trading requires
       # for a non-loopback bind. The port is published to 127.0.0.1 below, so
       # the reachable surface is still loopback-only — but the process has to
       # bind the interface compose routes to, not its own namespace's loopback.
       BT_TRADING_LISTEN_ADDR: 0.0.0.0:18092
       BT_TRADING_ALLOW_NON_LOOPBACK_LISTEN: "true"
-      BT_TRADING_DATABASE: bolter_trading_test
-      BT_TRADING_DATABASE_ROLE: bolter_trading_test
+      BT_TRADING_DATABASE: bolter_trading
+      BT_TRADING_DATABASE_ROLE: bolter_trading
       BT_TRADING_DATABASE_HOST: postgres:5432
       BT_GATEWAY_URL: http://gateway:18080
       # Trading is the one service that uses both gateway planes: /v1 for orders
@@ -272,10 +277,10 @@ services:
       # nothing joins it that is not in this file, and the only ports that leave
       # it are the 127.0.0.1 mappings below.
       BT_TRADING_ALLOW_NON_LOOPBACK_UPSTREAM: "true"
-      BT_TRADING_SERVICE_TOKEN_FILE: /etc/boltertrader/secrets/test/trading_service_token
-      BT_GATEWAY_TOKEN_FILE: /etc/boltertrader/secrets/test/gateway_auth_token
-      BT_GATEWAY_INTERNAL_TOKEN_FILE: /etc/boltertrader/secrets/test/gateway_internal_auth_token
-      BT_MANUAL_PREVIEW_SIGNING_KEY_FILE: /etc/boltertrader/secrets/test/manual_preview_signing_key
+      BT_TRADING_SERVICE_TOKEN_FILE: /etc/boltertrader/secrets/stack/trading_service_token
+      BT_GATEWAY_TOKEN_FILE: /etc/boltertrader/secrets/stack/gateway_auth_token
+      BT_GATEWAY_INTERNAL_TOKEN_FILE: /etc/boltertrader/secrets/stack/gateway_internal_auth_token
+      BT_MANUAL_PREVIEW_SIGNING_KEY_FILE: /etc/boltertrader/secrets/stack/manual_preview_signing_key
     volumes: *secrets
     ports:
       - "127.0.0.1:${TRADING_PORT:-18092}:18092"
@@ -308,12 +313,18 @@ services:
     build: *build
     entrypoint: ["/usr/local/bin/authedge"]
     environment:
-      BT_MODE: test
       BT_AUTHEDGE_LISTEN_ADDR: 0.0.0.0:18091
       BT_AUTHEDGE_ALLOW_NON_LOOPBACK_LISTEN: "true"
-      BT_AUTHEDGE_DATABASE: bolter_authedge_test
-      BT_AUTHEDGE_DATABASE_ROLE: bolter_authedge_test
+      BT_AUTHEDGE_DATABASE: bolter_authedge
+      BT_AUTHEDGE_DATABASE_ROLE: bolter_authedge
       BT_AUTHEDGE_DATABASE_HOST: postgres:5432
+      # Stated rather than left to the default, because it used to be derived:
+      # the session cookie was Secure exactly when the mode was live, and this
+      # stack was never live. Nothing derives it now, so the operator asserts it,
+      # and here the assertion is false — this edge speaks plaintext http on a
+      # published loopback port, and a browser drops a Secure cookie handed to it
+      # over http, leaving a login form that clears itself and does nothing.
+      BT_AUTHEDGE_SECURE_COOKIE: "false"
       BT_TRADING_URL: http://trading:18092
       # The authority plane, not the capability plane. Every route this process
       # forwards to the gateway is an /internal/v1 account-lifecycle route — it
@@ -323,11 +334,11 @@ services:
       # Both upstreams are DNS names on the compose bridge; see the identical
       # opt-in on trading above for why the process cannot decide this itself.
       BT_AUTHEDGE_ALLOW_NON_LOOPBACK_UPSTREAM: "true"
-      BT_TRADING_SERVICE_TOKEN_FILE: /etc/boltertrader/secrets/test/trading_service_token
-      BT_GATEWAY_TOKEN_FILE: /etc/boltertrader/secrets/test/gateway_internal_auth_token
+      BT_TRADING_SERVICE_TOKEN_FILE: /etc/boltertrader/secrets/stack/trading_service_token
+      BT_GATEWAY_TOKEN_FILE: /etc/boltertrader/secrets/stack/gateway_internal_auth_token
       # The bootstrap operator. The username is not a secret; the password is
       # never present in any form — only its bcrypt hash, which `make up`
-      # generates into .secrets/test/ alongside the two tokens. A plaintext
+      # generates into .secrets/stack/ alongside the two tokens. A plaintext
       # BT_BOOTSTRAP_PASSWORD here would be rejected by cmd/authedge's
       # inline-secret check.
       #
@@ -336,7 +347,7 @@ services:
       # — and for one specific to this file: compose's .env parser expands `$` in
       # values, and a bcrypt hash is `$2a$10$…`.
       BT_BOOTSTRAP_USERNAME: ${BT_BOOTSTRAP_USERNAME:-operator}
-      BT_BOOTSTRAP_PASSWORD_HASH_FILE: /etc/boltertrader/secrets/test/bootstrap_password_hash
+      BT_BOOTSTRAP_PASSWORD_HASH_FILE: /etc/boltertrader/secrets/stack/bootstrap_password_hash
     volumes: *secrets
     ports:
       # The one port a browser uses. The MVP loop runs against this.
@@ -399,8 +410,8 @@ secrets:
   # .env.stack by `make up`, and a compose run without them should fail here
   # with the variable's name rather than start a gateway with no token.
   GATEWAY_AUTH_TOKEN:
-    file: ${GATEWAY_AUTH_TOKEN_FILE:?run make up to generate .env.stack and .secrets/test}
+    file: ${GATEWAY_AUTH_TOKEN_FILE:?run make up to generate .env.stack and .secrets/stack}
   GATEWAY_INTERNAL_AUTH_TOKEN:
-    file: ${GATEWAY_INTERNAL_AUTH_TOKEN_FILE:?run make up to generate .env.stack and .secrets/test}
+    file: ${GATEWAY_INTERNAL_AUTH_TOKEN_FILE:?run make up to generate .env.stack and .secrets/stack}
   GATEWAY_POSTGRES_DSN:
-    file: ${GATEWAY_POSTGRES_DSN_FILE:?run make up to generate .env.stack and .secrets/test}
+    file: ${GATEWAY_POSTGRES_DSN_FILE:?run make up to generate .env.stack and .secrets/stack}

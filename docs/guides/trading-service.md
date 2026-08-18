@@ -130,9 +130,16 @@ with one leg filled and one leg `uncertain`, which is exactly the state the
 ledger exists to hold. Reconciliation resolves each leg against its own venue,
 and the pair is whatever its legs turn out to be.
 
-Live writes are refused outright. `open`, `close`, and `cancel` all return
-`403 LIVE_PRIVATE_WRITE_DISABLED` in live mode; the product is test-mode only
-until it has evidence it does not yet have.
+All three actions sit behind the same live-write switch as every other private
+write: with it closed, `open`, `close`, and `cancel` return
+`403 LIVE_PRIVATE_WRITE_DISABLED` before anything reaches a venue.
+
+They used to be refused unconditionally, on the grounds that a pair could be
+exercised in the test tier until the product had evidence it did not yet have.
+That tier is gone, so the refusal has nowhere left to send anyone, and the
+switch is the only thing standing between an `open` and two real orders. The
+evidence gap it was standing in for has not closed — arbitrage has less behind
+it than the manual product does, and the switch does not know that.
 
 ## Reconciliation
 
@@ -192,9 +199,10 @@ venue budget the read spent.
 
 ## Storage
 
-The service owns its own database, `bolter_trading_<mode>`, connecting as the
-role of the same name. `cmd/trading` refuses to start unless both match, so a
-live process cannot open test data.
+The service owns its own database, `bolter_trading`, connecting as the role of
+the same name. `cmd/trading` pins both rather than accepting whatever it is
+given: nothing else checks them, so a typo would reconcile this service's orders
+against whatever schema happened to answer.
 
 Its tables are unqualified: the schema comes from the connection's
 `search_path`, so the same binary runs against `trading`, a throwaway test

@@ -34,19 +34,22 @@ const (
 	principalHeader     = "X-Bolter-Principal"
 	csrfHeader          = "X-CSRF-Token"
 
-	// The two upstreams named the same fact differently, and the proxy is
-	// where that has to be reconciled. Sending trading's name to the gateway
-	// would leave a mode-attested write unattested.
-	TradingModeHeader = "X-Bolter-Principal-Mode"
-	GatewayModeHeader = "X-Bolter-Mode"
+	// The two upstreams each read a mode attestation under their own header
+	// name — trading X-Bolter-Principal-Mode, the gateway X-Bolter-Mode — and
+	// reconciling that was this proxy's job. Neither header exists now, but
+	// both stay on the forgeable list: an inbound request carrying one is
+	// still someone probing, and it must not survive to be read as authority
+	// if an upstream ever grows a name back.
+	tradingModeHeader = "X-Bolter-Principal-Mode"
+	gatewayModeHeader = "X-Bolter-Mode"
 )
 
-// forgeableHeaders are deleted from every inbound request. The first three are
+// forgeableHeaders are deleted from every inbound request. The first two are
 // how the auth edge asserts identity downstream, so a request that arrives
 // carrying one is either a misconfigured proxy or someone probing; Cookie goes
 // with them because the session token stops here.
 var forgeableHeaders = []string{
-	authorizationHeader, principalHeader, TradingModeHeader, GatewayModeHeader, "Cookie",
+	authorizationHeader, principalHeader, tradingModeHeader, gatewayModeHeader, "Cookie",
 }
 
 // forwardedHeaders is an allowlist rather than a denylist, and it holds exactly
@@ -81,8 +84,6 @@ type Upstream struct {
 	// Token is the shared service token proving the caller is the auth edge.
 	// Everything downstream rests on this being unreachable from a browser.
 	Token string
-	// ModeHeader is the header this upstream reads the principal's mode from.
-	ModeHeader string
 }
 
 // String, GoString and MarshalJSON keep the service token out of any log line
@@ -156,9 +157,6 @@ func validateUpstream(name UpstreamName, upstream Upstream) error {
 	if len(upstream.Token) < 32 {
 		return httpx.ConfigErr(fmt.Sprintf("%s service token must be at least 32 bytes", name))
 	}
-	if upstream.ModeHeader != TradingModeHeader && upstream.ModeHeader != GatewayModeHeader {
-		return httpx.ConfigErr(fmt.Sprintf("%s upstream mode header is invalid", name))
-	}
 	return nil
 }
 
@@ -209,7 +207,7 @@ func (proxy *Proxy) authorize(w http.ResponseWriter, r *http.Request) (session.P
 		writeAuthRequired(w, r)
 		return session.Principal{}, false
 	}
-	if result.Principal.ID == "" || (result.Principal.Mode != "test" && result.Principal.Mode != "live") {
+	if result.Principal.ID == "" {
 		writeAuthRequired(w, r)
 		return session.Principal{}, false
 	}
@@ -257,7 +255,6 @@ func (proxy *Proxy) build(w http.ResponseWriter, r *http.Request, route Route, u
 	}
 	outbound.Header.Set(authorizationHeader, "Bearer "+upstream.Token)
 	outbound.Header.Set(principalHeader, principal.ID)
-	outbound.Header.Set(upstream.ModeHeader, principal.Mode)
 	if outbound.Header.Get("X-Request-Id") == "" {
 		outbound.Header.Set("X-Request-Id", httpx.RequestID(r))
 	}

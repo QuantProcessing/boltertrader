@@ -24,7 +24,7 @@ func TestTradingStoresImplementPlatformContracts(t *testing.T) {
 
 func TestSameLedgerEntryUsesPostgresTimestampPrecision(t *testing.T) {
 	original := ledger.Entry{PrincipalID: "principal-a",
-		EntryID: "entry-a", Mode: ledger.ModeTest, ProductID: "manual", LineageID: "lineage-a",
+		EntryID: "entry-a", ProductID: "manual", LineageID: "lineage-a",
 		AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding,
 		Amount: "1", Currency: "USDT", OccurredAt: time.Date(2026, 8, 8, 12, 0, 0, 789, time.FixedZone("test", 8*60*60)),
 	}

@@ -24,19 +24,15 @@ const maxRoutes = 32
 // Client implements lifecycle.GatewayDesiredClient against the authority.
 type Client struct {
 	authority httpapi.InternalAuthority
-	mode      secretstore.Mode
 }
 
 var _ lifecycle.GatewayDesiredClient = (*Client)(nil)
 
-func New(authority httpapi.InternalAuthority, mode secretstore.Mode) (*Client, error) {
+func New(authority httpapi.InternalAuthority) (*Client, error) {
 	if authority == nil {
 		return nil, errors.New("gateway authority is required")
 	}
-	if mode != secretstore.ModeTest && mode != secretstore.ModeLive {
-		return nil, errors.New("gateway authority mode is invalid")
-	}
-	return &Client{authority: authority, mode: mode}, nil
+	return &Client{authority: authority}, nil
 }
 
 // Error is the lifecycle-facing view of an authority rejection. It carries a
@@ -65,7 +61,7 @@ func (err Error) Error() string {
 
 func (client *Client) ApplyDesired(ctx context.Context, apply lifecycle.DesiredApply) (lifecycle.GatewayRuntimeTruth, error) {
 	operationID, err := secretstore.ParseOperationID(string(apply.OperationID))
-	if err != nil || apply.Account.Mode != client.mode || apply.Account.Validate() != nil ||
+	if err != nil || apply.Account.Validate() != nil ||
 		!validRequestedState(string(apply.Account.State)) || len(apply.Account.Routes) > maxRoutes {
 		return lifecycle.GatewayRuntimeTruth{}, errors.New("gateway desired request is invalid")
 	}
@@ -88,7 +84,7 @@ func (client *Client) ApplyDesired(ctx context.Context, apply lifecycle.DesiredA
 		RequestedState: string(apply.Account.State), Routes: routes,
 	}
 	view, err := client.runtimeView(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityApplyDesired, Mode: string(client.mode),
+		Operation: httpapi.AuthorityApplyDesired,
 		AccountID: apply.Account.ID, OperationID: desired.OperationID, DesiredApply: &desired,
 	}, true)
 	if err != nil {
@@ -102,7 +98,7 @@ func (client *Client) GetRuntimeTruth(ctx context.Context, accountID string) (li
 		return lifecycle.GatewayRuntimeTruth{}, errors.New("gateway runtime truth request is invalid")
 	}
 	view, err := client.runtimeView(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityGetRuntimeAccount, Mode: string(client.mode), AccountID: accountID,
+		Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: accountID,
 	}, false)
 	if err != nil {
 		return lifecycle.GatewayRuntimeTruth{}, err
@@ -122,7 +118,7 @@ func (client *Client) RetireAccount(ctx context.Context, retire lifecycle.Retire
 		CredentialVersion: retire.CredentialVersion,
 	}
 	view, err := client.runtimeView(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityRetireDesired, Mode: string(client.mode),
+		Operation: httpapi.AuthorityRetireDesired,
 		AccountID: retire.AccountID, OperationID: retirement.OperationID, Retirement: &retirement,
 	}, true)
 	if err != nil {
@@ -145,7 +141,7 @@ func (client *Client) FinalizeRotation(ctx context.Context, cleanup lifecycle.Ro
 		ExpectedRetiringFence: authorityFence(cleanup.ExpectedRetiringFence),
 	}
 	response, err := client.execute(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityFinalizeRotation, Mode: string(client.mode),
+		Operation: httpapi.AuthorityFinalizeRotation,
 		AccountID: cleanup.AccountID, OperationID: finalization.OperationID, RotationFinalization: &finalization,
 	}, true)
 	if err != nil {

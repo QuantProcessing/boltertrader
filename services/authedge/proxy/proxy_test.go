@@ -59,7 +59,7 @@ type harness struct {
 func newHarness(t *testing.T, configure func(*Options)) *harness {
 	t.Helper()
 	h := &harness{
-		sessions: &fakeSessions{principal: session.Principal{ID: "browser-session", Mode: "test"}},
+		sessions: &fakeSessions{principal: session.Principal{ID: "browser-session"}},
 		trading:  &capture{},
 		gateway:  &capture{},
 	}
@@ -69,8 +69,8 @@ func newHarness(t *testing.T, configure func(*Options)) *harness {
 	t.Cleanup(gatewayUpstream.Close)
 
 	options := Options{
-		Trading:  Upstream{BaseURL: mustURL(t, tradingUpstream.URL), Token: testToken, ModeHeader: TradingModeHeader},
-		Gateway:  Upstream{BaseURL: mustURL(t, gatewayUpstream.URL), Token: testToken + "-gateway", ModeHeader: GatewayModeHeader},
+		Trading:  Upstream{BaseURL: mustURL(t, tradingUpstream.URL), Token: testToken},
+		Gateway:  Upstream{BaseURL: mustURL(t, gatewayUpstream.URL), Token: testToken + "-gateway"},
 		Sessions: h.sessions,
 	}
 	if configure != nil {
@@ -152,13 +152,13 @@ func errorCode(t *testing.T, response *http.Response) string {
 // browser must not be able to name itself.
 func TestForgedIdentityHeadersAreStripped(t *testing.T) {
 	h := newHarness(t, nil)
-	h.sessions.principal = session.Principal{ID: "real-principal", Mode: "test"}
+	h.sessions.principal = session.Principal{ID: "real-principal"}
 
 	response := h.do(t, http.MethodGet, "/api/v1/positions", map[string]string{
 		"Authorization":         "Bearer stolen-service-token",
 		"X-Bolter-Principal":    "someone-else",
-		TradingModeHeader:       "live",
-		GatewayModeHeader:       "live",
+		tradingModeHeader:       "live",
+		gatewayModeHeader:       "live",
 		"X-Forwarded-For":       "10.0.0.1",
 		"X-Some-Unknown-Header": "smuggled",
 	}, "")
@@ -171,39 +171,36 @@ func TestForgedIdentityHeadersAreStripped(t *testing.T) {
 	if got := h.trading.header.Get(principalHeader); got != "real-principal" {
 		t.Fatalf("principal = %q, want the session's principal", got)
 	}
-	if got := h.trading.header.Get(TradingModeHeader); got != "test" {
-		t.Fatalf("mode = %q, want the session's mode", got)
-	}
 	if got := h.trading.header.Get("Cookie"); got != "" {
 		t.Fatalf("Cookie = %q, want the session token to stop at the edge", got)
 	}
-	for _, name := range []string{"X-Forwarded-For", "X-Some-Unknown-Header"} {
+	// The two mode headers are in here rather than in a test of their own: no
+	// upstream reads either one now, so there is nothing left to assert about
+	// them except that a browser still cannot smuggle one through. That is the
+	// same claim this test makes about every other header it sends.
+	for _, name := range []string{tradingModeHeader, gatewayModeHeader, "X-Forwarded-For", "X-Some-Unknown-Header"} {
 		if got := h.trading.header.Get(name); got != "" {
 			t.Fatalf("%s = %q, want an allowlist that drops it", name, got)
 		}
 	}
 }
 
-// TestModeHeaderIsPerUpstream guards the one place the two services disagree on
-// vocabulary. Sending the wrong name leaves a mode-attested write unattested.
-func TestModeHeaderIsPerUpstream(t *testing.T) {
+// TestEachUpstreamGetsItsOwnServiceToken guards the one thing that is still per
+// upstream. The two services authenticate the edge with different credentials,
+// and handing one the other's token would fail as an authorization error at the
+// far end — the shape of failure that reads like "the gateway is down" rather
+// than "the proxy crossed two wires".
+func TestEachUpstreamGetsItsOwnServiceToken(t *testing.T) {
 	h := newHarness(t, nil)
-	h.sessions.principal = session.Principal{ID: "p", Mode: "live"}
 
 	h.do(t, http.MethodGet, "/api/v1/positions", nil, "")
-	if got := h.trading.header.Get(TradingModeHeader); got != "live" {
-		t.Fatalf("trading %s = %q, want live", TradingModeHeader, got)
-	}
-	if got := h.trading.header.Get(GatewayModeHeader); got != "" {
-		t.Fatalf("trading received the gateway's mode header: %q", got)
+	if got := h.trading.header.Get(authorizationHeader); got != "Bearer "+testToken {
+		t.Fatalf("trading Authorization = %q, want trading's token", got)
 	}
 
 	h.do(t, http.MethodGet, "/api/v1/accounts", nil, "")
-	if got := h.gateway.header.Get(GatewayModeHeader); got != "live" {
-		t.Fatalf("gateway %s = %q, want live", GatewayModeHeader, got)
-	}
-	if got := h.gateway.header.Get(TradingModeHeader); got != "" {
-		t.Fatalf("gateway received trading's mode header: %q", got)
+	if got := h.gateway.header.Get(authorizationHeader); got != "Bearer "+testToken+"-gateway" {
+		t.Fatalf("gateway Authorization = %q, want the gateway's token", got)
 	}
 }
 
@@ -373,18 +370,23 @@ func TestMissingOrInvalidSessionIsUnauthorized(t *testing.T) {
 	}
 }
 
-// TestPrincipalWithoutModeIsRejected stops a half-built principal from being
-// forwarded: an empty mode header would fail the gateway's attestation check
-// with a confusing error, and an empty principal would assert nobody.
-func TestPrincipalWithoutModeIsRejected(t *testing.T) {
-	for _, principal := range []session.Principal{
-		{ID: "p", Mode: ""}, {ID: "p", Mode: "staging"}, {ID: "", Mode: "test"},
-	} {
-		h := newHarness(t, nil)
-		h.sessions.principal = principal
-		if got := h.do(t, http.MethodGet, "/api/v1/positions", nil, "").StatusCode; got != http.StatusUnauthorized {
-			t.Fatalf("principal %+v: status = %d, want 401", principal, got)
-		}
+// TestNamelessPrincipalIsRejected stops a half-built principal from being
+// forwarded. The session service can only return one of these by failing
+// silently, and the upstreams cannot tell an empty principal header from a
+// request that was never meant to carry one — so the edge refuses rather than
+// asserting nobody.
+//
+// This used to check the mode attestation too, and rejected a principal whose
+// mode was empty or unrecognised. There is no mode to attest now; the name is
+// all a principal is.
+func TestNamelessPrincipalIsRejected(t *testing.T) {
+	h := newHarness(t, nil)
+	h.sessions.principal = session.Principal{ID: ""}
+	if got := h.do(t, http.MethodGet, "/api/v1/positions", nil, "").StatusCode; got != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", got)
+	}
+	if h.trading.path != "" {
+		t.Fatalf("a nameless principal reached trading: %q", h.trading.path)
 	}
 }
 
@@ -503,8 +505,8 @@ func TestRegisterMountsEveryRoute(t *testing.T) {
 
 	mux := http.NewServeMux()
 	proxy, err := New(Options{
-		Trading:  Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken, ModeHeader: TradingModeHeader},
-		Gateway:  Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken, ModeHeader: GatewayModeHeader},
+		Trading:  Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken},
+		Gateway:  Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken},
 		Sessions: &fakeSessions{},
 	})
 	if err != nil {
@@ -557,8 +559,8 @@ func TestRoutesIsACopy(t *testing.T) {
 func TestNewValidatesWiring(t *testing.T) {
 	valid := func() Options {
 		return Options{
-			Trading:  Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken, ModeHeader: TradingModeHeader},
-			Gateway:  Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken, ModeHeader: GatewayModeHeader},
+			Trading:  Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken},
+			Gateway:  Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken},
 			Sessions: &fakeSessions{},
 		}
 	}
@@ -568,9 +570,6 @@ func TestNewValidatesWiring(t *testing.T) {
 		"no gateway host": func(o *Options) { o.Gateway.BaseURL = mustURL(t, "http:///v1") },
 		"non-http scheme": func(o *Options) { o.Trading.BaseURL = mustURL(t, "ftp://trading.invalid") },
 		"short token":     func(o *Options) { o.Trading.Token = "short" },
-		"wrong mode header": func(o *Options) {
-			o.Gateway.ModeHeader = TradingModeHeader + "-typo"
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			options := valid()
@@ -585,9 +584,9 @@ func TestNewValidatesWiring(t *testing.T) {
 // TestServiceTokensDoNotRender keeps the one credential that unlocks both
 // upstreams out of any log line that happens to print the proxy.
 func TestServiceTokensDoNotRender(t *testing.T) {
-	upstream := Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken, ModeHeader: TradingModeHeader}
+	upstream := Upstream{BaseURL: mustURL(t, "http://trading.invalid"), Token: testToken}
 	proxy, err := New(Options{
-		Trading: upstream, Gateway: Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken, ModeHeader: GatewayModeHeader},
+		Trading: upstream, Gateway: Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken},
 		Sessions: &fakeSessions{},
 	})
 	if err != nil {
@@ -614,7 +613,7 @@ func TestSessionServiceSatisfiesSessions(t *testing.T) {
 		t.Fatalf("hash: %v", err)
 	}
 	service, err := session.New(session.Options{
-		Username: "operator", PasswordHash: hash, Mode: "test", TTL: time.Hour,
+		Username: "operator", PasswordHash: hash, TTL: time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("session.New: %v", err)
@@ -628,8 +627,8 @@ func TestSessionServiceSatisfiesSessions(t *testing.T) {
 	upstream := httptest.NewServer(recorder(trading, nil))
 	defer upstream.Close()
 	proxy, err := New(Options{
-		Trading:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken, ModeHeader: TradingModeHeader},
-		Gateway:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken, ModeHeader: GatewayModeHeader},
+		Trading:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken},
+		Gateway:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken},
 		Sessions: service,
 	})
 	if err != nil {

@@ -15,23 +15,22 @@ import (
 
 type runtimeProjectionFixture struct {
 	principal string
-	mode      string
 	accountID string
 	items     []AccountRuntimeProjection
 }
 
-func (fixture *runtimeProjectionFixture) ListAccountRuntimes(_ context.Context, principal, mode, accountID string) ([]AccountRuntimeProjection, error) {
-	fixture.principal, fixture.mode, fixture.accountID = principal, mode, accountID
+func (fixture *runtimeProjectionFixture) ListAccountRuntimes(_ context.Context, principal, accountID string) ([]AccountRuntimeProjection, error) {
+	fixture.principal, fixture.accountID = principal, accountID
 	return fixture.items, nil
 }
 
 type commandProjectionFixture struct {
 	commands map[string][]orders.Command
-	calls    [][3]string
+	calls    [][2]string
 }
 
-func (fixture *commandProjectionFixture) ListOwned(_ context.Context, principal string, mode orders.Mode, productID string) ([]orders.Command, error) {
-	fixture.calls = append(fixture.calls, [3]string{principal, string(mode), productID})
+func (fixture *commandProjectionFixture) ListOwned(_ context.Context, principal string, productID string) ([]orders.Command, error) {
+	fixture.calls = append(fixture.calls, [2]string{principal, productID})
 	return append([]orders.Command(nil), fixture.commands[productID]...), nil
 }
 
@@ -45,10 +44,10 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := activity.Publish(ActivityRecord{PrincipalID: testPrincipalID, Mode: "test", Kind: "account.runtime.updated", AccountID: "account-a", ResourceID: "account-a", Payload: map[string]any{"ready": true}}); err != nil {
+	if _, err := activity.Publish(ActivityRecord{PrincipalID: testPrincipalID, Kind: "account.runtime.updated", AccountID: "account-a", ResourceID: "account-a", Payload: map[string]any{"ready": true}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := activity.Publish(ActivityRecord{PrincipalID: "other-principal", Mode: "test", Kind: "command.accepted", ProductID: "manual", ResourceID: "other-command"}); err != nil {
+	if _, err := activity.Publish(ActivityRecord{PrincipalID: "other-principal", Kind: "command.accepted", ProductID: "manual", ResourceID: "other-command"}); err != nil {
 		t.Fatal(err)
 	}
 	runtimes := &runtimeProjectionFixture{items: []AccountRuntimeProjection{{
@@ -58,11 +57,11 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	}}}
 	commands := &commandProjectionFixture{commands: map[string][]orders.Command{
 		"manual": {
-			{CommandID: "manual-command", PrincipalID: testPrincipalID, AccountID: "account-a", LineageID: "manual-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "manual-key", CommandKind: "order.place", State: orders.StateFilled, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExecutionEvidence: orders.ExecutionEvidence{Fills: []orders.FillEvidence{{FillID: "fill-a", AccountID: "account-a", InstrumentID: "btc-usdt", Side: "buy", Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}},
-			{CommandID: "submitted-command", PrincipalID: testPrincipalID, AccountID: "account-b", LineageID: "submitted-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "submitted-key", CommandKind: "order.place", State: orders.StateSubmitted, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Minute)},
+			{CommandID: "manual-command", PrincipalID: testPrincipalID, AccountID: "account-a", LineageID: "manual-lineage", ProductID: "manual", IdempotencyKey: "manual-key", CommandKind: "order.place", State: orders.StateFilled, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExecutionEvidence: orders.ExecutionEvidence{Fills: []orders.FillEvidence{{FillID: "fill-a", AccountID: "account-a", InstrumentID: "btc-usdt", Side: "buy", Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}},
+			{CommandID: "submitted-command", PrincipalID: testPrincipalID, AccountID: "account-b", LineageID: "submitted-lineage", ProductID: "manual", IdempotencyKey: "submitted-key", CommandKind: "order.place", State: orders.StateSubmitted, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Minute)},
 		},
 	}}
-	principal := func(*http.Request) (string, string, error) { return testPrincipalID, "test", nil }
+	principal := func(*http.Request) (string, error) { return testPrincipalID, nil }
 	mux := http.NewServeMux()
 	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: runtimes, Commands: commands, Activity: activity, Principal: principal}); err != nil {
 		t.Fatal(err)
@@ -96,22 +95,22 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 			}
 		}
 	}
-	if runtimes.principal != testPrincipalID || runtimes.mode != "test" || runtimes.accountID != "account-a" {
-		t.Fatalf("runtime scope=%q/%q/%q", runtimes.principal, runtimes.mode, runtimes.accountID)
+	if runtimes.principal != testPrincipalID || runtimes.accountID != "account-a" {
+		t.Fatalf("runtime scope=%q/%q", runtimes.principal, runtimes.accountID)
 	}
 	if len(commands.calls) != 2 {
 		t.Fatalf("command projection calls=%+v", commands.calls)
 	}
 	for _, call := range commands.calls {
-		if call[0] != testPrincipalID || call[1] != "test" || call[2] != "manual" {
+		if call[0] != testPrincipalID || call[1] != "manual" {
 			t.Fatalf("unscoped command projection call=%+v", call)
 		}
 	}
-	replayed, err := hub.ReplayScoped("", testPrincipalID, "test")
+	replayed, err := hub.ReplayScoped("", testPrincipalID)
 	if err != nil || len(replayed) != 1 {
 		t.Fatalf("SSE replay=%+v err=%v", replayed, err)
 	}
-	otherReplay, err := hub.ReplayScoped("", "other-principal", "test")
+	otherReplay, err := hub.ReplayScoped("", "other-principal")
 	if err != nil || len(otherReplay) != 1 || otherReplay[0].EventID == replayed[0].EventID {
 		t.Fatalf("other-principal SSE replay=%+v err=%v", otherReplay, err)
 	}
@@ -122,7 +121,7 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 }
 
 func TestBrowserProjectionRoutesRejectUnknownFilters(t *testing.T) {
-	principal := func(*http.Request) (string, string, error) { return testPrincipalID, "test", nil }
+	principal := func(*http.Request) (string, error) { return testPrincipalID, nil }
 	mux := http.NewServeMux()
 	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: &runtimeProjectionFixture{}, Commands: &commandProjectionFixture{}, Activity: mustActivityLog(t), Principal: principal}); err != nil {
 		t.Fatal(err)

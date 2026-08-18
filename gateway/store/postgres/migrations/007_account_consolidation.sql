@@ -8,19 +8,8 @@ ALTER TABLE gateway_desired_accounts ALTER COLUMN secret_ref DROP NOT NULL;
 
 ALTER TABLE gateway_desired_accounts
     ADD COLUMN display_name text NOT NULL DEFAULT '',
-    ADD COLUMN mode text NOT NULL DEFAULT 'test',
     ADD COLUMN product_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
     ADD COLUMN last_validated_at timestamptz;
-
-ALTER TABLE gateway_desired_accounts
-    ADD CONSTRAINT gateway_desired_accounts_mode_check
-    CHECK (mode IN ('test', 'live'));
-
--- routeprofile only mints live profiles for the live native environment, so the
--- mode default can never silently mislabel a live account: it fails loudly.
-ALTER TABLE gateway_desired_accounts
-    ADD CONSTRAINT gateway_desired_accounts_mode_environment_check
-    CHECK ((mode = 'live') = (venue_environment = 'live'));
 
 ALTER TABLE gateway_desired_accounts
     ADD CONSTRAINT gateway_desired_accounts_product_ids_check
@@ -50,7 +39,6 @@ CREATE TABLE gateway_credential_operations (
     operation_id text PRIMARY KEY,
     principal_id text NOT NULL,
     account_id text NOT NULL REFERENCES gateway_desired_accounts(account_id) ON DELETE CASCADE,
-    mode text NOT NULL,
     kind text NOT NULL,
     state text NOT NULL,
     idempotency_key_digest text NOT NULL,
@@ -64,8 +52,7 @@ CREATE TABLE gateway_credential_operations (
     stable_error_code text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (mode, principal_id, kind, idempotency_key_digest),
-    CHECK (mode IN ('test', 'live')),
+    UNIQUE (principal_id, kind, idempotency_key_digest),
     CHECK (kind IN ('create', 'rotate', 'retire')),
     CHECK (state IN ('awaiting_material', 'stored', 'applying', 'active', 'cleanup_pending', 'abandoned', 'failed')),
     CHECK (target_desired_state_revision > 0),

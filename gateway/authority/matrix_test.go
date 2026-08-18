@@ -70,13 +70,13 @@ func TestMatricesRejectUnknownDuplicateOrUnsafeObjects(t *testing.T) {
 	}
 }
 
-func TestMatricesFreezeExactTestRoleTopology(t *testing.T) {
+func TestMatricesFreezeExactRoleTopology(t *testing.T) {
 	platform := authority.PlatformV15().Roles
-	if platform.Maintenance != "bolter_platform_test_admin" || platform.Migrator != "bolter_platform_test_migrator" || platform.Runtime != "bolter_platform_test" || platform.Writer != "bolter_platform_test_writer" {
+	if platform.Maintenance != "bolter_platform_admin" || platform.Migrator != "bolter_platform_migrator" || platform.Runtime != "bolter_platform" || platform.Writer != "bolter_platform_writer" {
 		t.Fatalf("platform roles=%+v", platform)
 	}
 	gateway := authority.GatewayV8().Roles
-	if gateway.Maintenance != "bolter_platform_test_admin" || gateway.Migrator != "bolter_gateway_test_migrator" || gateway.Runtime != "bolter_gateway_test" || gateway.Writer != "bolter_gateway_test_writer" {
+	if gateway.Maintenance != "bolter_platform_admin" || gateway.Migrator != "bolter_gateway_migrator" || gateway.Runtime != "bolter_gateway" || gateway.Writer != "bolter_gateway_writer" {
 		t.Fatalf("gateway roles=%+v", gateway)
 	}
 }

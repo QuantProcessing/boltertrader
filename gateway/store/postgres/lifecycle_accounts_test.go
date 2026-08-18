@@ -31,7 +31,6 @@ func lifecycleTestAccount(t *testing.T) lifecycle.Account {
 		ID:               string(testAccountID(t)),
 		Venue:            "binance",
 		VenueEnvironment: lifecycle.EnvironmentLive,
-		Mode:             secretstore.ModeTest,
 		DisplayName:      "Binance Primary",
 		ProductIDs:       []string{"manual"},
 		Routes: []lifecycle.AccountRoute{
@@ -52,7 +51,6 @@ func lifecycleTestOperation(account lifecycle.Account, id string, kind lifecycle
 		ID:                         secretstore.OperationID(id),
 		PrincipalID:                "principal-a",
 		AccountID:                  account.ID,
-		Mode:                       account.Mode,
 		Kind:                       kind,
 		State:                      state,
 		IdempotencyKeyDigest:       "digest-" + id,
@@ -81,7 +79,7 @@ func TestLifecycleStoreRoundTripsDraftAccountsAndRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if loaded.DisplayName != account.DisplayName || loaded.Mode != account.Mode ||
+	if loaded.DisplayName != account.DisplayName ||
 		loaded.VenueEnvironment != account.VenueEnvironment || loaded.NativeEnvironment != account.VenueEnvironment {
 		t.Fatalf("identity round trip = %+v", loaded)
 	}

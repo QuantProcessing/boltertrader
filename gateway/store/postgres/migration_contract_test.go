@@ -105,6 +105,10 @@ func TestDesiredAccountMigrationFreezesRecoveryAndCredentialFences(t *testing.T)
 		"rotation_from_credential_version", "rotation_to_credential_version",
 		"rotation_from_runtime_generation", "rotation_to_runtime_generation",
 		"requested_state in ('creating', 'active', 'rotating', 'draining')",
+		// The venue environment is pinned rather than enumerated. This column
+		// used to be cross-checked against a mode column on the same row; the
+		// mode axis is gone, and the pin is the whole of what is left to say.
+		"check (venue_environment = 'live')",
 	}
 	for _, value := range required {
 		if !strings.Contains(sql, value) {
@@ -127,6 +131,10 @@ func TestRuntimeSnapshotMigrationFreezesImmutableHeadsAndRecovery(t *testing.T) 
 		"gateway_desired_operations", "references gateway_runtime_snapshots(operation_id)",
 		"gateway_candidate_observations", "gateway_retiring_generations",
 		"gateway_retired_secret_refs", "gateway_desired_operations_recovery",
+		// Same pin as the desired-account row, on the venue's own environment
+		// string, and for the same reason: the mode column that used to be
+		// cross-checked against it no longer exists.
+		"check (native_environment = 'live')",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("runtime snapshot migration missing %q", required)
@@ -175,7 +183,7 @@ func TestRotationFinalizationMigrationFreezesExactReplayProof(t *testing.T) {
 		"active_snapshot_id uuid not null", "retiring_snapshot_id uuid not null unique",
 		"expected_active_desired_state_revision bigint not null", "expected_retiring_desired_state_revision bigint not null",
 		"retired_secret_ref text not null", "tombstone_revision bigint not null",
-		"mode text not null", "namespace text not null", "key_version text not null",
+		"namespace text not null", "key_version text not null",
 		"retiring_state in ('retired')", "secret_reference_state in ('tombstoned')",
 		"completed_at timestamptz not null",
 		"expected_active_desired_state_revision = expected_retiring_desired_state_revision + 1",
@@ -187,7 +195,7 @@ func TestRotationFinalizationMigrationFreezesExactReplayProof(t *testing.T) {
 		"foreign key (active_snapshot_id, account_id, expected_active_desired_state_revision, expected_active_runtime_generation, expected_active_credential_version)",
 		"foreign key (account_id, retiring_snapshot_id)",
 		"foreign key (retiring_snapshot_id, account_id, expected_retiring_desired_state_revision, expected_retiring_runtime_generation, expected_retiring_credential_version, retired_secret_ref)",
-		"foreign key (mode, namespace, retired_secret_ref, account_id)",
+		"foreign key (namespace, retired_secret_ref, account_id)",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("rotation finalization migration missing %q", required)
@@ -202,11 +210,8 @@ func TestAccountConsolidationMigrationFreezesTheSingleAccountAuthority(t *testin
 		// living in a second account table.
 		"alter table gateway_desired_accounts",
 		"add column display_name text not null",
-		"add column mode text not null",
 		"add column product_ids jsonb not null",
 		"add column last_validated_at timestamptz",
-		"check (mode in ('test', 'live'))",
-		"check ((mode = 'live') = (venue_environment = 'live'))",
 		"check (jsonb_typeof(product_ids) = 'array')",
 		// A credential-free row is only legitimate mid-create.
 		"alter column secret_ref drop not null",
@@ -219,7 +224,7 @@ func TestAccountConsolidationMigrationFreezesTheSingleAccountAuthority(t *testin
 		"gateway_credential_operations",
 		"check (kind in ('create', 'rotate', 'retire'))",
 		"check (state in ('awaiting_material', 'stored', 'applying', 'active', 'cleanup_pending', 'abandoned', 'failed'))",
-		"unique (mode, principal_id, kind, idempotency_key_digest)",
+		"unique (principal_id, kind, idempotency_key_digest)",
 		"check (target_desired_state_revision > 0)",
 		"check (target_runtime_generation > 0)",
 		"check (target_credential_version > 0)",

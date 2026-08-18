@@ -6,14 +6,12 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 )
 
 const (
-	modeEnv             = "BT_MODE"
 	listenAddrEnv       = "BT_TRADING_LISTEN_ADDR"
 	databaseEnv         = "BT_TRADING_DATABASE"
 	databaseRoleEnv     = "BT_TRADING_DATABASE_ROLE"
@@ -41,7 +39,6 @@ const (
 )
 
 type config struct {
-	Mode                     string
 	ListenAddr               string
 	DatabaseName             string
 	DatabaseRole             string
@@ -69,7 +66,6 @@ func load() (config, error) {
 		}
 	}
 	cfg := config{
-		Mode:               strings.TrimSpace(os.Getenv(modeEnv)),
 		ListenAddr:         getenv(listenAddrEnv, "127.0.0.1:18092"),
 		DatabaseName:       strings.TrimSpace(os.Getenv(databaseEnv)),
 		DatabaseRole:       strings.TrimSpace(os.Getenv(databaseRoleEnv)),
@@ -77,18 +73,12 @@ func load() (config, error) {
 		GatewayURL:         strings.TrimSpace(os.Getenv(gatewayURLEnv)),
 		GatewayInternalURL: strings.TrimSpace(os.Getenv(gatewayInternalURLEnv)),
 	}
-	if cfg.Mode != "test" && cfg.Mode != "live" {
-		return config{}, fmt.Errorf("%s must be test or live", modeEnv)
-	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(livePrivateWritesEnv))) {
 	case "", "false":
 	case "true":
 		cfg.LivePrivateWritesEnabled = true
 	default:
 		return config{}, fmt.Errorf("%s must be true or false", livePrivateWritesEnv)
-	}
-	if cfg.LivePrivateWritesEnabled && cfg.Mode != "live" {
-		return config{}, fmt.Errorf("%s requires %s=live", livePrivateWritesEnv, modeEnv)
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(allowNonLoopbackEnv))) {
 	case "", "false":
@@ -112,10 +102,10 @@ func load() (config, error) {
 	if err := validateListenAddr(cfg.ListenAddr, cfg.AllowNonLoopbackListen); err != nil {
 		return config{}, err
 	}
-	// The database is named for the mode it holds. A live process pointed at
-	// the test database would reconcile live orders against test state, and the
-	// name is the only check available before the first write.
-	wantDatabase := "bolter_trading_" + cfg.Mode
+	// The database name is pinned rather than accepted as given. Nothing else
+	// checks it, so a typo would reconcile this service's orders against
+	// whatever schema happened to answer.
+	const wantDatabase = "bolter_trading"
 	if cfg.DatabaseName != wantDatabase || cfg.DatabaseRole != wantDatabase {
 		return config{}, fmt.Errorf("%s and %s must both be %s", databaseEnv, databaseRoleEnv, wantDatabase)
 	}
@@ -156,7 +146,7 @@ func load() (config, error) {
 		secrets = append(secrets, secretFile{gatewayInternalTokenFileEnv, &cfg.GatewayInternalToken})
 	}
 	for _, secret := range secrets {
-		value, err := readProtectedToken(os.Getenv(secret.env), secret.env, cfg.Mode)
+		value, err := readProtectedToken(os.Getenv(secret.env), secret.env)
 		if err != nil {
 			cfg.clear()
 			return config{}, err
@@ -220,16 +210,19 @@ func validateGatewayURL(rawURL, envName string, allowNonLoopback bool) error {
 }
 
 // readProtectedToken enforces the same file discipline the auth edge uses: a
-// regular 0600 file, scoped to a directory named for the mode, holding opaque
-// printable bytes. The mode-scoped path is what stops a live process from
-// silently starting with test credentials that happen to be readable.
-func readProtectedToken(path, envName, mode string) ([]byte, error) {
+// regular 0600 file holding opaque printable bytes.
+//
+// The path also had to sit in a directory named for the mode, which is what
+// stopped a live process from silently starting with test credentials that
+// happened to be readable. One set of credentials is all there is now, so that
+// check had nothing left to discriminate between. What remains is the part that
+// was always carrying the weight: a token this service will spend on a real
+// exchange must be a file only its owner can read, never a value that shows up
+// in a process listing.
+func readProtectedToken(path, envName string) ([]byte, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, fmt.Errorf("%s is required", envName)
-	}
-	if filepath.Base(filepath.Dir(filepath.Clean(path))) != mode {
-		return nil, fmt.Errorf("%s must be scoped to %s %s", envName, modeEnv, mode)
 	}
 	info, err := os.Lstat(path)
 	if err != nil {

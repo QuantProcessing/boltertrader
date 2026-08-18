@@ -995,7 +995,7 @@ func TestCandidateLosingAccountOwnershipRaceIsDestroyedAndNotInstalled(t *testin
 	if _, err := manager.RetireRuntime(context.Background(), store.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1123,7 +1123,7 @@ func TestRetirementWithoutLocalActiveRuntimeChecksDurableActiveBlockers(t *testi
 			_, err := manager.RetireRuntime(context.Background(), store.RetirementRequest{
 				OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 				TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-				Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+				Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 			})
 			if !errors.Is(err, ErrRuntimeBlocked) {
 				t.Fatalf("retirement with blockers err=%v", err)
@@ -1156,7 +1156,7 @@ func TestRetirementAfterFailedRestoreChecksDurableActiveBlockers(t *testing.T) {
 	_, err := manager.RetireRuntime(context.Background(), store.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	})
 	if !errors.Is(err, ErrRuntimeBlocked) || lifecycle.blockerCalls() != 1 || runtimeStore.retireCalls != 0 {
 		t.Fatalf("failed-restore retirement err=%v blocker calls=%d retire calls=%d", err, lifecycle.blockerCalls(), runtimeStore.retireCalls)
@@ -1173,7 +1173,7 @@ func TestRetirementWithoutLocalRuntimeAllowsOnlyExactDurableReplay(t *testing.T)
 	request := store.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 	result := store.RetirementResult{
 		OperationID: request.OperationID, AccountID: request.AccountID, TombstoneRevision: request.TombstoneRevision,
@@ -1213,7 +1213,7 @@ func TestRetirementSerializesCandidateBuildAndPromotionLifecycle(t *testing.T) {
 		request := store.RetirementRequest{
 			OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 			TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-			Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+			Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 		}
 		return manager, active, request, barrier
 	}
@@ -1313,7 +1313,7 @@ func TestRetirementClosesAdmissionUntilLeaseReleaseAndFencesWrites(t *testing.T)
 		_, retireErr := manager.RetireRuntime(ctx, store.RetirementRequest{
 			OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 			TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-			Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+			Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 		})
 		done <- retireErr
 	}()
@@ -1382,7 +1382,7 @@ func TestRetirementRemainsFailClosedWhileVenueBlockersExist(t *testing.T) {
 	_, err = manager.RetireRuntime(context.Background(), store.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	})
 	if !errors.Is(err, ErrRuntimeBlocked) {
 		t.Fatalf("retirement blocker err=%v", err)
@@ -1426,7 +1426,7 @@ func TestRetirementCloseFailureRetainsOwnershipForExactReplay(t *testing.T) {
 	request := store.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 
 	if _, err := manager.RetireRuntime(context.Background(), request); !errors.Is(err, ErrRuntimeCleanupFailed) {
@@ -1498,7 +1498,7 @@ func TestConcurrentRetirementBeforeLocalCleanupConvergesOnOneOwnershipRecord(t *
 	request := store.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 	type retirementCall struct {
 		result store.RetirementResult
@@ -1841,7 +1841,7 @@ func TestRestoreRehydratesRetiringGenerationForExactRecoveryWithAdmissionClosed(
 	request := store.RotationFinalizationRequest{
 		OperationID: active.OperationID, AccountID: active.AccountID,
 		ExpectedActiveFence: active.Fence, ExpectedRetiringFence: retiring.Fence,
-		Scope: secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope: secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 	result, err := manager.FinalizeRotation(context.Background(), request)
 	if err != nil || result.OperationID != active.OperationID || result.RetiringFence != retiring.Fence {
@@ -2021,7 +2021,7 @@ func TestRestoreActiveRuntimeSerializesAgainstRetirement(t *testing.T) {
 	request := store.RetirementRequest{
 		OperationID: operationID, AccountID: active.AccountID, ExpectedActiveFence: active.Fence,
 		TombstoneRevision: active.Fence.DesiredStateRevision + 1,
-		Scope:             secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 	retired := make(chan error, 1)
 	go func() { _, err := manager.RetireRuntime(ctx, request); retired <- err }()
@@ -2093,7 +2093,7 @@ func rotationRuntimeRequest(active, retiring *RuntimeGroup) store.RotationFinali
 	return store.RotationFinalizationRequest{
 		OperationID: active.Snapshot.OperationID, AccountID: active.Snapshot.AccountID,
 		ExpectedActiveFence: active.Snapshot.Fence, ExpectedRetiringFence: retiring.Snapshot.Fence,
-		Scope: secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
+		Scope: secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
 	}
 }
 
@@ -2135,7 +2135,8 @@ func newRuntimeGroupTestManager(builder RuntimeGroupBuilder) *Manager {
 	return &Manager{
 		entries: map[domain.AccountID]*entry{}, runtimes: map[domain.AccountID]RuntimeAccount{},
 		groups: map[domain.AccountID]*accountRuntime{}, groupBuilder: builder,
-		profileRegistry: NewProfileRegistry(nil), runtimeMode: RuntimeModeTest,
+		profileRegistry:    NewProfileRegistry(nil),
+		allowLiveWrites:    true,
 		lifecycle:          &fakeRuntimeLifecycle{},
 		credentialResolver: &candidateResolverStub{value: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`)},
 		runtimeStore:       &runtimeStateStoreStub{},

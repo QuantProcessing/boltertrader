@@ -14,22 +14,22 @@ func NewSessionStore(database *sql.DB) *SessionStore { return &SessionStore{data
 
 func (store *SessionStore) Save(ctx context.Context, stored session.StoredSession) error {
 	_, err := store.database.ExecContext(ctx, `
-		INSERT INTO sessions (token_digest, principal_id, mode, username, csrf_digest, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO sessions (token_digest, principal_id, username, csrf_digest, expires_at)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (token_digest) DO UPDATE SET
-			principal_id = EXCLUDED.principal_id, mode = EXCLUDED.mode,
+			principal_id = EXCLUDED.principal_id,
 			username = EXCLUDED.username, csrf_digest = EXCLUDED.csrf_digest,
 			expires_at = EXCLUDED.expires_at`,
-		stored.TokenDigest, stored.Principal.ID, stored.Principal.Mode, stored.Principal.Username, stored.CSRFDigest, stored.ExpiresAt)
+		stored.TokenDigest, stored.Principal.ID, stored.Principal.Username, stored.CSRFDigest, stored.ExpiresAt)
 	return err
 }
 
 func (store *SessionStore) Get(ctx context.Context, tokenDigest string) (session.StoredSession, error) {
 	var stored session.StoredSession
 	err := store.database.QueryRowContext(ctx, `
-		SELECT token_digest, principal_id, mode, username, csrf_digest, expires_at
+		SELECT token_digest, principal_id, username, csrf_digest, expires_at
 		FROM sessions WHERE token_digest = $1`, tokenDigest).Scan(
-		&stored.TokenDigest, &stored.Principal.ID, &stored.Principal.Mode,
+		&stored.TokenDigest, &stored.Principal.ID,
 		&stored.Principal.Username, &stored.CSRFDigest, &stored.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return session.StoredSession{}, session.ErrNotFound
@@ -48,11 +48,11 @@ func NewIdentityStore(database *sql.DB) *IdentityStore { return &IdentityStore{d
 
 func (store *IdentityStore) Upsert(ctx context.Context, identity session.Identity) error {
 	_, err := store.database.ExecContext(ctx, `
-		INSERT INTO identities (principal_id, mode, username, password_hash)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (mode, username) DO UPDATE SET
+		INSERT INTO identities (principal_id, username, password_hash)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (username) DO UPDATE SET
 			principal_id = EXCLUDED.principal_id, password_hash = EXCLUDED.password_hash,
-			disabled_at = NULL`, identity.PrincipalID, identity.Mode, identity.Username, identity.PasswordHash)
+			disabled_at = NULL`, identity.PrincipalID, identity.Username, identity.PasswordHash)
 	return err
 }
 
@@ -60,12 +60,12 @@ func (store *IdentityStore) Upsert(ctx context.Context, identity session.Identit
 // disabled: the caller turns any lookup failure into the same generic login
 // rejection, and distinguishing them here would only create a way to probe
 // which usernames exist.
-func (store *IdentityStore) FindByUsername(ctx context.Context, mode, username string) (session.Identity, error) {
+func (store *IdentityStore) FindByUsername(ctx context.Context, username string) (session.Identity, error) {
 	var identity session.Identity
 	err := store.database.QueryRowContext(ctx, `
-		SELECT principal_id, username, password_hash, mode
-		FROM identities WHERE mode = $1 AND username = $2 AND disabled_at IS NULL`, mode, username).Scan(
-		&identity.PrincipalID, &identity.Username, &identity.PasswordHash, &identity.Mode)
+		SELECT principal_id, username, password_hash
+		FROM identities WHERE username = $1 AND disabled_at IS NULL`, username).Scan(
+		&identity.PrincipalID, &identity.Username, &identity.PasswordHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return session.Identity{}, session.ErrNotFound
 	}

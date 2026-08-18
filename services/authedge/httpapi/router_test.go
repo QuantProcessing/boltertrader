@@ -22,11 +22,11 @@ func newTestHandlerWith(t *testing.T, downstream func(*http.ServeMux) ([]string,
 	if err != nil {
 		t.Fatalf("session.HashPassword() error = %v", err)
 	}
-	sessions, err := session.New(session.Options{Username: "owner", PasswordHash: passwordHash, Mode: "test", TTL: time.Hour})
+	sessions, err := session.New(session.Options{Username: "owner", PasswordHash: passwordHash, TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("session.New() error = %v", err)
 	}
-	handler, err := New(Options{Sessions: sessions, Mode: "test", ContractVersion: ContractVersion, Downstream: downstream})
+	handler, err := New(Options{Sessions: sessions, ContractVersion: ContractVersion, Downstream: downstream})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -98,6 +98,9 @@ func TestBrowserRouterIsStrictAndDoesNotMountWorkRoutes(t *testing.T) {
 		body   string
 		want   int
 	}{
+		// `mode` was never a login field, and now it is not a concept either.
+		// A client still sending it must be told so rather than logged in on a
+		// request the server only half understood.
 		{name: "unknown login field", method: http.MethodPost, path: "/api/v1/auth/login", body: `{"username":"owner","password":"correct horse battery staple","mode":"live"}`, want: http.StatusBadRequest},
 		{name: "wrong login method", method: http.MethodGet, path: "/api/v1/auth/login", want: http.StatusMethodNotAllowed},
 		{name: "gateway route absent", method: http.MethodGet, path: "/internal/v1/accounts/desired", want: http.StatusNotFound},

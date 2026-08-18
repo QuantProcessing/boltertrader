@@ -16,7 +16,7 @@ make up
 Three things happen, in order:
 
 1. `go run ./internal/devsetup/cmd/bootstrap` generates the stack's credentials
-   into `.secrets/test/` and writes `.env.stack`. Running it twice is a no-op.
+   into `.secrets/stack/` and writes `.env.stack`. Running it twice is a no-op.
 2. `docker compose --env-file .env.stack -f compose.yaml up -d --build --wait`
    builds and starts the containers, waiting up to 180 seconds for their health
    checks.
@@ -25,8 +25,8 @@ Three things happen, in order:
 On the first run — and only on the run that generates it — bootstrap prints the
 bootstrap operator's username and password. That is the only time it is printed
 in readable form: the stack stores nothing but the bcrypt hash. The same value
-is also written to `.secrets/test/bootstrap_password` with mode `0600`. To reset
-it, delete `.secrets/test/bootstrap_password_hash` and run `make up` again.
+is also written to `.secrets/stack/bootstrap_password` with mode `0600`. To reset
+it, delete `.secrets/stack/bootstrap_password_hash` and run `make up` again.
 
 The default username is `operator`. Override it with `BT_BOOTSTRAP_USERNAME`.
 
@@ -84,7 +84,7 @@ depends on already failed — "postgres is down so nothing downstream was tested
 is a different answer from "the downstream checks passed".
 
 The gateway and trading probes authenticate: they read the generated service
-tokens from `.secrets/test/` and call the services' readiness endpoints. The
+tokens from `.secrets/stack/` and call the services' readiness endpoints. The
 auth edge probe expects `401` from `/api/v1/me` without a session, because that
 is the correct answer.
 
@@ -119,7 +119,7 @@ files in `.secrets/` are not touched, so the bootstrap password stays valid.
   trading service's command ledger and projections; and the auth edge's
   sessions. Three databases, one owning role each, and no service reads
   another's tables.
-- **`.secrets/test/`** holds the service tokens, the credential-store master
+- **`.secrets/stack/`** holds the service tokens, the credential-store master
   key, the gateway's DSN, and the bootstrap password and its hash. Mode `0700`
   on the directory, `0600` on each file.
 - **`.secrets/store/`** is the gateway's encrypted venue-credential store. It is

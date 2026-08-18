@@ -11,7 +11,7 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 	now := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
 	service := NewService(NewMemoryStore(), func() time.Time { return now })
 	request := CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen,
+		PrincipalID: "principal-a", ProductID: "manual", Kind: KindOpen,
 		IdempotencyKey: "reserve-a",
 		Scope:          NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT-PERP", VenueEnvironment: "live"},
 		Quantity:       "0.01",
@@ -20,7 +20,7 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Status != StatusHeld || first.ProductID != "manual" || first.Mode != ModeTest {
+	if first.Status != StatusHeld || first.ProductID != "manual" {
 		t.Fatalf("reservation = %+v", first)
 	}
 
@@ -30,7 +30,7 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 	if _, err := service.Create(context.Background(), conflict); !errors.Is(err, ErrScopeOwned) {
 		t.Fatalf("cross-product Create error = %v, want ErrScopeOwned", err)
 	}
-	if _, err := service.Release(context.Background(), "principal-a", ModeTest, first.ReservationID); err != nil {
+	if _, err := service.Release(context.Background(), "principal-a", first.ReservationID); err != nil {
 		t.Fatal(err)
 	}
 	second, err := service.Create(context.Background(), conflict)
@@ -39,10 +39,15 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 	}
 }
 
-func TestServiceFencesPrincipalModeAndProductOnConsume(t *testing.T) {
+// TestServiceFencesPrincipalAndProductOnConsume had a third case: a consume
+// naming the right principal and product but the wrong mode. Consume fenced on
+// all three, and this test is the only place that fence was ever exercised.
+// With one mode left there is nothing for a request to name wrongly, so the
+// clause went from Consume and the case went from here.
+func TestServiceFencesPrincipalAndProductOnConsume(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	held, err := service.Create(context.Background(), CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindHedge,
+		PrincipalID: "principal-a", ProductID: "manual", Kind: KindHedge,
 		IdempotencyKey: "reserve-a",
 		Scope:          NettingScope{AccountID: "account-a", Venue: "okx", InstrumentID: "ETH-USDT-SWAP", VenueEnvironment: "live"},
 		Notional:       "50", Currency: "USDT",
@@ -51,16 +56,15 @@ func TestServiceFencesPrincipalModeAndProductOnConsume(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, request := range []ConsumeRequest{
-		{ReservationID: held.ReservationID, PrincipalID: "principal-b", Mode: ModeTest, ProductID: "manual"},
-		{ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeLive, ProductID: "manual"},
-		{ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeTest, ProductID: "other"},
+		{ReservationID: held.ReservationID, PrincipalID: "principal-b", ProductID: "manual"},
+		{ReservationID: held.ReservationID, PrincipalID: "principal-a", ProductID: "other"},
 	} {
 		if _, err := service.Consume(context.Background(), request); !errors.Is(err, ErrOwnership) {
 			t.Fatalf("Consume(%+v) error = %v, want ErrOwnership", request, err)
 		}
 	}
 	consumed, err := service.Consume(context.Background(), ConsumeRequest{
-		ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual",
+		ReservationID: held.ReservationID, PrincipalID: "principal-a", ProductID: "manual",
 	})
 	if err != nil || consumed.Status != StatusConsumed {
 		t.Fatalf("consumed = %+v, err=%v", consumed, err)
@@ -70,7 +74,7 @@ func TestServiceFencesPrincipalModeAndProductOnConsume(t *testing.T) {
 func TestServiceReplaysReservationAndRejectsChangedIdempotentBody(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	request := CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
+		PrincipalID: "principal-a", ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
 		Scope: NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT", VenueEnvironment: "live"}, Quantity: "1",
 	}
 	first, err := service.Create(context.Background(), request)
@@ -97,7 +101,7 @@ func TestServiceReplaysReservationAndRejectsChangedIdempotentBody(t *testing.T) 
 // refused, which is the half of the old rule that still has work to do.
 func TestServiceRejectsNonLiveVenueEnvironment(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
-	request := CreateRequest{PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "a", Scope: NettingScope{AccountID: "a", Venue: "v", InstrumentID: "i"}, Quantity: "1"}
+	request := CreateRequest{PrincipalID: "principal-a", ProductID: "manual", Kind: KindOpen, IdempotencyKey: "a", Scope: NettingScope{AccountID: "a", Venue: "v", InstrumentID: "i"}, Quantity: "1"}
 	for _, environment := range []string{"demo", "testnet", ""} {
 		request.Scope.VenueEnvironment = environment
 		if _, err := service.Create(context.Background(), request); err == nil {
@@ -113,7 +117,7 @@ func TestServiceRejectsNonLiveVenueEnvironment(t *testing.T) {
 func TestServiceRejectsQuantityAndNotionalTogether(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	request := CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
+		PrincipalID: "principal-a", ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
 		Scope:    NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT", VenueEnvironment: "live"},
 		Quantity: "0.5", Notional: "50", Currency: "USDT",
 	}
@@ -127,7 +131,7 @@ func TestFreshServicesGenerateDistinctReservationIDs(t *testing.T) {
 	create := func(service *Service, key, instrument string) Reservation {
 		t.Helper()
 		item, err := service.Create(context.Background(), CreateRequest{
-			PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: key,
+			PrincipalID: "principal-a", ProductID: "manual", Kind: KindOpen, IdempotencyKey: key,
 			Scope: NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: instrument, VenueEnvironment: "live"}, Quantity: "1",
 		})
 		if err != nil {

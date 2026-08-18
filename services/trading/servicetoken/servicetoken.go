@@ -3,13 +3,13 @@
 //
 // The trading service does not authenticate users. It never has: the auth edge
 // resolves a session and tells trading who is asking. That arrangement survives
-// the split by moving from a function call to two HTTP headers, and this
-// package is the receiving end — it proves the *caller* is the auth edge (a
-// shared service token) and then trusts the identity that caller asserts.
+// the split by moving from a function call to an HTTP header, and this package
+// is the receiving end — it proves the *caller* is the auth edge (a shared
+// service token) and then trusts the identity that caller asserts.
 //
 // The whole design rests on the token being unreachable from a browser. A
 // caller that cannot present it cannot assert an identity, which is why the
-// identity headers are stripped from every request before the token is even
+// identity header is stripped from every request before the token is even
 // checked: a request that arrives carrying one is either a misconfigured proxy
 // or someone probing, and in both cases the header must not survive to be read
 // as authority.
@@ -26,13 +26,12 @@ import (
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
 )
 
-const (
-	// PrincipalHeader and ModeHeader carry the identity the trusted caller has
-	// already resolved. They are meaningful only alongside a valid service
-	// token; on their own they are inert.
-	PrincipalHeader = "X-Bolter-Principal"
-	ModeHeader      = "X-Bolter-Principal-Mode"
-)
+// PrincipalHeader carries the identity the trusted caller has already resolved.
+// It is meaningful only alongside a valid service token; on its own it is inert.
+//
+// A second header, X-Bolter-Principal-Mode, used to travel beside it and had to
+// match the mode this process ran in. It went with the mode axis.
+const PrincipalHeader = "X-Bolter-Principal"
 
 // ErrUnauthenticated is what the injected identity functions report when a
 // request reaches a handler without a verified principal. Reaching a handler at
@@ -44,12 +43,10 @@ var ErrUnauthenticated = errors.New("trading caller identity is absent")
 // from the middleware to the handlers.
 type Authenticator struct {
 	tokenHash [sha256.Size]byte
-	mode      string
 }
 
 type identity struct {
 	principal string
-	mode      string
 }
 
 type identityKey struct{}
@@ -58,38 +55,31 @@ type identityKey struct{}
 // because a shorter one is not a service token — it is a password someone typed,
 // and this credential is never typed.
 //
-// mode is the mode this process runs in. An identity asserting a different one
-// is rejected rather than honoured: a live principal arriving at a test process
-// means the deployment is crossed, and executing its orders under either mode
-// would be wrong.
-func New(token []byte, mode string) (*Authenticator, error) {
+// New also used to take the mode this process runs in, and rejected an identity
+// asserting a different one: a live principal arriving at a test process meant
+// the deployment was crossed, and executing its orders under either mode would
+// have been wrong. There is one mode now, so there is nothing left to cross.
+func New(token []byte) (*Authenticator, error) {
 	if len(token) < 32 {
 		return nil, fmt.Errorf("trading service token is invalid")
 	}
-	if mode != "test" && mode != "live" {
-		return nil, fmt.Errorf("trading service mode is invalid")
-	}
-	return &Authenticator{tokenHash: sha256.Sum256(token), mode: mode}, nil
+	return &Authenticator{tokenHash: sha256.Sum256(token)}, nil
 }
 
 // Wrap rejects any request that does not carry the service token, and strips
-// the identity headers before deciding anything so that no handler downstream
+// the identity header before deciding anything so that no handler downstream
 // can read an identity this package did not put there.
 func (authenticator *Authenticator) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asserted := identity{
-			principal: strings.TrimSpace(r.Header.Get(PrincipalHeader)),
-			mode:      strings.TrimSpace(r.Header.Get(ModeHeader)),
-		}
+		asserted := identity{principal: strings.TrimSpace(r.Header.Get(PrincipalHeader))}
 		r.Header.Del(PrincipalHeader)
-		r.Header.Del(ModeHeader)
 
 		if !authenticator.authorized(r.Header.Get("Authorization")) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			httpx.WriteError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "request rejected", nil, false, httpx.RequestID(r))
 			return
 		}
-		if asserted.principal == "" || asserted.mode != authenticator.mode {
+		if asserted.principal == "" {
 			// A valid token with no usable identity is a caller bug, not an
 			// attack: the trusted caller is expected to resolve identity before
 			// forwarding. Handlers still answer 401 for their own reasons, so
@@ -103,18 +93,17 @@ func (authenticator *Authenticator) Wrap(next http.Handler) http.Handler {
 
 // Principal is the identity function the trading assembly injects. It reads
 // only what Wrap established, never a header.
-func (authenticator *Authenticator) Principal(r *http.Request) (string, string, error) {
+func (authenticator *Authenticator) Principal(r *http.Request) (string, error) {
 	asserted, ok := fromContext(r.Context())
 	if !ok {
-		return "", "", ErrUnauthenticated
+		return "", ErrUnauthenticated
 	}
-	return asserted.principal, asserted.mode, nil
+	return asserted.principal, nil
 }
 
 // Authenticate answers the audit surface, which needs only the principal.
 func (authenticator *Authenticator) Authenticate(r *http.Request) (string, error) {
-	principal, _, err := authenticator.Principal(r)
-	return principal, err
+	return authenticator.Principal(r)
 }
 
 // AuthorizeMutation permits any authenticated caller to write. There is no
@@ -123,7 +112,7 @@ func (authenticator *Authenticator) Authenticate(r *http.Request) (string, error
 // browser session — and re-deciding it here without the browser's context would
 // mean inventing a weaker rule and calling it a stronger one.
 func (authenticator *Authenticator) AuthorizeMutation(r *http.Request) error {
-	_, _, err := authenticator.Principal(r)
+	_, err := authenticator.Principal(r)
 	return err
 }
 

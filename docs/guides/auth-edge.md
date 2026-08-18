@@ -79,20 +79,19 @@ These are exactly the headers the edge is about to assert, so a browser that
 sends them must not be able to influence them. Stripping is unconditional — it
 does not depend on the value looking wrong.
 
+The two mode headers are on that list even though nothing asserts them any more.
+They were how each upstream learned which mode a request belonged to, back when
+there were two; a request arriving with one today is someone probing, and it must
+not survive to be read as authority if an upstream ever grows the name back.
+
 **Copied through, by allowlist.** `Accept`, `Content-Type`, `Idempotency-Key`,
 `If-Match`, `Last-Event-ID`, and `X-Request-Id`. Nothing else. An allowlist
 rather than a denylist, because a header nobody thought about should not reach
 an upstream by default.
 
 **Injected on the way out.** `Authorization: Bearer <service token>`,
-`X-Bolter-Principal` with the authenticated principal's ID, the upstream's mode
-header, and `X-Request-Id` when the caller did not supply one.
-
-The mode header is named differently by each upstream — trading reads
-`X-Bolter-Principal-Mode`, the gateway reads `X-Bolter-Mode` — and the route's
-upstream decides which name is used. Sending trading's name to the gateway would
-leave a mode-attested write unattested, so the name is a property of the
-upstream rather than a constant.
+`X-Bolter-Principal` with the authenticated principal's ID, and `X-Request-Id`
+when the caller did not supply one.
 
 On the way back, hop-by-hop headers are removed, and so is `Set-Cookie`. No
 upstream is allowed to set a cookie in the browser. Only the edge does that, and
@@ -117,7 +116,7 @@ session.
 
 It does not authorize beyond the session. Whether a principal may touch a
 particular account or product is decided by the service that owns it, using the
-principal and mode the edge attested.
+principal the edge attested.
 
 ## Verify it
 

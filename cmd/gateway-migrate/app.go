@@ -30,7 +30,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *service != "gateway_test" || *database != "bolter_gateway_test" || *role != "bolter_gateway_test_migrator" {
+	if flags.NArg() != 0 || *service != "gateway_test" || *database != "bolter_gateway" || *role != "bolter_gateway_migrator" {
 		return fmt.Errorf("CROSS_MODE_DATABASE_IDENTITY")
 	}
 	result, err := migrateGateway(context.Background(), *service, *database, *role)

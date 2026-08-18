@@ -34,7 +34,7 @@ func openIntegrationDatabase(t *testing.T) (*sql.DB, func() *sql.DB) {
 		admin.Close()
 		t.Fatal(err)
 	}
-	schema := fmt.Sprintf("bolter_trading_test_%d_%d", os.Getpid(), integrationSchemaSequence.Add(1))
+	schema := fmt.Sprintf("bolter_trading_%d_%d", os.Getpid(), integrationSchemaSequence.Add(1))
 	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
 		admin.Close()
 		t.Fatal(err)

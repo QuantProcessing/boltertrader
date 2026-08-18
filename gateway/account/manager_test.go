@@ -430,7 +430,7 @@ func accountTestInstrument(venue exchange.Venue, product exchange.Product, symbo
 }
 
 func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRotation(t *testing.T) {
-	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	manager := newLifecycleTestManager(t)
 	initial := desiredTestAccount(t, 1, 1, 1, "opaque_initial")
 	created, err := manager.CreateRuntime(context.Background(), initial)
 	if err != nil {
@@ -471,14 +471,13 @@ func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRot
 	}
 }
 
-func TestManagerDynamicLifecycleIsolationBlockersAndRestore(t *testing.T) {
-	manager := newLifecycleTestManager(t, RuntimeModeTest)
+// The name used to say "Isolation" first: the test opened by proving a
+// test-mode manager refused a live-mode desired runtime. That isolation was
+// between two kinds of runtime, and there is only one kind left. The drain and
+// restore halves were never about it and are what remains.
+func TestManagerDynamicLifecycleBlockersAndRestore(t *testing.T) {
+	manager := newLifecycleTestManager(t)
 	desired := desiredTestAccount(t, 1, 1, 1, "opaque_test")
-	desired.Mode = RuntimeModeLive
-	if _, err := manager.CreateRuntime(context.Background(), desired); !errors.Is(err, ErrRuntimeModeMismatch) {
-		t.Fatalf("cross-mode CreateRuntime error=%v", err)
-	}
-	desired.Mode = RuntimeModeTest
 	if _, err := manager.CreateRuntime(context.Background(), desired); err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +495,7 @@ func TestManagerDynamicLifecycleIsolationBlockersAndRestore(t *testing.T) {
 		t.Fatal("drain did not fence old writes")
 	}
 
-	restored := newLifecycleTestManager(t, RuntimeModeTest)
+	restored := newLifecycleTestManager(t)
 	if err := restored.RestoreRuntimes(context.Background(), []DesiredRuntime{drained.Desired}); err != nil {
 		t.Fatalf("RestoreRuntimes: %v", err)
 	}
@@ -522,9 +521,8 @@ func TestManagerRejectsUnreachableEnvironmentBeforeLifecycleValidation(t *testin
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			manager := newLifecycleTestManager(t, RuntimeModeLive)
+			manager := newLifecycleTestManager(t)
 			desired := desiredTestAccount(t, 1, 1, 1, "opaque_unreachable_environment")
-			desired.Mode = RuntimeModeLive
 			desired.Venue = test.venue
 			desired.VenueEnvironment = test.environment
 			if _, err := manager.CreateRuntime(context.Background(), desired); err == nil {
@@ -538,10 +536,13 @@ func TestManagerRejectsUnreachableEnvironmentBeforeLifecycleValidation(t *testin
 	}
 }
 
+// Every runtime is a live runtime now, so the operator switch is the whole
+// answer to "may this fence spend money". It used to be half of one: a runtime
+// had to be in live mode *and* the switch had to be armed, and a test-mode
+// runtime wrote freely with the switch closed. Nothing writes freely any more.
 func TestManagerLiveWritesAreDefaultDenied(t *testing.T) {
-	manager := newLifecycleTestManager(t, RuntimeModeLive)
+	manager := newLifecycleTestManagerWithLiveWrites(t, false)
 	desired := desiredTestAccount(t, 1, 1, 1, "opaque_live")
-	desired.Mode = RuntimeModeLive
 	desired.VenueEnvironment = "live"
 	if _, err := manager.CreateRuntime(context.Background(), desired); err != nil {
 		t.Fatal(err)
@@ -552,7 +553,7 @@ func TestManagerLiveWritesAreDefaultDenied(t *testing.T) {
 }
 
 func TestManagerRuntimeReadyFollowsAuthoritativeRuntimeState(t *testing.T) {
-	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	manager := newLifecycleTestManager(t)
 	if !manager.RuntimeReady() {
 		t.Fatal("healthy manager with zero inventory must be control-plane ready")
 	}
@@ -583,7 +584,7 @@ func TestManagerRuntimeReadyFollowsAuthoritativeRuntimeState(t *testing.T) {
 }
 
 func TestManagerRuntimeReadyIgnoresOneUnreadyAccount(t *testing.T) {
-	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	manager := newLifecycleTestManager(t)
 	ready := desiredTestAccount(t, 1, 1, 1, "opaque_ready")
 	if _, err := manager.CreateRuntime(context.Background(), ready); err != nil {
 		t.Fatal(err)
@@ -609,7 +610,7 @@ func TestManagerRuntimeReadyIgnoresOneUnreadyAccount(t *testing.T) {
 }
 
 func TestManagerCloseDeactivatesActiveDynamicRuntime(t *testing.T) {
-	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	manager := newLifecycleTestManager(t)
 	if _, err := manager.CreateRuntime(context.Background(), desiredTestAccount(t, 1, 1, 1, "opaque_close")); err != nil {
 		t.Fatal(err)
 	}
@@ -650,14 +651,24 @@ func (lifecycle *fakeRuntimeLifecycle) Blockers(context.Context, domain.AccountI
 	return lifecycle.blockers, nil
 }
 
-func newLifecycleTestManager(t *testing.T, mode RuntimeMode) *Manager {
+// newLifecycleTestManager arms the operator switch, because the switch is now
+// the only thing standing between a fence and a real venue. It used to take the
+// runtime mode, and every caller but the live-write cases passed the test mode
+// to get past the write policy for free. There is no free pass left, so a
+// manager that is meant to write has to say so.
+func newLifecycleTestManager(t *testing.T) *Manager {
+	t.Helper()
+	return newLifecycleTestManagerWithLiveWrites(t, true)
+}
+
+func newLifecycleTestManagerWithLiveWrites(t *testing.T, allowLiveWrites bool) *Manager {
 	t.Helper()
 	service, err := catalog.NewService(time.Minute, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager, err := newManager(context.Background(), nil, Options{
-		GatewayCatalog: service, RuntimeMode: mode, Lifecycle: &fakeRuntimeLifecycle{},
+		GatewayCatalog: service, AllowLiveWrites: allowLiveWrites, Lifecycle: &fakeRuntimeLifecycle{},
 	}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
 		return nil, errors.New("unexpected static build")
 	})
@@ -675,7 +686,7 @@ func desiredTestAccount(t *testing.T, revision, generation, credential uint64, r
 		t.Fatal(err)
 	}
 	return DesiredRuntime{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live", Mode: RuntimeModeTest,
+		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live",
 		SecretRef: ref, DesiredStateRevision: revision, RuntimeGeneration: generation,
 		CredentialVersion: credential, RequestedState: RuntimeStateActive, RotationFence: "rotation-fence",
 	}

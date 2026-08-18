@@ -18,7 +18,7 @@ make up
 
 首次运行会生成凭证与 `.env.stack`，构建并启动全部容器，等待它们健康，然后
 运行下面的检查。首次运行会**只打印一次**生成的 `operator` 密码，同时也保存在
-`.secrets/<mode>/bootstrap_password`。应用入口是 <http://127.0.0.1:18090>。
+`.secrets/stack/bootstrap_password`。应用入口是 <http://127.0.0.1:18090>。
 
 ```sh
 make doctor   # 什么起来了、什么没起来、每个服务在哪个端口

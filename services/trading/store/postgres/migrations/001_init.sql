@@ -35,7 +35,6 @@ CREATE INDEX audit_resource_idx ON audit (resource_id, occurred_at DESC);
 CREATE TABLE reservations (
     reservation_id text PRIMARY KEY,
     principal_id text NOT NULL,
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     product_id text NOT NULL,
     reservation_kind text NOT NULL,
     netting_scope jsonb NOT NULL,
@@ -50,18 +49,17 @@ CREATE TABLE reservations (
     blocked_reason text,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    UNIQUE (principal_id, mode, idempotency_key)
+    UNIQUE (principal_id, idempotency_key)
 );
 
 -- Only one reservation may hold a netting scope at a time. The store detects
 -- the collision by name, so renaming this index changes behaviour.
-CREATE UNIQUE INDEX reservations_held_scope ON reservations (mode, scope_key) WHERE status = 'held';
+CREATE UNIQUE INDEX reservations_held_scope ON reservations (scope_key) WHERE status = 'held';
 
 CREATE TABLE commands (
     command_id text PRIMARY KEY,
     principal_id text NOT NULL,
     account_id text NOT NULL,
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     product_id text NOT NULL,
     lineage_id text NOT NULL,
     reservation_id text REFERENCES reservations (reservation_id),
@@ -76,12 +74,11 @@ CREATE TABLE commands (
     execution_evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    UNIQUE (principal_id, mode, method, path, idempotency_key)
+    UNIQUE (principal_id, method, path, idempotency_key)
 );
 
 CREATE TABLE reconciliation_tasks (
     command_id text PRIMARY KEY REFERENCES commands (command_id) ON DELETE CASCADE,
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     reason text NOT NULL,
     next_attempt_at timestamptz NOT NULL,
     lease_until timestamptz,
@@ -92,7 +89,6 @@ CREATE TABLE reconciliation_tasks (
 -- position or fill identifier, so the principal leads every key and index.
 CREATE TABLE positions (
     principal_id text NOT NULL CHECK (btrim(principal_id) <> ''),
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     product_id text NOT NULL,
     lineage_id text NOT NULL,
     account_id text NOT NULL,
@@ -105,7 +101,7 @@ CREATE TABLE positions (
     unrealized_pnl numeric NOT NULL,
     mark_observed_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    PRIMARY KEY (principal_id, mode, product_id, lineage_id, account_id, instrument_id)
+    PRIMARY KEY (principal_id, product_id, lineage_id, account_id, instrument_id)
 );
 
 CREATE TABLE portfolio_fills (
@@ -113,7 +109,6 @@ CREATE TABLE portfolio_fills (
     fill_id text NOT NULL,
     fill_hash text NOT NULL,
     command_id text NOT NULL,
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     product_id text NOT NULL,
     lineage_id text NOT NULL,
     account_id text NOT NULL,
@@ -129,12 +124,11 @@ CREATE TABLE portfolio_fills (
     PRIMARY KEY (principal_id, fill_id)
 );
 
-CREATE INDEX portfolio_fills_scope ON portfolio_fills (principal_id, mode, account_id, product_id, occurred_at, fill_id);
+CREATE INDEX portfolio_fills_scope ON portfolio_fills (principal_id, account_id, product_id, occurred_at, fill_id);
 
 CREATE TABLE ledger_entries (
     principal_id text NOT NULL CHECK (btrim(principal_id) <> ''),
     entry_id text NOT NULL,
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     product_id text NOT NULL,
     lineage_id text NOT NULL,
     account_id text NOT NULL,
@@ -146,11 +140,10 @@ CREATE TABLE ledger_entries (
     PRIMARY KEY (principal_id, entry_id)
 );
 
-CREATE INDEX ledger_attribution ON ledger_entries (principal_id, mode, product_id, lineage_id, account_id, instrument_id, occurred_at);
+CREATE INDEX ledger_attribution ON ledger_entries (principal_id, product_id, lineage_id, account_id, instrument_id, occurred_at);
 
 CREATE TABLE unrealized_pnl (
     principal_id text NOT NULL CHECK (btrim(principal_id) <> ''),
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     product_id text NOT NULL,
     lineage_id text NOT NULL,
     account_id text NOT NULL,
@@ -158,5 +151,5 @@ CREATE TABLE unrealized_pnl (
     amount numeric NOT NULL,
     currency text NOT NULL,
     as_of timestamptz NOT NULL,
-    PRIMARY KEY (principal_id, mode, product_id, lineage_id, account_id, instrument_id)
+    PRIMARY KEY (principal_id, product_id, lineage_id, account_id, instrument_id)
 );

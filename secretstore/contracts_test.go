@@ -79,20 +79,26 @@ func TestOperationIDRequiresCanonicalUUID(t *testing.T) {
 	}
 }
 
-func TestScopeValidationIsModeIsolated(t *testing.T) {
-	valid := []secretstore.Scope{
-		{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"},
-		{Mode: secretstore.ModeLive, Namespace: "boltertrader/live", KeyVersion: "v1"},
-	}
-	for _, scope := range valid {
-		if err := scope.Validate(); err != nil {
-			t.Fatalf("scope=%+v err=%v", scope, err)
-		}
+// A scope names the storage a credential is written to and read back from, so
+// Validate is what stops a caller addressing material the provider would then
+// refuse to serve — or worse, serve from somewhere else.
+//
+// This used to be a mode isolation test: there were two namespaces, one per
+// mode, and the pairing had to hold both ways round — a test-mode scope naming
+// the live namespace was as invalid as the reverse. One namespace is left, so
+// what remains to enforce is that it is the only one, and that the key version
+// is still pinned.
+func TestScopeValidationAcceptsOnlyTheOneNamespace(t *testing.T) {
+	valid := secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("scope=%+v err=%v", valid, err)
 	}
 	for _, scope := range []secretstore.Scope{
-		{Mode: secretstore.ModeTest, Namespace: "boltertrader/live", KeyVersion: "v1"},
-		{Mode: secretstore.ModeLive, Namespace: "boltertrader/test", KeyVersion: "v1"},
-		{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v2"},
+		{Namespace: "boltertrader/test", KeyVersion: "v1"},
+		{Namespace: "boltertrader/live", KeyVersion: "v1"},
+		{Namespace: "", KeyVersion: "v1"},
+		{Namespace: secretstore.Namespace, KeyVersion: "v2"},
+		{Namespace: secretstore.Namespace},
 	} {
 		if err := scope.Validate(); !errors.Is(err, secretstore.ErrInvalidScope) {
 			t.Fatalf("scope=%+v err=%v", scope, err)

@@ -47,7 +47,7 @@ const (
 )
 
 func TestPlatformRuntimeZeroAccountProcessIsReady(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeTest)
+	harness := newPlatformHarness(t)
 	if ready, active, routeReady := harness.manager.RuntimeReadiness(); !ready || active != 0 || routeReady != 0 {
 		t.Fatalf("zero-account readiness=(%t,%d,%d)", ready, active, routeReady)
 	}
@@ -55,7 +55,7 @@ func TestPlatformRuntimeZeroAccountProcessIsReady(t *testing.T) {
 	authRef := mustOperationalRef(t, "env://PLATFORM_TEST_TOKEN")
 	dsnRef := mustOperationalRef(t, "env://PLATFORM_TEST_DSN")
 	configFile := config.File{
-		Server:   config.ServerConfig{Mode: "test", Listen: "127.0.0.1:1", AuthTokenRef: authRef},
+		Server:   config.ServerConfig{Listen: "127.0.0.1:1", AuthTokenRef: authRef},
 		Postgres: config.PostgresConfig{DSNRef: dsnRef},
 	}
 	pool := &integrationPool{}
@@ -102,7 +102,7 @@ func TestPlatformRuntimeZeroAccountProcessIsReady(t *testing.T) {
 }
 
 func TestPlatformRuntimeAbsentRouteDeniesOrderBeforePrivateIO(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeTest)
+	harness := newPlatformHarness(t)
 	pending := platformSnapshot(t, "route-denial", "account-route", 1, 1, rawOpaqueRef, spotRoute())
 	harness.promote(t, pending)
 	router, err := order.NewAccountRouter(harness.manager)
@@ -119,7 +119,7 @@ func TestPlatformRuntimeAbsentRouteDeniesOrderBeforePrivateIO(t *testing.T) {
 }
 
 func TestPlatformRuntimeTwoAccountsSharePublicConnectorButNotPrivateRoutes(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeTest)
+	harness := newPlatformHarness(t)
 	first := platformSnapshot(t, "shared-first", "account-one", 1, 1, rawOpaqueRef, spotRoute())
 	second := platformSnapshot(t, "shared-second", "account-two", 1, 1, alternateOpaqueRef().RawForTrustedBoundary(), spotRoute())
 	firstGroup := harness.promote(t, first)
@@ -143,7 +143,7 @@ func TestPlatformRuntimeTwoAccountsSharePublicConnectorButNotPrivateRoutes(t *te
 }
 
 func TestPlatformRuntimeSpotAndPerpPromoteAtomically(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeTest)
+	harness := newPlatformHarness(t)
 	pending := platformSnapshot(t, "atomic", "account-atomic", 1, 1, rawOpaqueRef, spotRoute(), perpRoute())
 	harness.store.register(pending.DesiredSnapshot)
 	group, err := harness.manager.BuildCandidate(t.Context(), pending)
@@ -168,7 +168,7 @@ func TestPlatformRuntimeSpotAndPerpPromoteAtomically(t *testing.T) {
 }
 
 func TestPlatformRuntimeFailedCandidateKeepsActiveGeneration(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeTest)
+	harness := newPlatformHarness(t)
 	active := platformSnapshot(t, "active", "account-stable", 1, 1, rawOpaqueRef, spotRoute(), perpRoute())
 	harness.promote(t, active)
 	before := harness.manager.ActiveSnapshot(active.AccountID)
@@ -191,10 +191,10 @@ func TestPlatformRuntimeRejectsInvalidCandidatesBeforeResolverOrNetwork(t *testi
 		mutate  func(*store.PendingSnapshot, *platformHarness)
 		wantErr error
 	}{
-		{name: "wrong mode", mutate: func(pending *store.PendingSnapshot, _ *platformHarness) {
-			pending.NativeEnvironment = "live"
-			pending.Routes[0].RouteProfileID = "binance.spot.live.v1"
-		}},
+		// There used to be a "wrong mode" case ahead of this one, feeding a
+		// `binance.spot.live.v1` profile to a test-mode manager. Its whole point
+		// was the mode disagreement; with one mode left it named an unregistered
+		// profile and nothing else, which is what this case already covers.
 		{name: "wrong profile", mutate: func(pending *store.PendingSnapshot, _ *platformHarness) {
 			pending.Routes[0].RouteProfileID = "binance.profile.not-trusted.v1"
 		}},
@@ -207,7 +207,7 @@ func TestPlatformRuntimeRejectsInvalidCandidatesBeforeResolverOrNetwork(t *testi
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			harness := newPlatformHarness(t, account.RuntimeModeTest)
+			harness := newPlatformHarness(t)
 			pending := platformSnapshot(t, "invalid-"+strings.ReplaceAll(test.name, " ", "-"), "account-invalid", 1, 1, rawOpaqueRef, spotRoute())
 			test.mutate(&pending, harness)
 			_, err := harness.manager.BuildCandidate(t.Context(), pending)
@@ -232,7 +232,7 @@ func TestPlatformRuntimeRejectsInvalidCandidatesBeforeResolverOrNetwork(t *testi
 }
 
 func TestPlatformRuntimeRestorePublishesActiveBeforePending(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeTest)
+	harness := newPlatformHarness(t)
 	active := platformSnapshot(t, "restore-active", "account-restore", 4, 4, rawOpaqueRef, spotRoute(), perpRoute())
 	pending := platformSnapshot(t, "restore-pending", active.AccountID, 5, 5, alternateOpaqueRef().RawForTrustedBoundary(), spotRoute(), perpRoute())
 	harness.store.setStates([]store.RuntimeState{{
@@ -261,8 +261,13 @@ func TestPlatformRuntimeRestorePublishesActiveBeforePending(t *testing.T) {
 	}
 }
 
+// The harness never arms the operator switch, and that is now the whole reason
+// the fence refuses. It used to be half the reason: the test built a live-mode
+// manager on purpose, because every other test here ran in test mode and wrote
+// past this fence for free. Nothing writes for free any more, so "live" is no
+// longer a property this test has to arrange.
 func TestPlatformRuntimeLiveWritesRemainDenied(t *testing.T) {
-	harness := newPlatformHarness(t, account.RuntimeModeLive)
+	harness := newPlatformHarness(t)
 	pending := platformSnapshot(t, "live-denied", "account-live", 1, 1, rawOpaqueRef, store.RouteDefinition{
 		RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive,
 	})
@@ -295,7 +300,7 @@ func TestPlatformRuntimeArtifactsExcludeCredentialCanariesAndProviderIdentity(t 
 	credentials := newFilesystemCredentials(t)
 	activeRef := credentials.put(t, "redaction-active", credentialCanary)
 	rotatedRef := credentials.put(t, "redaction-rotated", credentialCanary+"-rotated")
-	harness := newPlatformHarnessWithResolver(t, account.RuntimeModeTest, credentials.resolver)
+	harness := newPlatformHarnessWithResolver(t, credentials.resolver)
 	active := platformSnapshot(t, "redaction-active", "account-redacted", 1, 1, activeRef.RawForTrustedBoundary(), spotRoute())
 	harness.promote(t, active)
 	harness.builder.setFailRoute("spot", errors.New("native failure "+credentialCanary+" "+activeRef.RawForTrustedBoundary()+" "+credentials.stateDir))
@@ -505,7 +510,6 @@ func newFilesystemCredentials(t *testing.T) *filesystemCredentials {
 	}
 	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{
 		StateDir: stateDir,
-		Mode:     secretstore.ModeTest,
 		KeySource: secretstore.StaticKeySource{
 			Key: key,
 		},
@@ -515,7 +519,7 @@ func newFilesystemCredentials(t *testing.T) *filesystemCredentials {
 		t.Fatal(err)
 	}
 	t.Cleanup(provider.Close)
-	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+	scope := secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"}
 	scopedResolver, err := secret.NewScopedCredentialResolver(provider.Resolver(), scope)
 	if err != nil {
 		t.Fatal(err)
@@ -594,16 +598,15 @@ type platformHarness struct {
 	publicFactory  *countingPublicFactory
 	publicRegistry *publicconn.Registry
 	catalog        *catalog.Service
-	mode           account.RuntimeMode
 }
 
-func newPlatformHarness(t *testing.T, mode account.RuntimeMode) *platformHarness {
+func newPlatformHarness(t *testing.T) *platformHarness {
 	t.Helper()
 	resolver := &countingCredentialResolver{payload: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key-` + credentialCanary + `","apiSecret":"secret-` + credentialCanary + `"}}`)}
-	return newPlatformHarnessWithResolver(t, mode, resolver)
+	return newPlatformHarnessWithResolver(t, resolver)
 }
 
-func newPlatformHarnessWithResolver(t *testing.T, mode account.RuntimeMode, resolver *countingCredentialResolver) *platformHarness {
+func newPlatformHarnessWithResolver(t *testing.T, resolver *countingCredentialResolver) *platformHarness {
 	t.Helper()
 	service, err := catalog.NewService(time.Minute, time.Now)
 	if err != nil {
@@ -618,7 +621,7 @@ func newPlatformHarnessWithResolver(t *testing.T, mode account.RuntimeMode, reso
 	runtimeStore := newMemoryRuntimeStore()
 	harness := &platformHarness{
 		store: runtimeStore, resolver: resolver, builder: builder, publicFactory: publicFactory,
-		publicRegistry: publicRegistry, catalog: service, mode: mode,
+		publicRegistry: publicRegistry, catalog: service,
 	}
 	harness.manager = harness.buildManager(t)
 	t.Cleanup(func() {
@@ -631,7 +634,7 @@ func newPlatformHarnessWithResolver(t *testing.T, mode account.RuntimeMode, reso
 func (harness *platformHarness) buildManager(t *testing.T) *account.Manager {
 	t.Helper()
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
-		GatewayCatalog: harness.catalog, HTTPClient: &http.Client{Transport: denyNetworkTransport{}}, RuntimeMode: harness.mode,
+		GatewayCatalog: harness.catalog, HTTPClient: &http.Client{Transport: denyNetworkTransport{}},
 		RuntimeGroupBuilder: harness.builder, CredentialResolver: harness.resolver, RuntimeStore: harness.store,
 		PublicConnectors: harness.publicRegistry, RequirePublicConnectors: true,
 	})

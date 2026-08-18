@@ -19,7 +19,7 @@ CREATE TABLE gateway_desired_accounts (
     rotation_blocked_reason text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (venue_environment IN ('demo', 'testnet', 'live')),
+    CHECK (venue_environment = 'live'),
     CHECK (desired_state_revision > 0),
     CHECK (runtime_generation > 0),
     CHECK (credential_version > 0),

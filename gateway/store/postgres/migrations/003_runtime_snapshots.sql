@@ -4,7 +4,7 @@ CREATE TABLE gateway_runtime_snapshots (
     operation_id uuid NOT NULL UNIQUE,
     request_digest text NOT NULL,
     venue text NOT NULL,
-    native_environment text NOT NULL CHECK (native_environment IN ('demo', 'testnet', 'live')),
+    native_environment text NOT NULL CHECK (native_environment = 'live'),
     secret_ref text NOT NULL,
     desired_state_revision bigint NOT NULL CHECK (desired_state_revision > 0),
     runtime_generation bigint NOT NULL CHECK (runtime_generation > 0),
@@ -62,13 +62,12 @@ CREATE TABLE gateway_retiring_generations (
 );
 
 CREATE TABLE gateway_retired_secret_refs (
-    mode text NOT NULL CHECK (mode IN ('test', 'live')),
     namespace text NOT NULL,
     secret_ref text NOT NULL,
     account_id text NOT NULL,
     tombstone_revision bigint NOT NULL CHECK (tombstone_revision > 0),
     created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (mode, namespace, secret_ref)
+    PRIMARY KEY (namespace, secret_ref)
 );
 
 CREATE INDEX gateway_runtime_snapshots_recovery ON gateway_runtime_snapshots (account_id, runtime_generation DESC);

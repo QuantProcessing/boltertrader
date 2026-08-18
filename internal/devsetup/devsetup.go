@@ -26,19 +26,24 @@ import (
 )
 
 const (
-	// Mode is the only mode this stack runs in, and it is a path component as
-	// well as a value: cmd/trading and cmd/authedge refuse a token file whose
-	// parent directory is not named for the mode the process is running as,
-	// which is what stops a live process from starting on these credentials.
-	Mode = "test"
-
 	// SecretDirName holds everything this package generates except the env
 	// file, so "start over" is `rm -rf .secrets .env.stack`.
 	SecretDirName = ".secrets"
 
+	// StackDirName holds the credentials this package generates for the stack's
+	// own services, and it is a path component rather than a flat layout for one
+	// reason: it is the directory trading and the auth edge bind-mount read-only.
+	// The store below must stay outside it, so those two services never hold a
+	// view of registered venue credentials.
+	//
+	// It was named for BT_MODE until there was one mode, which is when the name
+	// stopped describing anything. It pairs with .env.stack: both are what
+	// `make up` generates for a local stack and neither is ever committed.
+	StackDirName = "stack"
+
 	// SecretStoreDirName is the gateway's encrypted venue-credential store, and
 	// it is the one directory in the stack a service writes to. It sits beside
-	// the mode directory rather than inside it because that mount is read-only:
+	// the stack directory rather than inside it because that mount is read-only:
 	// the tokens are given to the services, whereas this is state the gateway
 	// owns.
 	//
@@ -81,7 +86,7 @@ const (
 // every run rather than preserved. Nothing in it is secret — the cluster runs
 // under trust authentication — but it lives beside the tokens so that one
 // directory is the whole answer to "what did make up generate".
-const gatewayDSN = "postgres://bolter_gateway_test@postgres:5432/bolter_gateway_test?sslmode=disable"
+const gatewayDSN = "postgres://bolter_gateway@postgres:5432/bolter_gateway?sslmode=disable"
 
 // Compose defaults, restated. Each also appears as a `${NAME:-default}` in
 // compose.yaml; TestStackDefaultsMatchCompose pins the two together, because the
@@ -133,7 +138,9 @@ type Result struct {
 	// Root is the absolute repository root everything below is relative to.
 	Root string
 
-	// SecretDir is the mode-scoped directory holding the six secret files.
+	// SecretDir is the directory holding the six secret files the stack's own
+	// services read. It is what those services bind-mount read-only, which is
+	// why the gateway's credential store sits beside it rather than in it.
 	SecretDir string
 
 	// EnvFile and ServiceFile are the two generated non-secret artifacts.
@@ -178,7 +185,7 @@ func Bootstrap(root string) (Result, error) {
 		return Result{}, err
 	}
 
-	secretDir := filepath.Join(root, SecretDirName, Mode)
+	secretDir := filepath.Join(root, SecretDirName, StackDirName)
 	if err := ensureDir(filepath.Join(root, SecretDirName)); err != nil {
 		return Result{}, err
 	}
@@ -506,7 +513,7 @@ func renderEnvStack(secretDir string, config Config, uid, gid int) string {
 %s=%s
 `,
 		EnvStackName,
-		filepath.Join(SecretDirName, Mode),
+		filepath.Join(SecretDirName, StackDirName),
 		hostUIDVar, uid,
 		hostGIDVar, gid,
 		secretDirVar, SecretDirName,
@@ -519,7 +526,7 @@ func renderEnvStack(secretDir string, config Config, uid, gid int) string {
 		webPortVar, config.WebPort,
 		authEdgePortVar, config.AuthEdgePort,
 		tradingPortVar, config.TradingPort,
-		filepath.Join(SecretDirName, Mode, BootstrapPasswordHashFile),
+		filepath.Join(SecretDirName, StackDirName, BootstrapPasswordHashFile),
 		bootstrapUserVar, config.BootstrapUsername,
 	)
 	return out.String()
@@ -543,13 +550,13 @@ func renderHostServiceFile(postgresPort string) string {
 # authentication on a port published only to 127.0.0.1.
 
 # The gateway migrator's identity. It carries no dbname on purpose —
-# cmd/gateway-migrate appends dbname=bolter_gateway_test itself and then asserts
+# cmd/gateway-migrate appends dbname=bolter_gateway itself and then asserts
 # current_database() matches, so a dbname here would be a second place for that
 # fact to live and the wrong one to win.
 [gateway_test]
 host=127.0.0.1
 port=%s
-user=bolter_gateway_test_migrator
+user=bolter_gateway_migrator
 sslmode=disable
 
 # The gateway's serving identity, used only by the authority acceptance test:
@@ -558,8 +565,8 @@ sslmode=disable
 [gateway_runtime_test]
 host=127.0.0.1
 port=%s
-user=bolter_gateway_test
-dbname=bolter_gateway_test
+user=bolter_gateway
+dbname=bolter_gateway
 sslmode=disable
 `, postgresPort, postgresPort)
 }

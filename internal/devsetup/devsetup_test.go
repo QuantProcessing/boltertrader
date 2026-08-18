@@ -12,7 +12,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
-// secretFiles is every file Bootstrap puts in .secrets/<mode>/. It is written
+// secretFiles is every file Bootstrap puts in .secrets/stack/. It is written
 // out here rather than derived from the package's own constants so that deleting
 // one from Bootstrap fails this test instead of quietly shrinking it.
 var secretFiles = []string{
@@ -109,8 +109,22 @@ func TestBootstrapGeneratesCredentialsTheServicesWillAccept(t *testing.T) {
 	if got := modeOf(t, result.SecretDir); got != 0o700 {
 		t.Errorf("secret directory mode = %o, want 700", got)
 	}
-	if filepath.Base(result.SecretDir) != Mode {
-		t.Errorf("secret directory %q must be named for the mode, %q", result.SecretDir, Mode)
+
+	// The store must be a sibling of this directory, never inside it. Trading
+	// and the auth edge bind-mount SecretDir read-only to get their tokens, so a
+	// store nested under it would hand both services a view of every registered
+	// venue credential — which neither has any business seeing.
+	//
+	// This level used to be named for BT_MODE, and the assertion here was that
+	// it carried that name. Nothing distinguishes one mode from another now, but
+	// the level itself still separates the two mounts, so the check moved to the
+	// property that survived.
+	store := filepath.Join(result.Root, SecretDirName, SecretStoreDirName)
+	if got := modeOf(t, store); got != 0o700 {
+		t.Errorf("secret store mode = %o, want 700", got)
+	}
+	if strings.HasPrefix(store+string(filepath.Separator), result.SecretDir+string(filepath.Separator)) {
+		t.Errorf("secret store %q sits inside the read-only mount %q", store, result.SecretDir)
 	}
 
 	// 0600 and no padding hold for every file, including the two no service
