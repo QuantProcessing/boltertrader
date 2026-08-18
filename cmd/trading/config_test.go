@@ -226,6 +226,35 @@ func TestLoadRequiresTheTradingDatabase(t *testing.T) {
 	}
 }
 
+// An unset switch arms private writes. This is the one default in this file
+// that opens something rather than closing it, and it is deliberate: the mode
+// axis used to admit commands on its own, and with that clause gone a closed
+// default would produce a stack that starts clean and then refuses every order
+// for a reason no health check reports. Setting the variable to false is what
+// buys back the read-only posture.
+func TestLoadArmsPrivateWritesUnlessDisarmed(t *testing.T) {
+	applyEnv(t, validEnv(t))
+	cfg, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LivePrivateWritesEnabled {
+		t.Fatal("an unset switch left private writes disarmed")
+	}
+	for _, value := range []string{"false", "FALSE", " False "} {
+		env := validEnv(t)
+		env[livePrivateWritesEnv] = value
+		applyEnv(t, env)
+		cfg, err := load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LivePrivateWritesEnabled {
+			t.Fatalf("%q did not disarm private writes", value)
+		}
+	}
+}
+
 // The flag is the only thing standing between this process and an order that
 // spends real money, so an operator who misspells their intent has to be told.
 // Reading "yes" as false would leave them believing writes were armed; reading

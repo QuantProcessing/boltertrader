@@ -9,7 +9,6 @@ import type {
   Instrument,
   MarketDataQuery,
   MarketFact,
-  Mode,
 } from "@/api/types";
 
 /* ---------------------------------------------------------------------------
@@ -111,12 +110,11 @@ export function useCandles(query: CandleQuery | null): UseQueryResult<Metered<Ca
 /**
  * Which accounts can actually trade this instrument.
  *
- * Two fences, both server-enforced anyway: the venue has to match, or the order
- * has nowhere to go; and the mode has to match the session's, or the preview is
- * rejected with a 400. Filtering here means the operator never picks an account
- * that cannot work, rather than finding out at the preview.
+ * One fence, server-enforced anyway: the venue has to match, or the order has
+ * nowhere to go. Filtering here means the operator never picks an account that
+ * cannot work, rather than finding out at the preview.
  */
-export function tradableAccounts(all: Account[], instrument: Instrument | null, mode: Mode): Account[] {
+export function tradableAccounts(all: Account[], instrument: Instrument | null): Account[] {
   if (!instrument) return [];
-  return all.filter((account) => account.venue === instrument.venue && account.mode === mode);
+  return all.filter((account) => account.venue === instrument.venue);
 }

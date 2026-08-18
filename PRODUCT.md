@@ -10,7 +10,7 @@ BolterTrader is a private trading workspace for an experienced operator who repe
 
 ## Product Purpose
 
-BolterTrader unifies Funding Trading and Manual Trading in one authenticated product over shared account, market-data, order, portfolio, ledger, and audit authority. It should make the exact Test or Live environment, account, capability, execution state, and economic result visible at every decision point. Success means the user can move from observation to confirmed action without guessing which service or venue owns the truth.
+BolterTrader unifies Funding Trading and Manual Trading in one authenticated product over shared account, market-data, order, portfolio, ledger, and audit authority. It should make the exact account, venue, capability, execution state, and economic result visible at every decision point, and must make it unmistakable that every action reaches a real exchange — there is no test environment to fall back to. Success means the user can move from observation to confirmed action without guessing which service or venue owns the truth.
 
 ## Brand Personality
 

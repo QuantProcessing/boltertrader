@@ -2,7 +2,6 @@ import { AlertTriangle } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
 import { Metric } from "@/components/ui/panel";
-import { Tag } from "@/components/ui/state-badge";
 import { FundingMatrix } from "@/features/funding/matrix";
 import { useFundingBoard } from "@/features/funding/queries";
 import { formatTimestamp } from "@/lib/format";
@@ -52,7 +51,6 @@ export function FundingPage() {
       <header className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
         <div className="flex items-center gap-2">
           <h1 className="text-title font-semibold tracking-tight text-text">Funding</h1>
-          {snapshot ? <Tag>{snapshot.mode}</Tag> : null}
         </div>
 
         <Metric label="Venues" value={String(venues.length)} />

@@ -143,11 +143,11 @@ export const accounts = {
   /**
    * Creating an account from what the form actually sends.
    *
-   * `CreateAccountRequest` carries no mode and no environment: the gateway
-   * derives both from the route profiles, and a client that sent them could
-   * disagree with the routes it sent alongside. That derivation is reproduced
-   * here rather than defaulted, because the settings screen's whole claim is
-   * that the routes decide.
+   * `CreateAccountRequest` carries no environment: the gateway derives it from
+   * the route profiles, and a client that sent one could disagree with the
+   * routes it sent alongside. That derivation is reproduced here rather than
+   * defaulted, because the settings screen's whole claim is that the routes
+   * decide.
    *
    * The credential bundle is read and discarded. Nothing about it is stored and
    * nothing about it is echoed — `Account` has no field for a secret, which is
@@ -157,7 +157,6 @@ export const accounts = {
     const account: Account = {
       accountId: nextId(`acct-${request.venue}`),
       venue: request.venue,
-      mode: "live",
       nativeEnvironment: "live",
       displayName: request.displayName,
       productPolicy: request.productPolicy,
@@ -256,7 +255,6 @@ export const orders = {
       accountId: intent.accountId,
       lineageId: request.lineageId,
       productId: "manual",
-      mode: "live",
       reservationId: null,
       idempotencyKey: request.idempotencyKey,
       commandKind: "place",

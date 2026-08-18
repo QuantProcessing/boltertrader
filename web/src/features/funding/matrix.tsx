@@ -128,7 +128,7 @@ interface Spread {
 /**
  * Columns first, because two profiles can share a venue.
  *
- * A mode carries eleven perpetual route profiles and some venues appear twice
+ * There are eleven perpetual route profiles and some venues appear twice
  * under different settlement assets. Keying by venue would silently merge two
  * different books into one column; keying by route profile and disambiguating
  * the *label* only when it is actually ambiguous keeps the common case short.

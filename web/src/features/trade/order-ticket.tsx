@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { describeError } from "@/api/errors";
-import type { Account, Instrument, Mode, OrderSide, OrderType } from "@/api/types";
+import type { Account, Instrument, OrderSide, OrderType } from "@/api/types";
 import { MANUAL_PREVIEW_TTL_MS } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Field, Input, inputClass } from "@/components/ui/field";
@@ -38,14 +38,12 @@ const ORDER_TYPES: { value: OrderType; label: string }[] = [
 export function OrderTicket({
   instrument,
   accounts,
-  mode,
   limitPrice,
   onLimitPriceChange,
 }: {
   instrument: Instrument | null;
-  /** Already filtered to the ones that can trade this instrument in this mode. */
+  /** Already filtered to the ones that can trade this instrument. */
   accounts: Account[];
-  mode: Mode;
   /** Lifted so a click in the order book can fill it. */
   limitPrice: string;
   onLimitPriceChange: (next: string) => void;
@@ -104,7 +102,6 @@ export function OrderTicket({
         limitPrice: orderType === "limit" ? limitPrice : "",
         timeInForce,
         reduceOnly,
-        mode,
       },
       {
         onSuccess: setSealed,
@@ -136,7 +133,7 @@ export function OrderTicket({
   };
 
   return (
-    <Panel title="Order" meta={<span className="uppercase">{mode}</span>} className="flex min-h-0 flex-col">
+    <Panel title="Order" className="flex min-h-0 flex-col">
       <div className="flex flex-col gap-3">
         <Segmented name="side" label="Side" value={side} options={SIDES} onChange={setSide} />
 
@@ -149,7 +146,7 @@ export function OrderTicket({
               onChange={(event) => setAccountId(event.target.value)}
               disabled={accounts.length === 0}
             >
-              {accounts.length === 0 ? <option value="">No account for this venue and mode</option> : null}
+              {accounts.length === 0 ? <option value="">No account for this venue</option> : null}
               {accounts.map((account) => (
                 <option key={account.accountId} value={account.accountId}>
                   {account.displayName} · {account.venue}
@@ -365,8 +362,10 @@ function isPositiveDecimal(value: string): boolean {
  * Quantity × price, for eyeballing the size before confirming.
  *
  * Float again, and display-only again — the strings above are what get sent.
- * It earns its place because test mode caps notional at 100 and an operator
- * should be able to see the cap coming rather than discover it in a blocker.
+ * It used to earn its place by showing a notional cap coming before it landed as
+ * a blocker. There is no cap now, and no test venue underneath it either, so it
+ * earns its place for the opposite reason: this is the only line on the ticket
+ * that says how much real money the two fields above it add up to.
  */
 function Notional({
   quantity,

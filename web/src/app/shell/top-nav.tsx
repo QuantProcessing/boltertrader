@@ -12,8 +12,8 @@ import { cn } from "@/lib/utils";
  * controls on the right.
  *
  * One bar, 44px, present on every authenticated route — the operator should
- * never have to look in a second place to find out which mode they are in or
- * how to leave the screen they are on. `--spacing-bar` is what makes it the
+ * never have to look in a second place to find out that this session reaches a
+ * real exchange, or how to leave the screen they are on. `--spacing-bar` is what makes it the
  * same height as the instrument strip below it, so the two read as one header
  * rather than two stacked rules.
  * ------------------------------------------------------------------------- */
@@ -34,7 +34,6 @@ const SECTIONS: Section[] = [
 
 export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
   const { state } = useSession();
-  const mode = state?.principal.mode ?? "test";
 
   return (
     <header className="flex h-bar shrink-0 items-center gap-4 border-b border-line bg-panel px-3">
@@ -42,7 +41,7 @@ export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
         <Link to="/trade" className="text-title font-semibold tracking-tight text-text">
           Bolter
         </Link>
-        <ModeChip mode={mode} />
+        <LiveBadge />
       </div>
 
       <nav aria-label="Sections" className="flex min-w-0 items-center gap-0.5">
@@ -85,19 +84,17 @@ export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
 }
 
 /**
- * Which mode this session trades in, stated permanently rather than on demand.
+ * That this session spends real money, stated permanently rather than on demand.
  *
- * Live is marked read-only because it is: the server refuses private writes in
- * live outright (`LIVE_PRIVATE_WRITE_DISABLED`). Saying so in the header is the
- * difference between an operator who knows why the order button did nothing and
- * one who files a bug.
+ * Nothing here is conditional, because there is no longer a second state to be
+ * in: the mode axis is gone and the test environments went with it. A permanent
+ * badge does habituate, which is why it is not carrying the weight alone — the
+ * ticket's preview-and-seal step is where the acute warning lives. This is the
+ * ambient half, and it is `danger` rather than `warn` because what it describes
+ * is not a risk, it is the normal case.
  */
-function ModeChip({ mode }: { mode: "test" | "live" }) {
-  return mode === "live" ? (
-    <StateBadge tone="danger" label="LIVE · READ-ONLY" detail="Live sessions cannot place private orders" />
-  ) : (
-    <StateBadge tone="warn" label="TEST" detail="Orders are placed against the venue's test environment" />
-  );
+function LiveBadge() {
+  return <StateBadge tone="danger" label="LIVE" detail="Orders reach a real exchange and spend real money" />;
 }
 
 const NEXT_PREFERENCE: Record<ThemePreference, ThemePreference> = {

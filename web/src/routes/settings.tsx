@@ -127,7 +127,7 @@ export function SettingsPage() {
                 />
               </span>
               <span className="truncate text-meta text-dim">
-                {account.venue} · {account.nativeEnvironment} · {account.mode}
+                {account.venue} · {account.nativeEnvironment}
               </span>
             </button>
           ))}
@@ -203,7 +203,6 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-meta md:grid-cols-4">
           <Fact label="Venue" value={account.venue} />
           <Fact label="Environment" value={account.nativeEnvironment} />
-          <Fact label="Mode" value={account.mode} />
           <Fact label="Products" value={account.productPolicy.join(", ")} />
           <Fact label="Desired revision" value={String(account.desiredStateRevision)} numeric />
           <Fact label="Runtime generation" value={String(account.runtimeGeneration)} numeric />
@@ -596,7 +595,7 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
         requestedState: "active" as const,
       }));
     if (routes.length === 0) {
-      setError("Select at least one route — the routes decide the account's mode and environment.");
+      setError("Select at least one route — the routes decide the account's environment.");
       return;
     }
     const missing = missingCredentialFields(venue, values);
@@ -632,7 +631,7 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
         <Field
           label="Venue"
           required
-          hint="The route profiles you pick below decide the mode and native environment."
+          hint="The route profiles you pick below decide the native environment."
         >
           {(field) => (
             <select
@@ -666,7 +665,7 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
               {...field}
               value={displayName}
               autoComplete="off"
-              placeholder="Binance testnet — manual"
+              placeholder="Binance — manual"
               onChange={(event) => setDisplayName(event.target.value)}
             />
           )}

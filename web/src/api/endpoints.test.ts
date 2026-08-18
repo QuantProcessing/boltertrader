@@ -38,9 +38,8 @@ const headersOf = (init: RequestInit): Record<string, string> =>
 const account = (over: Record<string, unknown> = {}) => ({
   accountId: "acct-1",
   venue: "binance",
-  mode: "test",
-  nativeEnvironment: "testnet",
-  displayName: "Binance testnet",
+  nativeEnvironment: "live",
+  displayName: "Binance",
   productPolicy: ["manual"],
   status: "active",
   desiredStateRevision: 7,
@@ -169,7 +168,7 @@ describe("trading envelopes", () => {
 
     const page = await market.candles({
       venue: "binance",
-      environment: "test",
+      environment: "live",
       product: "spot",
       instrumentId: "BTC-USDT",
       interval: "1m",

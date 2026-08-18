@@ -452,9 +452,6 @@ export const manual = {
    * 201, and the seal expires 30 seconds later — `MANUAL_PREVIEW_TTL_MS`. The
    * deadline is inside the token and is not returned, so the countdown starts
    * when this resolves.
-   *
-   * `mode` must equal the session principal's mode or the server answers 400,
-   * which is a guard against a stale tab submitting into the wrong one.
    */
   preview: async (request: ManualPreviewRequest, signal?: AbortSignal): Promise<ManualPreview> =>
     (await apiRequest<DataEnvelope<ManualPreview>>(paths.manualPreviews, { method: "POST", body: request, signal })).data,
@@ -612,9 +609,9 @@ async function submitArbitrageCommand<T>(request: ArbitrageCommandRequest, signa
 /**
  * `httpapi.createAccountRecordRequest`.
  *
- * There is no `mode` field, deliberately: the gateway derives the mode and the
- * native environment from the route profiles, so a client that sent one could
- * disagree with the routes it also sent. `routes` is what decides it.
+ * There is no `nativeEnvironment` field, deliberately: the gateway derives it
+ * from the route profiles, so a client that sent one could disagree with the
+ * routes it also sent. `routes` is what decides it.
  */
 export interface CreateAccountRequest {
   venue: string;

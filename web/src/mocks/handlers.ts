@@ -604,7 +604,6 @@ const arbitrage = [
       accountId: leg.accountId,
       lineageId: leg.lineageId,
       productId: "arbitrage",
-      mode: "live",
       reservationId: null,
       idempotencyKey: body.idempotencyKey,
       commandKind: "cancel",

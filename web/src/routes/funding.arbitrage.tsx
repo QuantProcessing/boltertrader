@@ -4,12 +4,10 @@ import { useMemo, useState } from "react";
 
 import { describeError } from "@/api/errors";
 import type { ArbitrageOpportunity } from "@/api/types";
-import { usePrincipal } from "@/app/session";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/field";
 import { Num } from "@/components/ui/num";
 import { Metric } from "@/components/ui/panel";
-import { Tag } from "@/components/ui/state-badge";
 import { ArbitragePairs } from "@/features/funding/arbitrage-pairs";
 import { ArbitrageTicket } from "@/features/funding/arbitrage-ticket";
 import { useArbitrageOpportunities } from "@/features/funding/queries";
@@ -46,19 +44,14 @@ export function ArbitragePage() {
   // layout route, so the *id* this route is filed under carries its parent's.
   const search = useSearch({ from: "/app/funding/arbitrage" });
   const navigate = useNavigate();
-  const { mode } = usePrincipal();
   const [needle, setNeedle] = useState("");
 
   const accountsQuery = useAccounts();
-  // Both halves of the filter matter: an account from the other mode cannot be
-  // reached at all, and one without the entitlement is refused at the product
-  // boundary rather than here.
+  // An account without the entitlement is refused at the product boundary
+  // rather than here; filtering early means it is never offered.
   const accounts = useMemo(
-    () =>
-      (accountsQuery.data ?? []).filter(
-        (account) => account.mode === mode && account.productPolicy.includes("arbitrage"),
-      ),
-    [accountsQuery.data, mode],
+    () => (accountsQuery.data ?? []).filter((account) => account.productPolicy.includes("arbitrage")),
+    [accountsQuery.data],
   );
   // Sorted so that the query key is a property of the set rather than of the
   // order the accounts happened to arrive in.
@@ -110,7 +103,6 @@ export function ArbitragePage() {
       <header className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
         <div className="flex items-center gap-2">
           <h1 className="text-title font-semibold tracking-tight text-text">Arbitrage</h1>
-          <Tag>{mode}</Tag>
         </div>
         <Metric label="Pairs" value={String(items.length)} />
         <Metric label="Executable" value={String(executable)} tone={executable === 0 ? "down" : "none"} />
@@ -195,7 +187,6 @@ export function ArbitragePage() {
               long={oriented.long}
               short={oriented.short}
               accounts={accounts}
-              mode={mode}
               onSwap={swap}
             />
           </div>

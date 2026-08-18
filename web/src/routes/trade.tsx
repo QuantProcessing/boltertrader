@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 
 import type { CandleInterval, Instrument } from "@/api/types";
-import { usePrincipal } from "@/app/session";
 import { Blotter } from "@/features/trade/blotter";
 import { OrderTicket } from "@/features/trade/order-ticket";
 import { InstrumentStrip } from "@/features/market/instrument-strip";
@@ -34,7 +33,6 @@ const DEFAULT_INTERVAL: CandleInterval = "15m";
 const CHART_BARS = 300;
 
 export function TradePage() {
-  const { mode } = usePrincipal();
   const instruments = useInstruments();
   const accounts = useAccounts();
 
@@ -55,7 +53,7 @@ export function TradePage() {
   const candles = useCandles(query ? { ...query, interval, limit: CHART_BARS } : null);
   const today = useCandles(query ? { ...query, interval: "1d", limit: 1 } : null);
 
-  const eligible = tradableAccounts(accounts.data ?? [], instrument, mode);
+  const eligible = tradableAccounts(accounts.data ?? [], instrument);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -95,7 +93,6 @@ export function TradePage() {
           <OrderTicket
             instrument={instrument}
             accounts={eligible}
-            mode={mode}
             limitPrice={limitPrice}
             onLimitPriceChange={setLimitPrice}
           />

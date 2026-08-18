@@ -73,10 +73,23 @@ func load() (config, error) {
 		GatewayURL:         strings.TrimSpace(os.Getenv(gatewayURLEnv)),
 		GatewayInternalURL: strings.TrimSpace(os.Getenv(gatewayInternalURLEnv)),
 	}
+	// Private writes are armed unless the operator disarms them, which is the
+	// reverse of every other switch in this function and the reverse of what this
+	// one used to do. Admission was a disjunction while the mode axis existed — a
+	// command was allowed through when either the mode was test or this was set —
+	// so defaulting it off cost nothing, because the test mode carried every path
+	// that had to run. There is no second clause now. Left off by default, the
+	// stack would start, pass every readiness probe, and refuse every order.
+	//
+	// The honest default is therefore the dangerous one, and it is dangerous in a
+	// way no configuration comment can soften: there is no demo venue behind this
+	// any more, so an admitted order is a real order against real money at the
+	// size the caller asked for. Setting the variable to false is the operator's
+	// kill switch, and read-only is the only other posture that still exists.
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(livePrivateWritesEnv))) {
-	case "", "false":
-	case "true":
+	case "", "true":
 		cfg.LivePrivateWritesEnabled = true
+	case "false":
 	default:
 		return config{}, fmt.Errorf("%s must be true or false", livePrivateWritesEnv)
 	}

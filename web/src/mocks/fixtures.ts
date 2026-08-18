@@ -70,7 +70,7 @@ export const RATE_LIMIT: RateLimitStatus = {
 export const CREDENTIALS = { username: "operator", password: "hunter2" };
 
 export const SESSION: SessionState = {
-  principal: { id: "principal-1", mode: "live", username: CREDENTIALS.username },
+  principal: { id: "principal-1", username: CREDENTIALS.username },
   session: { csrfToken: "csrf-mock", expiresAt: "2099-01-01T00:00:00Z" },
 };
 
@@ -271,7 +271,6 @@ export const VENUES: Venue[] = [
 export const ACCOUNT: Account = {
   accountId: "acct-binance-live",
   venue: "binance",
-  mode: "live",
   nativeEnvironment: "live",
   displayName: "Binance",
   productPolicy: ["manual", "arbitrage"],
@@ -304,7 +303,6 @@ export const ACCOUNT: Account = {
 export const HEDGE_ACCOUNT: Account = {
   accountId: "acct-bybit-live",
   venue: "bybit",
-  mode: "live",
   nativeEnvironment: "live",
   displayName: "Bybit",
   productPolicy: ["manual", "arbitrage"],
@@ -494,7 +492,6 @@ export function candles(instrument: Instrument, interval: CandleInterval, count:
  * than hypothetical.
  */
 export const FUNDING_BOARD: FundingBoardSnapshot = {
-  mode: "live",
   observedAt: OBSERVED_AT,
   venues: [
     {
@@ -678,7 +675,6 @@ export const POSITIONS: Position[] = [
   {
     lineageId: "lin-seed-1",
     productId: "arbitrage",
-    mode: "live",
     accountId: ACCOUNT.accountId,
     instrumentId: "binance:live:perp:USDT:BTC-USDT",
     settlementCurrency: "USDT",
@@ -694,7 +690,6 @@ export const POSITIONS: Position[] = [
 export const LEDGER: LedgerEntry[] = [
   {
     entryId: "led-1",
-    mode: "live",
     lineageId: "lin-seed-1",
     productId: "arbitrage",
     accountId: ACCOUNT.accountId,
@@ -706,7 +701,6 @@ export const LEDGER: LedgerEntry[] = [
   },
   {
     entryId: "led-2",
-    mode: "live",
     lineageId: "lin-seed-1",
     productId: "arbitrage",
     accountId: ACCOUNT.accountId,

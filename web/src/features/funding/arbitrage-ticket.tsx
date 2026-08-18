@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 import { describeError } from "@/api/errors";
 import { ARBITRAGE_PREVIEW_TTL_MS } from "@/api/types";
-import type { Account, ArbitrageOpportunityLeg, Mode, OrderType } from "@/api/types";
+import type { Account, ArbitrageOpportunityLeg, OrderType } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Field, Input, inputClass } from "@/components/ui/field";
 import { Num, Side } from "@/components/ui/num";
@@ -44,7 +44,6 @@ export function ArbitrageTicket({
   long,
   short,
   accounts,
-  mode,
   onSwap,
 }: {
   symbol: string;
@@ -52,9 +51,8 @@ export function ArbitrageTicket({
   quoteAsset: string;
   long: ArbitrageOpportunityLeg;
   short: ArbitrageOpportunityLeg;
-  /** Arbitrage-capable accounts for this mode, both venues mixed. */
+  /** Arbitrage-capable accounts, both venues mixed. */
   accounts: Account[];
-  mode: Mode;
   onSwap: () => void;
 }) {
   const toast = useToast();
@@ -133,7 +131,6 @@ export function ArbitrageTicket({
         quantity,
         orderType,
         timeInForce,
-        mode,
       },
       {
         onSuccess: setSealed,
@@ -168,7 +165,7 @@ export function ArbitrageTicket({
   };
 
   return (
-    <Panel title="Hedge" meta={<span className="uppercase">{mode}</span>}>
+    <Panel title="Hedge">
       <div className="flex flex-col gap-3">
         <LegCard
           leg="long"
@@ -248,7 +245,7 @@ export function ArbitrageTicket({
 
         {!reachable ? (
           <p className="text-meta text-warn" role="status">
-            One of these venues has no reachable account in {mode} mode, so this pair cannot be priced.
+            One of these venues has no reachable account, so this pair cannot be priced.
           </p>
         ) : null}
 

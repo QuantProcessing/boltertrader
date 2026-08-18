@@ -18,7 +18,7 @@ import { useSyncExternalStore } from "react";
 import { advanceSessionEpoch, setCsrfToken } from "@/api/client";
 import { auth } from "@/api/endpoints";
 import { isAuthFailure, isStaleSession } from "@/api/errors";
-import type { Mode, SessionState } from "@/api/types";
+import type { SessionState } from "@/api/types";
 
 /**
  * `unknown` is not a loading flag bolted on — it is the honest third answer.
@@ -136,7 +136,7 @@ export function useSession(): SessionSnapshot {
  * has already established there is one. Views below that point should not each
  * carry a null branch for a state their own route made impossible.
  */
-export function usePrincipal(): { id: string; username: string; mode: Mode } {
+export function usePrincipal(): { id: string; username: string } {
   const { state } = useSession();
   if (!state) throw new Error("usePrincipal was called outside an authenticated route");
   return state.principal;

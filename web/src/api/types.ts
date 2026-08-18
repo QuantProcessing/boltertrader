@@ -21,8 +21,6 @@
 /** `services/authedge/session.Principal` */
 export interface Principal {
   id: string;
-  /** Governs the entire session: a test principal cannot reach live routes. */
-  mode: Mode;
   username: string;
 }
 
@@ -39,9 +37,6 @@ export interface SessionState {
 }
 
 /* --- Orders -------------------------------------------------------------- */
-
-/** `orders.Mode`. The whole vocabulary. */
-export type Mode = "test" | "live";
 
 /**
  * `orders.State`.
@@ -123,7 +118,6 @@ export interface Command {
   accountId: string;
   lineageId: string;
   productId: string;
-  mode: Mode;
   reservationId: string | null;
   idempotencyKey: string;
   commandKind: string;
@@ -162,7 +156,6 @@ export interface CommandProjection {
   accountId: string;
   lineageId: string;
   productId: string;
-  mode: Mode;
   reservationId: string | null;
   idempotencyKey: string;
   commandKind: string;
@@ -197,8 +190,6 @@ export interface ManualPreviewRequest {
   limitPrice: string;
   timeInForce: string;
   reduceOnly: boolean;
-  /** Must equal the session principal's mode or the server answers 400. */
-  mode: Mode;
 }
 
 /**
@@ -480,7 +471,6 @@ export interface FundingBoardVenue {
  * single-flighted server-side, and why polling it faster here would buy nothing.
  */
 export interface FundingBoardSnapshot {
-  mode: Mode;
   observedAt: string;
   venues: FundingBoardVenue[];
 }
@@ -566,7 +556,6 @@ export const FUNDING_HISTORY_INSTRUMENT_UNKNOWN = "FUNDING_HISTORY_INSTRUMENT_UN
 export interface Position {
   lineageId: string;
   productId: string;
-  mode: Mode;
   accountId: string;
   instrumentId: string;
   settlementCurrency: string;
@@ -581,7 +570,6 @@ export interface Position {
 /** `ledger.Entry` */
 export interface LedgerEntry {
   entryId: string;
-  mode: Mode;
   lineageId: string;
   productId: string;
   accountId: string;
@@ -639,8 +627,7 @@ export interface ArbitrageLegRequest {
  * `httpapi.arbitragePreviewRequest`.
  *
  * One quantity for both legs, because a hedge whose sides differ in size is not
- * delta-neutral and the server refuses it. `mode` must equal the session
- * principal's mode or the answer is a 400, same as the manual product.
+ * delta-neutral and the server refuses it.
  */
 export interface ArbitragePreviewRequest {
   long: ArbitrageLegRequest;
@@ -648,7 +635,6 @@ export interface ArbitragePreviewRequest {
   quantity: string;
   orderType: OrderType;
   timeInForce?: string;
-  mode: Mode;
 }
 
 /**
@@ -930,7 +916,6 @@ export interface CredentialBundle {
 export interface Account {
   accountId: string;
   venue: string;
-  mode: Mode;
   nativeEnvironment: string;
   displayName: string;
   productPolicy: string[];
@@ -1067,7 +1052,6 @@ export interface NettingScope {
 /** `reservations.Reservation` */
 export interface Reservation {
   reservationId: string;
-  mode: Mode;
   productId: string;
   reservationKind: string;
   nettingScope: NettingScope;

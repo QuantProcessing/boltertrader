@@ -131,7 +131,7 @@ export const ErrorCode = {
   NotFound: "NOT_FOUND",
   Conflict: "CONFLICT",
   RateLimited: "RATE_LIMITED",
-  /** Live mode refuses private writes outright. Not a transient condition. */
+  /** An operator disarmed `BT_LIVE_PRIVATE_WRITES_ENABLED`. Not a transient condition. */
   LiveWriteDisabled: "LIVE_PRIVATE_WRITE_DISABLED",
   PublicDataNotReady: "PUBLIC_DATA_NOT_READY",
   RealtimeUnavailable: "REALTIME_UNAVAILABLE",

@@ -62,7 +62,9 @@ A **live-write switch**, `BT_LIVE_PRIVATE_WRITES_ENABLED`, is what replaces it
 operationally. It is not a mode: it does not change which venue a route reaches
 or which credentials a write uses, and there is nothing on the other side of it.
 Closed, every private write is refused with `LIVE_PRIVATE_WRITE_DISABLED`. Open,
-a write goes to a real exchange with real money.
+a write goes to a real exchange with real money. It defaults to open, because
+with the mode axis gone it is the only clause left in the admission check and a
+closed default would mean a stack that starts cleanly and refuses every order.
 
 ## Product rows
 

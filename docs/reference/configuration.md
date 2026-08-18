@@ -55,6 +55,35 @@ Every one reads a file with mode `0600`.
 host bind mount rather than a named volume. Docker creates a named volume owned
 by `root`, which a container running as your uid could not write to.
 
+## `BT_LIVE_PRIVATE_WRITES_ENABLED` — the live-write switch
+
+Read by the trading service. It is the only thing that decides whether a private
+write reaches a venue, and **it is armed unless you disarm it**.
+
+| Value | Effect |
+| --- | --- |
+| unset, or `true` | Private writes are admitted. An order reaches a real exchange |
+| `false` | Every private write is refused with `LIVE_PRIVATE_WRITE_DISABLED` |
+| anything else | The service refuses to start |
+
+The default opens rather than closes, which is the opposite of every other
+variable on this page. It reads that way because admission used to be a
+disjunction: a command was admitted when either the process was in test mode or
+this switch was armed, and defaulting it off cost nothing because the test mode
+carried every path that had to run. The mode axis is gone. Closed by default, the
+stack would start, pass every readiness probe, and then refuse every order for a
+reason no health check reports.
+
+So the honest default is also the dangerous one. Nothing sits behind this switch
+any more — no demo venue, no testnet wallet, no notional ceiling. An admitted
+order is a real order, against real money, at the size the caller asked for.
+Setting the variable to `false` is the operator's kill switch, and read-only is
+the only other posture that exists.
+
+A misspelling is refused rather than guessed at. Reading `yes` as `false` would
+leave you believing writes were armed; reading it as `true` would arm them on a
+word the switch never accepted.
+
 ## `.env` — venue credentials
 
 Only tests read this file, through `internal/testenv.LoadRepoEnv`, and no Make

@@ -15,8 +15,8 @@ import { CredentialFields, buildCredentialBundle, missingCredentialFields } from
 /** Hyperliquid's shape: two fields in one form that only `metadata` separates. */
 const venue: Venue = {
   venue: "hyperliquid",
-  environment: "test",
-  nativeEnvironment: "testnet",
+  environment: "live",
+  nativeEnvironment: "live",
   ready: true,
   products: ["perp"],
   credentialSchema: {
