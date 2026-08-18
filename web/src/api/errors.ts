@@ -12,6 +12,10 @@
  *                  authorized under is gone. Not a failure — say nothing.
  * ------------------------------------------------------------------------- */
 
+// Type-only, so it is erased: `lib/i18n` writes `document.documentElement.lang`
+// at module scope, and this file is reachable from the mock worker.
+import type { Translate } from "@/lib/i18n";
+
 /** The `error` object in `internal/httpx.WriteError`'s envelope. */
 export interface ApiErrorBody {
   code: string;
@@ -85,14 +89,26 @@ export function isApiError(value: unknown): value is ApiError {
  * The id is the only handle that ties what the operator saw to what the server
  * logged, so it travels with the message rather than being kept for a debug
  * view nobody opens while something is going wrong.
+ *
+ * Outside React, so it takes `t` rather than calling `useT()`. What gets
+ * translated here is only ever this client's own words: a server's sentence is
+ * printed as the server wrote it, which is the same rule the login screen
+ * follows when it prints a refused password.
  */
-export function describeError(error: unknown): string {
+export function describeError(error: unknown, t: Translate): string {
   if (isApiError(error)) {
+    // `INVALID_RESPONSE` is the one body no server sent — `client.ts` builds it
+    // when the JSON will not parse, so its message is ours to say.
+    const message = error.code === "INVALID_RESPONSE" ? t("error.unreadable") : error.message;
     return error.requestId
-      ? `${error.message} (${error.code} · ${error.requestId})`
-      : `${error.message} (${error.code})`;
+      ? `${message} (${error.code} · ${error.requestId})`
+      : `${message} (${error.code})`;
   }
-  return error instanceof Error ? error.message : "Unknown failure";
+  // Not the transport's own words: `cause.message` here is "Failed to fetch" or
+  // whichever phrase the browser picked, which is English whoever is reading and
+  // does not say the thing that matters — that a write may have landed anyway.
+  if (error instanceof NetworkError) return t("error.network");
+  return error instanceof Error ? error.message : t("error.unknown");
 }
 
 export function isStaleSession(value: unknown): value is StaleSessionError {

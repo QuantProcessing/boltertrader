@@ -217,6 +217,7 @@ Lighter's tighter base is what lets a 34px row hold 13px text with real padding.
 |---|---|---|
 | `--spacing-row` | 34px | Table rows, list rows |
 | `--spacing-bar` | 44px | Top nav, instrument strip. Also the touch-target floor. |
+| `--spacing-depth` | 22px | Order-book depth rows — tighter, because the book is only numbers |
 | `--spacing-side` | 256px | Order book, spread list — the narrow column |
 | `--spacing-ticket` | 320px | The ticket, which holds a form rather than a list |
 | `--spacing-deck` | 256px | Blotter, ledger, open pairs — the lower shelf |

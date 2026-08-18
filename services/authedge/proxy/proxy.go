@@ -181,9 +181,22 @@ func (proxy *Proxy) Register(mux *http.ServeMux) ([]string, error) {
 func (proxy *Proxy) handler(route Route) http.Handler {
 	upstream := proxy.upstreams[route.Upstream]
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principal, ok := proxy.authorize(w, r)
-		if !ok {
-			return
+		// The one request that skips the session entirely: a public read, by a
+		// safe method, from a browser that sent no cookie at all. The three
+		// conditions are separate on purpose. Public alone would open the path
+		// to writes; safeMethod alone would open every private read; and
+		// dropping the cookie test would turn an expired session into a silent
+		// downgrade — the reader would keep seeing a market and quietly stop
+		// seeing their own account, with nothing on screen to say why.
+		anonymous := route.Public && safeMethod(r.Method) && !hasSessionCookie(r)
+
+		var principal session.Principal
+		if !anonymous {
+			resolved, ok := proxy.authorize(w, r)
+			if !ok {
+				return
+			}
+			principal = resolved
 		}
 		outbound, ok := proxy.build(w, r, route, upstream, principal)
 		if !ok {
@@ -191,6 +204,11 @@ func (proxy *Proxy) handler(route Route) http.Handler {
 		}
 		proxy.forward(w, r, route, outbound)
 	})
+}
+
+func hasSessionCookie(r *http.Request) bool {
+	cookie, err := r.Cookie(session.CookieName)
+	return err == nil && cookie.Value != ""
 }
 
 // authorize resolves the session and, for a mutation, checks the CSRF token.
@@ -254,7 +272,13 @@ func (proxy *Proxy) build(w http.ResponseWriter, r *http.Request, route Route, u
 		outbound.Header.Del(name)
 	}
 	outbound.Header.Set(authorizationHeader, "Bearer "+upstream.Token)
-	outbound.Header.Set(principalHeader, principal.ID)
+	// Absent rather than present-and-empty when nobody is signed in. The
+	// upstream reads the two the same way, but "no identity header" is the
+	// honest wire form of an anonymous read, and it leaves no empty assertion
+	// for a future upstream to mistake for one.
+	if principal.ID != "" {
+		outbound.Header.Set(principalHeader, principal.ID)
+	}
 	if outbound.Header.Get("X-Request-Id") == "" {
 		outbound.Header.Set("X-Request-Id", httpx.RequestID(r))
 	}

@@ -67,6 +67,11 @@ export function Segmented<T extends string>({
                 htmlFor={optionId}
                 className={cn(
                   "flex h-[26px] cursor-pointer items-center justify-center rounded-control px-2 text-base font-medium",
+                  // A segment label that wraps is a segment label the track was
+                  // never measured for: with `flex-1` the intrinsic width comes
+                  // from whichever option is narrowest to break, so `EN | 中文`
+                  // sized itself to `EN` and folded the Chinese onto two lines.
+                  "whitespace-nowrap",
                   "transition-colors select-none",
                   "peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent",
                   "peer-disabled:cursor-not-allowed peer-disabled:opacity-50",

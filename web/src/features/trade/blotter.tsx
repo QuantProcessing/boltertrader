@@ -13,6 +13,7 @@ import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
 import { useCancelOrder, useFills, useOrders, usePositions } from "@/features/trade/queries";
 import { formatTimestamp } from "@/lib/format";
+import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ export function Blotter({ instrumentId }: { instrumentId: string | null }) {
   const orders = useOrders();
   const positions = usePositions();
   const fills = useFills();
+  const t = useT();
 
   // Working orders are the reason to look down here, so the count that decides
   // the default tab is the actionable one, not the total.
@@ -35,13 +37,17 @@ export function Blotter({ instrumentId }: { instrumentId: string | null }) {
 
   return (
     <Tabs.Root defaultValue="orders" className="flex min-h-0 flex-1 flex-col">
+      {/* `px-0.5` plus the trigger's own `px-2.5` puts the first label on the
+          same 12px gutter as the column headers directly beneath it. At `px-2`
+          it sat six pixels right of them, which on a deck this short reads as
+          the tab bar belonging to something other than the table. */}
       <Tabs.List
-        className="flex h-row shrink-0 items-center gap-1 border-b border-line px-2"
-        aria-label="Blotter"
+        className="flex h-row shrink-0 items-center gap-0.5 border-b border-line px-0.5"
+        aria-label={t("blotter.label")}
       >
-        <Trigger value="orders" label="Orders" count={working.length} />
-        <Trigger value="positions" label="Positions" count={positions.data?.length} />
-        <Trigger value="fills" label="Fills" count={fills.data?.length} />
+        <Trigger value="orders" label={t("blotter.orders")} count={working.length} />
+        <Trigger value="positions" label={t("blotter.positions")} count={positions.data?.length} />
+        <Trigger value="fills" label={t("blotter.fills")} count={fills.data?.length} />
       </Tabs.List>
 
       <Content value="orders">
@@ -64,11 +70,17 @@ function Trigger({ value, label, count }: { value: string; label: string; count:
       className={cn(
         "flex h-[26px] items-center gap-1.5 rounded-control px-2.5 text-base text-muted",
         "hover:text-text focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
-        "data-[state=active]:bg-raised data-[state=active]:text-text",
+        "data-[state=active]:bg-raised data-[state=active]:font-medium data-[state=active]:text-text",
       )}
     >
       {label}
-      {count ? <span className="text-meta text-dim">{count}</span> : null}
+      {/* Zero is not news, and a `0` beside every empty tab is three counts to
+          read past to find the one that is not zero. */}
+      {count ? (
+        <span className="rounded-pill bg-fill px-1 text-micro text-dim" data-numeric="">
+          {count}
+        </span>
+      ) : null}
     </Tabs.Trigger>
   );
 }
@@ -86,60 +98,64 @@ function Content({ value, children }: { value: string; children: React.ReactNode
 function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean }) {
   const toast = useToast();
   const cancel = useCancelOrder();
+  const t = useT();
 
   const columns: ColumnDef<Command, unknown>[] = [
     {
       id: "instrument",
-      header: "Instrument",
+      header: t("col.instrument"),
       accessorFn: (order) => intentOf(order)?.instrumentId ?? "—",
       cell: (context) => <span className="text-text">{String(context.getValue() ?? "—")}</span>,
     },
     {
       id: "side",
-      header: "Side",
+      header: t("col.side"),
       accessorFn: (order) => intentOf(order)?.side ?? "",
       cell: (context) => <Side side={String(context.getValue() ?? "")} />,
       meta: { width: "72px" },
     },
     {
       id: "type",
-      header: "Type",
+      header: t("col.type"),
       accessorFn: (order) => intentOf(order)?.orderType ?? "—",
       cell: (context) => <span className="capitalize text-muted">{String(context.getValue() ?? "—")}</span>,
       meta: { width: "80px" },
     },
     {
       id: "price",
-      header: "Price",
+      header: t("col.price"),
       accessorFn: (order) => intentOf(order)?.limitPrice ?? "",
       cell: (context) => <Num value={asDecimal(context.getValue())} />,
       meta: { numeric: true },
     },
     {
       id: "quantity",
-      header: "Quantity",
+      header: t("col.quantity"),
       accessorFn: (order) => intentOf(order)?.quantity ?? "",
       cell: (context) => <Num value={asDecimal(context.getValue())} />,
       meta: { numeric: true },
     },
     {
       id: "tif",
-      header: "TIF",
+      header: t("col.tif"),
       accessorFn: (order) => intentOf(order)?.timeInForce ?? "—",
       meta: { width: "64px" },
     },
     {
       id: "state",
-      header: "State",
+      header: t("col.state"),
       accessorFn: (order) => order.state,
       cell: (context) => {
         const order = context.row.original;
         const blockers = order.blockers.map((blocker) => blocker.code).join(", ");
         return (
+          // `order.state` and the blocker codes are the server's own words, and
+          // stay in them: the audit log and the operator's support ticket both
+          // say `uncertain` and `risk.notional_cap` whatever the interface says.
           <StateBadge
             tone={stateTone(order.state)}
             label={order.state}
-            detail={blockers === "" ? undefined : `Blocked: ${blockers}`}
+            detail={blockers === "" ? undefined : t("blotter.blocked", { codes: blockers })}
           />
         );
       },
@@ -147,7 +163,7 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
     },
     {
       id: "updated",
-      header: "Updated",
+      header: t("col.updated"),
       accessorFn: (order) => order.updatedAt,
       cell: (context) => <span className="text-dim">{formatTimestamp(String(context.getValue() ?? ""))}</span>,
       meta: { align: "right", width: "104px" },
@@ -169,13 +185,14 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
             disabled={cancel.isPending}
             onClick={() =>
               cancel.mutate(order, {
-                onSuccess: () => toast.push({ tone: "info", title: "Cancel submitted", detail: order.commandId }),
+                onSuccess: () =>
+                  toast.push({ tone: "info", title: t("blotter.cancelSubmitted"), detail: order.commandId }),
                 onError: (error) =>
-                  toast.push({ tone: "danger", title: "Cancel rejected", detail: describe(error) }),
+                  toast.push({ tone: "danger", title: t("blotter.cancelRejected"), detail: describe(error, t) }),
               })
             }
           >
-            Cancel
+            {t("blotter.cancel")}
           </Button>
         );
       },
@@ -189,8 +206,14 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
       data={orders}
       loading={loading}
       getRowId={(order) => order.commandId}
-      caption="Manual orders"
-      empty={<EmptyState icon={Inbox} title="No orders yet" detail="Placed orders appear here as soon as the venue acknowledges them." />}
+      caption={t("blotter.caption.orders")}
+      empty={
+        <EmptyState
+          icon={Inbox}
+          title={t("blotter.empty.orders")}
+          detail={t("blotter.empty.orders.detail")}
+        />
+      }
     />
   );
 }
@@ -198,52 +221,54 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
 /* --- Positions ----------------------------------------------------------- */
 
 function PositionsTable({ positions, loading }: { positions: Position[]; loading: boolean }) {
+  const t = useT();
+
   const columns: ColumnDef<Position, unknown>[] = [
-    { id: "instrument", header: "Instrument", accessorFn: (position) => position.instrumentId },
+    { id: "instrument", header: t("col.instrument"), accessorFn: (position) => position.instrumentId },
     {
       id: "quantity",
-      header: "Quantity",
+      header: t("col.quantity"),
       accessorFn: (position) => position.quantity,
       cell: (context) => <Num value={String(context.getValue() ?? "")} directional />,
       meta: { numeric: true },
     },
     {
       id: "entry",
-      header: "Avg entry",
+      header: t("col.entry"),
       accessorFn: (position) => position.averageEntryPrice,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
     {
       id: "mark",
-      header: "Mark",
+      header: t("col.mark"),
       accessorFn: (position) => position.markPrice,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
     {
       id: "unrealized",
-      header: "Unrealized",
+      header: t("col.unrealized"),
       accessorFn: (position) => position.unrealizedPnl,
       cell: (context) => <Num value={String(context.getValue() ?? "")} directional signed />,
       meta: { numeric: true },
     },
     {
       id: "realized",
-      header: "Realized",
+      header: t("col.realized"),
       accessorFn: (position) => position.realizedPnl,
       cell: (context) => <Num value={String(context.getValue() ?? "")} directional signed />,
       meta: { numeric: true },
     },
     {
       id: "currency",
-      header: "Settles",
+      header: t("col.settles"),
       accessorFn: (position) => position.settlementCurrency,
       meta: { width: "80px" },
     },
     {
       id: "updated",
-      header: "Updated",
+      header: t("col.updated"),
       accessorFn: (position) => position.updatedAt,
       cell: (context) => <span className="text-dim">{formatTimestamp(String(context.getValue() ?? ""))}</span>,
       meta: { align: "right", width: "104px" },
@@ -256,8 +281,14 @@ function PositionsTable({ positions, loading }: { positions: Position[]; loading
       data={positions}
       loading={loading}
       getRowId={(position) => `${position.lineageId}:${position.instrumentId}`}
-      caption="Open positions"
-      empty={<EmptyState icon={Inbox} title="Flat" detail="No open position on any instrument." />}
+      caption={t("blotter.caption.positions")}
+      empty={
+        <EmptyState
+          icon={Inbox}
+          title={t("blotter.empty.positions")}
+          detail={t("blotter.empty.positions.detail")}
+        />
+      }
     />
   );
 }
@@ -273,39 +304,41 @@ function FillsTable({
   loading: boolean;
   instrumentId: string | null;
 }) {
+  const t = useT();
+
   const columns: ColumnDef<Fill, unknown>[] = [
     {
       id: "time",
-      header: "Time",
+      header: t("col.time"),
       accessorFn: (fill) => fill.occurredAt,
       cell: (context) => formatTimestamp(String(context.getValue() ?? "")),
       meta: { width: "104px" },
     },
-    { id: "instrument", header: "Instrument", accessorFn: (fill) => fill.instrumentId },
+    { id: "instrument", header: t("col.instrument"), accessorFn: (fill) => fill.instrumentId },
     {
       id: "side",
-      header: "Side",
+      header: t("col.side"),
       accessorFn: (fill) => fill.side,
       cell: (context) => <Side side={String(context.getValue() ?? "")} />,
       meta: { width: "72px" },
     },
     {
       id: "price",
-      header: "Price",
+      header: t("col.price"),
       accessorFn: (fill) => fill.price,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
     {
       id: "quantity",
-      header: "Quantity",
+      header: t("col.quantity"),
       accessorFn: (fill) => fill.quantity,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
     {
       id: "fee",
-      header: "Fee",
+      header: t("col.fee"),
       accessorFn: (fill) => fill.fee,
       cell: (context) => (
         <span>
@@ -323,12 +356,14 @@ function FillsTable({
       data={fills}
       loading={loading}
       getRowId={(fill) => fill.fillId}
-      caption="Recent fills"
+      caption={t("blotter.caption.fills")}
       empty={
         <EmptyState
           icon={Inbox}
-          title="No fills"
-          detail={instrumentId ? `Nothing has executed on ${instrumentId} or anywhere else.` : undefined}
+          title={t("blotter.empty.fills")}
+          // No instrument selected means no name to put in the sentence, and
+          // "nothing has executed on  or anywhere else" is worse than silence.
+          detail={instrumentId ? t("blotter.empty.fills.detail", { instrument: instrumentId }) : undefined}
         />
       }
     />
@@ -374,7 +409,12 @@ function stateTone(state: CommandState): StateTone {
   }
 }
 
-function describe(error: unknown): string {
+/**
+ * Outside React, so it takes `t` rather than calling `useT()`. Both branches
+ * above it are the server's own text; only the "we have no idea" fallback is
+ * ours to translate.
+ */
+function describe(error: unknown, t: Translate): string {
   if (error instanceof ApiError) return `${error.message} (${error.code})`;
-  return error instanceof Error ? error.message : "Unknown failure";
+  return error instanceof Error ? error.message : t("error.unknown");
 }

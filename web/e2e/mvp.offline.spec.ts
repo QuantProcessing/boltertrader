@@ -30,6 +30,25 @@ const blotterOf = (page: Page): Locator => page.getByRole("tabpanel");
 
 const navOf = (page: Page): Locator => page.getByRole("navigation", { name: "Sections" });
 
+/** The risk disclosure and mode choice a signed-out visitor lands behind. */
+const entryOf = (page: Page): Locator => page.getByRole("dialog", { name: "Trading mode" });
+
+/**
+ * The book is a labelled region rather than a titled panel, deliberately: 256px
+ * of width is better spent on the ladder than on a heading that a red-over-green
+ * grid under Price/Size/Total does not need. The `aria-label` is what carries
+ * the name instead, so this is the role to reach for.
+ */
+const bookOf = (page: Page): Locator => page.getByRole("region", { name: "Order book" });
+
+/**
+ * A depth row, as distinct from the price-grouping controls in the book's
+ * header — both are buttons, and only the rows carry figures. `Num` writes
+ * `data-numeric` on every number in the product, so this cannot drift from what
+ * a row is without the rows ceasing to be numbers.
+ */
+const depthRowsOf = (page: Page): Locator => bookOf(page).locator("button:has([data-numeric])");
+
 /**
  * The single option a leg on `venue` should offer, given the fixture accounts.
  *
@@ -47,17 +66,63 @@ test.describe("the MVP path", () => {
   test("signs in and lands on the terminal", async ({ page }) => {
     await page.goto("/trade");
 
-    // Step 1: an unauthenticated visit is sent to the login screen, carrying
-    // where it was going so the operator gets back there.
+    // Step 1: `/trade` opens to a signed-out visitor now — the guard lets it
+    // through because the route opted in, and the disclosure is what stands
+    // between them and the product rather than a login form. The URL does not
+    // move, which is the part worth asserting: a redirect here would mean the
+    // read-only opt-in had stopped working.
+    await expect(page).toHaveURL(/\/trade$/);
+    await expect(entryOf(page)).toBeVisible();
+
+    // Step 2: both ways out are locked until the risks are acknowledged.
+    const live = entryOf(page).getByRole("button", { name: "Enable live trading" });
+    await expect(live).toBeDisabled();
+    await entryOf(page).getByRole("checkbox").check();
+    await expect(live).toBeEnabled();
+
+    // Step 3: choosing to trade is what asks for a session.
+    await live.click();
     await expect(page).toHaveURL(/\/login\?redirect=/);
 
     await page.getByLabel("Username").fill(CREDENTIALS.username);
     await page.getByLabel("Password").fill(CREDENTIALS.password);
     await page.getByRole("button", { name: "Sign in" }).click();
 
-    // Step 2: the session is real, so the shell renders.
+    // Step 4: the session is real, so the shell renders.
     await expect(page).toHaveURL(/\/trade$/);
     await expect(navOf(page)).toBeVisible();
+    await expect(entryOf(page)).toBeHidden();
+  });
+
+  test("reads the market without a session and cannot order into it", async ({ page }) => {
+    await page.goto("/trade");
+    await entryOf(page).getByRole("checkbox").check();
+    await entryOf(page).getByRole("button", { name: "Continue in read-only mode" }).click();
+
+    // The market renders — the book is venue public data and the auth edge's
+    // carve-out serves it without a session. Depth rows, not just the frame:
+    // the region would mount from an empty `fact` too, and an empty book proves
+    // only that React ran. A row means a request reached a venue and came back
+    // without an identity, which is the whole point of the mode and the
+    // assertion that says so if the carve-out regressed.
+    await expect(entryOf(page)).toBeHidden();
+    await expect(navOf(page)).toBeVisible();
+    await expect(depthRowsOf(page).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("READ-ONLY")).toBeVisible();
+
+    // And the ticket knows it has nothing to trade with: the accounts query is
+    // gated off, so the picker falls through to its own empty state rather than
+    // polling a 401 behind a control that looks live. Disabled is the half that
+    // matters — an empty option list would still leave a control an operator
+    // can open and wonder about.
+    const picker = ticketOf(page).getByLabel("Account");
+    await expect(picker).toBeDisabled();
+    await expect(picker).toContainText("No account for this venue");
+
+    // The choice is remembered for the tab, so changing screen does not
+    // re-open the disclosure.
+    await navOf(page).getByRole("link", { name: "Funding" }).click();
+    await expect(entryOf(page)).toBeHidden();
   });
 
   test("refuses a bad password without saying which half was wrong", async ({ page }) => {
@@ -291,20 +356,29 @@ test.describe("the MVP path", () => {
     await expect(page.getByRole("button", { name: /BTC-USDT okx/ })).toBeVisible();
   });
 
-  test("sends the operator back to login when the session ends", async ({ page }) => {
+  test("returns to the door on sign-out, and still guards the private routes", async ({ page }) => {
     await signIn(page);
 
-    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("button", { name: "Workspace" }).click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
+
+    // Signing out of `/trade` leaves the operator on `/trade`, because the route
+    // is readable without a session — but back at the disclosure, because the
+    // mode is reset with the session. The alternative is a visitor holding
+    // read-write with nothing to authorise it, whose only symptom is that every
+    // write is refused with no screen saying why.
+    await expect(page).toHaveURL(/\/trade$/);
+    await expect(entryOf(page)).toBeVisible();
+
+    // And the guard holds on a direct navigation to a private route afterwards,
+    // rather than flashing the terminal while a query discovers the 401.
+    //
     // One capture of where they were, not a stack of them. This shell outlives
     // the navigation it starts — the login route's `beforeLoad` is async — so an
     // effect keyed on `location.href` re-runs against its own `/login?redirect=…`
-    // output and wraps it once per render. That reads as a working sign-out
+    // output and wraps it once per render. That reads as a working redirect
     // right up until the address is kilobytes long and has to bounce a few dozen
     // times to unwrap, which a `/\/login/` assertion cannot tell apart from this.
-    await expect(page).toHaveURL("/login?redirect=%2Ftrade");
-
-    // And the guard holds on a direct navigation afterwards, rather than
-    // flashing the terminal while a query discovers the 401.
     await page.goto("/portfolio");
     await expect(page).toHaveURL("/login?redirect=%2Fportfolio");
   });
@@ -313,16 +387,23 @@ test.describe("the MVP path", () => {
 /* --- Steps used by more than one test ------------------------------------- */
 
 /**
- * Signs in the way an operator does: bounced off a guarded route, through the
- * form, and back to where they were going.
+ * Signs in the way an operator does: through the door, through the form, and
+ * into the terminal.
  *
  * There is no shortcut past this. The mock mints the session cookie and the
  * CSRF token in its login handler, and every write in these tests carries that
  * token — so a sign-in that cheated would leave the writes failing 403 for a
  * reason no screen would explain.
+ *
+ * Going via `/login` directly would be shorter and would skip the disclosure,
+ * which is exactly why it does not: the modal is now on the path every operator
+ * walks, and a helper that routed around it would leave every test in this file
+ * blind to it breaking.
  */
 async function signIn(page: Page): Promise<void> {
   await page.goto("/trade");
+  await entryOf(page).getByRole("checkbox").check();
+  await entryOf(page).getByRole("button", { name: "Enable live trading" }).click();
   await expect(page).toHaveURL(/\/login\?redirect=/);
   await page.getByLabel("Username").fill(CREDENTIALS.username);
   await page.getByLabel("Password").fill(CREDENTIALS.password);

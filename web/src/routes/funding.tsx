@@ -5,6 +5,7 @@ import { Metric } from "@/components/ui/panel";
 import { FundingMatrix } from "@/features/funding/matrix";
 import { useFundingBoard } from "@/features/funding/queries";
 import { formatTimestamp } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * Funding: ten venues quoting the same perpetuals, side by side.
@@ -19,6 +20,7 @@ import { formatTimestamp } from "@/lib/format";
  * ------------------------------------------------------------------------- */
 
 export function FundingPage() {
+  const t = useT();
   const board = useFundingBoard();
   const snapshot = board.data?.value;
   const budget = board.data?.rateLimit;
@@ -34,11 +36,11 @@ export function FundingPage() {
       <div className="flex min-h-0 flex-1 flex-col">
         <EmptyState
           icon={AlertTriangle}
-          title="The funding board is not available"
+          title={t("funding.unavailable")}
           detail={
             board.error instanceof Error
               ? board.error.message
-              : "The Gateway has not published a board yet. It retries on its own."
+              : t("funding.unavailable.detail")
           }
           className="flex-1"
         />
@@ -49,30 +51,32 @@ export function FundingPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
-        <div className="flex items-center gap-2">
-          <h1 className="text-title font-semibold text-text">Funding</h1>
-        </div>
+        <h1 className="shrink-0 text-title font-semibold text-text">{t("nav.funding")}</h1>
 
-        <Metric label="Venues" value={String(venues.length)} />
+        <Metric label={t("funding.venues")} value={String(venues.length)} />
         <Metric
-          label="Degraded"
+          label={t("funding.degraded")}
           value={String(degraded)}
           tone={degraded > 0 ? "down" : "none"}
         />
         <Metric
-          label="Observed"
+          label={t("funding.observed")}
           value={snapshot ? formatTimestamp(snapshot.observedAt) : "—"}
         />
         {budget ? (
-          <Metric label="Budget left" value={`${budget.remaining}/${budget.limit}`} />
-        ) : null}
-
-        {board.isError ? (
-          <p className="ml-auto text-meta text-warn" role="status">
-            Showing the last board — the refresh failed.
-          </p>
+          <Metric label={t("funding.budgetLeft")} value={`${budget.remaining}/${budget.limit}`} />
         ) : null}
       </header>
+
+      {/* Below the bar rather than `ml-auto` inside it, same as the arbitrage
+          route: the bar is a fixed 44px of readouts, and a sentence that appears
+          only when a refresh has failed should not be reflowing them at exactly
+          that moment. */}
+      {board.isError ? (
+        <p className="shrink-0 border-b border-line bg-panel px-3 py-1.5 text-meta text-warn" role="status">
+          {t("funding.stale")}
+        </p>
+      ) : null}
 
       <FundingMatrix snapshot={snapshot} loading={board.isPending} />
     </div>

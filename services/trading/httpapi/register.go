@@ -72,6 +72,17 @@ func Routes() []string {
 	return all
 }
 
+// PublicDataRoutes reports the group that fronts the venues' own public reads.
+//
+// "Public data" is a statement about the *data*, not about who may ask: every
+// route here is mounted behind the same service token as the rest, and one of
+// them (realtime) refuses an empty identity on its own. The auth edge is the
+// only thing that decides a request may arrive unauthenticated, and this list
+// is the outer bound on what it is allowed to decide that about — its contract
+// test compares its own carve-out against this, so widening one without the
+// other fails rather than drifts.
+func PublicDataRoutes() []string { return append([]string(nil), publicDataRoutes...) }
+
 // Register mounts every configured group on mux and reports the routes it now
 // owns. The caller needs that list because it is the one deciding what the
 // browser-facing surface is: it mounts its own routes alongside these and has

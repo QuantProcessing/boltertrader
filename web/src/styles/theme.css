@@ -185,6 +185,13 @@
   --spacing-row: 34px; /* the rhythm every table shares */
   --spacing-bar: 44px; /* the bars, and the minimum touch target on mobile */
 
+  /* Depth rows are deliberately tighter than `--spacing-row`: the book's job is
+   * to show as many levels at once as the column can hold, and it carries no
+   * controls — only two numbers and a bar. This is the row `format.ts` is
+   * talking about when it explains why the group separator has to be a
+   * *no-break* space. */
+  --spacing-depth: 22px;
+
   /* The terminal's fixed panels, from design.md §9. These are px rather than
    * steps of the scale above because they are the one set of measurements the
    * design fixes outright: the shape is two side columns and a lower deck, and

@@ -14,6 +14,7 @@ import { useArbitrageOpportunities } from "@/features/funding/queries";
 import { SpreadChart } from "@/features/funding/spread-chart";
 import { useAccounts } from "@/features/market/queries";
 import { formatTimestamp } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ import { cn } from "@/lib/utils";
  * ------------------------------------------------------------------------- */
 
 export function ArbitragePage() {
+  const t = useT();
   // `/app/…` rather than the address in the bar: the auth guard is a pathless
   // layout route, so the *id* this route is filed under carries its parent's.
   const search = useSearch({ from: "/app/funding/arbitrage" });
@@ -94,40 +96,61 @@ export function ArbitragePage() {
   };
 
   const executable = items.filter((item) => item.executable).length;
-  const visible = needle.trim()
-    ? items.filter((item) => item.symbol.toLowerCase().includes(needle.trim().toLowerCase()))
-    : items;
+
+  // Executable first, then the server's own spread-descending order inside each
+  // group — `sort` is stable, so that second order is inherited rather than
+  // recomputed. The server ranks on spread alone, which is right for a board and
+  // wrong for a list you pick from: the widest spreads belong to the thinnest
+  // instruments, which are exactly the ones no account can trade. On this board
+  // 611 of 621 pairs are blocked, so an unsorted list is a screen of things to
+  // scroll past before the first one that can be sent. Nothing is dropped — the
+  // blocked pairs keep their own ranking below, and still say why.
+  const ranked = useMemo(() => {
+    const needled = needle.trim().toLowerCase();
+    const pool = needled ? items.filter((item) => item.symbol.toLowerCase().includes(needled)) : items;
+    return [...pool].sort((left, right) => Number(right.executable) - Number(left.executable));
+  }, [items, needle]);
+
+  // Out of the bar rather than `ml-auto` inside it. The bar is a fixed 44px of
+  // readouts; a sentence that shows up only sometimes was reflowing them at the
+  // moment something had gone wrong. A banner also gets a full line, which this
+  // text needs and the gap between two metrics never had.
+  const notice =
+    accounts.length < 2
+      ? t("arb.needTwo")
+      : opportunities.isError
+        ? t("arb.stale")
+        : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
-        <div className="flex items-center gap-2">
-          <h1 className="text-title font-semibold text-text">Arbitrage</h1>
-        </div>
-        <Metric label="Pairs" value={String(items.length)} />
-        <Metric label="Executable" value={String(executable)} tone={executable === 0 ? "down" : "none"} />
-        <Metric label="Accounts" value={String(accounts.length)} tone={accounts.length < 2 ? "down" : "none"} />
-        <Metric label="Observed" value={observedAt ? formatTimestamp(observedAt) : "—"} />
-        {accounts.length < 2 ? (
-          <p className="ml-auto text-meta text-warn" role="status">
-            A hedge needs two venues. Add arbitrage-capable accounts in Settings.
-          </p>
-        ) : opportunities.isError ? (
-          <p className="ml-auto text-meta text-warn" role="status">
-            Showing the last read — the refresh failed.
-          </p>
-        ) : null}
+        <h1 className="shrink-0 text-title font-semibold text-text">{t("nav.arbitrage")}</h1>
+        <Metric label={t("arb.pairs")} value={String(items.length)} />
+        <Metric label={t("arb.executable")} value={String(executable)} tone={executable === 0 ? "down" : "none"} />
+        <Metric
+          label={t("arb.accounts")}
+          value={String(accounts.length)}
+          tone={accounts.length < 2 ? "down" : "none"}
+        />
+        <Metric label={t("funding.observed")} value={observedAt ? formatTimestamp(observedAt) : "—"} />
       </header>
+
+      {notice ? (
+        <p className="shrink-0 border-b border-line bg-panel px-3 py-1.5 text-meta text-warn" role="status">
+          {notice}
+        </p>
+      ) : null}
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-side shrink-0 flex-col border-r border-line">
           <div className="flex h-row shrink-0 items-center justify-between gap-2 border-b border-line px-3">
-            <h2 className="text-base font-medium text-text">Spreads</h2>
-            <span className="text-meta text-dim">{visible.length}</span>
+            <h2 className="text-base font-medium text-text">{t("arb.spreads")}</h2>
+            <span className="text-meta text-dim">{ranked.length}</span>
           </div>
           <div className="shrink-0 border-b border-line px-3 py-2">
             <label className="flex flex-col gap-1">
-              <span className="sr-only">Search underlyings</span>
+              <span className="sr-only">{t("arb.searchUnderlyings")}</span>
               <input
                 type="search"
                 value={needle}
@@ -138,10 +161,10 @@ export function ArbitragePage() {
             </label>
           </div>
           <SpreadList
-            items={visible}
+            items={ranked}
             selected={selected?.symbol}
             pending={opportunities.isPending}
-            error={opportunities.isError ? describeError(opportunities.error) : null}
+            error={opportunities.isError ? describeError(opportunities.error, t) : null}
             onSelect={select}
           />
         </aside>
@@ -159,11 +182,11 @@ export function ArbitragePage() {
             <div className="flex min-h-0 flex-1 flex-col">
               <EmptyState
                 icon={AlertTriangle}
-                title={opportunities.isPending ? "Reading the board" : "No pair to hedge"}
+                title={opportunities.isPending ? t("arb.empty.reading") : t("arb.empty.none")}
                 detail={
                   opportunities.isPending
-                    ? "Ranking every underlying quoted by more than one venue."
-                    : "A pair appears once two venues quote the same perpetual. Nothing does right now."
+                    ? t("arb.empty.reading.detail")
+                    : t("arb.empty.none.detail")
                 }
                 className="flex-1"
               />
@@ -198,7 +221,7 @@ export function ArbitragePage() {
   );
 }
 
-/** The ranked list. Spread-descending, straight from the server. */
+/** The ranked list. Executable first, spread-descending inside each group. */
 function SpreadList({
   items,
   selected,
@@ -212,14 +235,17 @@ function SpreadList({
   error: string | null;
   onSelect: (symbol: string) => void;
 }) {
+  // Above the early returns: a hook cannot sit behind a conditional.
+  const t = useT();
+
   if (pending) {
-    return <p className="px-3 py-4 text-base text-dim">Ranking spreads…</p>;
+    return <p className="px-3 py-4 text-base text-dim">{t("arb.ranking")}</p>;
   }
   if (items.length === 0) {
     return error ? (
       <p className="px-3 py-4 text-base text-danger">{error}</p>
     ) : (
-      <EmptyState icon={SearchX} title="Nothing matches" detail="No underlying by that name is quoted twice." />
+      <EmptyState icon={SearchX} title={t("arb.noMatch")} detail={t("arb.noMatch.detail")} />
     );
   }
 
@@ -254,8 +280,15 @@ function SpreadList({
                 {item.long.venue} → {item.short.venue}
               </span>
               {/* Named rather than dotted: "not executable" is a state with a
-                  reason, and the reason is one word long. */}
-              {item.executable ? null : <span className="shrink-0 text-warn">{item.blockers[0] ?? "blocked"}</span>}
+                  reason, and the reason is one word long. Underscores out — the
+                  code is the server's key, not a phrase, and it is read here by
+                  someone deciding what to trade. Same transform the pair rows
+                  already apply to a lineage state. */}
+              {item.executable ? null : (
+                <span className="shrink-0 text-warn">
+                  {item.blockers[0]?.replace(/_/g, " ") ?? t("arb.blocked")}
+                </span>
+              )}
             </span>
           </button>
         </li>

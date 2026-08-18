@@ -128,21 +128,50 @@ export function splitInstrument(instrumentId: string): { base: string; quote: st
   return { base: instrumentId.slice(0, index), quote: instrumentId.slice(index + 1) };
 }
 
-const TIME = new Intl.DateTimeFormat(undefined, {
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-});
+/**
+ * Which language the dates speak.
+ *
+ * Pushed in by `lib/i18n` rather than read from it, because this is the lower
+ * of the two modules and importing upward would drag that module's side effects
+ * into every test that formats a number. `undefined` means the browser's own
+ * language — the right answer until a reader picks one, and the only sensible
+ * answer in a test that never renders the app.
+ *
+ * Only `DATE_TIME` actually moves: `Aug 19, 10:11:28` against `8月19日 10:11:28`.
+ * A 24-hour clock is digits and colons in both, so `TIME` is rebuilt for
+ * symmetry rather than necessity.
+ */
+let dateLocale: string | undefined;
+let TIME = timeFormat();
+let DATE_TIME = dateTimeFormat();
 
-const DATE_TIME = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-});
+function timeFormat(): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(dateLocale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function dateTimeFormat(): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(dateLocale, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+/** Called by `lib/i18n` when the reader picks a language. */
+export function setDateLocale(locale: string): void {
+  if (locale === dateLocale) return;
+  dateLocale = locale;
+  TIME = timeFormat();
+  DATE_TIME = dateTimeFormat();
+}
 
 /** Time of day for today's events, date-qualified for anything older. */
 export function formatTimestamp(iso: string | null | undefined, now: Date = new Date()): string {

@@ -24,6 +24,7 @@ import { Segmented, type SegmentedOption } from "@/components/ui/segmented";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useFundingHistory } from "@/features/funding/queries";
 import { readChartPalette } from "@/lib/chart-palette";
+import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
@@ -56,6 +57,8 @@ import { cn } from "@/lib/utils";
  * half.
  * ------------------------------------------------------------------------- */
 
+// The labels are codes — `7d`, `30d` — so this one can stay at module scope:
+// there is nothing in it for a locale to change.
 const WINDOW_OPTIONS: SegmentedOption<FundingWindow>[] = FUNDING_WINDOWS.map((value) => ({
   value,
   label: value,
@@ -89,6 +92,7 @@ export function SpreadChart({
   shortVenue: string;
   shortEnvironment: string;
 }) {
+  const t = useT();
   const [historyWindow, setHistoryWindow] = useState<FundingWindow>("7d");
 
   // Two queries rather than one paired read: a venue that publishes no history
@@ -107,12 +111,16 @@ export function SpreadChart({
     window: historyWindow,
   });
 
+  // `t` is deliberately out of the dependency arrays: `useT()` returns a fresh
+  // closure every render, so keying on it would defeat the memo entirely. The
+  // language store re-renders this component when the locale changes, and the
+  // notes are read from `longLeg`/`shortLeg` on that render.
   const longLeg = useMemo(
-    () => readLeg(longHistory),
+    () => readLeg(longHistory, t),
     [longHistory.data, longHistory.error, longHistory.isPending],
   );
   const shortLeg = useMemo(
-    () => readLeg(shortHistory),
+    () => readLeg(shortHistory, t),
     [shortHistory.data, shortHistory.error, shortHistory.isPending],
   );
 
@@ -212,21 +220,21 @@ export function SpreadChart({
   const pending = longHistory.isPending || shortHistory.isPending;
 
   const notes: string[] = [];
-  if (longLeg.note) notes.push(`${longVenue}: ${longLeg.note.detail}`);
-  if (shortLeg.note) notes.push(`${shortVenue}: ${shortLeg.note.detail}`);
+  if (longLeg.note) notes.push(t("funding.note", { venue: longVenue, detail: longLeg.note.detail }));
+  if (shortLeg.note) notes.push(t("funding.note", { venue: shortVenue, detail: shortLeg.note.detail }));
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center justify-between gap-3 border-b border-line px-3">
-        <h2 className="shrink-0 text-base font-medium text-text">Funding history</h2>
+        <h2 className="shrink-0 text-base font-medium text-text">{t("funding.history")}</h2>
         <div className="flex min-w-0 items-center gap-3 overflow-x-auto">
           <div className="flex items-center gap-3 text-meta text-dim">
-            <LegendLeg side="Long" venue={longVenue} tone="up" note={longLeg.note} />
-            <LegendLeg side="Short" venue={shortVenue} tone="down" note={shortLeg.note} />
+            <LegendLeg side={t("arb.long")} venue={longVenue} tone="up" note={longLeg.note} />
+            <LegendLeg side={t("arb.short")} venue={shortVenue} tone="down" note={shortLeg.note} />
           </div>
           <Segmented
             name="funding-window"
-            label="History window"
+            label={t("funding.window")}
             value={historyWindow}
             options={WINDOW_OPTIONS}
             onChange={setHistoryWindow}
@@ -240,23 +248,31 @@ export function SpreadChart({
           ref={containerRef}
           className="absolute inset-0"
           role="img"
-          aria-label={`Settled daily funding rate for ${symbol} over the last ${historyWindow}, ${longVenue} against ${shortVenue}`}
+          aria-label={t("funding.chart.label", {
+            symbol,
+            window: historyWindow,
+            long: longVenue,
+            short: shortVenue,
+          })}
         />
         {drew ? null : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-panel px-6 text-center">
-            <p className="text-base text-dim">{pending ? "Reading settled funding" : "Neither leg has a history to draw"}</p>
+            <p className="text-base text-dim">{pending ? t("funding.reading") : t("funding.noHistory")}</p>
             <p className="text-meta text-dim">
-              {pending ? `The last ${historyWindow} from ${longVenue} and ${shortVenue}.` : notes.join(" ")}
+              {pending
+                ? t("funding.reading.detail", {
+                    window: historyWindow,
+                    long: longVenue,
+                    short: shortVenue,
+                  })
+                : notes.join(" ")}
             </p>
           </div>
         )}
       </div>
 
       <div className="shrink-0 border-t border-line px-3 py-1.5 text-meta text-dim">
-        <p>
-          Each settlement, normalised to a daily rate from that venue&rsquo;s own funding interval — the same unit as
-          the board. Read back from the venues; the rate being quoted now is on the ticket.
-        </p>
+        <p>{t("funding.footnote")}</p>
         {drew && notes.length > 0 ? (
           <p className="text-warn" role="status">
             {notes.join(" ")}
@@ -274,6 +290,7 @@ function LegendLeg({
   tone,
   note,
 }: {
+  /** Already translated by the caller — one word, and it reads as a label here. */
   side: string;
   venue: string;
   tone: "up" | "down";
@@ -302,8 +319,10 @@ function LegendLeg({
  * venue publishes no funding history" under a venue that publishes it for
  * hundreds of other pairs, which is both false and easy for the operator to
  * check.
+ *
+ * Not a component, so it takes `t` rather than calling `useT()` itself.
  */
-function readLeg(query: UseQueryResult<Metered<FundingHistorySeries>>): LegView {
+function readLeg(query: UseQueryResult<Metered<FundingHistorySeries>>, t: Translate): LegView {
   if (query.isPending) {
     return { points: [], note: null };
   }
@@ -314,8 +333,8 @@ function readLeg(query: UseQueryResult<Metered<FundingHistorySeries>>): LegView 
         points: [],
         note: {
           tone: "neutral",
-          label: "no history",
-          detail: "This venue publishes no funding history, so this leg cannot be drawn.",
+          label: t("funding.leg.noHistory"),
+          detail: t("funding.leg.noHistory.detail"),
         },
       };
     }
@@ -324,14 +343,18 @@ function readLeg(query: UseQueryResult<Metered<FundingHistorySeries>>): LegView 
         points: [],
         note: {
           tone: "neutral",
-          label: "not listed",
-          detail: "This venue does not list this instrument, so this leg cannot be drawn.",
+          label: t("funding.leg.notListed"),
+          detail: t("funding.leg.notListed.detail"),
         },
       };
     }
     return {
       points: [],
-      note: { tone: "danger", label: "unavailable", detail: `The history read failed. ${describeError(query.error)}` },
+      note: {
+        tone: "danger",
+        label: t("funding.leg.unavailable"),
+        detail: t("funding.leg.unavailable.detail", { error: describeError(query.error, t) }),
+      },
     };
   }
 
@@ -341,8 +364,8 @@ function readLeg(query: UseQueryResult<Metered<FundingHistorySeries>>): LegView 
       points,
       note: {
         tone: "warn",
-        label: "no settlements",
-        detail: "This venue settled no funding on this symbol during the window.",
+        label: t("funding.leg.noSettlements"),
+        detail: t("funding.leg.noSettlements.detail"),
       },
     };
   }

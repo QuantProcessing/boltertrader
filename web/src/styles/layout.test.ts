@@ -41,7 +41,7 @@ function documented(name: string): number {
 }
 
 describe("the layout tokens", () => {
-  it.each(["row", "bar", "side", "ticket", "deck"])("matches design.md for %s", (name) => {
+  it.each(["row", "bar", "depth", "side", "ticket", "deck"])("matches design.md for %s", (name) => {
     expect(token(name)).toBe(documented(name));
   });
 

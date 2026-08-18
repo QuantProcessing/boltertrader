@@ -13,6 +13,7 @@ import { useEffect, useRef } from "react";
 import { CANDLE_INTERVALS, type Candle, type CandleInterval } from "@/api/types";
 import { Segmented } from "@/components/ui/segmented";
 import { readChartPalette } from "@/lib/chart-palette";
+import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * The price chart.
@@ -43,6 +44,7 @@ export function PriceChart({
   const chartRef = useRef<IChartApi | null>(null);
   const priceRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const t = useT();
 
   // Built once. The library takes resolved colours rather than CSS variables,
   // so a chart normally has to be torn down and rebuilt whenever the palette
@@ -142,17 +144,24 @@ export function PriceChart({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center justify-between gap-3 border-b border-line px-3">
-        <h2 className="text-base font-medium text-text">Price</h2>
+        <h2 className="text-base font-medium text-text">{t("chart.price")}</h2>
         <Segmented
           name="interval"
-          label="Candle interval"
+          label={t("chart.interval")}
           value={interval}
+          // The options are interval codes — `15m`, `1d` — which the venues use
+          // untranslated and an operator types the same way in any language.
           options={INTERVAL_OPTIONS}
           onChange={onIntervalChange}
           className="w-auto"
         />
       </div>
-      <div ref={containerRef} className="min-h-0 flex-1" role="img" aria-label={`Candlestick chart, ${interval} bars`} />
+      <div
+        ref={containerRef}
+        className="min-h-0 flex-1"
+        role="img"
+        aria-label={t("chart.label", { interval })}
+      />
     </div>
   );
 }

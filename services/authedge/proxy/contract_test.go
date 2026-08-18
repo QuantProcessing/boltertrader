@@ -107,6 +107,100 @@ func TestForwardedRoutesDoNotShadowOwnedRoutes(t *testing.T) {
 	}
 }
 
+// Every Public route must be one the trading service classifies as public
+// data. That list is the outer bound on what may be reached without a session,
+// and this is what keeps the auth edge from widening it on its own: adding
+// Public to a route the trading service considers private fails here rather
+// than shipping an unauthenticated read of somebody's ledger.
+func TestPublicRoutesAreTradingPublicData(t *testing.T) {
+	t.Parallel()
+	allowed := make(map[string]struct{})
+	for _, pattern := range tradinghttp.PublicDataRoutes() {
+		allowed[pattern] = struct{}{}
+	}
+	for _, route := range Routes() {
+		if !route.Public {
+			continue
+		}
+		if _, ok := allowed[route.Pattern()]; !ok {
+			t.Errorf("%s is Public but trading does not classify it as public data", route.Pattern())
+		}
+	}
+}
+
+// A Public route must be a GET. The carve-out in handler already tests the
+// method at request time, so a POST marked Public would never actually skip
+// authorize — which is exactly why this belongs in a test: the table would
+// read as though writes were open while the code quietly disagreed, and the
+// next person to touch either side would have to guess which one was the rule.
+func TestPublicRoutesAreReads(t *testing.T) {
+	t.Parallel()
+	for _, route := range Routes() {
+		if route.Public && route.Method != http.MethodGet {
+			t.Errorf("%s is Public but not a GET", route.Pattern())
+		}
+	}
+}
+
+// The realtime stream is the one public-data route that is not Public.
+//
+// It replays a principal-scoped buffer and answers 401 on an empty identity by
+// itself, so marking it would widen the unauthenticated surface to a route
+// that could only refuse. Pinned by name because the reason lives in a
+// different service: someone reconciling the two lists would otherwise see
+// eight of nine and reasonably "fix" the ninth.
+func TestRealtimeStreamIsNotPublic(t *testing.T) {
+	t.Parallel()
+	const pattern = "GET /api/v1/realtime/stream"
+	found := false
+	for _, route := range Routes() {
+		if route.Pattern() != pattern {
+			continue
+		}
+		found = true
+		if route.Public {
+			t.Errorf("%s is Public; it answers 401 on an empty principal upstream", pattern)
+		}
+	}
+	if !found {
+		t.Fatalf("%s is not in the forwarding table", pattern)
+	}
+}
+
+// Nothing outside the trading service's public-data group is Public — no
+// gateway route, no projection, no product route. Stated as a count so that a
+// Public flag landing on a route this file has never heard of still fails.
+func TestPublicRoutesAreExactlyTheEightExpected(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"GET /api/v1/candles",
+		"GET /api/v1/catalog/instruments",
+		"GET /api/v1/catalog/venues",
+		"GET /api/v1/funding-board",
+		"GET /api/v1/funding-history",
+		"GET /api/v1/market-data",
+		"GET /api/v1/system/readiness",
+		"GET /api/v1/system/status",
+	}
+	var got []string
+	for _, route := range Routes() {
+		if route.Public {
+			got = append(got, route.Pattern())
+		}
+	}
+	sort.Strings(got)
+
+	// Spelled out rather than run through assertSameRoutes: that helper phrases
+	// both directions as an upstream disagreeing with the table, and here both
+	// sides of the comparison are this package's own.
+	for _, route := range routesMissingFrom(want, got) {
+		t.Errorf("%s should be reachable without a session but is not Public", route)
+	}
+	for _, route := range routesMissingFrom(got, want) {
+		t.Errorf("%s is Public; the carve-out was not meant to include it", route)
+	}
+}
+
 func assertSameRoutes(t *testing.T, upstream string, want, got []string) {
 	t.Helper()
 	for _, route := range routesMissingFrom(want, got) {

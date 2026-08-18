@@ -12,6 +12,7 @@ import { Tag } from "@/components/ui/state-badge";
 import { useAccounts } from "@/features/market/queries";
 import { pnlKeyOf, useLedger, usePnL, usePortfolioPositions } from "@/features/portfolio/queries";
 import { decimalSign, formatDecimal, formatTimestamp } from "@/lib/format";
+import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
@@ -31,6 +32,7 @@ import { cn } from "@/lib/utils";
 const rowIdOf = (position: Position): string => `${position.lineageId}:${position.instrumentId}`;
 
 export function PortfolioPage() {
+  const t = useT();
   const accounts = useAccounts();
   const [accountId, setAccountId] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -66,22 +68,19 @@ export function PortfolioPage() {
               </div>
             </div>
             <div className="flex min-w-0 flex-1 items-center gap-6 overflow-x-auto">
-              <Money label="Realised" value={pnl.data?.realizedPnl} />
-              <Money label="Unrealised" value={pnl.data?.unrealizedPnl} />
-              <Money label="Fees" value={pnl.data?.fees} />
-              <Money label="Funding" value={pnl.data?.funding} />
-              <Money label="Net" value={pnl.data?.netPnl} unit={selected.settlementCurrency} />
+              <Money label={t("portfolio.realized")} value={pnl.data?.realizedPnl} />
+              <Money label={t("portfolio.unrealized")} value={pnl.data?.unrealizedPnl} />
+              <Money label={t("portfolio.fees")} value={pnl.data?.fees} />
+              <Money label={t("portfolio.funding")} value={pnl.data?.funding} />
+              <Money label={t("portfolio.net")} value={pnl.data?.netPnl} unit={selected.settlementCurrency} />
             </div>
           </>
         ) : (
-          <p className="min-w-0 flex-1 truncate text-meta text-dim">
-            Select a position for its realised, unrealised, fee and funding breakdown. P&amp;L is
-            attributed per lineage, so there is no portfolio-wide total.
-          </p>
+          <p className="min-w-0 flex-1 truncate text-meta text-dim">{t("portfolio.hint")}</p>
         )}
 
         <label className="flex shrink-0 items-center gap-2">
-          <span className="th">Account</span>
+          <span className="th">{t("portfolio.account")}</span>
           <select
             value={accountId}
             onChange={(event) => {
@@ -90,7 +89,7 @@ export function PortfolioPage() {
             }}
             className={cn(inputClass, "w-48")}
           >
-            <option value="">All accounts</option>
+            <option value="">{t("filter.allAccounts")}</option>
             {(accounts.data ?? []).map((account) => (
               <option key={account.accountId} value={account.accountId}>
                 {account.displayName}
@@ -102,10 +101,10 @@ export function PortfolioPage() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <DataTable
-          columns={positionColumns(selectedId)}
+          columns={positionColumns(selectedId, t)}
           data={rows}
           getRowId={rowIdOf}
-          caption="Open positions"
+          caption={t("portfolio.caption.positions")}
           loading={positions.isPending}
           onRowClick={(position) => {
             const id = rowIdOf(position);
@@ -114,8 +113,8 @@ export function PortfolioPage() {
           empty={
             <EmptyState
               icon={Wallet}
-              title="No open positions"
-              detail="A position appears here once a manual order fills."
+              title={t("portfolio.empty.positions")}
+              detail={t("portfolio.empty.positions.detail")}
             />
           }
         />
@@ -123,22 +122,24 @@ export function PortfolioPage() {
 
       <section className="flex h-deck shrink-0 flex-col border-t border-line">
         <header className="flex h-row shrink-0 items-center gap-2 border-b border-line px-3">
-          <h2 className="text-base font-medium text-text">Ledger</h2>
-          {selected ? <Tag>this lineage</Tag> : null}
-          <span className="ml-auto text-meta text-dim">{ledger.data?.length ?? 0} entries</span>
+          <h2 className="text-base font-medium text-text">{t("portfolio.ledger")}</h2>
+          {selected ? <Tag>{t("portfolio.thisLineage")}</Tag> : null}
+          <span className="ml-auto text-meta text-dim">
+            {t("portfolio.entries", { count: ledger.data?.length ?? 0 })}
+          </span>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <DataTable
-            columns={ledgerColumns}
+            columns={ledgerColumns(t)}
             data={ledger.data ?? []}
             getRowId={(entry) => entry.entryId}
-            caption="Ledger entries"
+            caption={t("portfolio.caption.ledger")}
             loading={ledger.isPending}
             empty={
               <EmptyState
                 icon={Inbox}
-                title="No ledger entries"
-                detail="Realised P&L, fees, funding and adjustments are written here as they settle."
+                title={t("portfolio.empty.ledger")}
+                detail={t("portfolio.empty.ledger.detail")}
               />
             }
           />
@@ -162,11 +163,11 @@ function Money({ label, value, unit }: { label: string; value: string | undefine
   );
 }
 
-function positionColumns(selectedId: string | null): ColumnDef<Position, unknown>[] {
+function positionColumns(selectedId: string | null, t: Translate): ColumnDef<Position, unknown>[] {
   return [
     {
       id: "instrument",
-      header: "Instrument",
+      header: t("col.instrument"),
       accessorKey: "instrumentId",
       cell: ({ row }) => (
         <span className="flex items-center gap-2">
@@ -181,52 +182,52 @@ function positionColumns(selectedId: string | null): ColumnDef<Position, unknown
         </span>
       ),
     },
-    { id: "account", header: "Account", accessorKey: "accountId", meta: { width: "12rem" } },
-    { id: "product", header: "Product", accessorKey: "productId", meta: { width: "6rem" } },
+    { id: "account", header: t("col.account"), accessorKey: "accountId", meta: { width: "12rem" } },
+    { id: "product", header: t("col.product"), accessorKey: "productId", meta: { width: "6rem" } },
     {
       id: "quantity",
-      header: "Quantity",
+      header: t("col.quantity"),
       accessorKey: "quantity",
       meta: { numeric: true },
       cell: ({ row }) => <Num value={row.original.quantity} signed directional />,
     },
     {
       id: "entry",
-      header: "Avg entry",
+      header: t("col.entry"),
       accessorKey: "averageEntryPrice",
       meta: { numeric: true },
       cell: ({ row }) => <Num value={row.original.averageEntryPrice} />,
     },
     {
       id: "mark",
-      header: "Mark",
+      header: t("col.mark"),
       accessorKey: "markPrice",
       meta: { numeric: true },
       cell: ({ row }) => <Num value={row.original.markPrice} />,
     },
     {
       id: "unrealized",
-      header: "Unrealised",
+      header: t("col.unrealized"),
       accessorKey: "unrealizedPnl",
       meta: { numeric: true },
       cell: ({ row }) => <Num value={row.original.unrealizedPnl} decimals={2} signed grouped directional />,
     },
     {
       id: "realized",
-      header: "Realised",
+      header: t("col.realized"),
       accessorKey: "realizedPnl",
       meta: { numeric: true },
       cell: ({ row }) => <Num value={row.original.realizedPnl} decimals={2} signed grouped directional />,
     },
     {
       id: "currency",
-      header: "Ccy",
+      header: t("col.currency"),
       accessorKey: "settlementCurrency",
       meta: { width: "5rem" },
     },
     {
       id: "updated",
-      header: "Updated",
+      header: t("col.updated"),
       accessorKey: "updatedAt",
       meta: { align: "right", width: "7rem" },
       cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.updatedAt)}</span>,
@@ -234,23 +235,33 @@ function positionColumns(selectedId: string | null): ColumnDef<Position, unknown
   ];
 }
 
-const ledgerColumns: ColumnDef<LedgerEntry, unknown>[] = [
-  {
-    id: "occurred",
-    header: "Time",
-    accessorKey: "occurredAt",
-    meta: { width: "7rem" },
-    cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.occurredAt)}</span>,
-  },
-  { id: "kind", header: "Kind", accessorKey: "kind", meta: { width: "9rem" } },
-  { id: "instrument", header: "Instrument", accessorKey: "instrumentId" },
-  { id: "account", header: "Account", accessorKey: "accountId", meta: { width: "12rem" } },
-  {
-    id: "amount",
-    header: "Amount",
-    accessorKey: "amount",
-    meta: { numeric: true },
-    cell: ({ row }) => <Num value={row.original.amount} decimals={2} signed grouped directional />,
-  },
-  { id: "currency", header: "Ccy", accessorKey: "currency", meta: { width: "5rem" } },
-];
+/**
+ * A builder rather than a constant, now that the headers are translated: a
+ * module-level array is evaluated once at import and would freeze whichever
+ * locale happened to be active then.
+ *
+ * `kind` is the server's own vocabulary (`command.submitted`, `fee`) and is not
+ * translated — the activity log and the audit trail print the same token.
+ */
+function ledgerColumns(t: Translate): ColumnDef<LedgerEntry, unknown>[] {
+  return [
+    {
+      id: "occurred",
+      header: t("col.time"),
+      accessorKey: "occurredAt",
+      meta: { width: "7rem" },
+      cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.occurredAt)}</span>,
+    },
+    { id: "kind", header: t("col.kind"), accessorKey: "kind", meta: { width: "9rem" } },
+    { id: "instrument", header: t("col.instrument"), accessorKey: "instrumentId" },
+    { id: "account", header: t("col.account"), accessorKey: "accountId", meta: { width: "12rem" } },
+    {
+      id: "amount",
+      header: t("col.amount"),
+      accessorKey: "amount",
+      meta: { numeric: true },
+      cell: ({ row }) => <Num value={row.original.amount} decimals={2} signed grouped directional />,
+    },
+    { id: "currency", header: t("col.currency"), accessorKey: "currency", meta: { width: "5rem" } },
+  ];
+}

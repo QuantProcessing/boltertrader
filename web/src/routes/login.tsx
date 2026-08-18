@@ -5,6 +5,7 @@ import { isApiError } from "@/api/errors";
 import { sessionStore } from "@/app/session";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/field";
+import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * The only unauthenticated screen.
@@ -15,6 +16,7 @@ import { Field, Input } from "@/components/ui/field";
  * ------------------------------------------------------------------------- */
 
 export function LoginPage() {
+  const t = useT();
   const navigate = useNavigate();
   const { redirect } = useSearch({ from: "/login" });
   const [username, setUsername] = useState("");
@@ -33,7 +35,7 @@ export function LoginPage() {
       // The server's message is shown as written. It says "invalid username or
       // password" without saying which, and rewording it here would either lose
       // that property or invent a distinction the server refused to make.
-      setError(isApiError(cause) ? cause.message : "Could not reach the server. Check that it is running.");
+      setError(isApiError(cause) ? cause.message : t("login.unreachable"));
       setPassword("");
     } finally {
       setPending(false);
@@ -44,12 +46,12 @@ export function LoginPage() {
     <div className="flex min-h-dvh items-center justify-center bg-bg px-4 text-text">
       <div className="w-full max-w-80">
         <div className="mb-6">
-          <h1 className="text-title font-semibold">Bolter</h1>
-          <p className="mt-1 text-meta text-muted">Sign in to the trading workspace.</p>
+          <h1 className="text-title font-semibold">{t("login.wordmark")}</h1>
+          <p className="mt-1 text-meta text-muted">{t("login.subtitle")}</p>
         </div>
 
         <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-3.5">
-          <Field label="Username" required>
+          <Field label={t("login.username")} required>
             {(props) => (
               <Input
                 {...props}
@@ -63,7 +65,7 @@ export function LoginPage() {
             )}
           </Field>
 
-          <Field label="Password" required error={error}>
+          <Field label={t("login.password")} required error={error}>
             {(props) => (
               <Input
                 {...props}
@@ -78,7 +80,7 @@ export function LoginPage() {
           </Field>
 
           <Button type="submit" variant="primary" size="lg" disabled={pending} className="mt-1 w-full justify-center">
-            {pending ? "Signing in…" : "Sign in"}
+            {pending ? t("login.pending") : t("login.submit")}
           </Button>
         </form>
       </div>

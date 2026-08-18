@@ -83,6 +83,7 @@ export function TradePage() {
         <div className="flex w-side shrink-0 flex-col border-l border-line">
           <OrderBook
             fact={fact.data?.value}
+            instrument={instrument}
             quoteAsset={instrument?.quoteAsset}
             baseAsset={instrument?.baseAsset}
             onPickPrice={setLimitPrice}

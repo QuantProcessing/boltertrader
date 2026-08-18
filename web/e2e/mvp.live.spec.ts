@@ -51,20 +51,26 @@ test.describe("the MVP path, live", () => {
 
     const ticket = page.locator("section").filter({ has: page.getByRole("heading", { name: "Order" }) });
 
-    const book = page.locator("section").filter({ has: page.getByRole("heading", { name: "Order book" }) });
+    // The book is a labelled region, not a titled panel — 256px of width goes
+    // to the ladder rather than to a heading. And a depth row is specifically a
+    // button carrying figures: the price-grouping controls in the header are
+    // buttons too, and one of those being visible says nothing about whether a
+    // venue ever answered.
+    const book = page.getByRole("region", { name: "Order book" });
+    const depthRows = book.locator("button:has([data-numeric])");
 
     await test.step("an account and a book arrived", async () => {
       // The account comes from the gateway through the edge; the book comes
       // from the venue through trading. Both have to be real before anything
       // below means anything.
       await expect(ticket.getByLabel("Account")).not.toHaveValue("");
-      await expect(book.getByRole("button").first()).toBeVisible({ timeout: 30_000 });
+      await expect(depthRows.first()).toBeVisible({ timeout: 30_000 });
     });
 
     await test.step("price it out of reach", async () => {
       // Take a level straight from the book so the tick size is the venue's
       // own, then halve it: a buy limit at half the bid cannot cross.
-      await book.getByRole("button").last().click();
+      await depthRows.last().click();
 
       const field = ticket.getByLabel(/^Price/);
       await field.fill(halve(await field.inputValue()));

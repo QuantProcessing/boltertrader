@@ -11,11 +11,18 @@
  * `/login`. Putting the guard on the layout rather than on each leaf means a
  * route added later is protected by default; forgetting to opt in cannot
  * produce an unguarded screen.
+ *
+ * Read-only visitors are the one exception, and they are an *opt-in* one for
+ * exactly that reason: a route is readable without a session only if it says
+ * `staticData: { readOnly: true }` itself. The default stays "protected", so
+ * the sentence above still holds — forgetting to opt in costs a screen, never
+ * a leak.
  * ------------------------------------------------------------------------- */
 
 import type { QueryClient } from "@tanstack/react-query";
 import { Outlet, createRootRouteWithContext, createRoute, createRouter, redirect } from "@tanstack/react-router";
 
+import type { ModeStore } from "@/app/mode";
 import type { SessionStore } from "@/app/session";
 import { AppShell } from "@/app/shell/app-shell";
 import { ActivityPage } from "@/routes/activity";
@@ -28,7 +35,31 @@ import { TradePage } from "@/routes/trade";
 
 export interface RouterContext {
   session: SessionStore;
+  mode: ModeStore;
   queryClient: QueryClient;
+}
+
+/**
+ * A route that a signed-out visitor may read.
+ *
+ * Declaring it here rather than passing a literal at each call site is what
+ * makes `staticData: { readOnly: true }` type-checked — TanStack's
+ * `StaticDataRouteOption` is an empty interface published for exactly this
+ * merge, so without it a typo like `readonly: true` would compile and silently
+ * protect the route it was meant to open.
+ */
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    readOnly?: boolean;
+  }
+}
+
+/** Whether the route being navigated to opted into read-only access. */
+function opensToReadOnly(matches: ReadonlyArray<{ staticData: { readOnly?: boolean } }>): boolean {
+  // The last match is the leaf being navigated to. `beforeLoad` on a layout
+  // receives the whole destination lane, not just its own ancestors, which is
+  // what lets one guard on the layout answer for every route beneath it.
+  return matches[matches.length - 1]?.staticData.readOnly === true;
 }
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
@@ -71,13 +102,17 @@ const loginRoute = createRoute({
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "app",
-  beforeLoad: async ({ context, location }) => {
+  beforeLoad: async ({ context, location, matches }) => {
     const snapshot = await context.session.ensure();
-    if (snapshot.status !== "authenticated") {
-      // `location.href` is the full path with search, so signing in returns the
-      // operator to the screen they asked for rather than to the default one.
-      throw redirect({ to: "/login", search: { redirect: location.href }, replace: true });
-    }
+    if (snapshot.status === "authenticated") return;
+    // A signed-out visitor reaches a read-only route on the strength of the
+    // route saying so, and nothing else. They are not sent to `/login` and not
+    // asked to choose a mode here: the entry modal renders inside the shell, so
+    // it can put the choice in front of a live market rather than a blank page.
+    if (opensToReadOnly(matches)) return;
+    // `location.href` is the full path with search, so signing in returns the
+    // operator to the screen they asked for rather than to the default one.
+    throw redirect({ to: "/login", search: { redirect: location.href }, replace: true });
   },
   component: AppShell,
 });
@@ -85,13 +120,42 @@ const appRoute = createRoute({
 const indexRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/",
+  // Read-only because it is a doorway, not a screen: the layout guard runs
+  // before this redirect does, so without the opt-in a signed-out visitor
+  // typing the bare origin would be sent to `/login` instead of to the
+  // read-only `/trade` this points at.
+  staticData: { readOnly: true },
   beforeLoad: () => {
     throw redirect({ to: "/trade", replace: true });
   },
 });
 
-const tradeRoute = createRoute({ getParentRoute: () => appRoute, path: "/trade", component: TradePage });
-const fundingRoute = createRoute({ getParentRoute: () => appRoute, path: "/funding", component: FundingPage });
+/**
+ * The two routes a signed-out visitor may read.
+ *
+ * Both are venue public data end to end — a book, a chart, a funding board —
+ * and the auth edge's `Public` carve-out is what actually serves them without a
+ * session. This flag and that table have to agree: opening a route here whose
+ * requests the edge still guards renders a screen of 401s.
+ *
+ * `/portfolio`, `/activity` and `/settings` are private by nature.
+ * `/funding/arbitrage` looks like it belongs with these two but does not: its
+ * `opportunities()` handler asks for an identity before it does anything else,
+ * so opening it here would produce exactly that screen of 401s.
+ */
+const tradeRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/trade",
+  staticData: { readOnly: true },
+  component: TradePage,
+});
+
+const fundingRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/funding",
+  staticData: { readOnly: true },
+  component: FundingPage,
+});
 
 /**
  * Which pair, and which way round.

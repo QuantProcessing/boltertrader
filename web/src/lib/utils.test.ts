@@ -25,6 +25,7 @@ describe("cn", () => {
 
   it("resolves the custom spacing and radius scales", () => {
     expect(cn("h-row", "h-bar")).toBe("h-bar");
+    expect(cn("h-depth", "h-row")).toBe("h-row");
     expect(cn("w-side", "w-ticket")).toBe("w-ticket");
     expect(cn("h-deck", "h-row")).toBe("h-row");
     expect(cn("rounded-panel", "rounded-control")).toBe("rounded-control");

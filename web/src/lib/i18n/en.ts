@@ -1,0 +1,497 @@
+/* ---------------------------------------------------------------------------
+ * English, and the shape every other language has to match.
+ *
+ * This file is the key source: `Key` is derived from it, so a string added here
+ * is a type error in `zh.ts` until it is translated. That is the whole
+ * mechanism — there is no extraction step, no runtime "missing key" warning to
+ * miss in a console, and no way to ship a half-translated dictionary.
+ *
+ * Keys are `area.thing`, dot-separated, and read as a path rather than as a
+ * sentence. A key that repeats its English value (`"signIn": "Sign in"`) is
+ * fine; a key *named* for its English value is not, because the rename lands
+ * on translators who cannot see the original.
+ *
+ * Interpolation is `{name}`. Plurals are separate keys where they come up —
+ * only English inflects on this surface, and the handful of places it does are
+ * cheaper written out than modelled.
+ * ------------------------------------------------------------------------- */
+
+export const en = {
+  "entry.title": "Trading mode",
+  "entry.subtitle": "Risk disclosure",
+  "entry.risk.live": "Read-write mode submits real orders to the real accounts you configured. There is no test venue behind this product.",
+  "entry.risk.loss": "Derivatives and leverage can lose more than the amount you put in.",
+  "entry.risk.venue": "Prices, funding and fills come from the venues. Their outages, rate limits and rejections are yours to absorb.",
+  "entry.risk.responsibility": "You are responsible for every order this workspace sends under your credentials.",
+  "entry.acknowledge": "I have read and understood the risks above.",
+  "entry.readOnly": "Continue in read-only mode",
+  "entry.readOnly.detail": "Market data and account performance only. Orders will be refused.",
+  "entry.readWrite": "Enable live trading",
+  "entry.readWrite.detail": "Submits real orders to the real accounts you configured.",
+  "entry.footnote": "This choice applies to the current session only.",
+
+  "mode.readOnly": "READ-ONLY",
+  "mode.readOnly.detail": "Market data only. Orders are refused.",
+  "mode.readWrite": "READ-WRITE",
+  "mode.readWrite.detail": "Orders reach a real exchange and spend real money",
+
+  // The door. `login.failed` is the only message this screen writes itself: a
+  // refused password is the server's own sentence, printed as it arrived, and
+  // it deliberately does not say which half was wrong.
+  "login.wordmark": "Bolter",
+  "login.subtitle": "Sign in to the trading workspace.",
+  "login.username": "Username",
+  "login.password": "Password",
+  "login.pending": "Signing in…",
+  "login.submit": "Sign in",
+  "login.unreachable": "Could not reach the server. Check that it is running.",
+
+  "nav.trade": "Trade",
+  "nav.funding": "Funding",
+  "nav.arbitrage": "Arbitrage",
+  "nav.portfolio": "Portfolio",
+  "nav.activity": "Activity",
+  "nav.settings": "Settings",
+  "nav.sections": "Sections",
+  "nav.signInToUse": "Sign in to use",
+
+  "utility.menu": "Workspace",
+  "utility.language": "Language",
+  "utility.settings": "Settings",
+  "utility.signIn": "Sign in",
+  "utility.signOut": "Sign out",
+  "utility.palette": "Open the command palette",
+
+  "palette.label": "Command palette",
+  "palette.search": "Search commands…",
+  "palette.empty": "No matching command.",
+  "palette.goTo": "Go to",
+  "palette.workspace": "Workspace",
+
+  "strip.last": "Last",
+  // The current UTC day, which is the bar a `1d` interval returns. Not "24h",
+  // and not a rolling window in any language — see the file header on the strip.
+  "strip.today": "Today",
+  "strip.open": "Open",
+  "strip.high": "High",
+  "strip.low": "Low",
+  "strip.volume": "Volume",
+  "strip.mark": "Mark",
+  "strip.funding": "Funding",
+  "strip.openInterest": "Open interest",
+  "strip.budget": "Venue budget",
+  "strip.loading": "Loading…",
+  "strip.select": "Select instrument",
+  "strip.catalog": "catalog",
+  "strip.instruments": "Instruments",
+  "strip.search": "Symbol or venue — btc, okx, eth-usdt…",
+  "strip.empty": "No instrument matches.",
+  "strip.more": "+{count} more",
+  "strip.halted": "halted",
+
+  "book.label": "Order book",
+  "book.side": "Depth side",
+  "book.side.all": "All",
+  "book.side.bids": "Bids",
+  "book.side.asks": "Asks",
+  "book.grouping": "Price grouping",
+  "book.price": "Price",
+  "book.size": "Size",
+  "book.total": "Total",
+  "book.spread": "spread",
+  "book.waiting": "Waiting for depth…",
+
+  "chart.price": "Price",
+  "chart.interval": "Candle interval",
+  "chart.label": "Candlestick chart, {interval} bars",
+
+  // Column headers, shared rather than per-table: the blotter, the portfolio
+  // and the activity log name the same things, and three translations of
+  // "Instrument" is three places for them to drift apart.
+  "col.instrument": "Instrument",
+  "col.side": "Side",
+  "col.type": "Type",
+  "col.price": "Price",
+  "col.quantity": "Quantity",
+  "col.tif": "TIF",
+  "col.state": "State",
+  "col.updated": "Updated",
+  "col.time": "Time",
+  "col.fee": "Fee",
+  "col.mark": "Mark",
+  "col.entry": "Avg entry",
+  // American throughout, matching the wire: the server's fields are
+  // `realizedPnl` and `unrealizedPnl`. The portfolio page used to spell both
+  // the British way, which put two spellings of one word on two screens.
+  "col.unrealized": "Unrealized",
+  "col.realized": "Realized",
+  "col.settles": "Settles",
+  "col.account": "Account",
+  "col.product": "Product",
+  "col.kind": "Kind",
+  "col.amount": "Amount",
+  "col.resource": "Resource",
+  // Three characters of header over a monospace integer. "Sequence" would be
+  // wider than every value under it.
+  "col.seq": "Seq",
+  // The column is five characters wide and every trader reads the abbreviation.
+  // `col.settles` is the same idea with room to spell it.
+  "col.currency": "Ccy",
+
+  // The "everything" option in a filter, shared by the portfolio and the
+  // activity log: both narrow the same list of accounts from the same bar.
+  "filter.allAccounts": "All accounts",
+  "filter.allKinds": "All kinds",
+
+  "ticket.title": "Order",
+  "ticket.side": "Side",
+  // Capitalised for the segmented control; `ticket.confirm.*` spells the same
+  // word again in lower case because it sits mid-sentence there. One key with
+  // an interpolated side would have to pick a case and be wrong in one place.
+  "ticket.side.buy": "Buy",
+  "ticket.side.sell": "Sell",
+  "ticket.account": "Account",
+  "ticket.noAccount": "No account for this venue",
+  "ticket.orderType": "Order type",
+  "ticket.type.limit": "Limit",
+  "ticket.type.market": "Market",
+  "ticket.price": "Price",
+  "ticket.price.market": "Market orders take the book price.",
+  "ticket.price.hint": "Click a level in the book to fill this.",
+  "ticket.quantity": "Quantity",
+  "ticket.positive": "Must be a positive number.",
+  "ticket.tif": "Time in force",
+  "ticket.reduceOnly": "Reduce only",
+  "ticket.notional": "Order value",
+  "ticket.pricing": "Pricing…",
+  "ticket.review": "Review order",
+  "ticket.confirm": "Confirm",
+  "ticket.confirm.buy": "Confirm buy",
+  "ticket.confirm.sell": "Confirm sell",
+  "ticket.discard": "Discard",
+  "ticket.placing": "Placing…",
+  "ticket.expired": "expired",
+  "ticket.expiredButton": "Preview expired",
+  "ticket.left": "{duration} left",
+  "ticket.previewRejected": "Preview rejected",
+  "ticket.orderRejected": "Order rejected",
+  // `{state}` is the server's own word — `submitted`, `accepted` — and stays in
+  // English on purpose: it is what the blotter row and the audit log say too.
+  "ticket.placed.buy": "Buy order {state}",
+  "ticket.placed.sell": "Sell order {state}",
+
+  "blotter.label": "Blotter",
+  "blotter.orders": "Orders",
+  "blotter.positions": "Positions",
+  "blotter.fills": "Fills",
+  "blotter.blocked": "Blocked: {codes}",
+  "blotter.cancel": "Cancel",
+  "blotter.cancelSubmitted": "Cancel submitted",
+  "blotter.cancelRejected": "Cancel rejected",
+  "blotter.caption.orders": "Manual orders",
+  "blotter.caption.positions": "Open positions",
+  "blotter.caption.fills": "Recent fills",
+  "blotter.empty.orders": "No orders yet",
+  "blotter.empty.orders.detail": "Placed orders appear here as soon as the venue acknowledges them.",
+  "blotter.empty.positions": "Flat",
+  "blotter.empty.positions.detail": "No open position on any instrument.",
+  "blotter.empty.fills": "No fills",
+  "blotter.empty.fills.detail": "Nothing has executed on {instrument} or anywhere else.",
+
+  // The funding board and the chart under the hedge ticket. Rate *units* are
+  // codes and stay as they are in every language — `24h`, `7d`, `30d`, `APR`,
+  // `%/d` — so only `Period` needs a key here.
+  "funding.unavailable": "The funding board is not available",
+  "funding.unavailable.detail": "The Gateway has not published a board yet. It retries on its own.",
+  "funding.venues": "Venues",
+  "funding.degraded": "Degraded",
+  "funding.observed": "Observed",
+  "funding.budgetLeft": "Budget left",
+  "funding.stale": "Showing the last board — the refresh failed.",
+  "funding.unit.period": "Period",
+  // What the countdown says once the interval has elapsed.
+  "funding.due": "due",
+  "funding.search": "Search",
+  "funding.minOpenInterest": "Min open interest",
+  "funding.rateUnit": "Funding rate unit",
+  "funding.crossVenueOnly": "Cross-venue only",
+  "funding.count": "{shown} of {total} pairs",
+  "funding.withoutOpenInterest": "{count} without open interest",
+  "funding.caption": "Funding rates by instrument and venue",
+  "funding.empty.filtered": "No pairs match these filters",
+  "funding.empty.allDown": "The board is empty. Every venue column is unavailable.",
+  "funding.empty.filtered.detail": "Widen the search, lower the open-interest threshold, or turn off cross-venue only.",
+  // Two keys because English inflects the verb as well as the noun. Chinese
+  // says one sentence for both.
+  "funding.degraded.one": "{count} shown venue is down or stale.",
+  "funding.degraded.many": "{count} shown venues are down or stale.",
+  "funding.columns": "Columns",
+  "funding.showAll": "Show all",
+  // Said twice — on the venue chip and again on the column header — from one
+  // pair of keys, so the chip and the header cannot drift apart.
+  "funding.venue.down": "down",
+  "funding.venue.down.detail": "This venue did not answer; it has no rates on the board.",
+  "funding.venue.stale": "stale",
+  "funding.venue.stale.detail": "These rates are older than the rest of the table.",
+  "funding.venueCount.one": "{count} venue",
+  "funding.venueCount.many": "{count} venues",
+  "funding.noOpenInterest": "No venue on this row publishes open interest in its bulk feed.",
+  "funding.openInterestFrom": "Reported by {venue}",
+  "funding.noInterval": "This venue does not publish a funding interval, so the rate cannot be annualised.",
+  "funding.maxSpread": "Max spread",
+  "funding.legs": "short {short} · long {long}",
+
+  "funding.history": "Funding history",
+  "funding.window": "History window",
+  "funding.chart.label": "Settled daily funding rate for {symbol} over the last {window}, {long} against {short}",
+  "funding.reading": "Reading settled funding",
+  "funding.reading.detail": "The last {window} from {long} and {short}.",
+  "funding.noHistory": "Neither leg has a history to draw",
+  // One key rather than venue + ": " + detail: the colon is full-width in
+  // Chinese and assembling it in the component would leave the ASCII one.
+  "funding.note": "{venue}: {detail}",
+  "funding.footnote": "Each settlement, normalised to a daily rate from that venue’s own funding interval — the same unit as the board. Read back from the venues; the rate being quoted now is on the ticket.",
+  "funding.leg.noHistory": "no history",
+  "funding.leg.noHistory.detail": "This venue publishes no funding history, so this leg cannot be drawn.",
+  "funding.leg.notListed": "not listed",
+  "funding.leg.notListed.detail": "This venue does not list this instrument, so this leg cannot be drawn.",
+  "funding.leg.unavailable": "unavailable",
+  "funding.leg.unavailable.detail": "The history read failed. {error}",
+  "funding.leg.noSettlements": "no settlements",
+  "funding.leg.noSettlements.detail": "This venue settled no funding on this symbol during the window.",
+
+  // The hedge: the ranked spreads, the ticket that opens one, and the pairs
+  // already carrying exposure.
+  "funding.hedge": "Hedge",
+  "arb.needTwo": "A hedge needs two venues. Add arbitrage-capable accounts in Settings.",
+  "arb.stale": "Showing the last read — the refresh failed.",
+  // Candidate spreads on the board, not hedges that exist. `arb.openPairs` is
+  // the other one, and Chinese does not spell them the same way.
+  "arb.pairs": "Pairs",
+  "arb.executable": "Executable",
+  "arb.accounts": "Accounts",
+  "arb.spreads": "Spreads",
+  "arb.searchUnderlyings": "Search underlyings",
+  "arb.empty.reading": "Reading the board",
+  "arb.empty.reading.detail": "Ranking every underlying quoted by more than one venue.",
+  "arb.empty.none": "No pair to hedge",
+  "arb.empty.none.detail": "A pair appears once two venues quote the same perpetual. Nothing does right now.",
+  "arb.ranking": "Ranking spreads…",
+  "arb.noMatch": "Nothing matches",
+  "arb.noMatch.detail": "No underlying by that name is quoted twice.",
+  // Only the fallback: a real blocker is the server's own token and is printed
+  // as it arrives.
+  "arb.blocked": "blocked",
+
+  "arb.long": "Long",
+  "arb.short": "Short",
+  "arb.swap": "Swap",
+  "arb.swap.label": "Swap which venue is the long leg",
+  "arb.quantity": "Quantity ({asset})",
+  "arb.baseAsset": "base",
+  "arb.quoteAsset": "quote",
+  "arb.sameSize": "Same size both legs.",
+  // Shorter than `ticket.positive` because it sits under a narrower field.
+  "arb.mustBePositive": "Must be positive.",
+  "arb.unreachable": "One of these venues has no reachable account, so this pair cannot be priced.",
+  "arb.review": "Review hedge",
+  "arb.rejected": "Hedge rejected",
+  "arb.partial": "Only one leg opened",
+  "arb.partial.detail": "The pair is carrying one-sided exposure. Dispose of the open leg below.",
+  // `{state}` is the server's word, as on the order ticket.
+  "arb.opened": "Hedge {state}",
+  "arb.noRate": "no rate",
+  "arb.staleQuote": "This venue's quote is stale.",
+  "arb.unlisted": "No instrument on this venue for this account.",
+  "arb.noAccountFor": "No account for {venue}",
+  "arb.limitPrice": "Limit price ({asset})",
+  "arb.noComparable": "{symbol}: no comparable daily rate — one venue publishes no funding interval.",
+  "arb.spread": "Spread",
+  "arb.dailyFunding": "Funding per day",
+  "arb.gross": "Gross — venue fees are priced per route at execution.",
+  "arb.confirm": "Confirm hedge",
+  "arb.sealedSpread": "Sealed spread",
+  "arb.sealedApr": "Sealed APR",
+  "arb.notional": "Notional",
+  "arb.opening": "Opening…",
+  "arb.openBoth": "Open both legs",
+
+  "arb.openPairs": "Pairs",
+  "arb.attention": "{count} need attention",
+  "arb.reading": "Reading open pairs…",
+  "arb.empty.pairs": "No open pairs",
+  "arb.empty.pairs.detail": "A hedge opened from the ticket lands here with both legs, its accrued funding and a way out.",
+  "arb.closing": "Closing",
+  "arb.closing.detail": "Reduce-only orders are out for both legs.",
+  "arb.closePartly": "Close partly rejected",
+  "arb.closePartly.detail": "One leg did not accept the reduce-only order. The pair is still carrying it.",
+  "arb.closeRejected": "Close rejected",
+  "arb.cancelSent": "Cancel sent",
+  // `{leg}` is `long` or `short` as the server names it.
+  "arb.cancelSent.detail": "The {leg} leg will stop resting.",
+  "arb.closingButton": "Closing…",
+  "arb.closeOpenLeg": "Close open leg",
+  "arb.closePair": "Close pair",
+  "arb.directional": "One leg is live and the other is not. This pair is directional until you dispose of it.",
+  "arb.noLeg": "No leg on this side.",
+  "arb.unknownVenue": "unknown venue",
+  // Lower case on a tag, unlike the `ticket.reduceOnly` checkbox.
+  "arb.reduceOnly": "reduce only",
+  "arb.mark": "mark",
+  "arb.upnl": "upnl",
+  "arb.cancelling": "Cancelling…",
+  "arb.cancelLeg": "Cancel this leg",
+  "arb.funding": "funding",
+
+  "portfolio.realized": "Realized",
+  "portfolio.unrealized": "Unrealized",
+  "portfolio.fees": "Fees",
+  "portfolio.funding": "Funding",
+  "portfolio.net": "Net",
+  // Why there is no total, said once where an operator would look for one.
+  "portfolio.hint": "Select a position for its realized, unrealized, fee and funding breakdown. P&L is attributed per lineage, so there is no portfolio-wide total.",
+  "portfolio.account": "Account",
+  "portfolio.caption.positions": "Open positions",
+  "portfolio.empty.positions": "No open positions",
+  "portfolio.empty.positions.detail": "A position appears here once a manual order fills.",
+  "portfolio.ledger": "Ledger",
+  "portfolio.thisLineage": "this lineage",
+  "portfolio.entries": "{count} entries",
+  "portfolio.caption.ledger": "Ledger entries",
+  "portfolio.empty.ledger": "No ledger entries",
+  "portfolio.empty.ledger.detail": "Realized P&L, fees, funding and adjustments are written here as they settle.",
+
+  // The kinds themselves (`command.submitted`, `command.cancel_accepted`) are
+  // the server's and are never translated: the filter, the table cell, the
+  // audit trail and a support ticket all have to say the same token.
+  "activity.count": "{matched} of {total} events",
+  "activity.newest": "newest {count} shown",
+  "activity.caption": "Activity events, newest first",
+  "activity.empty.none": "Nothing recorded yet",
+  "activity.empty.none.detail": "The log holds the most recent events since trading started, so it is empty after a restart.",
+  "activity.empty.filtered": "No events match these filters",
+  "activity.noSelection": "No event selected",
+  "activity.noSelection.detail": "Select a row to read its full payload.",
+  "activity.observed": "Observed",
+  "activity.cursor": "Cursor",
+  "activity.payload": "Payload",
+
+  "settings.accounts": "Accounts",
+  // A form dismissal, which is why it is not `blotter.cancel`: that one cancels
+  // a resting order and Chinese spells the two differently (取消 / 撤单).
+  "settings.cancel": "Cancel",
+  "settings.addAccount": "Add account",
+  "settings.noAccounts": "No accounts yet.",
+  "settings.empty.title": "No account selected",
+  "settings.empty.detail": "Select an account to inspect its desired state, runtime and capabilities.",
+
+  "settings.venue": "Venue",
+  "settings.environment": "Environment",
+  "settings.products": "Products",
+  "settings.desiredRevision": "Desired revision",
+  "settings.runtimeGeneration": "Runtime generation",
+  "settings.credentialVersion": "Credential version",
+  "settings.lastValidated": "Last validated",
+  "settings.never": "never",
+
+  "settings.validate": "Validate",
+  "settings.cancelRotation": "Cancel rotation",
+  "settings.rotateCredential": "Rotate credential",
+  "settings.drain": "Drain",
+  "settings.disable": "Disable",
+  "settings.remove": "Remove",
+  "settings.remove.confirm": "Remove {name}?",
+  "settings.keep": "Keep",
+  "settings.removeForGood": "Remove for good",
+  "settings.remove.accepted": "Removal accepted. The credential is destroyed once the runtime confirms the tombstone.",
+
+  // Paired rather than derived. The failure title used to be the success title
+  // with "requested" replaced by "failed", which is a sentence-level edit that
+  // only works in English — in Chinese the substring is not there and the
+  // danger toast would have announced success.
+  "settings.validate.requested": "Validation requested",
+  "settings.validate.failed": "Validation failed",
+  "settings.drain.requested": "Drain requested",
+  "settings.drain.failed": "Drain failed",
+  "settings.disable.requested": "Disable requested",
+  "settings.disable.failed": "Disable failed",
+  "settings.remove.requested": "Removal requested",
+  "settings.remove.failed": "Removal failed",
+  "settings.conflict": "Account had already changed",
+  "settings.conflict.detail": "Someone else modified this account. It has been reloaded — check the state and try again.",
+
+  "settings.routes": "Routes",
+  "settings.lanes": "{count} lanes",
+  "settings.noRoutes": "No routes on this account.",
+
+  "settings.runtime": "Runtime",
+  "settings.runtime.loading": "Reading trading's runtime…",
+  "settings.runtime.absent": "Trading has no runtime for this account yet.",
+  "settings.observed": "observed {time}",
+  "settings.read": "Read",
+  "settings.write": "Write",
+  "settings.readiness": "{label}: {state}",
+  "settings.ready": "ready",
+  "settings.notReady": "not ready",
+  "settings.applied": "applied rev {revision} · gen {generation}",
+  "settings.blocked": "Blocked: {reason}",
+  "settings.active": "Active",
+  "settings.pending": "Pending",
+  "settings.retiring": "Retiring",
+  "settings.generation": "rev {revision} · gen {generation} · cred {credential}",
+  "settings.noGeneration": "No generation is loaded.",
+  "settings.capabilities": "Capabilities",
+  "settings.writeReady": "write ready",
+  // Lower case and space-separated: this is a capability the venue reports, not
+  // the session mode `mode.readOnly` puts on a badge.
+  "settings.capability.readOnly": "read only",
+  "settings.noOperation": "No operation is permitted.",
+
+  "settings.rotate.hint": "The new credential is proven before it takes over. Until it does, the account keeps trading on the current one and both generations show above.",
+  "settings.rotate.started": "Rotation started",
+  "settings.rotate.started.detail": "The account keeps serving on the active credential until the new one is proven.",
+  "settings.rotate.refused": "Rotation refused",
+  "settings.conflict.reenter": "Someone else modified this account. It has been reloaded — re-enter the credential and try again.",
+  "settings.rotating": "Rotating…",
+  "settings.rotate": "Rotate",
+  "settings.stillNeeded": "Still needed: {fields}.",
+
+  "settings.newAccount": "New account",
+  "settings.venue.hint": "The route profiles you pick below decide the native environment.",
+  "settings.chooseVenue": "Choose a venue…",
+  // Carries its own parentheses: it is an aside inside an option's text, and
+  // Chinese brackets those with （） rather than with the ASCII pair.
+  "settings.venueNotReady": "(not ready)",
+  "settings.venue.required": "Choose a venue.",
+  "settings.displayName": "Display name",
+  "settings.displayName.placeholder": "Binance — manual",
+  "settings.displayName.required": "A display name is required.",
+  "settings.routes.required": "Select at least one route — the routes decide the account's environment.",
+  "settings.noRouteProfiles": "This venue publishes no route profiles.",
+  "settings.creating": "Creating…",
+  "settings.createAccount": "Create account",
+  "settings.created": "Account created",
+  "settings.refused": "Account refused",
+  "settings.manualOnly": "Trades manually. Other products are not accepted here.",
+
+  // The two hints under a credential field. Which one shows is `field.metadata`;
+  // the field's own label is the venue's word for it and stays as it arrives.
+  "settings.credential.metadata": "Stored alongside the credential, not secret.",
+  "settings.credential.secret": "Write-only. Never shown again.",
+
+  "toast.dismiss": "Dismiss notification",
+
+  // The three failures this client describes in its own words. Everything a
+  // server says is printed as the server said it; these cover the one body this
+  // client synthesized itself and the two cases where nothing answered at all.
+  // No trailing full stop on the two that `describeError` suffixes with a code.
+  "error.network": "Could not reach the server. The request may still have been received.",
+  "error.unreadable": "The server sent a response this client could not read",
+  "error.unknown": "Unknown failure",
+} as const;
+
+/** Every string the product can render. */
+export type Key = keyof typeof en;
+
+/** A translation of the whole of `en`, with nothing missing and nothing extra. */
+export type Dictionary = Record<Key, string>;

@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export type ToastTone = "info" | "ok" | "warn" | "danger";
@@ -104,6 +105,8 @@ function ToastRegion({
   role: "status" | "alert";
   onDismiss: (id: string) => void;
 }) {
+  const t = useT();
+
   return (
     <div role={role} aria-live={live} aria-atomic="false" className="flex flex-col gap-2">
       {toasts.map((toast) => (
@@ -134,7 +137,7 @@ function ToastRegion({
           <button
             type="button"
             onClick={() => onDismiss(toast.id)}
-            aria-label="Dismiss notification"
+            aria-label={t("toast.dismiss")}
             className="-m-1 rounded-control p-1 text-dim hover:text-text"
           >
             <X className="size-3.5" aria-hidden="true" />

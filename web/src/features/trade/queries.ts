@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 
 import { manual, trading } from "@/api/endpoints";
 import type { Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
+import { useReadOnly } from "@/app/mode";
 
 /* ---------------------------------------------------------------------------
  * The order path, and the ledgers it moves.
@@ -26,10 +27,25 @@ export const tradeKeys = {
   fills: () => ["trading", "fills"] as const,
 };
 
+/**
+ * All three ledgers below belong to a principal, and all three poll.
+ *
+ * `enabled` is what keeps a read-only visitor from asking for them. Not because
+ * the answer would leak anything — the server refuses an anonymous read of
+ * someone's orders whatever the browser does — but because the alternative is a
+ * 401 every five seconds, forever, and a blotter whose three tabs all say
+ * something went wrong when nothing did.
+ *
+ * The gate is here rather than at the call sites so that a fourth ledger added
+ * later inherits it by sitting next to these, and so no page has to remember
+ * which of the hooks it calls are private.
+ */
 export function useOrders(): UseQueryResult<Command[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: tradeKeys.orders(),
     queryFn: ({ signal }) => manual.orders(signal),
+    enabled: !readOnly,
     // Working orders change when the venue says so, and the reconciler is what
     // hears it. Five seconds is how long a fill can sit unseen.
     refetchInterval: 5_000,
@@ -37,17 +53,21 @@ export function useOrders(): UseQueryResult<Command[]> {
 }
 
 export function usePositions(): UseQueryResult<Position[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: tradeKeys.positions(),
     queryFn: ({ signal }) => trading.positions({}, signal),
+    enabled: !readOnly,
     refetchInterval: 5_000,
   });
 }
 
 export function useFills(): UseQueryResult<Fill[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: tradeKeys.fills(),
     queryFn: ({ signal }) => trading.fills({}, signal),
+    enabled: !readOnly,
     refetchInterval: 10_000,
   });
 }

@@ -135,6 +135,43 @@ func (h *harness) do(t *testing.T, method, path string, headers map[string]strin
 	return response
 }
 
+// doAnonymous sends a request with no session cookie at all, which is the only
+// state in which the public carve-out applies.
+func (h *harness) doAnonymous(t *testing.T, method, path string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(method, h.proxy.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	response, err := h.proxy.Client().Do(request)
+	if err != nil {
+		t.Fatalf("do %s %s: %v", method, path, err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	return response
+}
+
+// publicRoutes is the carve-out as the table declares it. Tests walk it rather
+// than naming paths, so a route marked Public later is exercised here whether
+// or not anyone remembers to add a case.
+func publicRoutes(t *testing.T) []Route {
+	t.Helper()
+	var out []Route
+	for _, route := range Routes() {
+		if !route.Public {
+			continue
+		}
+		if strings.Contains(route.Path, "{") {
+			t.Fatalf("%s is Public and has a wildcard; these tests request route.Path verbatim", route.Pattern())
+		}
+		out = append(out, route)
+	}
+	if len(out) == 0 {
+		t.Fatal("no Public routes; the carve-out is not wired")
+	}
+	return out
+}
+
 func errorCode(t *testing.T, response *http.Response) string {
 	t.Helper()
 	var envelope struct {
@@ -367,6 +404,117 @@ func TestMissingOrInvalidSessionIsUnauthorized(t *testing.T) {
 	}
 	if h.trading.path != "" {
 		t.Fatalf("an unauthenticated request reached trading: %q", h.trading.path)
+	}
+}
+
+// A public read from a browser with no session at all is forwarded, not
+// refused. This is the carve-out working: the venues behind these routes
+// publish the same numbers to anyone who asks, and a login that guards a
+// public number protects nothing while costing the product its first screen.
+//
+// The session service is armed to fail here on purpose. If authorize were
+// still being consulted the request would 401, so a 200 is proof the carve-out
+// skipped it rather than proof the fake happened to say yes.
+func TestPublicRoutesAnswerWithoutASession(t *testing.T) {
+	for _, route := range publicRoutes(t) {
+		t.Run(route.Pattern(), func(t *testing.T) {
+			h := newHarness(t, nil)
+			h.sessions.err = session.ErrInvalidSession
+
+			response := h.doAnonymous(t, route.Method, route.Path)
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", response.StatusCode)
+			}
+			if h.trading.path != route.UpstreamPath() {
+				t.Fatalf("trading saw %q, want %q", h.trading.path, route.UpstreamPath())
+			}
+			// The service token still goes: anonymous to the browser is not
+			// anonymous to the upstream, which authenticates its caller either way.
+			if got := h.trading.header.Get(authorizationHeader); got != "Bearer "+testToken {
+				t.Fatalf("Authorization = %q, want the service token", got)
+			}
+			// No identity header at all, rather than an empty one. An empty
+			// assertion is indistinguishable from a real one to an upstream that
+			// ever grows a reason to care.
+			if _, present := h.trading.header[principalHeader]; present {
+				t.Fatalf("%s was sent for an anonymous read: %q", principalHeader, h.trading.header.Get(principalHeader))
+			}
+		})
+	}
+}
+
+// A signed-in reader still asserts their identity on a public route. The
+// carve-out is a floor, not a ceiling: dropping the principal here would make
+// every reader anonymous to the upstream the moment a route went Public, which
+// is a downgrade nobody asked for and nothing on screen would report.
+func TestPublicRoutesStillCarryASignedInPrincipal(t *testing.T) {
+	h := newHarness(t, nil)
+
+	if got := h.do(t, http.MethodGet, "/api/v1/funding-board", nil, "").StatusCode; got != http.StatusOK {
+		t.Fatalf("status = %d, want 200", got)
+	}
+	if got := h.trading.header.Get(principalHeader); got != "browser-session" {
+		t.Fatalf("%s = %q, want the session's principal", principalHeader, got)
+	}
+}
+
+// A stale cookie on a public route is reported stale, not quietly downgraded.
+//
+// This is the third condition in the carve-out earning its place. Without it a
+// reader whose session expired would keep seeing a market and silently stop
+// seeing their own account — the worst failure available here, because nothing
+// on the page would say why the numbers they came for went missing.
+func TestPublicRoutesWithAStaleSessionAreUnauthorized(t *testing.T) {
+	h := newHarness(t, nil)
+	h.sessions.err = session.ErrInvalidSession
+
+	response := h.do(t, http.MethodGet, "/api/v1/funding-board", nil, "")
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", response.StatusCode)
+	}
+	if got := errorCode(t, response); got != "AUTH_REQUIRED" {
+		t.Fatalf("code = %q, want AUTH_REQUIRED", got)
+	}
+	if h.trading.path != "" {
+		t.Fatalf("a stale session reached trading: %q", h.trading.path)
+	}
+}
+
+// Public does not mean writable. No route in the table is both Public and a
+// mutation — TestPublicRoutesAreReads keeps it that way — so this combination
+// has to be built on purpose to be reached at all.
+//
+// It is still worth pinning. That clause is the one deciding whether "public"
+// means readable or writable, and the table is one character away from needing
+// it to hold.
+func TestPublicDoesNotOpenWrites(t *testing.T) {
+	upstream := &capture{}
+	trading := httptest.NewServer(recorder(upstream, nil))
+	defer trading.Close()
+
+	proxy, err := New(Options{
+		Trading:  Upstream{BaseURL: mustURL(t, trading.URL), Token: testToken},
+		Gateway:  Upstream{BaseURL: mustURL(t, "http://gateway.invalid"), Token: testToken},
+		Sessions: &fakeSessions{principal: session.Principal{ID: "browser-session"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	server := httptest.NewServer(proxy.handler(Route{
+		Method: http.MethodPost, Path: "/api/v1/market-data", Upstream: Trading, Public: true,
+	}))
+	defer server.Close()
+
+	response, err := server.Client().Post(server.URL+"/api/v1/market-data", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", response.StatusCode)
+	}
+	if upstream.path != "" {
+		t.Fatalf("an anonymous write reached trading: %q", upstream.path)
 	}
 }
 

@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { modeStore } from "@/app/mode";
 import { createQueryClient } from "@/app/query";
 import { createAppRouter } from "@/app/router";
 import { sessionStore } from "@/app/session";
@@ -26,7 +27,7 @@ import { ToastProvider } from "@/components/ui/toast";
 export function App() {
   const [{ queryClient, router }] = useState(() => {
     const queryClient = createQueryClient();
-    return { queryClient, router: createAppRouter({ session: sessionStore, queryClient }) };
+    return { queryClient, router: createAppRouter({ session: sessionStore, mode: modeStore, queryClient }) };
   });
 
   return (

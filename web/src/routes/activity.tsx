@@ -10,6 +10,7 @@ import { Tag } from "@/components/ui/state-badge";
 import { useActivity } from "@/features/activity/queries";
 import { useAccounts } from "@/features/market/queries";
 import { formatTimestamp } from "@/lib/format";
+import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
@@ -30,6 +31,7 @@ import { cn } from "@/lib/utils";
 const RENDER_LIMIT = 300;
 
 export function ActivityPage() {
+  const t = useT();
   const accounts = useAccounts();
   const events = useActivity(useMemo(() => ({}), []));
   const [kind, setKind] = useState("");
@@ -56,13 +58,15 @@ export function ActivityPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-bar shrink-0 items-center gap-4 border-b border-line px-3">
         <label className="flex shrink-0 items-center gap-2">
-          <span className="th">Kind</span>
+          <span className="th">{t("col.kind")}</span>
           <select
             value={kind}
             onChange={(event) => setKind(event.target.value)}
             className={cn(inputClass, "w-56")}
           >
-            <option value="">All kinds</option>
+            <option value="">{t("filter.allKinds")}</option>
+            {/* The kinds are the server's own tokens and are never translated:
+                the filter, the cell and the audit trail must say the same word. */}
             {kinds.map((value) => (
               <option key={value} value={value}>
                 {value}
@@ -72,13 +76,13 @@ export function ActivityPage() {
         </label>
 
         <label className="flex shrink-0 items-center gap-2">
-          <span className="th">Account</span>
+          <span className="th">{t("col.account")}</span>
           <select
             value={accountId}
             onChange={(event) => setAccountId(event.target.value)}
             className={cn(inputClass, "w-48")}
           >
-            <option value="">All accounts</option>
+            <option value="">{t("filter.allAccounts")}</option>
             {(accounts.data ?? []).map((account) => (
               <option key={account.accountId} value={account.accountId}>
                 {account.displayName}
@@ -88,18 +92,20 @@ export function ActivityPage() {
         </label>
 
         <p className="ml-auto shrink-0 text-meta text-dim">
-          {matched.length} of {all.length} events
-          {matched.length > rows.length ? ` · newest ${rows.length} shown` : ""}
+          {t("activity.count", { matched: matched.length, total: all.length })}
+          {matched.length > rows.length
+            ? ` · ${t("activity.newest", { count: rows.length })}`
+            : ""}
         </p>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <DataTable
-            columns={columns(selectedId)}
+            columns={columns(selectedId, t)}
             data={rows}
             getRowId={(event) => event.eventId}
-            caption="Activity events, newest first"
+            caption={t("activity.caption")}
             loading={events.isPending}
             onRowClick={(event) =>
               setSelectedId((current) => (current === event.eventId ? null : event.eventId))
@@ -107,12 +113,10 @@ export function ActivityPage() {
             empty={
               <EmptyState
                 icon={Activity}
-                title={all.length === 0 ? "Nothing recorded yet" : "No events match these filters"}
-                detail={
-                  all.length === 0
-                    ? "The log holds the most recent events since trading started, so it is empty after a restart."
-                    : undefined
+                title={
+                  all.length === 0 ? t("activity.empty.none") : t("activity.empty.filtered")
                 }
+                detail={all.length === 0 ? t("activity.empty.none.detail") : undefined}
               />
             }
           />
@@ -127,28 +131,34 @@ export function ActivityPage() {
 }
 
 function Detail({ event }: { event: ActivityEvent | null }) {
+  const t = useT();
+
   if (!event) {
     return (
-      <EmptyState title="No event selected" detail="Select a row to read its full payload." />
+      <EmptyState
+        title={t("activity.noSelection")}
+        detail={t("activity.noSelection.detail")}
+      />
     );
   }
   return (
     <div className="flex flex-col">
       <header className="flex h-row shrink-0 items-center gap-2 border-b border-line px-3">
+        {/* The kind and the sequence number are the record itself. */}
         <h2 className="truncate text-base font-medium text-text">{event.kind}</h2>
         <Tag className="ml-auto">#{event.sequence}</Tag>
       </header>
 
       <dl className="grid grid-cols-[6rem_1fr] gap-x-3 gap-y-2 border-b border-line p-3 text-meta">
-        <Row label="Observed" value={formatTimestamp(event.observedAt)} />
-        <Row label="Product" value={event.productId} />
-        <Row label="Account" value={event.accountId} />
-        <Row label="Resource" value={event.resourceId} />
-        <Row label="Cursor" value={event.cursor} />
+        <Row label={t("activity.observed")} value={formatTimestamp(event.observedAt)} />
+        <Row label={t("col.product")} value={event.productId} />
+        <Row label={t("col.account")} value={event.accountId} />
+        <Row label={t("col.resource")} value={event.resourceId} />
+        <Row label={t("activity.cursor")} value={event.cursor} />
       </dl>
 
       <div className="p-3">
-        <div className="th mb-2">Payload</div>
+        <div className="th mb-2">{t("activity.payload")}</div>
         <pre
           data-numeric=""
           className="overflow-x-auto rounded-card bg-fill p-2 text-meta text-muted"
@@ -169,11 +179,16 @@ function Row({ label, value }: { label: string; value: string | null }) {
   );
 }
 
-function columns(selectedId: string | null): ColumnDef<ActivityEvent, unknown>[] {
+/**
+ * A builder rather than a constant, now that the headers are translated: a
+ * module-level array is evaluated once at import and would freeze whichever
+ * locale happened to be active then.
+ */
+function columns(selectedId: string | null, t: Translate): ColumnDef<ActivityEvent, unknown>[] {
   return [
     {
       id: "observed",
-      header: "Time",
+      header: t("col.time"),
       accessorKey: "observedAt",
       meta: { width: "7rem" },
       cell: ({ row }) => (
@@ -189,30 +204,30 @@ function columns(selectedId: string | null): ColumnDef<ActivityEvent, unknown>[]
         </span>
       ),
     },
-    { id: "kind", header: "Kind", accessorKey: "kind", meta: { width: "16rem" } },
+    { id: "kind", header: t("col.kind"), accessorKey: "kind", meta: { width: "16rem" } },
     {
       id: "product",
-      header: "Product",
+      header: t("col.product"),
       accessorKey: "productId",
       meta: { width: "7rem" },
       cell: ({ row }) => <Scope value={row.original.productId} />,
     },
     {
       id: "account",
-      header: "Account",
+      header: t("col.account"),
       accessorKey: "accountId",
       meta: { width: "12rem" },
       cell: ({ row }) => <Scope value={row.original.accountId} />,
     },
     {
       id: "resource",
-      header: "Resource",
+      header: t("col.resource"),
       accessorKey: "resourceId",
       cell: ({ row }) => <Scope value={row.original.resourceId} />,
     },
     {
       id: "sequence",
-      header: "Seq",
+      header: t("col.seq"),
       accessorKey: "sequence",
       meta: { numeric: true, width: "5rem" },
     },

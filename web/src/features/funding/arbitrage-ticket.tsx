@@ -16,6 +16,7 @@ import {
   type SealedArbitragePreview,
 } from "@/features/funding/queries";
 import { formatDuration, splitDecimal } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * The hedge ticket.
@@ -31,11 +32,6 @@ import { formatDuration, splitDecimal } from "@/lib/format";
  * `negative_spread` as a warning, not a blocker, because paying funding to hold
  * a hedge is a choice an operator is allowed to make.
  * ------------------------------------------------------------------------- */
-
-const ORDER_TYPES: { value: OrderType; label: string }[] = [
-  { value: "limit", label: "Limit" },
-  { value: "market", label: "Market" },
-];
 
 export function ArbitrageTicket({
   symbol,
@@ -55,6 +51,7 @@ export function ArbitrageTicket({
   accounts: Account[];
   onSwap: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [longChoice, setLongChoice] = useState<string | null>(null);
   const [shortChoice, setShortChoice] = useState<string | null>(null);
@@ -98,7 +95,7 @@ export function ArbitrageTicket({
   const remaining = useSealCountdown(sealed);
   const expired = sealed !== null && remaining <= 0;
 
-  const quantityError = quantity !== "" && !isPositiveDecimal(quantity) ? "Must be a positive number." : null;
+  const quantityError = quantity !== "" && !isPositiveDecimal(quantity) ? t("ticket.positive") : null;
   const reachable = long.instrumentId !== undefined && short.instrumentId !== undefined;
   const ready =
     reachable &&
@@ -111,6 +108,15 @@ export function ArbitrageTicket({
     (orderType === "market" || (isPositiveDecimal(longLimit) && isPositiveDecimal(shortLimit)));
 
   const edge = spreadOf(long.dailyRate, short.dailyRate);
+
+  // Built here rather than at module scope: a module-level array is evaluated
+  // once at import and would freeze whichever locale was active then. Inline
+  // rather than memoised, because `useT()` returns a fresh closure every render
+  // and a `useMemo` keyed on it would never hit.
+  const orderTypes: { value: OrderType; label: string }[] = [
+    { value: "limit", label: t("ticket.type.limit") },
+    { value: "market", label: t("ticket.type.market") },
+  ];
 
   const onReview = () => {
     if (!ready || long.instrumentId === undefined || short.instrumentId === undefined) return;
@@ -135,7 +141,7 @@ export function ArbitrageTicket({
       {
         onSuccess: setSealed,
         onError: (error) =>
-          toast.push({ tone: "danger", title: "Preview rejected", detail: describeError(error) }),
+          toast.push({ tone: "danger", title: t("ticket.previewRejected"), detail: describeError(error, t) }),
       },
     );
   };
@@ -149,23 +155,22 @@ export function ArbitrageTicket({
         const partial = execution.state === "partially_open" || execution.failures.length > 0;
         toast.push({
           tone: partial ? "danger" : "ok",
-          title: partial ? "Only one leg opened" : `Hedge ${execution.state}`,
-          detail: partial
-            ? "The pair is carrying one-sided exposure. Dispose of the open leg below."
-            : execution.lineageId,
+          // `execution.state` is the server's own word, as on the order ticket.
+          title: partial ? t("arb.partial") : t("arb.opened", { state: execution.state }),
+          detail: partial ? t("arb.partial.detail") : execution.lineageId,
         });
       },
       onError: (error) => {
         // The seal is spent whether or not the legs landed, so a retry has to
         // start from a fresh price rather than from a token the server has seen.
         setSealed(null);
-        toast.push({ tone: "danger", title: "Hedge rejected", detail: describeError(error) });
+        toast.push({ tone: "danger", title: t("arb.rejected"), detail: describeError(error, t) });
       },
     });
   };
 
   return (
-    <Panel title="Hedge">
+    <Panel title={t("funding.hedge")}>
       <div className="flex flex-col gap-3">
         <LegCard
           leg="long"
@@ -185,9 +190,9 @@ export function ArbitrageTicket({
 
         <div className="flex items-center gap-2">
           <span aria-hidden className="h-px flex-1 bg-line" />
-          <Button variant="outline" size="sm" onClick={onSwap} aria-label="Swap which venue is the long leg">
+          <Button variant="outline" size="sm" onClick={onSwap} aria-label={t("arb.swap.label")}>
             <ArrowUpDown aria-hidden className="size-3" />
-            Swap
+            {t("arb.swap")}
           </Button>
           <span aria-hidden className="h-px flex-1 bg-line" />
         </div>
@@ -210,9 +215,9 @@ export function ArbitrageTicket({
 
         <Segmented
           name="arbitrage-order-type"
-          label="Order type"
+          label={t("ticket.orderType")}
           value={orderType}
-          options={ORDER_TYPES}
+          options={orderTypes}
           onChange={(next) => {
             setOrderType(next);
             // Both legs go out together and a resting hedge is half a hedge for
@@ -221,7 +226,12 @@ export function ArbitrageTicket({
           }}
         />
 
-        <Field label={`Quantity (${baseAsset || "base"})`} error={quantityError} hint="Same size both legs." required>
+        <Field
+          label={t("arb.quantity", { asset: baseAsset || t("arb.baseAsset") })}
+          error={quantityError}
+          hint={t("arb.sameSize")}
+          required
+        >
           {(field) => (
             <Input
               {...field}
@@ -245,7 +255,7 @@ export function ArbitrageTicket({
 
         {!reachable ? (
           <p className="text-meta text-warn" role="status">
-            One of these venues has no reachable account, so this pair cannot be priced.
+            {t("arb.unreachable")}
           </p>
         ) : null}
 
@@ -257,7 +267,7 @@ export function ArbitrageTicket({
             disabled={!ready || preview.isPending}
             className="w-full"
           >
-            {preview.isPending ? "Pricing…" : "Review hedge"}
+            {preview.isPending ? t("ticket.pricing") : t("arb.review")}
           </Button>
         ) : (
           <SealedConfirmation
@@ -305,8 +315,9 @@ function LegCard({
   showLimit: boolean;
   quoteAsset: string;
 }) {
+  const t = useT();
   const percent = percentOf(dailyRate);
-  const priceError = showLimit && limitPrice !== "" && !isPositiveDecimal(limitPrice) ? "Must be positive." : null;
+  const priceError = showLimit && limitPrice !== "" && !isPositiveDecimal(limitPrice) ? t("arb.mustBePositive") : null;
 
   return (
     <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
@@ -318,7 +329,7 @@ function LegCard({
         </div>
         <div className="flex shrink-0 items-baseline gap-1">
           {percent === null ? (
-            <span className="text-meta text-dim">no rate</span>
+            <span className="text-meta text-dim">{t("arb.noRate")}</span>
           ) : (
             <Num value={percent} decimals={4} signed directional className="text-base" />
           )}
@@ -326,10 +337,10 @@ function LegCard({
         </div>
       </div>
 
-      {stale ? <p className="text-meta text-warn">This venue&rsquo;s quote is stale.</p> : null}
-      {unlisted ? <p className="text-meta text-warn">No instrument on this venue for this account.</p> : null}
+      {stale ? <p className="text-meta text-warn">{t("arb.staleQuote")}</p> : null}
+      {unlisted ? <p className="text-meta text-warn">{t("arb.unlisted")}</p> : null}
 
-      <Field label="Account" required>
+      <Field label={t("ticket.account")} required>
         {(field) => (
           <select
             {...field}
@@ -338,7 +349,7 @@ function LegCard({
             onChange={(event) => onAccountChange(event.target.value)}
             disabled={accounts.length === 0}
           >
-            {accounts.length === 0 ? <option value="">No account for {venue}</option> : null}
+            {accounts.length === 0 ? <option value="">{t("arb.noAccountFor", { venue })}</option> : null}
             {accounts.map((account) => (
               <option key={account.accountId} value={account.accountId}>
                 {account.displayName}
@@ -349,7 +360,11 @@ function LegCard({
       </Field>
 
       {showLimit ? (
-        <Field label={`Limit price (${quoteAsset || "quote"})`} error={priceError} required>
+        <Field
+          label={t("arb.limitPrice", { asset: quoteAsset || t("arb.quoteAsset") })}
+          error={priceError}
+          required
+        >
           {(field) => (
             <Input
               {...field}
@@ -395,24 +410,26 @@ function Edge({
   longMark: string | undefined;
   shortMark: string | undefined;
 }) {
+  // Above the early return: a hook cannot sit behind a conditional.
+  const t = useT();
+
   if (spreadDaily === null) {
     return (
-      <p className="text-meta text-dim">
-        {symbol}: no comparable daily rate — one venue publishes no funding interval.
-      </p>
+      <p className="text-meta text-dim">{t("arb.noComparable", { symbol })}</p>
     );
   }
   const notional = notionalOf(quantity, longMark, shortMark);
   return (
     <dl className="flex flex-col gap-1 text-meta">
       <div className="flex items-baseline justify-between">
-        <dt className="text-dim">Spread</dt>
+        <dt className="text-dim">{t("arb.spread")}</dt>
         <dd>
           <Num value={(spreadDaily * 100).toFixed(4)} decimals={4} signed directional />
           <span className="text-dim"> %/d</span>
         </dd>
       </div>
       <div className="flex items-baseline justify-between">
+        {/* `APR` is a unit code, the same in every language. */}
         <dt className="text-dim">APR</dt>
         <dd>
           <Num value={(spreadDaily * 365 * 100).toFixed(2)} decimals={2} signed directional />
@@ -420,7 +437,7 @@ function Edge({
         </dd>
       </div>
       <div className="flex items-baseline justify-between">
-        <dt className="text-dim">Funding per day</dt>
+        <dt className="text-dim">{t("arb.dailyFunding")}</dt>
         <dd>
           {notional === null ? (
             <span className="text-dim">—</span>
@@ -432,7 +449,7 @@ function Edge({
           )}
         </dd>
       </div>
-      <p className="text-dim">Gross — venue fees are priced per route at execution.</p>
+      <p className="text-dim">{t("arb.gross")}</p>
     </dl>
   );
 }
@@ -454,46 +471,49 @@ function SealedConfirmation({
   onConfirm: () => void;
   onDiscard: () => void;
 }) {
+  const t = useT();
   const { blockers, warnings, spreadDaily, spreadApr, notional, dailyFunding } = sealed.preview;
   const blocked = blockers.length > 0;
 
   return (
     <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
       <div className="flex items-center justify-between">
-        <span className="th">Confirm hedge</span>
+        <span className="th">{t("arb.confirm")}</span>
         <span className={expired ? "text-meta text-danger" : "text-meta text-dim"} role="timer" aria-live="off">
-          {expired ? "expired" : `${formatDuration(remaining)} left`}
+          {expired ? t("ticket.expired") : t("ticket.left", { duration: formatDuration(remaining) })}
         </span>
       </div>
 
       <dl className="flex flex-col gap-1 text-meta">
         <div className="flex items-baseline justify-between">
-          <dt className="text-dim">Sealed spread</dt>
+          <dt className="text-dim">{t("arb.sealedSpread")}</dt>
           <dd>
             <Num value={spreadDaily} decimals={6} signed directional />
             <span className="text-dim"> /d</span>
           </dd>
         </div>
         <div className="flex items-baseline justify-between">
-          <dt className="text-dim">Sealed APR</dt>
+          <dt className="text-dim">{t("arb.sealedApr")}</dt>
           <dd>
             <Num value={spreadApr} decimals={4} signed directional />
           </dd>
         </div>
         <div className="flex items-baseline justify-between">
-          <dt className="text-dim">Notional</dt>
+          <dt className="text-dim">{t("arb.notional")}</dt>
           <dd>
             <Num value={notional} decimals={2} grouped />
           </dd>
         </div>
         <div className="flex items-baseline justify-between">
-          <dt className="text-dim">Funding per day</dt>
+          <dt className="text-dim">{t("arb.dailyFunding")}</dt>
           <dd>
             <Num value={dailyFunding} decimals={4} signed directional />
           </dd>
         </div>
       </dl>
 
+      {/* Blockers and warnings are the server's own sentences, printed as they
+          arrived — the same rule the pair rows follow. */}
       {blocked ? (
         <ul className="flex flex-col gap-1 text-meta text-danger">
           {blockers.map((blocker) => (
@@ -512,7 +532,7 @@ function SealedConfirmation({
 
       <div className="flex gap-2">
         <Button variant="ghost" size="lg" onClick={onDiscard} className="shrink-0">
-          Discard
+          {t("ticket.discard")}
         </Button>
         <Button
           variant="primary"
@@ -521,7 +541,7 @@ function SealedConfirmation({
           disabled={blocked || expired || opening}
           className="flex-1"
         >
-          {opening ? "Opening…" : expired ? "Preview expired" : "Open both legs"}
+          {opening ? t("arb.opening") : expired ? t("ticket.expiredButton") : t("arb.openBoth")}
         </Button>
       </div>
     </div>

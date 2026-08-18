@@ -10,6 +10,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { useToast } from "@/components/ui/toast";
 import { usePlaceOrder, usePreviewOrder, type SealedPreview } from "@/features/trade/queries";
 import { formatDecimal, formatDuration, splitDecimal } from "@/lib/format";
+import { useT, type Key } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * The order ticket.
@@ -25,15 +26,24 @@ import { formatDecimal, formatDuration, splitDecimal } from "@/lib/format";
  * not exist while there is one. Warnings are advisory and confirm stays live.
  * ------------------------------------------------------------------------- */
 
-const SIDES: { value: OrderSide; label: string; tone: "buy" | "sell" }[] = [
-  { value: "buy", label: "Buy", tone: "buy" },
-  { value: "sell", label: "Sell", tone: "sell" },
+/**
+ * The two static option lists name their label instead of holding it: a
+ * module-level array outlives every render, so the dictionary lookup has to
+ * happen at the call site where the locale is known.
+ */
+const SIDES: { value: OrderSide; labelKey: Key; tone: "buy" | "sell" }[] = [
+  { value: "buy", labelKey: "ticket.side.buy", tone: "buy" },
+  { value: "sell", labelKey: "ticket.side.sell", tone: "sell" },
 ];
 
-const ORDER_TYPES: { value: OrderType; label: string }[] = [
-  { value: "limit", label: "Limit" },
-  { value: "market", label: "Market" },
+const ORDER_TYPES: { value: OrderType; labelKey: Key }[] = [
+  { value: "limit", labelKey: "ticket.type.limit" },
+  { value: "market", labelKey: "ticket.type.market" },
 ];
+
+/** The confirm button and the success toast, which spell the side differently. */
+const CONFIRM: Record<OrderSide, Key> = { buy: "ticket.confirm.buy", sell: "ticket.confirm.sell" };
+const PLACED: Record<OrderSide, Key> = { buy: "ticket.placed.buy", sell: "ticket.placed.sell" };
 
 export function OrderTicket({
   instrument,
@@ -49,6 +59,7 @@ export function OrderTicket({
   onLimitPriceChange: (next: string) => void;
 }) {
   const toast = useToast();
+  const t = useT();
   const [accountId, setAccountId] = useState("");
   const [side, setSide] = useState<OrderSide>("buy");
   const [orderType, setOrderType] = useState<OrderType>("limit");
@@ -76,11 +87,9 @@ export function OrderTicket({
   const remaining = useSealCountdown(sealed);
   const expired = sealed !== null && remaining <= 0;
 
-  const quantityError = quantity !== "" && !isPositiveDecimal(quantity) ? "Must be a positive number." : null;
+  const quantityError = quantity !== "" && !isPositiveDecimal(quantity) ? t("ticket.positive") : null;
   const priceError =
-    orderType === "limit" && limitPrice !== "" && !isPositiveDecimal(limitPrice)
-      ? "Must be a positive number."
-      : null;
+    orderType === "limit" && limitPrice !== "" && !isPositiveDecimal(limitPrice) ? t("ticket.positive") : null;
 
   const ready =
     instrument !== null &&
@@ -105,7 +114,8 @@ export function OrderTicket({
       },
       {
         onSuccess: setSealed,
-        onError: (error) => toast.push({ tone: "danger", title: "Preview rejected", detail: describeError(error) }),
+        onError: (error) =>
+          toast.push({ tone: "danger", title: t("ticket.previewRejected"), detail: describeError(error, t) }),
       },
     );
   };
@@ -118,7 +128,9 @@ export function OrderTicket({
         setQuantity("");
         toast.push({
           tone: "ok",
-          title: `${side === "buy" ? "Buy" : "Sell"} order ${command.state}`,
+          // `command.state` is the server's own word and is not translated: it is
+          // what the blotter row and the audit log call the same thing.
+          title: t(PLACED[side], { state: command.state }),
           detail: command.commandId,
         });
       },
@@ -127,17 +139,25 @@ export function OrderTicket({
         // back — so clearing it forces a fresh price rather than a retry of a
         // token the server has already seen.
         setSealed(null);
-        toast.push({ tone: "danger", title: "Order rejected", detail: describeError(error) });
+        toast.push({ tone: "danger", title: t("ticket.orderRejected"), detail: describeError(error, t) });
       },
     });
   };
 
   return (
-    <Panel title="Order" className="flex min-h-0 flex-col">
+    <Panel title={t("ticket.title")} className="flex min-h-0 flex-col">
       <div className="flex flex-col gap-3">
-        <Segmented name="side" label="Side" value={side} options={SIDES} onChange={setSide} />
+        {/* Options are rebuilt per render rather than memoised: `useT` returns a
+            fresh closure every time, so a `[t]` dependency would never hit. */}
+        <Segmented
+          name="side"
+          label={t("ticket.side")}
+          value={side}
+          options={SIDES.map((entry) => ({ value: entry.value, label: t(entry.labelKey), tone: entry.tone }))}
+          onChange={setSide}
+        />
 
-        <Field label="Account" required>
+        <Field label={t("ticket.account")} required>
           {(field) => (
             <select
               {...field}
@@ -146,7 +166,7 @@ export function OrderTicket({
               onChange={(event) => setAccountId(event.target.value)}
               disabled={accounts.length === 0}
             >
-              {accounts.length === 0 ? <option value="">No account for this venue</option> : null}
+              {accounts.length === 0 ? <option value="">{t("ticket.noAccount")}</option> : null}
               {accounts.map((account) => (
                 <option key={account.accountId} value={account.accountId}>
                   {account.displayName} · {account.venue}
@@ -158,9 +178,9 @@ export function OrderTicket({
 
         <Segmented
           name="order-type"
-          label="Order type"
+          label={t("ticket.orderType")}
           value={orderType}
-          options={ORDER_TYPES}
+          options={ORDER_TYPES.map((entry) => ({ value: entry.value, label: t(entry.labelKey) }))}
           onChange={(next) => {
             setOrderType(next);
             // A resting market order is not a thing. Immediate-or-cancel is the
@@ -170,9 +190,9 @@ export function OrderTicket({
         />
 
         <Field
-          label={`Price${instrument?.quoteAsset ? ` (${instrument.quoteAsset})` : ""}`}
+          label={`${t("ticket.price")}${instrument?.quoteAsset ? ` (${instrument.quoteAsset})` : ""}`}
           error={priceError}
-          hint={orderType === "market" ? "Market orders take the book price." : "Click a level in the book to fill this."}
+          hint={orderType === "market" ? t("ticket.price.market") : t("ticket.price.hint")}
           required={orderType === "limit"}
         >
           {(field) => (
@@ -189,7 +209,7 @@ export function OrderTicket({
         </Field>
 
         <Field
-          label={`Quantity${instrument?.baseAsset ? ` (${instrument.baseAsset})` : ""}`}
+          label={`${t("ticket.quantity")}${instrument?.baseAsset ? ` (${instrument.baseAsset})` : ""}`}
           error={quantityError}
           required
         >
@@ -206,7 +226,7 @@ export function OrderTicket({
         </Field>
 
         <div className="flex items-end gap-3">
-          <Field label="Time in force" className="flex-1">
+          <Field label={t("ticket.tif")} className="flex-1">
             {(field) => (
               <select
                 {...field}
@@ -229,7 +249,7 @@ export function OrderTicket({
               onChange={(event) => setReduceOnly(event.target.checked)}
               className="size-3.5 accent-[var(--bt-accent)]"
             />
-            Reduce only
+            {t("ticket.reduceOnly")}
           </label>
         </div>
 
@@ -243,7 +263,7 @@ export function OrderTicket({
             disabled={!ready || preview.isPending}
             className="w-full"
           >
-            {preview.isPending ? "Pricing…" : "Review order"}
+            {preview.isPending ? t("ticket.pricing") : t("ticket.review")}
           </Button>
         ) : (
           <SealedConfirmation
@@ -282,6 +302,7 @@ function SealedConfirmation({
 }) {
   const { blockers, warnings } = sealed.preview;
   const blocked = blockers.length > 0;
+  const t = useT();
 
   return (
     // A well, not a card: §5 gives inner containers no border, so the seal
@@ -290,9 +311,9 @@ function SealedConfirmation({
     // header and the countdown beside it are for.
     <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
       <div className="flex items-center justify-between">
-        <span className="th">Confirm</span>
+        <span className="th">{t("ticket.confirm")}</span>
         <span className={expired ? "text-meta text-danger" : "text-meta text-dim"} role="timer" aria-live="off">
-          {expired ? "expired" : `${formatDuration(remaining)} left`}
+          {expired ? t("ticket.expired") : t("ticket.left", { duration: formatDuration(remaining) })}
         </span>
       </div>
 
@@ -314,7 +335,7 @@ function SealedConfirmation({
 
       <div className="flex gap-2">
         <Button variant="ghost" size="lg" onClick={onDiscard} className="shrink-0">
-          Discard
+          {t("ticket.discard")}
         </Button>
         <Button
           variant="primary"
@@ -323,7 +344,7 @@ function SealedConfirmation({
           disabled={blocked || expired || placing}
           className="flex-1"
         >
-          {placing ? "Placing…" : expired ? "Preview expired" : `Confirm ${side}`}
+          {placing ? t("ticket.placing") : expired ? t("ticket.expiredButton") : t(CONFIRM[side])}
         </Button>
       </div>
     </div>
@@ -382,6 +403,8 @@ function Notional({
   asset?: string;
   active: boolean;
 }) {
+  // Before the early returns, because a hook cannot sit behind a branch.
+  const t = useT();
   if (!active || !isPositiveDecimal(quantity) || !isPositiveDecimal(price)) {
     return <div className="h-4" />;
   }
@@ -389,7 +412,7 @@ function Notional({
   if (!Number.isFinite(value)) return <div className="h-4" />;
   return (
     <div className="flex h-4 items-center justify-between text-meta text-dim">
-      <span>Order value</span>
+      <span>{t("ticket.notional")}</span>
       <span data-numeric="">
         {formatDecimal(value.toFixed(2))} {asset ?? ""}
       </span>

@@ -19,8 +19,25 @@ declare module "@tanstack/react-table" {
     align?: "left" | "right";
     /** Fixed width, so a streaming value cannot resize its own column. */
     width?: string;
+    /**
+     * Pinned to the left edge while the rest of a wide table scrolls under it.
+     *
+     * Only the anchor column should take this: a sticky cell needs its own
+     * background to hide what passes behind it, and a background is what makes
+     * it stop sharing the row's hover state.
+     */
+    sticky?: boolean;
   }
 }
+
+/**
+ * The background a pinned cell paints, and the hover it has to rejoin.
+ *
+ * `bg-bg` rather than `bg-panel`: every table in the product sits directly on
+ * the shell's canvas, and `.th` carries no background of its own, so an
+ * unpainted sticky cell would show the scrolling columns straight through it.
+ */
+const STICKY = "sticky left-0 z-10 bg-bg";
 
 export interface DataTableProps<TData> {
   columns: ColumnDef<TData, unknown>[];
@@ -68,11 +85,17 @@ export function DataTable<TData>({
 
   return (
     <div className={cn("w-full overflow-x-auto", className)}>
-      <table className="w-full border-collapse text-base">
+      {/* `border-separate` with no spacing rather than `border-collapse`: a
+          collapsed border belongs to the table grid, not to the cell, so it does
+          not travel with a `position: sticky` column and the pinned cell loses
+          its seam the moment the table scrolls. Separated borders are drawn by
+          the cells themselves, which is why the header rule below sits on each
+          `th` — a `tr` border paints nothing in this mode. */}
+      <table className="w-full border-separate border-spacing-0 text-base">
         <caption className="sr-only">{caption}</caption>
         <thead>
           {headers.map((group) => (
-            <tr key={group.id} className="border-b border-line">
+            <tr key={group.id}>
               {group.headers.map((header) => {
                 const meta = header.column.columnDef.meta;
                 const alignRight = meta?.align === "right" || meta?.numeric === true;
@@ -92,7 +115,11 @@ export function DataTable<TData>({
                             ? "descending"
                             : "none"
                     }
-                    className={cn("th h-8 px-3", alignRight ? "text-right" : "text-left")}
+                    className={cn(
+                      "th h-8 border-b border-line px-3",
+                      alignRight ? "text-right" : "text-left",
+                      meta?.sticky && STICKY,
+                    )}
                   >
                     {header.isPlaceholder ? null : sortable ? (
                       <button
@@ -128,7 +155,10 @@ export function DataTable<TData>({
             ? Array.from({ length: loadingRows }, (_, index) => (
                 <tr key={`skeleton-${index}`} className="h-row">
                   {table.getAllLeafColumns().map((column) => (
-                    <td key={column.id} className="px-3">
+                    <td
+                      key={column.id}
+                      className={cn("px-3", column.columnDef.meta?.sticky && STICKY)}
+                    >
                       <span className="block h-3 w-full max-w-24 rounded-seam bg-raised" />
                     </td>
                   ))}
@@ -139,7 +169,7 @@ export function DataTable<TData>({
                   key={row.id}
                   onClick={onRowClick ? () => onRowClick(row.original) : undefined}
                   className={cn(
-                    "h-row transition-colors hover:bg-raised",
+                    "group h-row transition-colors hover:bg-raised",
                     onRowClick && "cursor-pointer",
                   )}
                 >
@@ -153,6 +183,10 @@ export function DataTable<TData>({
                         className={cn(
                           "truncate px-3 align-middle",
                           alignRight ? "text-right" : "text-left",
+                          // Its own background opts the pinned cell out of the
+                          // row's hover, so it has to opt back in by hand or the
+                          // anchor stays unlit while the row it names highlights.
+                          meta?.sticky && `${STICKY} group-hover:bg-raised`,
                         )}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}

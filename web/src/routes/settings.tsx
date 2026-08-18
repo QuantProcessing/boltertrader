@@ -37,6 +37,7 @@ import {
   useVenues,
 } from "@/features/settings/queries";
 import { formatTimestamp } from "@/lib/format";
+import { useT, type Key } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ const STATUS_TONE: Record<AccountStatus, StateTone> = {
 const isTerminal = (status: AccountStatus): boolean => status === "removing" || status === "removed";
 
 export function SettingsPage() {
+  const t = useT();
   const accountsQuery = useAccounts();
   const venuesQuery = useVenues();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -87,7 +89,7 @@ export function SettingsPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-bar shrink-0 items-center gap-3 border-b border-line px-3">
-        <h1 className="text-title font-medium text-text">Accounts</h1>
+        <h1 className="text-title font-medium text-text">{t("settings.accounts")}</h1>
         <Tag>{list.length}</Tag>
         <Button
           variant={creating ? "outline" : "primary"}
@@ -98,12 +100,18 @@ export function SettingsPage() {
             setSelectedId(null);
           }}
         >
-          {creating ? "Cancel" : <><Plus className="size-3.5" aria-hidden="true" /> Add account</>}
+          {creating ? (
+            t("settings.cancel")
+          ) : (
+            <>
+              <Plus className="size-3.5" aria-hidden="true" /> {t("settings.addAccount")}
+            </>
+          )}
         </Button>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <nav aria-label="Accounts" className="w-72 shrink-0 overflow-y-auto border-r border-line">
+        <nav aria-label={t("settings.accounts")} className="w-72 shrink-0 overflow-y-auto border-r border-line">
           {list.map((account) => (
             <button
               key={account.accountId}
@@ -132,7 +140,7 @@ export function SettingsPage() {
             </button>
           ))}
           {list.length === 0 && !accountsQuery.isPending ? (
-            <p className="p-3 text-meta text-dim">No accounts yet.</p>
+            <p className="p-3 text-meta text-dim">{t("settings.noAccounts")}</p>
           ) : null}
         </nav>
 
@@ -154,8 +162,8 @@ export function SettingsPage() {
           ) : (
             <EmptyState
               icon={KeyRound}
-              title="No account selected"
-              detail="Select an account to inspect its desired state, runtime and capabilities."
+              title={t("settings.empty.title")}
+              detail={t("settings.empty.detail")}
             />
           )}
         </div>
@@ -168,6 +176,7 @@ export function SettingsPage() {
 
 function AccountDetail({ account, venue }: { account: Account; venue: Venue | null }) {
   const toast = useToast();
+  const t = useT();
   const runtimes = useAccountRuntimes(account.accountId);
   const [rotating, setRotating] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -182,15 +191,17 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
 
   const runtime = runtimes.data?.find((entry) => entry.accountId === account.accountId) ?? null;
 
-  const announce = (title: string) => ({
-    onSuccess: () => toast.push({ tone: "ok", title, detail: account.displayName }),
+  // Two keys rather than one edited at runtime. The failure title used to be the
+  // success title with "requested" swapped for "failed", which is a sentence-level
+  // edit that only holds in English: any other language has no such substring, so
+  // the replace would be a no-op and a failed mutation would announce success.
+  const announce = (requested: Key, failed: Key) => ({
+    onSuccess: () => toast.push({ tone: "ok", title: t(requested), detail: account.displayName }),
     onError: (error: unknown) =>
       toast.push({
         tone: "danger" as const,
-        title: isRevisionConflict(error) ? "Account had already changed" : title.replace("requested", "failed"),
-        detail: isRevisionConflict(error)
-          ? "Someone else modified this account. It has been reloaded — check the state and try again."
-          : describeError(error),
+        title: isRevisionConflict(error) ? t("settings.conflict") : t(failed),
+        detail: isRevisionConflict(error) ? t("settings.conflict.detail") : describeError(error, t),
       }),
   });
 
@@ -201,15 +212,17 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
         meta={<StateBadge tone={STATUS_TONE[account.status]} label={account.status} />}
       >
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-meta md:grid-cols-4">
-          <Fact label="Venue" value={account.venue} />
-          <Fact label="Environment" value={account.nativeEnvironment} />
-          <Fact label="Products" value={account.productPolicy.join(", ")} />
-          <Fact label="Desired revision" value={String(account.desiredStateRevision)} numeric />
-          <Fact label="Runtime generation" value={String(account.runtimeGeneration)} numeric />
-          <Fact label="Credential version" value={String(account.credentialVersion)} numeric />
+          <Fact label={t("settings.venue")} value={account.venue} />
+          <Fact label={t("settings.environment")} value={account.nativeEnvironment} />
+          <Fact label={t("settings.products")} value={account.productPolicy.join(", ")} />
+          <Fact label={t("settings.desiredRevision")} value={String(account.desiredStateRevision)} numeric />
+          <Fact label={t("settings.runtimeGeneration")} value={String(account.runtimeGeneration)} numeric />
+          <Fact label={t("settings.credentialVersion")} value={String(account.credentialVersion)} numeric />
           <Fact
-            label="Last validated"
-            value={account.lastValidatedAt === null ? "never" : formatTimestamp(account.lastValidatedAt)}
+            label={t("settings.lastValidated")}
+            value={
+              account.lastValidatedAt === null ? t("settings.never") : formatTimestamp(account.lastValidatedAt)
+            }
           />
         </dl>
 
@@ -217,38 +230,44 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
           <Button
             size="sm"
             disabled={busy || terminal}
-            onClick={() => validate.mutate(account, announce("Validation requested"))}
+            onClick={() =>
+              validate.mutate(account, announce("settings.validate.requested", "settings.validate.failed"))
+            }
           >
-            <ShieldCheck className="size-3.5" aria-hidden="true" /> Validate
+            <ShieldCheck className="size-3.5" aria-hidden="true" /> {t("settings.validate")}
           </Button>
           <Button
             size="sm"
             disabled={busy || terminal || !venue}
             onClick={() => setRotating((current) => !current)}
           >
-            {rotating ? "Cancel rotation" : "Rotate credential"}
+            {rotating ? t("settings.cancelRotation") : t("settings.rotateCredential")}
           </Button>
           <Button
             size="sm"
             disabled={busy || terminal || account.status === "draining" || account.status === "drained"}
-            onClick={() => drain.mutate(account, announce("Drain requested"))}
+            onClick={() => drain.mutate(account, announce("settings.drain.requested", "settings.drain.failed"))}
           >
-            Drain
+            {t("settings.drain")}
           </Button>
           <Button
             size="sm"
             disabled={busy || terminal || account.status === "disabled"}
-            onClick={() => disable.mutate(account, announce("Disable requested"))}
+            onClick={() =>
+              disable.mutate(account, announce("settings.disable.requested", "settings.disable.failed"))
+            }
           >
-            Disable
+            {t("settings.disable")}
           </Button>
 
           <span className="ml-auto flex items-center gap-2">
             {confirmingRemove ? (
               <>
-                <span className="text-meta text-muted">Remove {account.displayName}?</span>
+                <span className="text-meta text-muted">
+                  {t("settings.remove.confirm", { name: account.displayName })}
+                </span>
                 <Button size="sm" variant="ghost" onClick={() => setConfirmingRemove(false)}>
-                  Keep
+                  {t("settings.keep")}
                 </Button>
                 <Button
                   size="sm"
@@ -256,10 +275,10 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
                   disabled={busy}
                   onClick={() => {
                     setConfirmingRemove(false);
-                    remove.mutate(account, announce("Removal requested"));
+                    remove.mutate(account, announce("settings.remove.requested", "settings.remove.failed"));
                   }}
                 >
-                  Remove for good
+                  {t("settings.removeForGood")}
                 </Button>
               </>
             ) : (
@@ -269,7 +288,7 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
                 disabled={busy || account.status === "removed"}
                 onClick={() => setConfirmingRemove(true)}
               >
-                Remove
+                {t("settings.remove")}
               </Button>
             )}
           </span>
@@ -279,9 +298,7 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
             the runtime confirms the tombstone, which is why the account stays
             visible in `removing` rather than disappearing on click. */}
         {account.status === "removing" ? (
-          <p className="mt-2 text-meta text-warn">
-            Removal accepted. The credential is destroyed once the runtime confirms the tombstone.
-          </p>
+          <p className="mt-2 text-meta text-warn">{t("settings.remove.accepted")}</p>
         ) : null}
       </Panel>
 
@@ -289,7 +306,7 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
         <RotateCredential account={account} venue={venue} onDone={() => setRotating(false)} />
       ) : null}
 
-      <Panel title="Routes" meta={`${account.routes?.length ?? 0} lanes`}>
+      <Panel title={t("settings.routes")} meta={t("settings.lanes", { count: account.routes?.length ?? 0 })}>
         {account.routes && account.routes.length > 0 ? (
           <ul className="flex flex-col">
             {account.routes.map((route) => (
@@ -297,7 +314,7 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
             ))}
           </ul>
         ) : (
-          <p className="text-meta text-dim">No routes on this account.</p>
+          <p className="text-meta text-dim">{t("settings.noRoutes")}</p>
         )}
       </Panel>
 
@@ -336,49 +353,69 @@ function RouteRow({ route }: { route: AccountRoute }) {
 /* --- Runtime -------------------------------------------------------------- */
 
 function RuntimePanel({ runtime, loading }: { runtime: AccountRuntime | null; loading: boolean }) {
+  const t = useT();
+
   if (!runtime) {
     return (
-      <Panel title="Runtime">
+      <Panel title={t("settings.runtime")}>
         <p className="text-meta text-dim">
-          {loading ? "Reading trading's runtime…" : "Trading has no runtime for this account yet."}
+          {loading ? t("settings.runtime.loading") : t("settings.runtime.absent")}
         </p>
       </Panel>
     );
   }
 
   return (
-    <Panel title="Runtime" meta={`observed ${formatTimestamp(runtime.observedAt)}`}>
+    <Panel
+      title={t("settings.runtime")}
+      meta={t("settings.observed", { time: formatTimestamp(runtime.observedAt) })}
+    >
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <Readiness label="Read" ready={runtime.readiness.ready} reason={runtime.readiness.reason} />
-        <Readiness label="Write" ready={runtime.writeReadiness.ready} reason={runtime.writeReadiness.reason} />
+        <Readiness
+          label={t("settings.read")}
+          ready={runtime.readiness.ready}
+          reason={runtime.readiness.reason}
+        />
+        <Readiness
+          label={t("settings.write")}
+          ready={runtime.writeReadiness.ready}
+          reason={runtime.writeReadiness.reason}
+        />
         <span className="text-meta text-dim" data-numeric="">
-          applied rev {runtime.lastAppliedDesiredStateRevision} · gen {runtime.lastAppliedRuntimeGeneration}
+          {t("settings.applied", {
+            revision: runtime.lastAppliedDesiredStateRevision,
+            generation: runtime.lastAppliedRuntimeGeneration,
+          })}
         </span>
       </div>
 
       {runtime.blockedReason !== null ? (
-        <p className="mt-2 text-meta text-warn">Blocked: {runtime.blockedReason}</p>
+        <p className="mt-2 text-meta text-warn">{t("settings.blocked", { reason: runtime.blockedReason })}</p>
       ) : null}
 
       <div className="mt-3 flex flex-col gap-3 border-t border-line pt-3">
-        {runtime.active ? <Generation title="Active" snapshot={runtime.active} tone="ok" /> : null}
-        {runtime.pending ? <Generation title="Pending" snapshot={runtime.pending} tone="pending" /> : null}
+        {runtime.active ? (
+          <Generation title={t("settings.active")} snapshot={runtime.active} tone="ok" />
+        ) : null}
+        {runtime.pending ? (
+          <Generation title={t("settings.pending")} snapshot={runtime.pending} tone="pending" />
+        ) : null}
         {runtime.retiring.map((snapshot) => (
           <Generation
             key={`retiring-${snapshot.runtimeGeneration}`}
-            title="Retiring"
+            title={t("settings.retiring")}
             snapshot={snapshot}
             tone="neutral"
           />
         ))}
         {!runtime.active && !runtime.pending && runtime.retiring.length === 0 ? (
-          <p className="text-meta text-dim">No generation is loaded.</p>
+          <p className="text-meta text-dim">{t("settings.noGeneration")}</p>
         ) : null}
       </div>
 
       {runtime.capabilities.length > 0 ? (
         <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3">
-          <div className="th">Capabilities</div>
+          <div className="th">{t("settings.capabilities")}</div>
           {runtime.capabilities.map((capability) => (
             <Capability key={capability.rowId} capability={capability} />
           ))}
@@ -389,10 +426,17 @@ function RuntimePanel({ runtime, loading }: { runtime: AccountRuntime | null; lo
 }
 
 function Readiness({ label, ready, reason }: { label: string; ready: boolean; reason?: string }) {
+  const t = useT();
   return (
     <StateBadge
       tone={ready ? "ok" : "warn"}
-      label={`${label}: ${ready ? "ready" : "not ready"}`}
+      // One interpolated key rather than `${label}: ${state}` assembled here:
+      // the separator is a full-width colon in Chinese, and a half-width one
+      // between two Chinese words reads as a typesetting mistake.
+      label={t("settings.readiness", {
+        label,
+        state: ready ? t("settings.ready") : t("settings.notReady"),
+      })}
       detail={reason}
       className="text-base"
     />
@@ -413,15 +457,23 @@ function Generation({
   snapshot: RuntimeSnapshot | PendingRuntimeSnapshot;
   tone: StateTone;
 }) {
+  const t = useT();
   const pending = "state" in snapshot ? snapshot : null;
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2">
+        {/* `title` arrives translated: the caller knows which of active,
+            pending or retiring this is, and this component only lays it out. */}
         <StateBadge tone={tone} label={title} className="text-base text-text" />
         <span className="text-meta text-dim" data-numeric="">
-          rev {snapshot.desiredStateRevision} · gen {snapshot.runtimeGeneration} · cred{" "}
-          {snapshot.credentialVersion}
+          {t("settings.generation", {
+            revision: snapshot.desiredStateRevision,
+            generation: snapshot.runtimeGeneration,
+            credential: snapshot.credentialVersion,
+          })}
         </span>
+        {/* `requestedState`, the pending `state` and `reason` are the runtime's
+            own words and stay in them, same as the blotter's command states. */}
         <Tag>{snapshot.requestedState}</Tag>
         {pending ? <Tag>{pending.state}</Tag> : null}
       </div>
@@ -435,7 +487,7 @@ function Generation({
             <span className="shrink-0 text-dim">{route.product}</span>
             <StateBadge
               tone={route.ready ? "ok" : "warn"}
-              label={route.ready ? "ready" : "not ready"}
+              label={route.ready ? t("settings.ready") : t("settings.notReady")}
               detail={route.reason}
               className="w-24 shrink-0 justify-end text-muted"
             />
@@ -448,6 +500,7 @@ function Generation({
 
 /** The venue's answer to "what may this account do", not the product's wish. */
 function Capability({ capability }: { capability: AccountCapability }) {
+  const t = useT();
   const allowed = Object.entries(capability.operations)
     .filter(([, enabled]) => enabled)
     .map(([operation]) => operation);
@@ -461,14 +514,16 @@ function Capability({ capability }: { capability: AccountCapability }) {
         </span>
         <StateBadge
           tone={capability.writeReady ? "ok" : "warn"}
-          label={capability.writeReady ? "write ready" : "read only"}
+          label={capability.writeReady ? t("settings.writeReady") : t("settings.capability.readOnly")}
           className="text-muted"
         />
       </div>
       <div className="mt-1 flex flex-wrap gap-1">
         {allowed.length === 0 ? (
-          <span className="text-meta text-dim">No operation is permitted.</span>
+          <span className="text-meta text-dim">{t("settings.noOperation")}</span>
         ) : (
+          // The operation names are the venue's vocabulary — `place`, `cancel`,
+          // `query` — and read the same in a support ticket as on screen.
           allowed.map((operation) => <Tag key={operation}>{operation}</Tag>)
         )}
       </div>
@@ -489,6 +544,7 @@ function RotateCredential({
 }) {
   const toast = useToast();
   const rotate = useRotateCredential();
+  const t = useT();
   const [values, setValues] = useState<CredentialValues>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -496,7 +552,9 @@ function RotateCredential({
     event.preventDefault();
     const missing = missingCredentialFields(venue, values);
     if (missing.length > 0) {
-      setError(`Still needed: ${missing.join(", ")}.`);
+      // The field names come from the venue's credential schema, so the list
+      // stays in the venue's spelling; only the sentence around it translates.
+      setError(t("settings.stillNeeded", { fields: missing.join(", ") }));
       return;
     }
     setError(null);
@@ -509,30 +567,32 @@ function RotateCredential({
         onSuccess: () => {
           toast.push({
             tone: "ok",
-            title: "Rotation started",
-            detail: "The account keeps serving on the active credential until the new one is proven.",
+            title: t("settings.rotate.started"),
+            detail: t("settings.rotate.started.detail"),
           });
           onDone();
         },
         onError: (rotateError) =>
           toast.push({
             tone: "danger",
-            title: isRevisionConflict(rotateError) ? "Account had already changed" : "Rotation refused",
+            title: isRevisionConflict(rotateError)
+              ? t("settings.conflict")
+              : t("settings.rotate.refused"),
             detail: isRevisionConflict(rotateError)
-              ? "Someone else modified this account. It has been reloaded — re-enter the credential and try again."
-              : describeError(rotateError),
+              ? t("settings.conflict.reenter")
+              : describeError(rotateError, t),
           }),
       },
     );
   };
 
   return (
-    <Panel title="Rotate credential" meta={`${venue.credentialSchema.authKind} · v${venue.credentialSchema.schemaVersion}`}>
+    <Panel
+      title={t("settings.rotateCredential")}
+      meta={`${venue.credentialSchema.authKind} · v${venue.credentialSchema.schemaVersion}`}
+    >
       <form onSubmit={submit} className="flex max-w-lg flex-col gap-3">
-        <p className="text-meta text-dim">
-          The new credential is proven before it takes over. Until it does, the account keeps trading on
-          the current one and both generations show above.
-        </p>
+        <p className="text-meta text-dim">{t("settings.rotate.hint")}</p>
         <CredentialFields
           venue={venue}
           values={values}
@@ -542,10 +602,10 @@ function RotateCredential({
         {error ? <p className="text-meta text-danger">{error}</p> : null}
         <div className="flex items-center gap-2">
           <Button type="submit" variant="primary" size="sm" disabled={rotate.isPending}>
-            {rotate.isPending ? "Rotating…" : "Rotate"}
+            {rotate.isPending ? t("settings.rotating") : t("settings.rotate")}
           </Button>
           <Button type="button" variant="ghost" size="sm" onClick={onDone}>
-            Cancel
+            {t("settings.cancel")}
           </Button>
         </div>
       </form>
@@ -567,6 +627,7 @@ const PRODUCT_POLICY = ["manual", "arbitrage"];
 function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (account: Account) => void }) {
   const toast = useToast();
   const create = useCreateAccount();
+  const t = useT();
   const [venueName, setVenueName] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [routeIds, setRouteIds] = useState<string[]>([]);
@@ -578,11 +639,11 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!venue) {
-      setError("Choose a venue.");
+      setError(t("settings.venue.required"));
       return;
     }
     if (displayName.trim() === "") {
-      setError("A display name is required.");
+      setError(t("settings.displayName.required"));
       return;
     }
     const routes: AccountRoute[] = venue.routeProfiles
@@ -595,12 +656,12 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
         requestedState: "active" as const,
       }));
     if (routes.length === 0) {
-      setError("Select at least one route — the routes decide the account's environment.");
+      setError(t("settings.routes.required"));
       return;
     }
     const missing = missingCredentialFields(venue, values);
     if (missing.length > 0) {
-      setError(`Still needed: ${missing.join(", ")}.`);
+      setError(t("settings.stillNeeded", { fields: missing.join(", ") }));
       return;
     }
     setError(null);
@@ -616,23 +677,19 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
       {
         onSettled: () => setValues({}),
         onSuccess: (account) => {
-          toast.push({ tone: "ok", title: "Account created", detail: account.accountId });
+          toast.push({ tone: "ok", title: t("settings.created"), detail: account.accountId });
           onCreated(account);
         },
         onError: (createError) =>
-          toast.push({ tone: "danger", title: "Account refused", detail: describeError(createError) }),
+          toast.push({ tone: "danger", title: t("settings.refused"), detail: describeError(createError, t) }),
       },
     );
   };
 
   return (
-    <Panel title="New account">
+    <Panel title={t("settings.newAccount")}>
       <form onSubmit={submit} className="flex max-w-lg flex-col gap-3">
-        <Field
-          label="Venue"
-          required
-          hint="The route profiles you pick below decide the native environment."
-        >
+        <Field label={t("settings.venue")} required hint={t("settings.venue.hint")}>
           {(field) => (
             <select
               {...field}
@@ -648,24 +705,24 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
                 setError(null);
               }}
             >
-              <option value="">Choose a venue…</option>
+              <option value="">{t("settings.chooseVenue")}</option>
               {venues.map((candidate) => (
                 <option key={candidate.venue} value={candidate.venue}>
                   {candidate.venue} · {candidate.nativeEnvironment}
-                  {candidate.ready ? "" : " (not ready)"}
+                  {candidate.ready ? "" : ` ${t("settings.venueNotReady")}`}
                 </option>
               ))}
             </select>
           )}
         </Field>
 
-        <Field label="Display name" required>
+        <Field label={t("settings.displayName")} required>
           {(field) => (
             <Input
               {...field}
               value={displayName}
               autoComplete="off"
-              placeholder="Binance — manual"
+              placeholder={t("settings.displayName.placeholder")}
               onChange={(event) => setDisplayName(event.target.value)}
             />
           )}
@@ -675,7 +732,7 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
           <>
             <fieldset className="flex flex-col gap-1.5">
               <legend className="th">
-                Routes <span className="text-danger" aria-hidden="true">*</span>
+                {t("settings.routes")} <span className="text-danger" aria-hidden="true">*</span>
               </legend>
               {venue.routeProfiles.map((profile) => (
                 <label key={profile.routeId} className="flex h-row items-center gap-2 text-base">
@@ -699,7 +756,7 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
                 </label>
               ))}
               {venue.routeProfiles.length === 0 ? (
-                <p className="text-meta text-dim">This venue publishes no route profiles.</p>
+                <p className="text-meta text-dim">{t("settings.noRouteProfiles")}</p>
               ) : null}
             </fieldset>
 
@@ -716,9 +773,9 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
 
         <div className="flex items-center gap-2">
           <Button type="submit" variant="primary" size="sm" disabled={create.isPending || !venue}>
-            {create.isPending ? "Creating…" : "Create account"}
+            {create.isPending ? t("settings.creating") : t("settings.createAccount")}
           </Button>
-          <span className="text-meta text-dim">Trades manually. Other products are not accepted here.</span>
+          <span className="text-meta text-dim">{t("settings.manualOnly")}</span>
         </div>
       </form>
     </Panel>

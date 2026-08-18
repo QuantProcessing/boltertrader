@@ -1,4 +1,5 @@
 import { Field, Input } from "@/components/ui/field";
+import { useT } from "@/lib/i18n";
 import type { CredentialBundle, Venue } from "@/api/types";
 
 /* ---------------------------------------------------------------------------
@@ -30,14 +31,17 @@ export function CredentialFields({
   onChange: (key: string, value: string) => void;
   disabled?: boolean;
 }) {
+  const t = useT();
+
   return (
     <div className="flex flex-col gap-3">
       {venue.credentialSchema.fields.map((field) => (
         <Field
           key={field.key}
+          // The venue's own name for the field, printed as it arrived.
           label={field.label}
           required={field.required}
-          hint={field.metadata ? "Stored alongside the credential, not secret." : "Write-only. Never shown again."}
+          hint={field.metadata ? t("settings.credential.metadata") : t("settings.credential.secret")}
         >
           {(props) => (
             <Input

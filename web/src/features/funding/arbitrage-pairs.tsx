@@ -9,6 +9,7 @@ import { StateBadge, Tag, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
 import { useArbitragePositions, useCancelArbitrageLeg, useCloseArbitrage } from "@/features/funding/queries";
 import { formatTimestamp, splitInstrument } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * Open hedges, both legs each.
@@ -26,6 +27,7 @@ import { formatTimestamp, splitInstrument } from "@/lib/format";
  * ------------------------------------------------------------------------- */
 
 export function ArbitragePairs({ accounts }: { accounts: Account[] }) {
+  const t = useT();
   const positions = useArbitragePositions();
   const close = useCloseArbitrage();
   const cancel = useCancelArbitrageLeg();
@@ -40,15 +42,13 @@ export function ArbitragePairs({ accounts }: { accounts: Account[] }) {
       onSuccess: (execution) => {
         toast.push({
           tone: execution.failures.length > 0 ? "warn" : "ok",
-          title: execution.failures.length > 0 ? "Close partly rejected" : "Closing",
+          title: execution.failures.length > 0 ? t("arb.closePartly") : t("arb.closing"),
           detail:
-            execution.failures.length > 0
-              ? "One leg did not accept the reduce-only order. The pair is still carrying it."
-              : "Reduce-only orders are out for both legs.",
+            execution.failures.length > 0 ? t("arb.closePartly.detail") : t("arb.closing.detail"),
         });
       },
       onError: (error) => {
-        toast.push({ tone: "danger", title: "Close rejected", detail: describeError(error) });
+        toast.push({ tone: "danger", title: t("arb.closeRejected"), detail: describeError(error, t) });
       },
     });
   };
@@ -58,10 +58,16 @@ export function ArbitragePairs({ accounts }: { accounts: Account[] }) {
       { lineageId: leg.lineageId, commandId: leg.commandId },
       {
         onSuccess: () => {
-          toast.push({ tone: "ok", title: "Cancel sent", detail: `The ${leg.leg} leg will stop resting.`, duration: 4000 });
+          toast.push({
+            tone: "ok",
+            title: t("arb.cancelSent"),
+            // `leg.leg` is the server's own `long` / `short`.
+            detail: t("arb.cancelSent.detail", { leg: leg.leg }),
+            duration: 4000,
+          });
         },
         onError: (error) => {
-          toast.push({ tone: "danger", title: "Cancel rejected", detail: describeError(error) });
+          toast.push({ tone: "danger", title: t("blotter.cancelRejected"), detail: describeError(error, t) });
         },
       },
     );
@@ -70,24 +76,22 @@ export function ArbitragePairs({ accounts }: { accounts: Account[] }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center justify-between gap-3 border-b border-line px-3">
-        <h2 className="text-base font-medium text-text">Pairs</h2>
+        <h2 className="text-base font-medium text-text">{t("arb.openPairs")}</h2>
         <div className="flex items-center gap-3 text-meta text-dim">
-          {attention > 0 ? <span className="text-danger">{attention} need attention</span> : null}
+          {attention > 0 ? (
+            <span className="text-danger">{t("arb.attention", { count: attention })}</span>
+          ) : null}
           <span>{pairs.length}</span>
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {positions.isPending ? (
-          <p className="px-3 py-4 text-base text-dim">Reading open pairs…</p>
+          <p className="px-3 py-4 text-base text-dim">{t("arb.reading")}</p>
         ) : positions.isError ? (
-          <p className="px-3 py-4 text-base text-danger">{describeError(positions.error)}</p>
+          <p className="px-3 py-4 text-base text-danger">{describeError(positions.error, t)}</p>
         ) : pairs.length === 0 ? (
-          <EmptyState
-            icon={Layers}
-            title="No open pairs"
-            detail="A hedge opened from the ticket lands here with both legs, its accrued funding and a way out."
-          />
+          <EmptyState icon={Layers} title={t("arb.empty.pairs")} detail={t("arb.empty.pairs.detail")} />
         ) : (
           <ul>
             {[...pairs].sort(byUrgency).map((pair) => (
@@ -124,6 +128,7 @@ function PairRow({
   onClose: () => void;
   onCancel: (leg: ArbitrageLegView) => void;
 }) {
+  const t = useT();
   const long = pair.legs.filter((leg) => leg.leg === "long");
   const short = pair.legs.filter((leg) => leg.leg === "short");
   const partial = pair.state === "partially_open";
@@ -140,24 +145,22 @@ function PairRow({
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span className="text-base font-medium text-text">{symbol || "—"}</span>
+        {/* The lineage state is the server's own word, printed as it arrived. */}
         <StateBadge tone={pairTone(pair.state)} label={pair.state.replace("_", " ")} />
         <FundingRoll amounts={pair.funding} />
         <span className="ml-auto flex items-center gap-2">
           <span className="text-meta text-dim">{formatTimestamp(pair.updatedAt)}</span>
           {pair.state === "open" || partial ? (
             <Button size="sm" variant={partial ? "danger" : "outline"} onClick={onClose} disabled={closing}>
-              {closing ? "Closing…" : partial ? "Close open leg" : "Close pair"}
+              {closing ? t("arb.closingButton") : partial ? t("arb.closeOpenLeg") : t("arb.closePair")}
             </Button>
           ) : null}
         </span>
       </div>
 
-      {partial ? (
-        <p className="mt-1.5 text-meta text-danger">
-          One leg is live and the other is not. This pair is directional until you dispose of it.
-        </p>
-      ) : null}
+      {partial ? <p className="mt-1.5 text-meta text-danger">{t("arb.directional")}</p> : null}
 
+      {/* The blockers are the server's own sentences. */}
       {pair.blockers.length > 0 ? <p className="mt-1.5 text-meta text-warn">{pair.blockers.join(" · ")}</p> : null}
 
       <div className="mt-2 grid gap-2 md:grid-cols-2">
@@ -188,6 +191,9 @@ function LegColumn({
   cancelling: string | undefined;
   onCancel: (leg: ArbitrageLegView) => void;
 }) {
+  // Above the early return: a hook cannot sit behind a conditional.
+  const t = useT();
+
   if (legs.length === 0) {
     // The one border §5 permits inside a panel, because it is not a card: a
     // dashed outline is the shape of an absent leg, and the shape is the
@@ -195,7 +201,7 @@ function LegColumn({
     // seam when solid disappears entirely once it is broken into dashes.
     return (
       <div className="rounded-card border border-dashed border-line-strong px-2.5 py-2 text-meta text-dim">
-        No leg on this side.
+        {t("arb.noLeg")}
       </div>
     );
   }
@@ -229,13 +235,17 @@ function LegCard({
   cancelling: boolean;
   onCancel: () => void;
 }) {
+  const t = useT();
+
   return (
     <div className="rounded-card bg-fill px-2.5 py-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Side side={leg.leg} className="text-base" />
-        <span className="text-base text-text">{account?.venue ?? "unknown venue"}</span>
+        <span className="text-base text-text">{account?.venue ?? t("arb.unknownVenue")}</span>
+        {/* The native environment and the command state are both the server's
+            own words, printed as they arrived. */}
         {account ? <Tag>{account.nativeEnvironment}</Tag> : null}
-        {leg.reduceOnly ? <Tag>reduce only</Tag> : null}
+        {leg.reduceOnly ? <Tag>{t("arb.reduceOnly")}</Tag> : null}
         <span className="ml-auto">
           <StateBadge tone={legTone(leg.state)} label={leg.state} />
         </span>
@@ -244,15 +254,18 @@ function LegCard({
       <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-meta text-dim">
         <span className="text-text">{leg.instrumentId}</span>
         <span>
+          {/* `market` is the order type as the server names it, the same word
+              the blotter's type column prints. */}
           <Num value={leg.quantity} /> @ {leg.orderType === "limit" ? <Num value={leg.limitPrice} /> : "market"}
         </span>
         {position ? (
           <>
             <span>
-              mark <Num value={position.markPrice} />
+              {t("arb.mark")} <Num value={position.markPrice} />
             </span>
             <span>
-              upnl <Num value={position.unrealizedPnl} directional signed /> {position.settlementCurrency}
+              {t("arb.upnl")} <Num value={position.unrealizedPnl} directional signed />{" "}
+              {position.settlementCurrency}
             </span>
           </>
         ) : null}
@@ -261,7 +274,7 @@ function LegCard({
       {isRestable(leg.state) ? (
         <div className="mt-1.5">
           <Button size="sm" variant="ghost" onClick={onCancel} disabled={cancelling}>
-            {cancelling ? "Cancelling…" : "Cancel this leg"}
+            {cancelling ? t("arb.cancelling") : t("arb.cancelLeg")}
           </Button>
         </div>
       ) : null}
@@ -271,12 +284,15 @@ function LegCard({
 
 /** Accrued funding, one figure per settlement currency. */
 function FundingRoll({ amounts }: { amounts: { currency: string; amount: string }[] }) {
+  // Above the early return: a hook cannot sit behind a conditional.
+  const t = useT();
+
   if (amounts.length === 0) {
-    return <span className="text-meta text-dim">funding —</span>;
+    return <span className="text-meta text-dim">{t("arb.funding")} —</span>;
   }
   return (
     <span className="flex flex-wrap items-baseline gap-2 text-meta text-dim">
-      funding
+      {t("arb.funding")}
       {amounts.map((amount) => (
         <span key={amount.currency} className="text-text">
           <Num value={amount.amount} directional signed /> {amount.currency}

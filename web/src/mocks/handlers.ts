@@ -24,6 +24,7 @@ import type {
 } from "@/api/types";
 
 import { accounts, activity, hedges, orders, previews, session } from "./db";
+import { PUBLIC_PATHS } from "./public-paths";
 import {
   CREDENTIALS,
   FILLS,
@@ -116,8 +117,17 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  *
  * Returning `undefined` hands the request to the next matching handler, so this
  * is a gate in front of the table rather than a copy of the check inside each
- * of its forty entries. Login is the one exemption: it is how the session comes
- * into existence, and it is the only route the auth edge serves unauthenticated.
+ * of its forty entries. Login is the one exemption of its own: it is how the
+ * session comes into existence. Beyond it sits `PUBLIC_PATHS`, which is a
+ * licence to read and nothing more — a signed-out write still fails here,
+ * because the path is consulted only for a safe method.
+ *
+ * One asymmetry with the real edge is worth naming: it distinguishes "no cookie
+ * arrived" from "a cookie arrived and was stale", and only the first is allowed
+ * through anonymously. The mock has a single boolean, so signed-out here always
+ * means the first. A stale session downgrading silently to anonymous is a bug
+ * the mock structurally cannot reproduce; the Go test named for it is what
+ * covers that case.
  *
  * Getting this wrong in the mock would hide the failure mode that matters most
  * — a screen that quietly renders against a session the server would have
@@ -127,7 +137,10 @@ const gate = http.all("/api/v1/*", ({ request }) => {
   const { pathname } = new URL(request.url);
   if (pathname === "/api/v1/auth/login") return undefined;
 
-  if (!session.open) return failure(401, "AUTH_REQUIRED", "no session");
+  if (!session.open) {
+    if (SAFE_METHODS.has(request.method) && PUBLIC_PATHS.has(pathname)) return undefined;
+    return failure(401, "AUTH_REQUIRED", "no session");
+  }
 
   if (!SAFE_METHODS.has(request.method)) {
     const token = request.headers.get("X-CSRF-Token");

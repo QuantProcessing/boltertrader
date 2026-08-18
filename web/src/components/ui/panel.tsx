@@ -36,7 +36,19 @@ export function Panel({ title, meta, flush = false, className, children, ...prop
   );
 }
 
-/** The metric strip above the panels. Label over value, nothing else. */
+/**
+ * Label over value, at the density of a table cell.
+ *
+ * It used to be `--text-metric`, on the reading that these are the numbers a
+ * page exists to show. They are — but every one of them sits in a 44px `h-bar`,
+ * and a label plus 22px of leading measured 40 of those 44 pixels with the
+ * page title beside it. That is the same finding the instrument strip reached
+ * on real data, so this is the same fix: emphasis moves to weight and colour,
+ * which cost no height at all.
+ *
+ * §6 still reserves 22px and its 700 weight for the one number a panel exists
+ * to show. No panel in the product currently leads with one.
+ */
 export function Metric({
   label,
   value,
@@ -53,15 +65,14 @@ export function Metric({
   return (
     <div className={cn("min-w-0", className)}>
       <div className="th truncate">{label}</div>
-      <div className="mt-1 flex items-baseline gap-1.5">
+      <div className="flex items-baseline gap-1.5">
         <span
           data-numeric=""
           className={cn(
-            // No weight class: 700 is bound to `--text-metric` itself, because
-            // §6 reserves that weight for this one size and nothing else.
-            "truncate text-metric leading-none",
+            "truncate text-base font-semibold",
             tone === "up" && "text-up",
             tone === "down" && "text-down",
+            (tone === undefined || tone === "none") && "text-text",
           )}
         >
           {value}

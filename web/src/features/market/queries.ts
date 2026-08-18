@@ -10,6 +10,7 @@ import type {
   MarketDataQuery,
   MarketFact,
 } from "@/api/types";
+import { useReadOnly } from "@/app/mode";
 
 /* ---------------------------------------------------------------------------
  * Reads that describe a market.
@@ -51,10 +52,20 @@ export function useInstruments(): UseQueryResult<Projected<Instrument>> {
   });
 }
 
+/**
+ * The operator's own accounts — the one private read on this surface.
+ *
+ * Everything else here describes a market and is public at every venue, which
+ * is why only this hook carries the read-only gate. A signed-out visitor gets
+ * an empty list and a ticket that already knows how to say "no account for this
+ * venue", rather than a 401 behind a panel that looks broken.
+ */
 export function useAccounts(): UseQueryResult<Account[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: marketKeys.accounts(),
     queryFn: ({ signal }) => accounts.list(signal),
+    enabled: !readOnly,
     staleTime: 30_000,
   });
 }

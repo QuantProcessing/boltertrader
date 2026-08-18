@@ -2,7 +2,9 @@ import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
 import { useEffect } from "react";
 
+import { modeStore, useReadOnly } from "@/app/mode";
 import { sessionStore } from "@/app/session";
+import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * ⌘K.
@@ -20,6 +22,8 @@ import { sessionStore } from "@/app/session";
 
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const navigate = useNavigate();
+  const readOnly = useReadOnly();
+  const t = useT();
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -42,28 +46,51 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     <Command.Dialog
       open={open}
       onOpenChange={onOpenChange}
-      label="Command palette"
+      label={t("palette.label")}
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh]"
     >
       <div className="w-full max-w-lg overflow-hidden rounded-modal border border-line-strong bg-overlay shadow-modal">
         <Command.Input
-          placeholder="Search commands…"
+          placeholder={t("palette.search")}
           className="h-bar w-full border-b border-line bg-transparent px-3.5 text-title text-text placeholder:text-dim focus:outline-none"
         />
         <Command.List className="max-h-80 overflow-y-auto p-1.5">
-          <Command.Empty className="px-2.5 py-6 text-center text-base text-muted">No matching command.</Command.Empty>
+          <Command.Empty className="px-2.5 py-6 text-center text-base text-muted">{t("palette.empty")}</Command.Empty>
 
-          <Group heading="Go to">
-            <Item onSelect={() => run(() => void navigate({ to: "/trade" }))}>Trade</Item>
-            <Item onSelect={() => run(() => void navigate({ to: "/funding" }))}>Funding</Item>
-            <Item onSelect={() => run(() => void navigate({ to: "/funding/arbitrage", search: {} }))}>Arbitrage</Item>
-            <Item onSelect={() => run(() => void navigate({ to: "/portfolio" }))}>Portfolio</Item>
-            <Item onSelect={() => run(() => void navigate({ to: "/activity" }))}>Activity</Item>
-            <Item onSelect={() => run(() => void navigate({ to: "/settings" }))}>Settings</Item>
+          {/* Every section stays listed for a read-only visitor, private ones
+              included. Selecting one lands on the login form, which is a
+              better answer to "where is Portfolio" than the command not being
+              there at all. */}
+          <Group heading={t("palette.goTo")}>
+            <Item onSelect={() => run(() => void navigate({ to: "/trade" }))}>{t("nav.trade")}</Item>
+            <Item onSelect={() => run(() => void navigate({ to: "/funding" }))}>{t("nav.funding")}</Item>
+            <Item onSelect={() => run(() => void navigate({ to: "/funding/arbitrage", search: {} }))}>
+              {t("nav.arbitrage")}
+            </Item>
+            <Item onSelect={() => run(() => void navigate({ to: "/portfolio" }))}>{t("nav.portfolio")}</Item>
+            <Item onSelect={() => run(() => void navigate({ to: "/activity" }))}>{t("nav.activity")}</Item>
+            <Item onSelect={() => run(() => void navigate({ to: "/settings" }))}>{t("nav.settings")}</Item>
           </Group>
 
-          <Group heading="Workspace">
-            <Item onSelect={() => run(() => void sessionStore.logout())}>Sign out</Item>
+          <Group heading={t("palette.workspace")}>
+            {readOnly ? (
+              <Item onSelect={() => run(() => void navigate({ to: "/login", search: { redirect: "/trade" } }))}>
+                {t("utility.signIn")}
+              </Item>
+            ) : (
+              // Resets the mode with the session, for the same reason the
+              // header's sign-out does: a `readWrite` mode outliving the
+              // session it was granted under only shows up as refused writes.
+              <Item
+                onSelect={() =>
+                  run(() => {
+                    void sessionStore.logout().then(() => modeStore.reset());
+                  })
+                }
+              >
+                {t("utility.signOut")}
+              </Item>
+            )}
           </Group>
         </Command.List>
       </div>

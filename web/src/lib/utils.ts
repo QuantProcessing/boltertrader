@@ -65,7 +65,7 @@ const twMerge = extendTailwindMerge({
     },
     theme: {
       // `h-row`, `min-h-bar` and friends resolve through the spacing scale.
-      spacing: ["row", "bar", "side", "ticket", "deck"],
+      spacing: ["row", "bar", "depth", "side", "ticket", "deck"],
       radius: [...RADII],
     },
   },
