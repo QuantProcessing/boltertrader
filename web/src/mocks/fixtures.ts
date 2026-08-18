@@ -1,18 +1,11 @@
 import type {
   Account,
   AccountRuntime,
-  ArbitrageOpportunity,
-  Candle,
-  CandleInterval,
   CatalogProjectionMeta,
   CredentialSchema,
   Fill,
-  FundingBoardSnapshot,
-  FundingHistorySeries,
-  FundingWindow,
   Instrument,
   LedgerEntry,
-  MarketFact,
   PnLSnapshot,
   Position,
   RateLimitStatus,
@@ -23,10 +16,20 @@ import type {
 } from "@/api/types";
 
 /* ---------------------------------------------------------------------------
- * The world the mock serves.
+ * The part of the world that has no public feed.
  *
- * Every value here is shaped by something in the backend rather than invented
- * to look plausible:
+ * Everything an exchange publishes without a key — books, candles, funding, the
+ * board and the spreads derived from it — is fetched live in `venues.ts`. What
+ * is left here is what a venue will only tell an authenticated caller, or will
+ * not tell anyone: the operator's session, their accounts and routes, their
+ * positions, fills, ledger and PnL. Those are the mock's actual subject. A
+ * price was never anyone's to invent.
+ *
+ * The instrument and venue catalogs stay here too, one step behind that line:
+ * the venues do publish them, but as thousands of rows, and the terminal's
+ * first screen is a picker over them. Seven instruments chosen to exercise the
+ * picker is a better fixture than binance's nine hundred, so these are curated
+ * rather than fetched — and curated from the real thing:
  *
  *   - Instrument rules use the four keys `catalog.Instrument` actually emits
  *     (`priceIncrement`, `quantityIncrement`, `minQuantity`, `minNotional`) and
@@ -46,7 +49,14 @@ import type {
  * said `testnet` would be describing a deployment that no longer exists.
  * ------------------------------------------------------------------------- */
 
-/** The instant the whole fixture set was "observed". Fixed, so runs compare. */
+/**
+ * The instant the account-side fixtures were "observed". Fixed, so runs compare.
+ *
+ * It is deliberately not used for anything the venues answer. A position opened
+ * at this timestamp beside a mark price fetched a moment ago is the honest
+ * picture of a mock account against a live market; back-dating the price to
+ * match would be the dishonest one.
+ */
 export const OBSERVED_AT = "2026-08-17T09:00:00Z";
 
 export const META = { requestId: "req-mock", contractVersion: "1", apiVersion: "v1" } as const;
@@ -183,30 +193,6 @@ export const INSTRUMENTS: Instrument[] = [
 
 export function instrumentOf(instrumentId: string): Instrument | undefined {
   return INSTRUMENTS.find((candidate) => candidate.instrumentId === instrumentId);
-}
-
-/** The level each instrument's synthetic book and chart are drawn around. */
-const ANCHOR: Record<string, number> = {
-  "binance:live:spot:BTC-USDT": 114_250,
-  "binance:live:spot:ETH-USDT": 4_120,
-  "binance:live:perp:USDT:BTC-USDT": 114_262,
-  "bybit:live:perp:USDT:BTC-USDT": 114_258,
-};
-
-/** Decimal places implied by a tick, so prices are formatted to the venue's grid. */
-function decimalsOf(increment: string): number {
-  const dot = increment.indexOf(".");
-  return dot === -1 ? 0 : increment.length - dot - 1;
-}
-
-function priceStep(instrument: Instrument): number {
-  return Number(instrument.rules.priceIncrement ?? "0.01");
-}
-
-function toPrice(instrument: Instrument, value: number): string {
-  const step = priceStep(instrument);
-  const snapped = Math.round(value / step) * step;
-  return snapped.toFixed(decimalsOf(String(instrument.rules.priceIncrement ?? "0.01")));
 }
 
 /* --- Venues --------------------------------------------------------------- */
@@ -435,280 +421,6 @@ export function runtimeOf(account: Account): AccountRuntime {
     observedAt: OBSERVED_AT,
   };
 }
-
-/* --- Market data ---------------------------------------------------------- */
-
-/**
- * A book drawn around the instrument's anchor, one tick of spread at the touch
- * and widening from there, so the mid, the spread and the depth bars all differ.
- */
-export function marketFact(instrument: Instrument): MarketFact {
-  const step = priceStep(instrument);
-  const anchor = ANCHOR[instrument.instrumentId] ?? 100;
-  const bid = anchor - step / 2;
-  const ask = anchor + step / 2;
-  const sizes = instrument.product === "spot" ? [0.85, 1.4, 2.1, 3.05] : [1.2, 0.9, 3.3, 5.4];
-  const depth = (from: number, direction: -1 | 1) =>
-    sizes.map((size, index) => ({
-      price: toPrice(instrument, from + direction * index * step * 6),
-      quantity: (size + index * 0.35).toFixed(5),
-    }));
-
-  return {
-    venue: instrument.venue,
-    environment: instrument.environment,
-    product: instrument.product,
-    instrumentId: instrument.instrumentId,
-    bestBid: toPrice(instrument, bid),
-    bestBidSize: sizes[0]!.toFixed(5),
-    bestAsk: toPrice(instrument, ask),
-    bestAskSize: sizes[1]!.toFixed(5),
-    bids: depth(bid, -1),
-    asks: depth(ask, 1),
-    ...(instrument.product === "perp"
-      ? {
-          markPrice: toPrice(instrument, anchor),
-          fundingRate: instrument.venue === "bybit" ? "0.00042" : "0.0001",
-          openInterest: instrument.venue === "bybit" ? "1520.44" : "9841.72",
-        }
-      : {}),
-    observedAt: OBSERVED_AT,
-  };
-}
-
-const INTERVAL_MS: Record<CandleInterval, number> = {
-  "1m": 60_000,
-  "5m": 300_000,
-  "15m": 900_000,
-  "30m": 1_800_000,
-  "1h": 3_600_000,
-  "4h": 14_400_000,
-  "12h": 43_200_000,
-  "1d": 86_400_000,
-};
-
-/**
- * A deterministic walk that reads like a market.
- *
- * Three sines with incommensurable periods, so the series has trends and
- * pullbacks at different scales without ever depending on `Math.random` — a
- * chart that redraws differently per run is untestable.
- */
-function wobble(index: number): number {
-  return Math.sin(index / 7) * 0.45 + Math.sin(index / 23) * 1.1 + Math.sin(index / 61) * 1.9;
-}
-
-/** Bars ending at `OBSERVED_AT`, with only the last one still forming. */
-export function candles(instrument: Instrument, interval: CandleInterval, count: number): Candle[] {
-  const step = INTERVAL_MS[interval];
-  const anchor = ANCHOR[instrument.instrumentId] ?? 100;
-  const end = Date.parse(OBSERVED_AT);
-  const start = end - count * step;
-
-  return Array.from({ length: count }, (_unused, index) => {
-    const openTime = start + index * step;
-    const open = anchor * (1 + wobble(index) / 100);
-    const close = anchor * (1 + wobble(index + 1) / 100);
-    const spread = Math.abs(close - open) + anchor * 0.0006;
-    return {
-      openTime: new Date(openTime).toISOString(),
-      closeTime: new Date(openTime + step - 1).toISOString(),
-      open: toPrice(instrument, open),
-      high: toPrice(instrument, Math.max(open, close) + spread * 0.6),
-      low: toPrice(instrument, Math.min(open, close) - spread * 0.6),
-      close: toPrice(instrument, close),
-      volume: (12 + Math.abs(wobble(index)) * 9).toFixed(4),
-      // The bar the venue has not closed yet is the one being traded in.
-      complete: index < count - 1,
-    } satisfies Candle;
-  });
-}
-
-/* --- Funding -------------------------------------------------------------- */
-
-/**
- * Four venues quoting perpetuals, which is the least that makes a matrix a
- * matrix: a spread needs two full columns, a third that answered late shows
- * what stale looks like, and a fourth that did not answer at all shows that a
- * venue which is down is still a column rather than a gap.
- *
- * Lighter is the venue that publishes a rate with no interval and no open
- * interest, so the row that cannot honestly be annualised is present rather
- * than hypothetical.
- */
-export const FUNDING_BOARD: FundingBoardSnapshot = {
-  observedAt: OBSERVED_AT,
-  venues: [
-    {
-      venue: "binance",
-      environment: "live",
-      product: "perp",
-      settlement: "USDT",
-      routeProfileId: "binance.perp.usdt.v1",
-      observedAt: OBSERVED_AT,
-      stale: false,
-      unavailable: false,
-      rows: [
-        {
-          symbol: "BTC-USDT",
-          nativeSymbol: "BTCUSDT",
-          baseAsset: "BTC",
-          quoteAsset: "USDT",
-          rate: "0.0001",
-          intervalHours: 8,
-          nextFundingTime: "2026-08-17T16:00:00Z",
-          markPrice: "114262.0",
-          openInterest: "9841.72",
-        },
-        {
-          symbol: "ETH-USDT",
-          nativeSymbol: "ETHUSDT",
-          baseAsset: "ETH",
-          quoteAsset: "USDT",
-          rate: "-0.00025",
-          intervalHours: 8,
-          nextFundingTime: "2026-08-17T16:00:00Z",
-          markPrice: "4120.15",
-        },
-      ],
-    },
-    {
-      venue: "bybit",
-      environment: "live",
-      product: "perp",
-      settlement: "USDT",
-      routeProfileId: "bybit.perp.usdt.v1",
-      observedAt: OBSERVED_AT,
-      stale: false,
-      unavailable: false,
-      rows: [
-        {
-          symbol: "BTC-USDT",
-          nativeSymbol: "BTCUSDT",
-          baseAsset: "BTC",
-          quoteAsset: "USDT",
-          rate: "0.00042",
-          intervalHours: 8,
-          nextFundingTime: "2026-08-17T16:00:00Z",
-          markPrice: "114258.0",
-          openInterest: "1520.44",
-        },
-      ],
-    },
-    {
-      venue: "lighter",
-      environment: "live",
-      product: "perp",
-      settlement: "USDC",
-      routeProfileId: "lighter.perp.usdc.v1",
-      observedAt: "2026-08-17T08:58:00Z",
-      stale: true,
-      unavailable: false,
-      rows: [{ symbol: "BTC-USDC", baseAsset: "BTC", quoteAsset: "USDC", rate: "0.00007" }],
-    },
-    {
-      venue: "okx",
-      environment: "live",
-      product: "perp",
-      settlement: "USDT",
-      routeProfileId: "okx.perp.usdt.v1",
-      stale: false,
-      unavailable: true,
-      rows: [],
-    },
-  ],
-};
-
-/** The rate each venue's history oscillates around, matched to the board. */
-const FUNDING_BASELINE: Record<string, number> = {
-  "binance:BTC-USDT": 0.0001,
-  "binance:ETH-USDT": -0.00025,
-  "bybit:BTC-USDT": 0.00042,
-  "lighter:BTC-USDC": 0.00007,
-};
-
-const WINDOW_DAYS: Record<FundingWindow, number> = { "7d": 7, "30d": 30 };
-
-/**
- * A settled funding series: one point every eight hours back across the window.
- *
- * Returns null for a pair the venue does not quote, which is the case the
- * server answers 404 `FUNDING_HISTORY_INSTRUMENT_UNKNOWN` for.
- */
-export function fundingHistory(venue: string, symbol: string, window: FundingWindow): FundingHistorySeries | null {
-  const baseline = FUNDING_BASELINE[`${venue}:${symbol}`];
-  if (baseline === undefined) return null;
-
-  const step = 8 * 3_600_000;
-  const until = Date.parse(OBSERVED_AT);
-  const since = until - WINDOW_DAYS[window] * 86_400_000;
-  const count = Math.floor((until - since) / step);
-
-  return {
-    venue,
-    environment: "live",
-    symbol,
-    since: new Date(since).toISOString(),
-    until: new Date(until).toISOString(),
-    observedAt: OBSERVED_AT,
-    points: Array.from({ length: count }, (_unused, index) => ({
-      fundingTime: new Date(since + index * step).toISOString(),
-      // Funding oscillates around its baseline rather than holding it; the
-      // chart exists to show that shape.
-      rate: (baseline * (1 + Math.sin(index / 5) * 0.55) + Math.sin(index / 17) * 0.00004).toFixed(8),
-      intervalHours: 8,
-    })),
-  };
-}
-
-/**
- * The one pair the board's two full columns can make.
- *
- * Derived by hand from `FUNDING_BOARD` so the two screens agree: binance pays
- * 0.0001 every eight hours and bybit pays 0.00042, which is 0.0003 and 0.00126
- * a day. Longs collect where the rate is lower and pay where it is higher, so
- * the hedge is long binance and short bybit, and the daily spread is the
- * difference. Lighter quotes BTC-USDC — a different quote asset, and so not the
- * same underlying — which is why one opportunity comes out of a board with
- * three live venues rather than three.
- */
-export const ARBITRAGE_OPPORTUNITIES: ArbitrageOpportunity[] = [
-  {
-    symbol: "BTC-USDT",
-    baseAsset: "BTC",
-    quoteAsset: "USDT",
-    long: {
-      venue: "binance",
-      environment: "live",
-      accountId: ACCOUNT.accountId,
-      instrumentId: "binance:live:perp:USDT:BTC-USDT",
-      rate: "0.0001",
-      intervalHours: 8,
-      nextFundingTime: "2026-08-17T16:00:00Z",
-      markPrice: "114262.0",
-      openInterest: "9841.72",
-      dailyRate: "0.0003",
-      stale: false,
-    },
-    short: {
-      venue: "bybit",
-      environment: "live",
-      accountId: HEDGE_ACCOUNT.accountId,
-      instrumentId: "bybit:live:perp:USDT:BTC-USDT",
-      rate: "0.00042",
-      intervalHours: 8,
-      nextFundingTime: "2026-08-17T16:00:00Z",
-      markPrice: "114258.0",
-      openInterest: "1520.44",
-      dailyRate: "0.00126",
-      stale: false,
-    },
-    spreadDaily: "0.00096",
-    spreadApr: "0.3504",
-    executable: true,
-    blockers: [],
-  },
-];
 
 /* --- Ledgers -------------------------------------------------------------- */
 

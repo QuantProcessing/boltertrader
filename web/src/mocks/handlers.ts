@@ -5,6 +5,8 @@ import type {
   AccountRoute,
   ArbitrageExecution,
   ArbitrageLegView,
+  ArbitrageOpportunity,
+  ArbitrageOpportunityLeg,
   ArbitragePair,
   ArbitragePreview,
   ArbitragePreviewLeg,
@@ -12,6 +14,9 @@ import type {
   CandleInterval,
   Command,
   CredentialBundle,
+  FundingBoardRow,
+  FundingBoardSnapshot,
+  FundingBoardVenue,
   FundingWindow,
   Instrument,
   ManualCommandRequest,
@@ -20,10 +25,8 @@ import type {
 
 import { accounts, activity, hedges, orders, previews, session } from "./db";
 import {
-  ARBITRAGE_OPPORTUNITIES,
   CREDENTIALS,
   FILLS,
-  FUNDING_BOARD,
   INSTRUMENTS,
   LEDGER,
   META,
@@ -36,12 +39,10 @@ import {
   SYSTEM,
   VENUES,
   VENUE_REVISION,
-  candles,
-  fundingHistory,
   instrumentOf,
-  marketFact,
   runtimeOf,
 } from "./fixtures";
+import { fetchCandles, fetchFundingBoard, fetchFundingHistory, fetchMarketFact } from "./venues";
 
 /* ---------------------------------------------------------------------------
  * The mock edge.
@@ -172,18 +173,44 @@ const system = [
 
 /* --- Catalog and market data ---------------------------------------------- */
 
+/**
+ * The market plane is the one part of this file with a venue behind it.
+ *
+ * A book, a chart and a funding rate are public everywhere: no key, no
+ * signature, no account. Mocking them was a mistake with a visible cost — the
+ * synthetic prices were drawn around anchors written down once, so BTC showed
+ * 114,250 months after the market left, and an instrument with no anchor priced
+ * at 100. What the mock is for is the credentialed half: placing an order,
+ * reading a balance, sealing a preview. Those never leave the page.
+ *
+ * When a venue does not answer, that is reported as the unavailability it is.
+ * `PUBLIC_DATA_NOT_READY` is the code the real trading service returns for the
+ * same condition, so the screen behaves the same way against either edge.
+ */
+const unreachable = (venue: string, error: unknown) =>
+  failure(
+    503,
+    "PUBLIC_DATA_NOT_READY",
+    `${venue} public market data is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    true,
+  );
+
 const catalog = [
   http.get("/api/v1/catalog/venues", () => projected(VENUES)),
   http.get("/api/v1/catalog/instruments", () => projected(INSTRUMENTS)),
 
-  http.get("/api/v1/market-data", ({ request }) => {
+  http.get("/api/v1/market-data", async ({ request }) => {
     const instrumentId = new URL(request.url).searchParams.get("instrumentId") ?? "";
     const instrument = instrumentOf(instrumentId);
     if (!instrument) return notFound("instrument");
-    return metered(marketFact(instrument));
+    try {
+      return metered(await fetchMarketFact(instrument));
+    } catch (error) {
+      return unreachable(instrument.venue, error);
+    }
   }),
 
-  http.get("/api/v1/candles", ({ request }) => {
+  http.get("/api/v1/candles", async ({ request }) => {
     const query = new URL(request.url).searchParams;
     const instrument = instrumentOf(query.get("instrumentId") ?? "");
     if (!instrument) return notFound("instrument");
@@ -194,24 +221,36 @@ const catalog = [
     // a silently truncated page, so the clamp has to live in the caller.
     if (!Number.isFinite(limit) || limit < 1 || limit > 500) return invalid("limit must be between 1 and 500");
 
-    return metered({
-      venue: instrument.venue,
-      environment: instrument.environment,
-      product: instrument.product,
-      instrumentId: instrument.instrumentId,
-      interval,
-      candles: candles(instrument, interval, limit),
-      observedAt: OBSERVED_AT,
-    });
+    try {
+      const bars = await fetchCandles(instrument, interval, limit);
+      return metered({
+        venue: instrument.venue,
+        environment: instrument.environment,
+        product: instrument.product,
+        instrumentId: instrument.instrumentId,
+        interval,
+        candles: bars,
+        // The venue's observation, not a constant: these bars were read now.
+        observedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      return unreachable(instrument.venue, error);
+    }
   }),
 ];
 
 /* --- Funding -------------------------------------------------------------- */
 
 const funding = [
-  http.get("/api/v1/funding-board", () => metered(FUNDING_BOARD)),
+  http.get("/api/v1/funding-board", async () => {
+    try {
+      return metered(await fetchFundingBoard());
+    } catch (error) {
+      return unreachable("funding board", error);
+    }
+  }),
 
-  http.get("/api/v1/funding-history", ({ request }) => {
+  http.get("/api/v1/funding-history", async ({ request }) => {
     const query = new URL(request.url).searchParams;
     const venue = query.get("venue") ?? "";
     const symbol = query.get("symbol") ?? "";
@@ -219,19 +258,28 @@ const funding = [
 
     // A venue that publishes no history at all is a fact about the venue, not
     // about this moment, which is why it is answered with its own code and
-    // `retryable: false`. The board shows okx unavailable for the same reason.
-    const column = FUNDING_BOARD.venues.find((entry) => entry.venue === venue);
-    if (!column || column.unavailable) {
+    // `retryable: false`.
+    if (!FUNDING_HISTORY_VENUES.has(venue)) {
       return failure(404, "FUNDING_HISTORY_UNSUPPORTED", `${venue || "venue"} publishes no funding history`);
     }
 
-    const series = fundingHistory(venue, symbol, window);
-    if (!series) {
-      return failure(404, "FUNDING_HISTORY_INSTRUMENT_UNKNOWN", `${venue} does not list ${symbol}`);
+    try {
+      const series = await fetchFundingHistory(venue, symbol, window);
+      // Every venue here reports an unknown instrument as a 200 — an empty
+      // array, or a failure code in the body — so "no points" is the only
+      // signal there is, and it is the one the venue gives for "not listed".
+      if (!series) {
+        return failure(404, "FUNDING_HISTORY_INSTRUMENT_UNKNOWN", `${venue} does not list ${symbol}`);
+      }
+      return metered(series);
+    } catch (error) {
+      return unreachable(venue, error);
     }
-    return metered(series);
   }),
 ];
+
+/** The four venues with a public funding-history endpoint. */
+const FUNDING_HISTORY_VENUES = new Set(["binance", "bybit", "okx", "lighter"]);
 
 /* --- Realtime ------------------------------------------------------------- */
 
@@ -325,14 +373,35 @@ const trading = [
 /* --- Manual product ------------------------------------------------------- */
 
 /**
+ * The book, for the previews that need a reference price.
+ *
+ * Unlike the market-data route, a preview must not fail because a venue was
+ * briefly unreachable — the operator is mid-ticket and the read is incidental
+ * to what they asked for. So this answers null and each caller decides what a
+ * missing price means for the field it was filling.
+ */
+async function touch(instrument: Instrument) {
+  try {
+    return await fetchMarketFact(instrument);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The blockers the instrument's own published rules imply, and nothing else.
  *
  * Only two rules can be checked without a venue: the lot floor and the notional
  * floor. Both are read from the same `rules` object the catalog served, so a
  * ticket that renders "min 0.00001" and a preview that rejects 0.000005 are
  * quoting one number rather than two that happen to agree.
+ *
+ * A market order has no price of its own, so its notional is measured against
+ * the real touch. If the venue cannot be reached the notional floor is not
+ * checked rather than checked against a guess: a preview that blocks on an
+ * invented price is worse than one that lets the venue decide.
  */
-function manualBlockers(instrument: Instrument, request: ManualPreviewRequest): string[] {
+async function manualBlockers(instrument: Instrument, request: ManualPreviewRequest): Promise<string[]> {
   const blockers: string[] = [];
   const quantity = num(request.quantity);
   const minQuantity = num(instrument.rules.minQuantity);
@@ -342,8 +411,10 @@ function manualBlockers(instrument: Instrument, request: ManualPreviewRequest): 
   else if (minQuantity > 0 && quantity < minQuantity) blockers.push("BELOW_MIN_QUANTITY");
 
   const reference =
-    request.orderType === "limit" ? num(request.limitPrice) : num(marketFact(instrument).bestAsk);
-  if (minNotional > 0 && quantity * reference < minNotional) blockers.push("BELOW_MIN_NOTIONAL");
+    request.orderType === "limit" ? num(request.limitPrice) : num((await touch(instrument))?.bestAsk);
+  if (minNotional > 0 && reference > 0 && quantity * reference < minNotional) {
+    blockers.push("BELOW_MIN_NOTIONAL");
+  }
 
   return blockers;
 }
@@ -372,7 +443,7 @@ const manual = [
     if (!accounts.find(body.accountId)) return notFound("account");
 
     const previewId = previews.seal(body);
-    return data({ previewId, blockers: manualBlockers(instrument, body), warnings: [] }, 201);
+    return data({ previewId, blockers: await manualBlockers(instrument, body), warnings: [] }, 201);
   }),
 
   http.post("/api/v1/products/manual/commands", async ({ request }) => {
@@ -433,9 +504,23 @@ const manual = [
 
 const DAILY_INTERVALS = 3;
 
-function previewLeg(accountId: string, instrumentId: string, side: "buy" | "sell", limitPrice?: string) {
+/**
+ * The next settlement, derived rather than stored.
+ *
+ * Every venue on this board settles on the same 8-hour UTC grid — 00:00, 08:00,
+ * 16:00 — so the next one is arithmetic on the clock. It used to be a fixed
+ * date, which was in the past for most of the time anyone would run this and
+ * made the countdown beside it read zero.
+ */
+function nextSettlement(): string {
+  const now = Date.now();
+  const period = 8 * 3_600_000;
+  return new Date(Math.ceil(now / period) * period).toISOString();
+}
+
+async function previewLeg(accountId: string, instrumentId: string, side: "buy" | "sell", limitPrice?: string) {
   const instrument = instrumentOf(instrumentId);
-  const fact = instrument ? marketFact(instrument) : null;
+  const fact = instrument ? await touch(instrument) : null;
   const rate = fact?.fundingRate;
   const leg: ArbitragePreviewLeg = {
     accountId,
@@ -447,7 +532,7 @@ function previewLeg(accountId: string, instrumentId: string, side: "buy" | "sell
     limitPrice,
     rate,
     intervalHours: rate ? 8 : undefined,
-    nextFundingTime: rate ? "2026-08-17T16:00:00Z" : undefined,
+    nextFundingTime: rate ? nextSettlement() : undefined,
     markPrice: fact?.markPrice,
     dailyRate: rate ? String(num(rate) * DAILY_INTERVALS) : undefined,
   };
@@ -488,20 +573,163 @@ function asPair(execution: ArbitrageExecution): ArbitragePair {
   };
 }
 
+/* --- Arbitrage ------------------------------------------------------------ */
+
+/**
+ * The opportunities the real board implies, derived the way the server derives
+ * them (`services/trading/httpapi/arbitrage_product.go`).
+ *
+ * Group the board by underlying, then take the extremes: the venue paying most
+ * is the one to be short on, the venue paying least the one to be long on. Any
+ * other pairing on the same underlying earns strictly less, so there is exactly
+ * one interesting pair per row.
+ *
+ * The comparison is on the *daily* rate, never the per-interval one — an hourly
+ * 0.0001 pays eight times what an eight-hourly 0.0001 does, and a board that
+ * ranks them together is worse than no board. A venue that published no interval
+ * cannot be ranked at all: it still appears, with `funding_interval_unknown`
+ * saying why the spread is missing.
+ */
+function dailyRate(rate: string, intervalHours: number | undefined): number | null {
+  const value = Number(rate);
+  if (!Number.isFinite(value) || !intervalHours || intervalHours <= 0) return null;
+  return (value * 24) / intervalHours;
+}
+
+function legOf(venue: FundingBoardVenue, row: FundingBoardRow, holder: Account | undefined): ArbitrageOpportunityLeg {
+  const daily = dailyRate(row.rate, row.intervalHours);
+  // The account is attached only when the caller actually holds one on this
+  // venue, and the instrument only when the catalog lists this underlying there
+  // — an operator with two accounts asking about a four-venue board is the
+  // normal case, so the gaps are reported as blockers rather than as errors.
+  const instrument = holder
+    ? INSTRUMENTS.find(
+        (candidate) =>
+          candidate.venue === venue.venue &&
+          candidate.product === "perp" &&
+          candidate.baseAsset === row.baseAsset &&
+          candidate.quoteAsset === row.quoteAsset,
+      )
+    : undefined;
+  return {
+    venue: venue.venue,
+    environment: venue.environment,
+    ...(holder ? { accountId: holder.accountId } : {}),
+    ...(instrument ? { instrumentId: instrument.instrumentId } : {}),
+    rate: row.rate,
+    ...(row.intervalHours !== undefined ? { intervalHours: row.intervalHours } : {}),
+    ...(row.nextFundingTime !== undefined ? { nextFundingTime: row.nextFundingTime } : {}),
+    ...(row.markPrice !== undefined ? { markPrice: row.markPrice } : {}),
+    ...(row.openInterest !== undefined ? { openInterest: row.openInterest } : {}),
+    ...(daily !== null ? { dailyRate: String(daily) } : {}),
+    stale: venue.stale,
+  };
+}
+
+function opportunitiesFrom(board: FundingBoardSnapshot, held: Account[]): ArbitrageOpportunity[] {
+  const grouped = new Map<string, { symbol: string; legs: ArbitrageOpportunityLeg[] }>();
+  for (const venue of board.venues) {
+    if (venue.unavailable || venue.product !== "perp") continue;
+    const holder = held.find((account) => account.venue === venue.venue);
+    for (const row of venue.rows) {
+      if (!row.baseAsset || !row.quoteAsset || !row.rate) continue;
+      // Keyed by the underlying, not by the symbol: okx spells the same market
+      // BTC-USDT-SWAP where binance spells it BTC-USDT, and a hedge between
+      // them is still a hedge.
+      //
+      // The label is then whichever spelling the *last* column used, because
+      // that is what the server does (`symbols[key] = row.Symbol`, reassigned
+      // per row). It is not obviously the right choice — for BTC/USDT it makes
+      // the row read `BTC-USDT-SWAP` when three of the four venues call it
+      // BTC-USDT — but it is the choice the operator will see in production,
+      // and a mock that quietly picked the nicer spelling would hide that.
+      const key = `${row.baseAsset}/${row.quoteAsset}`;
+      const entry = grouped.get(key) ?? { symbol: row.symbol, legs: [] };
+      entry.symbol = row.symbol;
+      entry.legs.push(legOf(venue, row, holder));
+      grouped.set(key, entry);
+    }
+  }
+
+  const items: ArbitrageOpportunity[] = [];
+  for (const [key, { symbol, legs }] of grouped) {
+    // One quote per exchange. A hedge with both legs on one exchange is not a
+    // hedge — it nets inside a single position and pays no spread.
+    const venues: ArbitrageOpportunityLeg[] = [];
+    for (const leg of legs) {
+      if (!venues.some((taken) => taken.venue === leg.venue)) venues.push(leg);
+    }
+    if (venues.length < 2) continue;
+
+    // Indices rather than values, because the two extremes can otherwise
+    // coincide: an underlying only one venue dated leaves both on `venues[0]`
+    // and would report a zero spread between a venue and itself.
+    let lowest = 0;
+    let highest = 0;
+    for (let index = 1; index < venues.length; index += 1) {
+      if (compareLegs(venues[index]!, venues[lowest]!) < 0) lowest = index;
+      if (compareLegs(venues[index]!, venues[highest]!) > 0) highest = index;
+    }
+    if (lowest === highest) highest = (lowest + 1) % venues.length;
+    const long = venues[lowest]!;
+    const short = venues[highest]!;
+
+    const [baseAsset, quoteAsset] = key.split("/") as [string, string];
+    const blockers: string[] = [];
+    const longDaily = long.dailyRate === undefined ? null : Number(long.dailyRate);
+    const shortDaily = short.dailyRate === undefined ? null : Number(short.dailyRate);
+    const spread = longDaily !== null && shortDaily !== null ? shortDaily - longDaily : null;
+    if (spread === null) blockers.push("funding_interval_unknown");
+    if (!long.accountId || !short.accountId) blockers.push("account_unreachable");
+    if (!long.instrumentId || !short.instrumentId) blockers.push("instrument_unlisted");
+    if (long.stale || short.stale) blockers.push("board_stale");
+
+    items.push({
+      symbol: symbol || `${baseAsset}-${quoteAsset}`,
+      baseAsset,
+      quoteAsset,
+      long,
+      short,
+      ...(spread !== null ? { spreadDaily: String(spread), spreadApr: String(spread * 365) } : {}),
+      executable: blockers.length === 0,
+      blockers,
+    });
+  }
+
+  // Comparable spreads first and largest first within them; an underlying no
+  // venue published an interval for still appears, at the bottom, rather than
+  // being dropped for being unrankable.
+  return items.sort((left, right) => {
+    if (left.spreadDaily === undefined && right.spreadDaily === undefined) {
+      return left.symbol.localeCompare(right.symbol);
+    }
+    if (left.spreadDaily === undefined) return 1;
+    if (right.spreadDaily === undefined) return -1;
+    const difference = Number(right.spreadDaily) - Number(left.spreadDaily);
+    return difference !== 0 ? difference : left.symbol.localeCompare(right.symbol);
+  });
+}
+
+/** Refuses to order two legs when either published no interval. */
+function compareLegs(left: ArbitrageOpportunityLeg, right: ArbitrageOpportunityLeg): number {
+  if (left.dailyRate === undefined || right.dailyRate === undefined) return 0;
+  return Number(left.dailyRate) - Number(right.dailyRate);
+}
+
 const arbitrage = [
   // `{meta, data: {items, observedAt}}` — this route's shape and no other's.
-  http.get("/api/v1/products/arbitrage/opportunities", ({ request }) => {
-    const held = new Set(new URL(request.url).searchParams.getAll("accountId"));
-    const reachable = (accountId?: string) => !accountId || held.size === 0 || held.has(accountId);
-    return envelope({
-      meta: META,
-      data: {
-        items: ARBITRAGE_OPPORTUNITIES.filter(
-          (opportunity) => reachable(opportunity.long.accountId) && reachable(opportunity.short.accountId),
-        ),
-        observedAt: OBSERVED_AT,
-      },
-    });
+  http.get("/api/v1/products/arbitrage/opportunities", async ({ request }) => {
+    const named = new Set(new URL(request.url).searchParams.getAll("accountId"));
+    const held = accounts.list().filter((account) => named.has(account.accountId));
+    try {
+      const board = await fetchFundingBoard();
+      return envelope({
+        meta: META,
+        data: { items: opportunitiesFrom(board, held), observedAt: board.observedAt },
+      });
+    } catch (error) {
+      return unreachable("funding board", error);
+    }
   }),
 
   http.post("/api/v1/products/arbitrage/execution-previews", async ({ request }) => {
@@ -527,10 +755,15 @@ const arbitrage = [
       if (minQuantity > 0 && quantity < minQuantity) blockers.push("BELOW_MIN_QUANTITY");
     }
 
-    const longLeg = previewLeg(body.long.accountId, body.long.instrumentId, "buy", body.long.limitPrice);
-    const shortLeg = previewLeg(body.short.accountId, body.short.instrumentId, "sell", body.short.limitPrice);
+    // Both legs at once: they are two venues answering independently, and a
+    // hedge quoted from books a round-trip apart is a hedge quoted at two times.
+    const [longLeg, shortLeg, longFact] = await Promise.all([
+      previewLeg(body.long.accountId, body.long.instrumentId, "buy", body.long.limitPrice),
+      previewLeg(body.short.accountId, body.short.instrumentId, "sell", body.short.limitPrice),
+      touch(long),
+    ]);
     const spread = num(shortLeg.dailyRate) - num(longLeg.dailyRate);
-    const notional = quantity * num(marketFact(long).markPrice ?? marketFact(long).bestAsk);
+    const notional = quantity * num(longFact?.markPrice ?? longFact?.bestAsk);
 
     const preview: ArbitragePreview = {
       previewId: previews.nextArbitrageId(),

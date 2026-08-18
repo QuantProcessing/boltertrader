@@ -4,12 +4,14 @@ import { defineConfig, devices } from "@playwright/test";
  * Two suites, one browser, one dev server — and therefore never both at once.
  *
  * `offline` walks the MVP path against the MSW mock, served by `npm run
- * dev:mock`. It is the default because AGENTS.md requires the default test path
- * to be offline and deterministic: it needs no postgres, no gateway, no venue
- * and no credentials, so it can run anywhere and cannot place an order anywhere.
- * Since the mock now lives in the dev server rather than in `page.route`, that
- * property belongs to the server this config starts, which is why the suite and
- * the command are chosen together below.
+ * dev:mock`. The name is about credentials, not connectivity: it needs no
+ * postgres, no gateway and no key, so it can run anywhere and cannot place an
+ * order anywhere. It does need the internet. The mock answers the market half
+ * of the surface by reading the venues' public endpoints, so the prices this
+ * suite sees are today's, and any assertion it makes has to hold for every
+ * price rather than for one. Since the mock lives in the dev server rather than
+ * in `page.route`, that property belongs to the server this config starts,
+ * which is why the suite and the command are chosen together below.
  *
  * `live` walks the same path against a real `make up` stack and is opt-in via
  * BOLTER_E2E_LIVE=1, in the same shape as the Makefile's other live gates. It

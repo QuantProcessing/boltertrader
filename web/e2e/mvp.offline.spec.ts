@@ -30,6 +30,19 @@ const blotterOf = (page: Page): Locator => page.getByRole("tabpanel");
 
 const navOf = (page: Page): Locator => page.getByRole("navigation", { name: "Sections" });
 
+/**
+ * The single option a leg on `venue` should offer, given the fixture accounts.
+ *
+ * The board has four venues and the fixtures have two accounts, which is the
+ * ordinary case rather than a gap in them: an operator reads every venue and
+ * trades the ones they hold a key for. A leg on a venue they do not hold falls
+ * through to the picker's own empty state, which names the venue so the reason
+ * is on screen rather than inferred from a disabled control.
+ */
+const offeredFor = (venue: string): string =>
+  [ACCOUNT, HEDGE_ACCOUNT].find((account) => account.venue === venue)?.displayName ??
+  `No account for ${venue}`;
+
 test.describe("the MVP path", () => {
   test("signs in and lands on the terminal", async ({ page }) => {
     await page.goto("/trade");
@@ -180,43 +193,71 @@ test.describe("the MVP path", () => {
 
   // The board is the one screen that needs no account, no credential and no
   // instrument selection, so this is also the assertion that it renders from
-  // public data alone. What it checks beyond "the page loaded" is the two
-  // things the matrix exists to do: pivot one instrument across venues into a
-  // single row, and mark a column that did not answer instead of dropping it.
+  // public data alone. What it checks beyond "the page loaded" is the thing the
+  // matrix exists to do: pivot one instrument across venues into a single row.
+  //
+  // Every venue answers here, because the mock reads the same public endpoints
+  // production reads, so nothing below may assume a particular column is down —
+  // and nothing may assume a particular *rate*, which is today's. What is
+  // asserted is structural: the columns exist, and BTC pivots across two of them.
   test("shows the funding board without an account", async ({ page }) => {
     await signIn(page);
     await navOf(page).getByRole("link", { name: "Funding" }).click();
 
     await expect(page).toHaveURL(/\/funding$/);
-    await expect(page.getByRole("columnheader", { name: /binance/ })).toBeVisible();
-    await expect(page.getByRole("columnheader", { name: /bybit/ })).toBeVisible();
+    for (const venue of ["binance", "bybit", "okx", "lighter"] as const) {
+      await expect(page.getByRole("columnheader", { name: new RegExp(venue) })).toBeVisible();
+    }
 
-    // BTC is quoted by binance and bybit under the same symbol, so it survives
-    // the cross-venue filter; a venue that answered nothing is still a column.
-    await expect(page.getByRole("cell", { name: "BTC-USDT", exact: false })).toBeVisible();
-    await expect(page.getByRole("columnheader", { name: /okx/ })).toContainText("down");
+    // Binance and bybit both canonicalise to `BTC-USDT`, so BTC is quoted twice
+    // under one symbol and survives the cross-venue filter that is on by
+    // default. Exactly the row that filter exists to keep.
+    await expect(page.getByRole("cell", { name: "BTC-USDT", exact: false }).first()).toBeVisible();
   });
 
   // A hedge is the one thing on the terminal that is two orders on two venues,
   // so what this checks is that both halves survive the trip: the ranked scan
   // arrives through an envelope nothing else uses (`{items, observedAt}`), and
   // the ticket resolves each leg to an account on the leg's own exchange.
+  //
+  // Which venues those are is today's market. The scan ranks live funding
+  // rates, and the two extremes for one underlying move between venues from
+  // one read to the next, so naming them here would be asserting a rate. The
+  // test reads the legs off the row it clicked instead, and holds the ticket
+  // to those.
   test("ranks a cross-venue spread and offers both legs a home", async ({ page }) => {
     await signIn(page);
     await navOf(page).getByRole("link", { name: "Arbitrage" }).click();
 
     await expect(page).toHaveURL(/\/funding\/arbitrage$/);
 
-    // The scan ranked one pair, and it is the pair the board can make.
-    const spread = page.getByRole("button", { name: /BTC-USDT/ }).first();
-    await expect(spread).toContainText("binance → bybit");
+    // BTC is the one underlying certain to be quoted by more than one venue,
+    // which is the whole of what it takes to be rankable. Anchored at the
+    // start so the list's near misses — `WBTC-USDT` and friends — do not
+    // match, and unanchored at the end because okx spells this pair
+    // `BTC-USDT-SWAP` and the label is whichever venue was read last.
+    await page.getByRole("searchbox", { name: "Search underlyings" }).fill("BTC-USDT");
+    const spread = page.getByRole("button", { name: /^BTC-USDT/ }).first();
+    await spread.click();
 
-    // Long above short, each picking from accounts on its own exchange: the
-    // pickers are filtered by venue, so a wrong filter puts the wrong name here.
+    // Two venues, and two *different* ones: a pair whose legs were the same
+    // exchange would net inside one position and pay no spread, which is why
+    // the server dedupes to one quote per venue before taking extremes.
+    const [, longVenue, shortVenue] = /(\w+) → (\w+)/.exec(await spread.innerText()) ?? [];
+    expect(longVenue).toBeDefined();
+    expect(longVenue).not.toBe(shortVenue);
+
+    // Long above short, each picking from accounts on its own exchange. The
+    // fixtures hold one binance account and one bybit account, so a leg on
+    // either offers exactly that one and a leg anywhere else offers none.
+    // Asserted as the whole option list rather than as a substring, because a
+    // picker that had lost its venue filter would offer both accounts and
+    // still contain the right name.
     const ticket = page.locator("section").filter({ has: page.getByRole("heading", { name: "Hedge" }) });
     const pickers = ticket.getByLabel("Account");
-    await expect(pickers.nth(0)).toContainText(ACCOUNT.displayName);
-    await expect(pickers.nth(1)).toContainText(HEDGE_ACCOUNT.displayName);
+    for (const [index, venue] of [longVenue, shortVenue].entries()) {
+      await expect(pickers.nth(index).getByRole("option")).toHaveText([offeredFor(venue!)]);
+    }
   });
 
   // The picker is the control every session starts with, and the one defect
