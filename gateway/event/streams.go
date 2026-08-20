@@ -441,6 +441,7 @@ func (manager *StreamManager) superviseStaticAccount(ctx context.Context, accoun
 		}
 		streams, err := manager.openAccountStreams(ctx, accountID)
 		if err != nil {
+			logPrivateStreamConnectFailure(accountID, "", err)
 			manager.unavailable(accountID, "private_stream_connect_failed", true)
 			if !waitContext(ctx, manager.reconnectBackoff) {
 				return
@@ -565,6 +566,7 @@ func (manager *StreamManager) runDynamicAccount(
 			}
 			streams, err := manager.openDynamicRouteStreams(ctx, accountID, routeID, plan.routes[routeID], faults)
 			if err != nil {
+				logPrivateStreamConnectFailure(accountID, routeID, err)
 				manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed", true, observer)
 				initializationFailed = true
 				break
@@ -688,6 +690,7 @@ func (manager *StreamManager) reconnectDynamicRoute(
 		}
 		streams, err := manager.openDynamicRouteStreams(ctx, accountID, fence.RouteID, selected, faults)
 		if err != nil {
+			logPrivateStreamConnectFailure(accountID, fence.RouteID, err)
 			manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed", true, observer)
 			continue
 		}
@@ -702,6 +705,22 @@ func (manager *StreamManager) reconnectDynamicRoute(
 		return streams, true
 	}
 	return nil, false
+}
+
+func logPrivateStreamConnectFailure(accountID domain.AccountID, routeID domain.RouteID, err error) {
+	attributes := []any{"account_id", accountID}
+	if routeID != "" {
+		attributes = append(attributes, "route_id", routeID)
+	}
+	var venueErr *exchange.Error
+	if errors.As(err, &venueErr) {
+		details := venueErr.Details()
+		attributes = append(attributes, "kind", venueErr.Kind(), "venue", details.Venue,
+			"product", details.Product, "operation", details.Operation, "venue_code", details.Code)
+	} else {
+		attributes = append(attributes, "kind", "unclassified")
+	}
+	slog.Warn("private stream connection failed", attributes...)
 }
 
 func (manager *StreamManager) waitDynamicRouteActivation(

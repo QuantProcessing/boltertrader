@@ -69,9 +69,8 @@ type BoardVenue struct {
 // "0001-01-01T00:00:00Z" and render as a countdown that expired two thousand
 // years ago.
 type BoardRow struct {
+	InstrumentID    string    `json:"instrumentId,omitempty"`
 	Symbol          string    `json:"symbol"`
-	NativeSymbol    string    `json:"nativeSymbol,omitempty"`
-	NativeID        string    `json:"nativeId,omitempty"`
 	BaseAsset       string    `json:"baseAsset,omitempty"`
 	QuoteAsset      string    `json:"quoteAsset,omitempty"`
 	Rate            string    `json:"rate"`
@@ -80,6 +79,9 @@ type BoardRow struct {
 	MarkPrice       string    `json:"markPrice,omitempty"`
 	IndexPrice      string    `json:"indexPrice,omitempty"`
 	OpenInterest    string    `json:"openInterest,omitempty"`
+	// OpenInterestNotional is quote-stablecoin notional (USDT/USDC), the only
+	// open-interest unit that may be compared or sorted across venues.
+	OpenInterestNotional string `json:"openInterestNotional,omitempty"`
 }
 
 type BoardSource interface {
@@ -236,6 +238,18 @@ func validateBoard(snapshot BoardSnapshot, now time.Time) error {
 			}
 			if row.IntervalHours < 0 {
 				return fmt.Errorf("Gateway funding-board interval for %q is invalid", row.Symbol)
+			}
+			for label, value := range map[string]string{
+				"open interest":          row.OpenInterest,
+				"open-interest notional": row.OpenInterestNotional,
+			} {
+				if value == "" {
+					continue
+				}
+				parsed, err := decimal.NewFromString(value)
+				if err != nil || parsed.IsNegative() {
+					return fmt.Errorf("Gateway funding-board %s for %q is invalid", label, row.Symbol)
+				}
 			}
 		}
 	}

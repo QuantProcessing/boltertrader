@@ -147,5 +147,5 @@ state is unconfirmed — belong to
 ## Next
 
 [Your first order](first-order.md) walks the full browser loop against a real
-venue account, with real money. To walk the same loop with no venue behind it,
-run `npm --prefix web run dev:mock` instead.
+venue account, with real money. Before signing in, the same application opens in
+read-only mode and displays live public market data without venue credentials.

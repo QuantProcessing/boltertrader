@@ -109,7 +109,7 @@ export interface ExecutionEvidence {
  * by `GET /api/v1/products/manual/orders`.
  *
  * `payload` is the sealed intent (`instrumentId`, `side`, `quantity`,
- * `orderType`, `limitPrice`, `timeInForce`, `reduceOnly`, `routeId` and the
+ * `orderType`, `limitPrice`, `timeInForce`, `reduceOnly`, `leverage`, `routeId` and the
  * three account fences). It is opaque JSON on the wire; `ManualIntent` below
  * types the manual product's version of it.
  */
@@ -138,10 +138,11 @@ export interface ManualIntent {
   limitPrice: string;
   timeInForce: string;
   reduceOnly: boolean;
+  /** Perpetual-only target applied immediately before the durable order handoff. Zero means unchanged. */
+  leverage: number;
   routeId: string;
-  desiredStateRevision: number;
-  runtimeGeneration: number;
-  credentialVersion: number;
+  /** Internal stale-preview fence; not an account version and not rendered. */
+  runtimeId: string;
 }
 
 /**
@@ -190,6 +191,8 @@ export interface ManualPreviewRequest {
   limitPrice: string;
   timeInForce: string;
   reduceOnly: boolean;
+  /** Perpetual-only target. Spot requests must send zero. */
+  leverage: number;
 }
 
 /**
@@ -337,13 +340,13 @@ export interface MarketFact {
   markPrice?: string;
   fundingRate?: string;
   openInterest?: string;
+  fundingObservedAt?: string;
+  fundingTime?: string;
+  nextFundingTime?: string;
   observedAt: string;
 }
 
 export interface MarketDataQuery {
-  venue: string;
-  environment: string;
-  product: string;
   instrumentId: string;
 }
 
@@ -427,9 +430,8 @@ export const MAX_CANDLES = 500;
  * shown per-period but cannot honestly be shown per-year.
  */
 export interface FundingBoardRow {
+  instrumentId?: string;
   symbol: string;
-  nativeSymbol?: string;
-  nativeId?: string;
   baseAsset?: string;
   quoteAsset?: string;
   rate: string;
@@ -437,6 +439,9 @@ export interface FundingBoardRow {
   nextFundingTime?: string;
   markPrice?: string;
   indexPrice?: string;
+  /** Quote-stablecoin notional (USDT/USDC), safe to compare across venues. */
+  openInterestNotional?: string;
+  /** Venue-native base units or contracts; never use for cross-venue sorting. */
   openInterest?: string;
 }
 
@@ -512,9 +517,8 @@ export interface FundingHistoryPoint {
  * in `fundingTime`.
  */
 export interface FundingHistorySeries {
+  instrumentId: string;
   venue: string;
-  environment: string;
-  symbol: string;
   since: string;
   until: string;
   observedAt: string;
@@ -523,9 +527,7 @@ export interface FundingHistorySeries {
 
 /** Every field required; the server rejects an unknown fifth outright. */
 export interface FundingHistoryQuery {
-  venue: string;
-  environment: string;
-  symbol: string;
+  instrumentId: string;
   window: FundingWindow;
 }
 
@@ -565,6 +567,29 @@ export interface Position {
   realizedPnl: string;
   unrealizedPnl: string;
   updatedAt: string;
+}
+
+/** Live account balance projected through trading for one owned account. */
+export interface AccountBalance {
+  accountId: string;
+  product: string;
+  settlementAsset?: string;
+  asset: string;
+  available: string;
+  availableMargin?: string;
+  locked: string;
+  total: string;
+}
+
+/** Current venue position for one owned account; positive is long. */
+export interface AccountPosition {
+  accountId: string;
+  instrumentId: string;
+  side?: OrderSide;
+  quantity: string;
+  entryPrice: string;
+  markPrice: string;
+  unrealizedPnl: string;
 }
 
 /** `ledger.Entry` */
@@ -710,6 +735,8 @@ export const ARBITRAGE_PREVIEW_TTL_MS = 30_000;
 export interface ArbitrageOpportunityLeg {
   venue: string;
   environment: string;
+  routeProfileId: string;
+  settlement?: string;
   /** Present only when the caller named an account that can reach this venue. */
   accountId?: string;
   instrumentId?: string;
@@ -718,6 +745,7 @@ export interface ArbitrageOpportunityLeg {
   nextFundingTime?: string;
   markPrice?: string;
   openInterest?: string;
+  openInterestNotional?: string;
   dailyRate?: string;
   stale?: boolean;
 }
@@ -861,17 +889,12 @@ export type RouteState = "active" | "disabled";
 /**
  * `lifecycle.State`. The whole vocabulary, from `gateway/account/lifecycle/state.go`.
  *
- * Transitions are linear and irreversible except for the rotation and drain
- * excursions, which is why the UI shows the state rather than deriving a
- * "healthy / unhealthy" boolean from it: `draining` and `disabled` are both
- * deliberate operator choices, not faults.
+ * Credentials are immutable. The visible lifecycle only creates, activates,
+ * disables and removes an account.
  */
 export type AccountStatus =
   | "creating"
   | "active"
-  | "rotating"
-  | "draining"
-  | "drained"
   | "disabled"
   | "removing"
   | "removed";
@@ -902,8 +925,13 @@ export interface CredentialBundle {
   schemaVersion: number;
   venue: string;
   authKind: string;
-  metadata?: Record<string, string>;
-  secrets?: Record<string, string>;
+  /**
+   * BundleV1 requires both nested objects on the wire. API-key venues have no
+   * metadata fields, but their valid representation is still `metadata: {}`
+   * rather than an absent value.
+   */
+  metadata: Record<string, string>;
+  secrets: Record<string, string>;
 }
 
 /**
@@ -921,9 +949,6 @@ export interface Account {
   productPolicy: string[];
   routes?: AccountRoute[];
   status: AccountStatus;
-  desiredStateRevision: number;
-  runtimeGeneration: number;
-  credentialVersion: number;
   lastValidatedAt: string | null;
   updatedAt: string;
 }
@@ -975,10 +1000,7 @@ export interface RouteRuntime {
 
 /** `httpapi.RuntimeSnapshotProjection` */
 export interface RuntimeSnapshot {
-  desiredStateRevision: number;
-  runtimeGeneration: number;
-  credentialVersion: number;
-  requestedState: string;
+	requestedState: string;
   routes: RouteRuntime[];
 }
 
@@ -988,27 +1010,14 @@ export interface PendingRuntimeSnapshot extends RuntimeSnapshot {
   reason: string;
 }
 
-/**
- * `httpapi.AccountRuntimeProjection`.
- *
- * `active` / `pending` / `retiring` are the three generations that can coexist
- * during a credential rotation. An account showing a `pending` alongside an
- * `active` is mid-rotation, not broken — the UI has to say which is which
- * rather than picking one and hiding the other.
- */
+/** `httpapi.AccountRuntimeProjection`: internal connection readiness only. */
 export interface AccountRuntime {
   accountId: string;
   active?: RuntimeSnapshot;
   pending?: PendingRuntimeSnapshot;
   retiring: RuntimeSnapshot[];
-  desiredStateRevision: number;
-  runtimeGeneration: number;
-  credentialVersion: number;
-  runtimeVersion: number;
   readiness: ProjectionReadiness;
   writeReadiness: ProjectionReadiness;
-  lastAppliedDesiredStateRevision: number;
-  lastAppliedRuntimeGeneration: number;
   blockedReason: string | null;
   capabilities: AccountCapability[];
   observedAt: string;

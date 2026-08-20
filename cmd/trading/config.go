@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/internal/livewrite"
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 )
 
@@ -28,7 +29,7 @@ const (
 	gatewayInternalURLEnv       = "BT_GATEWAY_INTERNAL_URL"
 	gatewayInternalTokenFileEnv = "BT_GATEWAY_INTERNAL_TOKEN_FILE"
 	previewSigningKeyEnv        = "BT_MANUAL_PREVIEW_SIGNING_KEY_FILE"
-	livePrivateWritesEnv        = "BT_LIVE_PRIVATE_WRITES_ENABLED"
+	livePrivateWritesEnv        = livewrite.EnvName
 	allowNonLoopbackEnv         = "BT_TRADING_ALLOW_NON_LOOPBACK_LISTEN"
 	allowPlaintextEnv           = "BT_TRADING_ALLOW_NON_LOOPBACK_UPSTREAM"
 	inlinePreviewKeyEnv         = "BT_MANUAL_PREVIEW_SIGNING_KEY"
@@ -86,12 +87,10 @@ func load() (config, error) {
 	// any more, so an admitted order is a real order against real money at the
 	// size the caller asked for. Setting the variable to false is the operator's
 	// kill switch, and read-only is the only other posture that still exists.
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(livePrivateWritesEnv))) {
-	case "", "true":
-		cfg.LivePrivateWritesEnabled = true
-	case "false":
-	default:
-		return config{}, fmt.Errorf("%s must be true or false", livePrivateWritesEnv)
+	var liveWriteErr error
+	cfg.LivePrivateWritesEnabled, liveWriteErr = livewrite.Enabled()
+	if liveWriteErr != nil {
+		return config{}, liveWriteErr
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(allowNonLoopbackEnv))) {
 	case "", "false":

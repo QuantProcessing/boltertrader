@@ -183,7 +183,9 @@
   --spacing: 0.22rem;
 
   --spacing-row: 34px; /* the rhythm every table shares */
-  --spacing-bar: 44px; /* the bars, and the minimum touch target on mobile */
+  --spacing-nav: 52px; /* primary navigation and workspace identity */
+  --spacing-bar: 44px; /* panel bars, and the minimum touch target on mobile */
+  --spacing-status: 24px; /* persistent connectivity strip at the viewport edge */
 
   /* Depth rows are deliberately tighter than `--spacing-row`: the book's job is
    * to show as many levels at once as the column can hold, and it carries no
@@ -202,9 +204,10 @@
    *
    * `side` and `deck` share a value and stay separate anyway: one is a width and
    * one is a height, and the day the blotter grows the book should not. */
-  --spacing-side: 256px; /* order book, spread list */
-  --spacing-ticket: 320px; /* the ticket, which holds a form rather than a list */
-  --spacing-deck: 256px; /* blotter, ledger, open pairs */
+  --spacing-side: 340px; /* order book, spread list */
+  --spacing-ticket: 340px; /* the ticket, which holds a form rather than a list */
+  --spacing-deck: 190px; /* blotter, ledger, open pairs */
+  --spacing-content: 1600px; /* centered reading width outside the trade terminal */
 
   --shadow-overlay: var(--bt-shadow-overlay);
   --shadow-modal: var(--bt-shadow-modal);

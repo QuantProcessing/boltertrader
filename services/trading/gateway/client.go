@@ -30,6 +30,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
+	"github.com/shopspring/decimal"
 )
 
 // Client is trading's handle on the Gateway. One instance serves every question
@@ -114,6 +115,11 @@ const (
 	// documents above that borrowing their 8 MiB would say nothing true about
 	// this read.
 	fundingHistoryResponseLimit = 1 << 20
+	// balanceResponseLimit bounds the Gateway's advertised maximum of 500
+	// balance resources. Some venues return a long tail of legacy assets; even
+	// after the Gateway removes exact zeroes, a real multi-asset account can be
+	// larger than the 64 KiB control-plane envelope.
+	balanceResponseLimit = 1 << 20
 )
 
 type readEnvelope[T any] struct {
@@ -167,21 +173,22 @@ func readErrorCode(body io.Reader) string {
 
 type runtimeProjectionView struct {
 	AccountID                       string                           `json:"accountId"`
+	RuntimeID                       string                           `json:"runtimeId,omitempty"`
 	Active                          *runtimeSnapshotView             `json:"active,omitempty"`
 	Pending                         *pendingSnapshotView             `json:"pending,omitempty"`
 	Retiring                        []runtimeSnapshotView            `json:"retiring"`
 	Tombstoned                      *bool                            `json:"tombstoned"`
+	Readiness                       *tradinghttp.ProjectionReadiness `json:"readiness"`
+	WriteReadiness                  *tradinghttp.ProjectionReadiness `json:"writeReadiness"`
+	BlockedReason                   *string                          `json:"blockedReason"`
+	Capabilities                    []runtimeCapabilityView          `json:"capabilities"`
+	ObservedAt                      *time.Time                       `json:"observedAt"`
 	DesiredStateRevision            *int64                           `json:"desiredStateRevision"`
 	RuntimeGeneration               *int64                           `json:"runtimeGeneration"`
 	CredentialVersion               *int64                           `json:"credentialVersion"`
 	RuntimeVersion                  *int64                           `json:"runtimeVersion"`
-	Readiness                       *tradinghttp.ProjectionReadiness `json:"readiness"`
-	WriteReadiness                  *tradinghttp.ProjectionReadiness `json:"writeReadiness"`
 	LastAppliedDesiredStateRevision *int64                           `json:"lastAppliedDesiredStateRevision"`
 	LastAppliedRuntimeGeneration    *int64                           `json:"lastAppliedRuntimeGeneration"`
-	BlockedReason                   *string                          `json:"blockedReason"`
-	Capabilities                    []runtimeCapabilityView          `json:"capabilities"`
-	ObservedAt                      *time.Time                       `json:"observedAt"`
 }
 
 type runtimeCapabilityView struct {
@@ -205,11 +212,12 @@ type routeRuntimeView struct {
 
 type runtimeSnapshotView struct {
 	OperationID          string             `json:"operationId"`
+	RuntimeID            string             `json:"runtimeId"`
+	RequestedState       string             `json:"requestedState"`
+	Routes               []routeRuntimeView `json:"routes"`
 	DesiredStateRevision int64              `json:"desiredStateRevision"`
 	RuntimeGeneration    int64              `json:"runtimeGeneration"`
 	CredentialVersion    int64              `json:"credentialVersion"`
-	RequestedState       string             `json:"requestedState"`
-	Routes               []routeRuntimeView `json:"routes"`
 }
 
 type pendingSnapshotView struct {
@@ -258,18 +266,15 @@ func (client *Client) Accounts() ManualAccounts { return ManualAccounts{client: 
 // emits must be named because the read decoder refuses unknown fields, so a
 // field added there fails loudly here rather than being silently dropped.
 type accountRecordView struct {
-	ID                   string             `json:"accountId"`
-	Venue                string             `json:"venue"`
-	NativeEnvironment    string             `json:"nativeEnvironment"`
-	DisplayName          string             `json:"displayName"`
-	ProductPolicy        []string           `json:"productPolicy"`
-	Routes               []accountRouteView `json:"routes,omitempty"`
-	Status               string             `json:"status"`
-	DesiredStateRevision int64              `json:"desiredStateRevision"`
-	RuntimeGeneration    int64              `json:"runtimeGeneration"`
-	CredentialVersion    int64              `json:"credentialVersion"`
-	LastValidatedAt      *time.Time         `json:"lastValidatedAt"`
-	UpdatedAt            time.Time          `json:"updatedAt"`
+	ID                string             `json:"accountId"`
+	Venue             string             `json:"venue"`
+	NativeEnvironment string             `json:"nativeEnvironment"`
+	DisplayName       string             `json:"displayName"`
+	ProductPolicy     []string           `json:"productPolicy"`
+	Routes            []accountRouteView `json:"routes,omitempty"`
+	Status            string             `json:"status"`
+	LastValidatedAt   *time.Time         `json:"lastValidatedAt"`
+	UpdatedAt         time.Time          `json:"updatedAt"`
 }
 
 // accountRouteView mirrors lifecycle.AccountRoute. It is the account record's
@@ -308,19 +313,21 @@ func (source ManualAccounts) Get(ctx context.Context, principal, accountID strin
 	for _, route := range account.Routes {
 		routes = append(routes, tradinghttp.ManualAccountRoute{
 			RouteID: route.RouteID, Product: route.Product,
-			SettlementAsset: route.SettlementAsset, RequestedState: route.RequestedState,
+			SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID,
+			RequestedState: route.RequestedState,
 		})
 	}
+	runtimes, err := source.client.ListAccountRuntimes(ctx, principal, accountID)
+	if err != nil {
+		return tradinghttp.ManualAccount{}, fmt.Errorf("read Gateway account runtime: %w", err)
+	}
+	if len(runtimes) != 1 || runtimes[0].Active == nil || strings.TrimSpace(runtimes[0].RuntimeID) == "" {
+		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account runtime response is invalid")
+	}
 	return tradinghttp.ManualAccount{
-		ID:                   account.ID,
-		Venue:                account.Venue,
-		VenueEnvironment:     account.NativeEnvironment,
-		State:                account.Status,
-		ProductIDs:           account.ProductPolicy,
-		Routes:               routes,
-		DesiredStateRevision: account.DesiredStateRevision,
-		RuntimeGeneration:    account.RuntimeGeneration,
-		CredentialVersion:    account.CredentialVersion,
+		ID: account.ID, RuntimeID: runtimes[0].RuntimeID,
+		Venue: account.Venue, VenueEnvironment: account.NativeEnvironment,
+		State: account.Status, ProductIDs: account.ProductPolicy, Routes: routes,
 	}, nil
 }
 
@@ -377,35 +384,33 @@ func (source FundingHistorySource) FetchFundingHistory(ctx context.Context, read
 }
 
 type orderIntent struct {
-	AccountID            string `json:"accountId,omitempty"`
-	InstrumentID         string `json:"instrumentId"`
-	Side                 string `json:"side"`
-	Quantity             string `json:"quantity"`
-	OrderType            string `json:"orderType"`
-	LimitPrice           string `json:"limitPrice,omitempty"`
-	LimitPolicy          string `json:"limitPolicy,omitempty"`
-	TimeInForce          string `json:"timeInForce,omitempty"`
-	ReduceOnly           bool   `json:"reduceOnly,omitempty"`
-	RouteID              string `json:"routeId,omitempty"`
-	DesiredStateRevision uint64 `json:"desiredStateRevision"`
-	RuntimeGeneration    uint64 `json:"runtimeGeneration"`
-	CredentialVersion    uint64 `json:"credentialVersion"`
+	AccountID    string `json:"accountId,omitempty"`
+	InstrumentID string `json:"instrumentId"`
+	Side         string `json:"side"`
+	Quantity     string `json:"quantity"`
+	OrderType    string `json:"orderType"`
+	LimitPrice   string `json:"limitPrice,omitempty"`
+	LimitPolicy  string `json:"limitPolicy,omitempty"`
+	TimeInForce  string `json:"timeInForce,omitempty"`
+	ReduceOnly   bool   `json:"reduceOnly,omitempty"`
+	Leverage     int    `json:"leverage,omitempty"`
+	RouteID      string `json:"routeId,omitempty"`
+	RuntimeID    string `json:"runtimeId"`
 }
 
 type placeRequest struct {
-	AccountID            string `json:"account_id"`
-	RouteID              string `json:"route_id"`
-	InstrumentID         string `json:"instrument_id"`
-	IdempotencyKey       string `json:"idempotency_key"`
-	Side                 string `json:"side"`
-	Type                 string `json:"type"`
-	Quantity             string `json:"quantity"`
-	LimitPrice           string `json:"limit_price,omitempty"`
-	LimitPolicy          string `json:"limit_policy,omitempty"`
-	ReduceOnly           bool   `json:"reduce_only,omitempty"`
-	DesiredStateRevision uint64 `json:"desired_state_revision"`
-	RuntimeGeneration    uint64 `json:"runtime_generation"`
-	CredentialVersion    uint64 `json:"credential_version"`
+	AccountID      string `json:"account_id"`
+	RouteID        string `json:"route_id"`
+	InstrumentID   string `json:"instrument_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Side           string `json:"side"`
+	Type           string `json:"type"`
+	Quantity       string `json:"quantity"`
+	LimitPrice     string `json:"limit_price,omitempty"`
+	LimitPolicy    string `json:"limit_policy,omitempty"`
+	ReduceOnly     bool   `json:"reduce_only,omitempty"`
+	Leverage       int    `json:"leverage,omitempty"`
+	RuntimeID      string `json:"runtime_id"`
 }
 
 type placeResponse struct {
@@ -551,11 +556,14 @@ func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest
 	if !client.liveWrites {
 		return manual.GatewayResult{}, orders.ErrLiveWriteDisabled
 	}
+	runtimeID := strings.TrimSpace(request.RuntimeID)
+	if runtimeID == "" && request.DesiredStateRevision > 0 && request.RuntimeGeneration > 0 && request.CredentialVersion > 0 {
+		runtimeID = "legacy-runtime"
+	}
 	intent := orderIntent{
 		AccountID: request.AccountID, InstrumentID: request.InstrumentID, Side: request.Side, Quantity: request.Quantity,
-		OrderType: request.OrderType, LimitPrice: request.LimitPrice, TimeInForce: request.TimeInForce, ReduceOnly: request.ReduceOnly,
-		RouteID:              request.RouteID,
-		DesiredStateRevision: uint64(request.DesiredStateRevision), RuntimeGeneration: uint64(request.RuntimeGeneration), CredentialVersion: uint64(request.CredentialVersion),
+		OrderType: request.OrderType, LimitPrice: request.LimitPrice, TimeInForce: request.TimeInForce, ReduceOnly: request.ReduceOnly, Leverage: request.Leverage,
+		RouteID: request.RouteID, RuntimeID: runtimeID,
 	}
 	handoff, err := client.place(ctx, request.CommandID, intent)
 	result := manual.GatewayResult{CommandID: request.CommandID, AccountID: request.AccountID, State: manualState(handoff.Evidence.State), Handoff: handoff}
@@ -689,6 +697,9 @@ func (client *Client) ListAccountRuntimes(ctx context.Context, principal, accoun
 		return nil, fmt.Errorf("read Gateway runtime account: %w", err)
 	}
 	projection := runtime.Data
+	if projection.RuntimeID == "" && projection.Active != nil && projection.Active.DesiredStateRevision > 0 && projection.Active.RuntimeGeneration > 0 && projection.Active.CredentialVersion > 0 {
+		projection.RuntimeID = "legacy-runtime"
+	}
 	if projection.AccountID != accountID || projection.Tombstoned == nil || projection.Readiness == nil || projection.WriteReadiness == nil || projection.Retiring == nil || projection.Capabilities == nil {
 		return nil, fmt.Errorf("Gateway runtime account response is invalid")
 	}
@@ -696,7 +707,7 @@ func (client *Client) ListAccountRuntimes(ctx context.Context, principal, accoun
 		return nil, fmt.Errorf("Gateway runtime account response is invalid")
 	}
 	if projection.Active != nil {
-		if *projection.Tombstoned || projection.DesiredStateRevision == nil || *projection.DesiredStateRevision < 1 || projection.RuntimeGeneration == nil || *projection.RuntimeGeneration < 1 || projection.CredentialVersion == nil || *projection.CredentialVersion < 1 || projection.RuntimeVersion == nil || *projection.RuntimeVersion < 1 || projection.LastAppliedDesiredStateRevision == nil || *projection.LastAppliedDesiredStateRevision < 1 || projection.LastAppliedRuntimeGeneration == nil || *projection.LastAppliedRuntimeGeneration < 1 || *projection.LastAppliedDesiredStateRevision > *projection.DesiredStateRevision || *projection.LastAppliedRuntimeGeneration > *projection.RuntimeGeneration || projection.ObservedAt == nil || projection.ObservedAt.IsZero() || len(projection.Capabilities) == 0 {
+		if *projection.Tombstoned || strings.TrimSpace(projection.RuntimeID) == "" || projection.ObservedAt == nil || projection.ObservedAt.IsZero() || len(projection.Capabilities) == 0 {
 			return nil, fmt.Errorf("Gateway runtime account response is invalid")
 		}
 	} else if !*projection.Tombstoned && projection.Pending == nil {
@@ -734,11 +745,109 @@ func (client *Client) ListAccountRuntimes(ctx context.Context, principal, accoun
 		retiring = append(retiring, *projected)
 	}
 	return []tradinghttp.AccountRuntimeProjection{{
-		AccountID: accountID, Active: active, Pending: pending, Retiring: retiring, DesiredStateRevision: int64Value(projection.DesiredStateRevision), RuntimeGeneration: int64Value(projection.RuntimeGeneration),
-		CredentialVersion: int64Value(projection.CredentialVersion), RuntimeVersion: int64Value(projection.RuntimeVersion), Readiness: *projection.Readiness, WriteReadiness: *projection.WriteReadiness,
-		LastAppliedDesiredStateRevision: int64Value(projection.LastAppliedDesiredStateRevision), LastAppliedRuntimeGeneration: int64Value(projection.LastAppliedRuntimeGeneration),
+		AccountID: accountID, RuntimeID: projection.RuntimeID, Active: active, Pending: pending, Retiring: retiring,
+		Readiness: *projection.Readiness, WriteReadiness: *projection.WriteReadiness,
 		BlockedReason: projection.BlockedReason, Capabilities: projectedCapabilities, ObservedAt: timeValue(projection.ObservedAt),
+		DesiredStateRevision: int64Value(projection.DesiredStateRevision), RuntimeGeneration: int64Value(projection.RuntimeGeneration),
+		CredentialVersion: int64Value(projection.CredentialVersion), RuntimeVersion: int64Value(projection.RuntimeVersion),
+		LastAppliedDesiredStateRevision: int64Value(projection.LastAppliedDesiredStateRevision), LastAppliedRuntimeGeneration: int64Value(projection.LastAppliedRuntimeGeneration),
 	}}, nil
+}
+
+// ListAccountBalances projects one owned account's venue balances into the
+// browser-facing trading service. The account lookup is intentionally first:
+// the capability endpoint is service-authenticated, so it must never become a
+// way for a browser principal to probe an arbitrary account id.
+func (client *Client) ListAccountBalances(ctx context.Context, principal, accountID string) ([]tradinghttp.AccountBalanceProjection, error) {
+	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" {
+		return nil, fmt.Errorf("Gateway balance projection scope is invalid")
+	}
+	if _, err := client.Accounts().Get(ctx, principal, accountID); err != nil {
+		return nil, fmt.Errorf("authorize Gateway balance read: %w", err)
+	}
+	var page struct {
+		Items []struct {
+			AccountID       string `json:"account_id"`
+			Product         string `json:"product"`
+			SettlementAsset string `json:"settlement_asset"`
+			AvailableMargin string `json:"available_margin"`
+			Balance         struct {
+				Asset     string `json:"asset"`
+				Available string `json:"available"`
+				Locked    string `json:"locked"`
+				Total     string `json:"total"`
+			} `json:"balance"`
+		} `json:"items"`
+	}
+	query := url.Values{"account_id": {accountID}, "pagination.limit": {"500"}}
+	if err := client.readLimit(ctx, principal, "/v1/balances", query, &page, balanceResponseLimit); err != nil {
+		return nil, fmt.Errorf("read Gateway balances: %w", err)
+	}
+	items := make([]tradinghttp.AccountBalanceProjection, 0, len(page.Items))
+	for _, item := range page.Items {
+		if item.AccountID != accountID || strings.TrimSpace(item.Product) == "" || strings.TrimSpace(item.Balance.Asset) == "" {
+			return nil, fmt.Errorf("Gateway balance response is invalid")
+		}
+		items = append(items, tradinghttp.AccountBalanceProjection{
+			AccountID: item.AccountID, Product: item.Product, SettlementAsset: item.SettlementAsset,
+			Asset: item.Balance.Asset, Available: item.Balance.Available,
+			AvailableMargin: item.AvailableMargin, Locked: item.Balance.Locked, Total: item.Balance.Total,
+		})
+	}
+	return items, nil
+}
+
+// ListAccountPositions projects current venue positions instead of trading's
+// fill-derived portfolio. The account authority check comes first so the
+// service-authenticated capability route cannot be used to probe another
+// principal's account.
+func (client *Client) ListAccountPositions(ctx context.Context, principal, accountID, instrumentID string) ([]tradinghttp.AccountPositionProjection, error) {
+	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || strings.TrimSpace(instrumentID) == "" {
+		return nil, fmt.Errorf("Gateway position projection scope is invalid")
+	}
+	if _, err := client.Accounts().Get(ctx, principal, accountID); err != nil {
+		return nil, fmt.Errorf("authorize Gateway position read: %w", err)
+	}
+	var page struct {
+		Items []struct {
+			AccountID    string          `json:"account_id"`
+			InstrumentID string          `json:"instrument_id"`
+			Position     json.RawMessage `json:"position"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor,omitempty"`
+	}
+	query := url.Values{"account_id": {accountID}, "instrument_id": {instrumentID}, "pagination.limit": {"100"}}
+	if err := client.readLimit(ctx, principal, "/v1/positions", query, &page, authorityResponseLimit); err != nil {
+		return nil, fmt.Errorf("read Gateway positions: %w", err)
+	}
+	items := make([]tradinghttp.AccountPositionProjection, 0, len(page.Items))
+	for _, item := range page.Items {
+		var position struct {
+			Side          string `json:"side"`
+			Quantity      string `json:"quantity"`
+			EntryPrice    string `json:"entry_price"`
+			MarkPrice     string `json:"mark_price"`
+			UnrealizedPnL string `json:"unrealized_pnl"`
+		}
+		if item.AccountID != accountID || item.InstrumentID != instrumentID || json.Unmarshal(item.Position, &position) != nil {
+			return nil, fmt.Errorf("Gateway position response is invalid")
+		}
+		quantity, err := decimal.NewFromString(position.Quantity)
+		if err != nil || (position.Side != "" && position.Side != "buy" && position.Side != "sell") {
+			return nil, fmt.Errorf("Gateway position response is invalid")
+		}
+		if position.Side == "buy" {
+			quantity = quantity.Abs()
+		} else if position.Side == "sell" {
+			quantity = quantity.Abs().Neg()
+		}
+		items = append(items, tradinghttp.AccountPositionProjection{
+			AccountID: item.AccountID, InstrumentID: item.InstrumentID, Side: position.Side,
+			Quantity: quantity.String(), EntryPrice: position.EntryPrice, MarkPrice: position.MarkPrice,
+			UnrealizedPnL: position.UnrealizedPnL,
+		})
+	}
+	return items, nil
 }
 
 func int64Value(value *int64) int64 {
@@ -759,7 +868,10 @@ func projectRuntimeSnapshot(snapshot *runtimeSnapshotView) (*tradinghttp.Runtime
 	if snapshot == nil {
 		return nil, nil
 	}
-	if _, err := secretstore.ParseOperationID(snapshot.OperationID); err != nil || snapshot.DesiredStateRevision < 1 || snapshot.RuntimeGeneration < 1 || snapshot.CredentialVersion < 1 || !validRequestedState(snapshot.RequestedState) {
+	if snapshot.RuntimeID == "" && snapshot.DesiredStateRevision > 0 && snapshot.RuntimeGeneration > 0 && snapshot.CredentialVersion > 0 {
+		snapshot.RuntimeID = "legacy-runtime"
+	}
+	if _, err := secretstore.ParseOperationID(snapshot.OperationID); err != nil || strings.TrimSpace(snapshot.RuntimeID) == "" || !validRequestedState(snapshot.RequestedState) {
 		return nil, fmt.Errorf("Gateway runtime snapshot response is invalid")
 	}
 	routes := make([]tradinghttp.RouteRuntimeProjection, 0, len(snapshot.Routes))
@@ -769,7 +881,10 @@ func projectRuntimeSnapshot(snapshot *runtimeSnapshotView) (*tradinghttp.Runtime
 		}
 		routes = append(routes, tradinghttp.RouteRuntimeProjection{RouteID: route.RouteID, Product: route.Product, SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID, RequestedState: route.RequestedState, Ready: route.Ready, Reason: route.Reason})
 	}
-	return &tradinghttp.RuntimeSnapshotProjection{DesiredStateRevision: snapshot.DesiredStateRevision, RuntimeGeneration: snapshot.RuntimeGeneration, CredentialVersion: snapshot.CredentialVersion, RequestedState: snapshot.RequestedState, Routes: routes}, nil
+	return &tradinghttp.RuntimeSnapshotProjection{
+		RuntimeID: snapshot.RuntimeID, RequestedState: snapshot.RequestedState, Routes: routes,
+		DesiredStateRevision: snapshot.DesiredStateRevision, RuntimeGeneration: snapshot.RuntimeGeneration, CredentialVersion: snapshot.CredentialVersion,
+	}, nil
 }
 
 func validPendingRuntimeState(state string) bool {
@@ -796,11 +911,9 @@ func (client *Client) fetchMarketData(ctx context.Context, query marketdata.Quer
 
 // fetchCandles reads the chart's bars from the Gateway's internal plane.
 //
-// It sends no account: the internal candle route is keyed by the instrument,
-// and the Gateway resolves a read-ready route on the requested venue itself.
-// That is the same shape as fetchMarketData above, and for the same reason —
-// candles are public data, and the browser asks for an instrument's bars rather
-// than for one account's view of them.
+// It sends no account: the internal candle route is keyed by the instrument and
+// Gateway resolves it through its credential-free public market source. The
+// browser asks for an instrument's bars, never for one account's view of them.
 func (client *Client) fetchCandles(ctx context.Context, query marketdata.CandleQuery) (marketdata.CandlePage, error) {
 	values := url.Values{
 		"venue": {query.Venue}, "environment": {query.Environment}, "product": {query.Product},
@@ -847,8 +960,8 @@ func (client *Client) fetchFundingBoard(ctx context.Context) (marketdata.BoardSn
 
 func (client *Client) fetchFundingHistory(ctx context.Context, read marketdata.FundingHistoryRead) (marketdata.FundingHistorySeries, error) {
 	values := url.Values{
-		"venue": {read.Venue}, "environment": {read.Environment}, "symbol": {read.Symbol},
-		"since": {read.Since.UTC().Format(time.RFC3339)}, "until": {read.Until.UTC().Format(time.RFC3339)},
+		"instrumentId": {read.InstrumentID},
+		"since":        {read.Since.UTC().Format(time.RFC3339)}, "until": {read.Until.UTC().Format(time.RFC3339)},
 	}
 	var result readEnvelope[marketdata.FundingHistorySeries]
 	if err := client.readLimit(ctx, "", "/internal/v1/funding-history", values, &result, fundingHistoryResponseLimit); err != nil {
@@ -885,7 +998,7 @@ func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
 			break
 		}
 	}
-	if strings.TrimSpace(result.Data.Revision) == "" || result.Data.ObservedAt.IsZero() || result.Data.Instruments == nil || (len(result.Data.Instruments) > 0 && !readyInstrument) {
+	if strings.TrimSpace(result.Data.Revision) == "" || result.Data.ObservedAt.IsZero() || len(result.Data.Instruments) == 0 || !readyInstrument {
 		return fmt.Errorf("Gateway market-data route is unavailable")
 	}
 	return nil
@@ -944,13 +1057,13 @@ func (client *Client) place(ctx context.Context, idempotencyID string, intent or
 	if idempotencyID == "" || intent.AccountID == "" || intent.RouteID == "" || intent.InstrumentID == "" || intent.Side == "" || intent.Quantity == "" || (orderType != "market" && orderType != "limit") {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway order intent is incomplete")
 	}
-	if intent.DesiredStateRevision == 0 || intent.RuntimeGeneration == 0 || intent.CredentialVersion == 0 {
+	if strings.TrimSpace(intent.RuntimeID) == "" {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway order fence is incomplete")
 	}
 	payload, err := json.Marshal(placeRequest{
 		AccountID: intent.AccountID, RouteID: intent.RouteID, InstrumentID: intent.InstrumentID, IdempotencyKey: idempotencyID,
-		Side: intent.Side, Type: orderType, Quantity: intent.Quantity, LimitPrice: intent.LimitPrice, LimitPolicy: policy, ReduceOnly: intent.ReduceOnly,
-		DesiredStateRevision: intent.DesiredStateRevision, RuntimeGeneration: intent.RuntimeGeneration, CredentialVersion: intent.CredentialVersion,
+		Side: intent.Side, Type: orderType, Quantity: intent.Quantity, LimitPrice: intent.LimitPrice, LimitPolicy: policy, ReduceOnly: intent.ReduceOnly, Leverage: intent.Leverage,
+		RuntimeID: intent.RuntimeID,
 	})
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("encode Gateway order")
@@ -1079,4 +1192,3 @@ func (client *Client) fetchFills(ctx context.Context, gatewayOrderID, accountID,
 	}
 	return nil, fmt.Errorf("Gateway fill pagination exceeded %d pages", maxFillPages)
 }
-

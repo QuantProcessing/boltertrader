@@ -16,6 +16,8 @@ import (
 type fakePublicWSBackend struct {
 	mu sync.Mutex
 
+	bookCallbacks streamCallbacks[exchange.BookEvent]
+
 	startBBOCalls int
 	stopBBOCalls  int
 	closeCalls    int
@@ -27,10 +29,13 @@ type fakePublicWSBackend struct {
 }
 
 func (backend *fakePublicWSBackend) StartOrderBook(
-	context.Context,
-	exchange.Instrument,
-	streamCallbacks[exchange.BookEvent],
+	_ context.Context,
+	_ exchange.Instrument,
+	callbacks streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
+	backend.mu.Lock()
+	backend.bookCallbacks = callbacks
+	backend.mu.Unlock()
 	return func() error { return nil }, nil
 }
 
@@ -116,6 +121,13 @@ func (backend *fakePublicWSBackend) emitBBO(event exchange.BBOEvent) {
 	emit(event)
 }
 
+func (backend *fakePublicWSBackend) emitBook(event exchange.BookEvent) {
+	backend.mu.Lock()
+	emit := backend.bookCallbacks.Event
+	backend.mu.Unlock()
+	emit(event)
+}
+
 func (backend *fakePublicWSBackend) statusBBO(status backendStatus) {
 	backend.mu.Lock()
 	emit := backend.bboCallbacks.Status
@@ -182,6 +194,45 @@ func TestPublicWebSocketIsLazyAndSharesOneNativeTopic(t *testing.T) {
 	}
 	if backend.stopBBOCalls != 1 {
 		t.Fatalf("native topic stops = %d, want 1", backend.stopBBOCalls)
+	}
+}
+
+func TestPublicWebSocketRejectsBackendOrderBookContractViolations(t *testing.T) {
+	backend := &fakePublicWSBackend{}
+	socket := newPublicWebSocket(
+		clientMeta{venue: exchange.VenueBinance, product: exchange.ProductSpot},
+		backend,
+	)
+	instrument := websocketTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT")
+	subscription, err := socket.WatchOrderBook(t.Context(), exchange.WatchRequest{Instrument: instrument})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = subscription.Close() })
+
+	backend.emitBook(exchange.BookEvent{
+		Kind: exchange.EventSnapshot, Instrument: instrument, Sequence: "10",
+		Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(1)}},
+	})
+	select {
+	case event := <-subscription.Events():
+		if event.Kind != exchange.EventSnapshot || event.Sequence != "10" {
+			t.Fatalf("event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("valid backend event was not published")
+	}
+
+	backend.emitBook(exchange.BookEvent{
+		Kind: exchange.EventDelta, Instrument: instrument, Sequence: "12", Previous: "11",
+	})
+	select {
+	case streamErr := <-subscription.Errors():
+		if !errors.Is(streamErr, exchange.ErrMalformedResponse) {
+			t.Fatalf("error=%v, want malformed response", streamErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backend contract violation was not surfaced")
 	}
 }
 

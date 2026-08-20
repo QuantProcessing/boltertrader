@@ -3,12 +3,15 @@ import { Layers } from "lucide-react";
 import { describeError } from "@/api/errors";
 import type { Account, ArbitrageLegView, ArbitragePair, ArbitragePairState, CommandState, Position } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import { InstrumentName } from "@/components/ui/instrument-name";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Num, Side } from "@/components/ui/num";
 import { StateBadge, Tag, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
+import { arbitrageBlockerLabel } from "@/features/funding/blockers";
 import { useArbitragePositions, useCancelArbitrageLeg, useCloseArbitrage } from "@/features/funding/queries";
-import { formatTimestamp, splitInstrument } from "@/lib/format";
+import { formatTimestamp } from "@/lib/format";
+import { instrumentSymbol } from "@/lib/instrument";
 import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
@@ -132,7 +135,7 @@ function PairRow({
   const long = pair.legs.filter((leg) => leg.leg === "long");
   const short = pair.legs.filter((leg) => leg.leg === "short");
   const partial = pair.state === "partially_open";
-  const symbol = splitInstrument(pair.legs[0]?.instrumentId ?? "").base;
+  const symbol = instrumentSymbol(pair.legs[0]?.instrumentId);
 
   return (
     <li
@@ -160,8 +163,11 @@ function PairRow({
 
       {partial ? <p className="mt-1.5 text-meta text-danger">{t("arb.directional")}</p> : null}
 
-      {/* The blockers are the server's own sentences. */}
-      {pair.blockers.length > 0 ? <p className="mt-1.5 text-meta text-warn">{pair.blockers.join(" · ")}</p> : null}
+      {pair.blockers.length > 0 ? (
+        <p className="mt-1.5 text-meta text-warn">
+          {pair.blockers.map((blocker) => arbitrageBlockerLabel(blocker, t)).join(" · ")}
+        </p>
+      ) : null}
 
       <div className="mt-2 grid gap-2 md:grid-cols-2">
         <LegColumn legs={long} pair={pair} venues={venues} cancelling={cancelling} onCancel={onCancel} />
@@ -252,7 +258,7 @@ function LegCard({
       </div>
 
       <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-meta text-dim">
-        <span className="text-text">{leg.instrumentId}</span>
+        <InstrumentName instrumentId={leg.instrumentId} />
         <span>
           {/* `market` is the order type as the server names it, the same word
               the blotter's type column prints. */}

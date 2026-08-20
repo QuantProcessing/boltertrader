@@ -55,7 +55,7 @@ func (operation CredentialOperation) Validate() error {
 		return errors.New("credential operation identity is invalid")
 	}
 	switch operation.Kind {
-	case OperationCreate, OperationRotate, OperationRetire:
+	case OperationCreate, OperationRetire:
 	default:
 		return errors.New("credential operation kind is invalid")
 	}
@@ -63,9 +63,6 @@ func (operation CredentialOperation) Validate() error {
 	case OperationAwaitingMaterial, OperationStored, OperationApplying, OperationActive, OperationCleanupPending, OperationAbandoned, OperationFailed:
 	default:
 		return errors.New("credential operation state is invalid")
-	}
-	if operation.TargetDesiredStateRevision < 1 || operation.TargetRuntimeGeneration < 1 || operation.TargetCredentialVersion < 1 {
-		return errors.New("credential operation fence is invalid")
 	}
 	proofRecorded := operation.RotationCleanupTombstoneRevision != 0 || !operation.RotationCleanupCompletedAt.IsZero()
 	if proofRecorded && (operation.Kind != OperationRotate || operation.RotationCleanupTombstoneRevision != operation.TargetDesiredStateRevision || operation.RotationCleanupCompletedAt.IsZero()) {
@@ -76,6 +73,7 @@ func (operation CredentialOperation) Validate() error {
 
 type AccountFence struct {
 	AccountID            string
+	RuntimeID            string
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
@@ -83,7 +81,7 @@ type AccountFence struct {
 
 func (fence AccountFence) Validate() error {
 	if strings.TrimSpace(fence.AccountID) == "" || fence.AccountID != strings.TrimSpace(fence.AccountID) ||
-		fence.DesiredStateRevision < 1 || fence.RuntimeGeneration < 1 || fence.CredentialVersion < 1 {
+		(fence.RuntimeID == "" && (fence.DesiredStateRevision < 1 || fence.RuntimeGeneration < 1 || fence.CredentialVersion < 1)) {
 		return errors.New("account fence is invalid")
 	}
 	return nil

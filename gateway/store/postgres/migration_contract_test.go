@@ -245,3 +245,42 @@ func TestAccountConsolidationMigrationFreezesTheSingleAccountAuthority(t *testin
 		}
 	}
 }
+
+func TestTerminalAccountSecretRefsMigrationAllowsCredentialFreeRemovalOnly(t *testing.T) {
+	sql := strings.ToLower(TerminalAccountSecretRefsMigrationSQL())
+	for _, required := range []string{
+		"drop constraint gateway_desired_accounts_secret_ref_check",
+		"add constraint gateway_desired_accounts_secret_ref_check",
+		"requested_state = 'removed'",
+		"secret_ref is null",
+		"previous_secret_ref is null",
+		"requested_state <> 'removed'",
+		"secret_ref is not null or requested_state = 'creating'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("terminal account credential migration missing %q", required)
+		}
+	}
+}
+
+func TestSimpleAccountsMigrationDeletesVersionAndRotationPersistence(t *testing.T) {
+	sql := strings.ToLower(SimpleAccountsMigrationSQL())
+	for _, required := range []string{
+		"add column runtime_id uuid",
+		"drop table if exists gateway_rotation_finalizations",
+		"drop column desired_state_revision",
+		"drop column runtime_generation",
+		"drop column credential_version",
+		"drop column target_desired_state_revision",
+		"drop column target_runtime_generation",
+		"drop column target_credential_version",
+		"drop column rotation_fence_id",
+		"drop column previous_secret_ref",
+		"drop column tombstone_revision",
+		"check (kind in ('create', 'retire'))",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("simple account migration missing %q", required)
+		}
+	}
+}

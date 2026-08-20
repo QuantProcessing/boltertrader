@@ -73,13 +73,14 @@ trading，注入服务令牌与身份头，并剥离浏览器自己带来的这�
 ```sh
 make test                 # Go，不需要凭证，short mode
 make test-compose         # compose 配置、镜像构建、加固、冒烟、持久化
-cd web && npm run build && npm test && npm run test:e2e
+cd web && npm run build && npm test
 ```
 
 上面每一套都是离线的、不需要凭证的、确定性的，没有任何一套会碰到交易所。已经不存在
 可供显式启用的带凭证 target——`TestMakefileRecipesNeverEnableCredentialedWrites`
-会读 Makefile 里的每一条 recipe，一旦某条为写入开闸就失败。想不接交易所把产品点着走
-一遍，跑 `npm --prefix web run dev:mock`，它由 `web/src/mocks/` 应答整个 API 面。
+会读 Makefile 里的每一条 recipe，一旦某条为写入开闸就失败。`make up` 会在
+`http://127.0.0.1:18090` 提供真实应用；默认匿名模式为只读，不需要交易所凭证，读取的
+是实时公共行情。
 
 ## 当前支持
 

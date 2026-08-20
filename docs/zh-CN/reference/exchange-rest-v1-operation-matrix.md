@@ -159,4 +159,4 @@ venue 今天仍然可用。已经没有可供认证的 non-production environmen
 credential 的调用都直达真实 venue，`PlaceOrder`、`CancelOrder`、`SetLeverage`
 与 WebSocket order command 都会花掉真金白银。对 production 的验证只能使用专用
 账户、显式 symbol、显式 notional bound、串行执行与 terminal cleanup evidence。
-如果只是需要点着看、完全不想碰 venue，请用前端的离线 mock。
+只需要实时公共行情时，请使用应用默认的匿名只读模式。

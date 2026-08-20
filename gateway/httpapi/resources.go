@@ -26,8 +26,11 @@ type fillResource struct {
 }
 
 type balanceResource struct {
-	AccountID domain.AccountID `json:"account_id"`
-	Balance   exchange.Balance `json:"balance"`
+	AccountID       domain.AccountID `json:"account_id"`
+	Product         exchange.Product `json:"product"`
+	SettlementAsset string           `json:"settlement_asset,omitempty"`
+	AvailableMargin string           `json:"available_margin,omitempty"`
+	Balance         exchange.Balance `json:"balance"`
 }
 
 type positionResource struct {
@@ -258,6 +261,7 @@ func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		var balances []exchange.Balance
+		var availableMargin string
 		switch resource.Product {
 		case exchange.ProductSpot:
 			client, clientErr := handler.accounts.SpotRoute(resource.AccountID, resource.Settlement)
@@ -272,7 +276,12 @@ func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
 				handler.fail(w, clientErr)
 				return
 			}
-			balances, err = client.Balances(r.Context())
+			var accountSnapshot exchange.PerpAccount
+			accountSnapshot, err = client.PerpAccount(r.Context())
+			balances = accountSnapshot.Balances
+			if accountSnapshot.Available.Valid {
+				availableMargin = accountSnapshot.Available.Value.String()
+			}
 		default:
 			err = account.ErrProductMismatch
 		}
@@ -281,7 +290,17 @@ func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, balance := range balances {
-			items = append(items, balanceResource{AccountID: resource.AccountID, Balance: balance})
+			// Venue account endpoints commonly return every asset they have ever
+			// listed. Binance alone contributes hundreds of all-zero rows, which
+			// are not account state and can crowd real balances out of the bounded
+			// response. Keep every row carrying money; omit only exact zeroes.
+			if balance.Available.IsZero() && balance.Locked.IsZero() && balance.Total.IsZero() {
+				continue
+			}
+			items = append(items, balanceResource{
+				AccountID: resource.AccountID, Product: resource.Product,
+				SettlementAsset: resource.Settlement, AvailableMargin: availableMargin, Balance: balance,
+			})
 			if len(items) == selection.limit {
 				break
 			}

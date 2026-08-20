@@ -72,6 +72,47 @@ func NewAsterUSDTPerp(userAddress, apiWalletPrivateKey, expectedSigner string, s
 	}
 }
 
+// NewAsterPublicSpot constructs only the credential-free REST side of Aster.
+// Aster's ordinary client constructor requires a signer because it also owns
+// order methods; public market reads need the endpoint profile and no security
+// context at all.
+func NewAsterPublicSpot(settings Settings) exchange.SpotClient {
+	profile, err := astercommon.NewProfile(astercommon.ProductSpot)
+	if err == nil {
+		profile, err = profile.WithEndpointOverrides(settings.Endpoint, settings.WebSocketEndpoint, settings.WebSocketEndpoint)
+	}
+	var sdk *asterspot.Client
+	if err == nil {
+		sdk, err = asterspot.NewClient(profile, nil)
+	}
+	if err == nil && sdk != nil {
+		sdk.WithHTTPClient(settings.HTTPClient)
+	}
+	return &asterSpotClient{
+		spotClient: spotClient{meta: clientMetaFromSettings(exchange.VenueAster, exchange.ProductSpot, settings)},
+		sdk:        sdk, profile: profile,
+	}
+}
+
+// NewAsterPublicPerp is the perpetual counterpart of NewAsterPublicSpot.
+func NewAsterPublicPerp(settings Settings) exchange.PerpClient {
+	profile, err := astercommon.NewProfile(astercommon.ProductPerp)
+	if err == nil {
+		profile, err = profile.WithEndpointOverrides(settings.Endpoint, settings.WebSocketEndpoint, settings.WebSocketEndpoint)
+	}
+	var sdk *asterperp.Client
+	if err == nil {
+		sdk, err = asterperp.NewClient(profile, nil)
+	}
+	if err == nil && sdk != nil {
+		sdk.WithHTTPClient(settings.HTTPClient)
+	}
+	return &asterPerpClient{
+		perpClient: perpClient{meta: clientMetaFromSettings(exchange.VenueAster, exchange.ProductPerp, settings)},
+		sdk:        sdk, profile: profile,
+	}
+}
+
 func newAsterProfileAndSecurity(product astercommon.Product, user, key, signer string, settings Settings) (astercommon.Profile, *astercommon.SecurityContext, error) {
 	profile, err := astercommon.NewProfile(product)
 	if err != nil {
@@ -1395,7 +1436,7 @@ func (backend *asterSpotWSBackend) StartOrderBook(ctx context.Context, instrumen
 		if err != nil {
 			return err
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Bids: book.Bids, Asks: book.Asks, Time: book.Time})
+		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Previous: asterDepthPrevious(event.FirstUpdateID, event.FinalUpdateIDLast), Bids: book.Bids, Asks: book.Asks, Time: book.Time})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeIncrementOrderBook(native, "") }, err
@@ -1415,10 +1456,20 @@ func (backend *asterPerpWSBackend) StartOrderBook(ctx context.Context, instrumen
 		if err != nil {
 			return err
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Previous: strconv.FormatInt(event.FinalUpdateIDLast, 10), Bids: book.Bids, Asks: book.Asks, Time: book.Time})
+		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Previous: asterDepthPrevious(event.FirstUpdateID, event.FinalUpdateIDLast), Bids: book.Bids, Asks: book.Asks, Time: book.Time})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeIncrementOrderBook(native, "") }, err
+}
+
+func asterDepthPrevious(firstUpdateID, previousFinalUpdateID int64) string {
+	if previousFinalUpdateID > 0 {
+		return strconv.FormatInt(previousFinalUpdateID, 10)
+	}
+	if firstUpdateID > 0 {
+		return strconv.FormatInt(firstUpdateID-1, 10)
+	}
+	return ""
 }
 
 func (backend *asterSpotWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {

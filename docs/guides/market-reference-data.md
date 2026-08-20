@@ -18,9 +18,10 @@ venue client. No layer above the gateway knows a native symbol.
 
 ## Reference data
 
-The gateway loads the Catalog per account at startup and refreshes it. It
-exposes `/v1/instruments`, `/v1/rules`, `/v1/capabilities`, and
-`/v1/risk-limits`.
+The gateway loads and refreshes the public Catalog directly from every trusted
+route profile. This discovery uses no account and no credentials; configuring
+an account later adds trading eligibility, not instruments. The gateway also
+exposes account-scoped `/v1/rules`, `/v1/capabilities`, and `/v1/risk-limits`.
 
 The trading service republishes what the interface needs as
 `/api/v1/catalog/venues` and `/api/v1/catalog/instruments`. Instrument
@@ -28,6 +29,29 @@ identifiers are the canonical segmented form throughout — venue, environment,
 product, an optional settlement asset, then the canonical symbol — never a
 venue's own symbol string. See
 [Accounts and instruments](../concepts/accounts-instruments.md).
+
+### Instrument identity boundary
+
+There is one input identity and one output formatter:
+
+- A browser or product API submits only `instrumentId`. It does not submit
+  `venue`, `product`, `settlement`, or `symbol` beside it. The trading Catalog
+  resolves those facts, so a request cannot name Binance in one field and an
+  OKX contract in another.
+- The Gateway's public instrument directory maps that id to exactly one route
+  profile and the venue's `nativeId`/`nativeSymbol`. Native identity stops at
+  the Gateway boundary and is never reconstructed from a display symbol.
+- Responses keep `instrumentId` for joins, commands and audit. The interface
+  renders `baseAsset` + `quoteAsset` where structured facts are present, with a
+  shared canonical-id formatter as the fallback. Raw ids remain available as
+  titles for diagnostics but are not primary labels.
+- Accounts add execution reachability only. They never create an instrument or
+  decide whether it is listed. Therefore `account_unreachable` and
+  `instrument_identity_unresolved` are separate states.
+
+This contract is shared by the instrument picker, market data, candles,
+funding history, manual previews, arbitrage legs, positions, orders and fills.
+Adding another symbol parser in one of those consumers is a boundary violation.
 
 `/v1/risk-limits` answers honestly rather than approximately: venue risk limits
 are not normalized, so it reports that they are unavailable and says why. It is
@@ -71,8 +95,8 @@ quietly.
 
 ## Candles
 
-`GET /api/v1/candles` serves the chart. It takes the same instrument
-coordinates plus an interval and a bound, and returns at most five hundred
+`GET /api/v1/candles` serves the chart. It takes the same canonical
+`instrumentId` plus an interval and a bound, and returns at most five hundred
 candles — the same bound the gateway applies, so a longer page did not come from
 a gateway that agrees about the limit.
 
@@ -90,19 +114,19 @@ disagree with each other.
 Funding arrives on two surfaces, and they are not the same read.
 
 The funding fields on `/api/v1/market-data` — the current rate, its observation
-and next-funding times, the twenty historical points above — belong to one
-instrument on one account. They come with the rest of that instrument's
-snapshot, through that account's own venue client, and they spend that account's
-rate-limit budget.
+and next-funding times, and the twenty historical points above — belong to one
+public instrument snapshot. They use the same credential-free route as its book
+and candles and are unrelated to whether an account is configured.
 
 `GET /api/v1/funding-board` and `GET /api/v1/funding-history` need no account at
 all. The gateway answers them from venue clients it builds without credentials,
 so they resolve before a single account has been declared. The board is the
 whole cross-venue matrix — one column per venue, product, and settlement asset —
 each column carrying its current rate, its settlement interval, and whether that
-venue publishes history. The history is one symbol on one venue over one window,
-`7d` or `30d` and nothing else; an open range would mean paginating a venue
-call, and this read exists to be a single call.
+venue publishes history. The history is one canonical `instrumentId` over one
+window, `7d` or `30d` and nothing else. The Gateway resolves that id to the exact
+route profile and native address before calling the venue; an open range would
+mean paginating a venue call, and this read exists to be a single call.
 
 Rates from different venues are not comparable as published, because venues do
 not settle on the same schedule. Anything that ranks them normalizes to a daily

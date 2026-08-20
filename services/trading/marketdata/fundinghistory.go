@@ -76,16 +76,14 @@ func (window FundingWindow) span() (time.Duration, error) {
 // FundingHistoryQuery is what the browser asks for: one leg of a spread, over a
 // named window.
 type FundingHistoryQuery struct {
-	Venue       string
-	Environment string
-	Symbol      string
-	Window      FundingWindow
+	InstrumentID string
+	Venue        string
+	Window       FundingWindow
 }
 
 func (query FundingHistoryQuery) validate() error {
-	if strings.TrimSpace(query.Venue) == "" || strings.TrimSpace(query.Environment) == "" ||
-		strings.TrimSpace(query.Symbol) == "" {
-		return fmt.Errorf("venue, environment, and symbol are required")
+	if strings.TrimSpace(query.InstrumentID) == "" || strings.TrimSpace(query.Venue) == "" {
+		return fmt.Errorf("instrumentId and resolved venue are required")
 	}
 	_, err := query.Window.span()
 	return err
@@ -100,11 +98,10 @@ func (query FundingHistoryQuery) validate() error {
 // answering the same question is how a test that passes at noon fails at a
 // settlement boundary.
 type FundingHistoryRead struct {
-	Venue       string
-	Environment string
-	Symbol      string
-	Since       time.Time
-	Until       time.Time
+	InstrumentID string
+	Venue        string
+	Since        time.Time
+	Until        time.Time
 }
 
 // FundingHistorySeries is what the browser receives, and it is also exactly what
@@ -112,13 +109,12 @@ type FundingHistoryRead struct {
 // unknown fields disallowed, so these tags are pinned to that projection rather
 // than chosen here.
 type FundingHistorySeries struct {
-	Venue       string                `json:"venue"`
-	Environment string                `json:"environment"`
-	Symbol      string                `json:"symbol"`
-	Since       time.Time             `json:"since"`
-	Until       time.Time             `json:"until"`
-	ObservedAt  time.Time             `json:"observedAt"`
-	Points      []FundingHistoryPoint `json:"points"`
+	InstrumentID string                `json:"instrumentId"`
+	Venue        string                `json:"venue"`
+	Since        time.Time             `json:"since"`
+	Until        time.Time             `json:"until"`
+	ObservedAt   time.Time             `json:"observedAt"`
+	Points       []FundingHistoryPoint `json:"points"`
 }
 
 // FundingHistoryPoint is one settled funding payment.
@@ -141,8 +137,8 @@ type FundingHistorySource interface {
 //
 // Like CandleService and unlike BoardService it keeps no cache. The board is one
 // parameterless document that every visitor to the matrix asks for at once; a
-// history series is one venue's one symbol over one window, fetched when someone
-// opens a pair. Caching it would mean a map keyed by three fields that grows
+// history series is one canonical instrument over one window, fetched when
+// someone opens a pair. Caching it would mean a map keyed by instrument that grows
 // with the instrument universe, to serve a curve that only changes when the
 // venue settles. The browser's query cache already holds it for as long as the
 // page is open, and the shared venue budget is what stops a reload storm from
@@ -176,7 +172,7 @@ func (service *FundingHistoryService) Get(ctx context.Context, query FundingHist
 	// window check below against the very value that produced it.
 	until := service.now().UTC().Truncate(time.Second)
 	read := FundingHistoryRead{
-		Venue: query.Venue, Environment: query.Environment, Symbol: query.Symbol,
+		InstrumentID: query.InstrumentID, Venue: query.Venue,
 		Since: until.Add(-span), Until: until,
 	}
 	if err := service.budget.Acquire(ctx, query.Venue); err != nil {
@@ -210,7 +206,7 @@ func (service *FundingHistoryService) BudgetStatus(venue string) BudgetStatus {
 // reason: the chart library throws on unordered timestamps, which surfaces as a
 // blank panel and a stack trace instead of an error anyone can act on.
 func validateFundingHistory(read FundingHistoryRead, series FundingHistorySeries) error {
-	if series.Venue != read.Venue || series.Environment != read.Environment || series.Symbol != read.Symbol {
+	if series.InstrumentID != read.InstrumentID || series.Venue != read.Venue {
 		return fmt.Errorf("Gateway funding history identity mismatch")
 	}
 	if !series.Since.Equal(read.Since) || !series.Until.Equal(read.Until) {

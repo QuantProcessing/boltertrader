@@ -1,13 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /* ---------------------------------------------------------------------------
- * The same MVP path, against a real stack.
- *
- * The offline suite proves the frontend. This one proves the seam: that the
- * envelopes the fake edge speaks are the envelopes the services actually send,
- * that a preview sealed by trading is accepted by trading, and that an order
- * this app places is an order the venue really rests. It is the run the plan's
- * P5 gate means.
+ * The MVP path against a real stack. It proves that a preview sealed by trading
+ * is accepted by trading and that an order this app places is an order the
+ * venue really rests.
  *
  * It needs a stack (`make up`), an account with working credentials, and the
  * bootstrap password — which is not on disk anywhere, only its hash is, so it

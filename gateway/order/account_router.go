@@ -207,8 +207,27 @@ type exchangeDriver struct {
 	lookup exchange.ExactOrderLookup
 }
 
+type leverageSetter interface {
+	SetLeverage(context.Context, exchange.SetLeverageRequest) (exchange.Leverage, error)
+}
+
 func (driver *exchangeDriver) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
 	return driver.orders.PlaceOrder(ctx, request)
+}
+
+func (driver *exchangeDriver) SetLeverage(ctx context.Context, instrument exchange.Instrument, leverage int) error {
+	setter, ok := driver.orders.(leverageSetter)
+	if !ok {
+		return fmt.Errorf("set leverage precondition: %w", exchange.ErrUnsupported)
+	}
+	result, err := setter.SetLeverage(ctx, exchange.SetLeverageRequest{Instrument: instrument, Leverage: leverage})
+	if err != nil {
+		return fmt.Errorf("set leverage precondition: %w", err)
+	}
+	if result.Effective != 0 && result.Effective != leverage {
+		return fmt.Errorf("set leverage precondition returned %d, want %d: %w", result.Effective, leverage, exchange.ErrMalformedResponse)
+	}
+	return nil
 }
 
 func (driver *exchangeDriver) CancelOrder(ctx context.Context, request exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {

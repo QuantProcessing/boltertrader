@@ -51,6 +51,23 @@ func fundingOptionalNonNegative(value string) exchange.OptionalDecimal {
 	return exchange.OptionalDecimal{Value: parsed, Valid: true}
 }
 
+// fundingOpenInterestNotional converts venue-native open interest into quote
+// notional. Most linear venues report base units and use a multiplier of one;
+// contract-count venues such as Gate pass their catalog multiplier instead.
+// Missing or malformed conversion inputs stay absent rather than putting a
+// quantity with the wrong unit into a cross-venue ranking.
+func fundingOpenInterestNotional(openInterest, markPrice string, multiplier decimal.Decimal) exchange.OptionalDecimal {
+	quantity, err := decimal.NewFromString(openInterest)
+	if err != nil || quantity.IsNegative() || !multiplier.IsPositive() {
+		return exchange.OptionalDecimal{}
+	}
+	price, err := decimal.NewFromString(markPrice)
+	if err != nil || !price.IsPositive() {
+		return exchange.OptionalDecimal{}
+	}
+	return exchange.OptionalDecimal{Value: quantity.Mul(multiplier).Mul(price), Valid: true}
+}
+
 // baseFromCanonical recovers the base asset from an already-canonical symbol.
 //
 // The bulk ticker endpoints send no base/quote metadata — only the native

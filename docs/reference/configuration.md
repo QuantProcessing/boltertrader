@@ -57,14 +57,16 @@ by `root`, which a container running as your uid could not write to.
 
 ## `BT_LIVE_PRIVATE_WRITES_ENABLED` — the live-write switch
 
-Read by the trading service. It is the only thing that decides whether a private
-write reaches a venue, and **it is armed unless you disarm it**.
+Read independently by both the trading service and the gateway. They use the
+same strict parser and default so an order cannot pass one boundary only to be
+rejected by the other. It is the only operator switch that decides whether a
+private write reaches a venue, and **it is armed unless you disarm it**.
 
 | Value | Effect |
 | --- | --- |
 | unset, or `true` | Private writes are admitted. An order reaches a real exchange |
 | `false` | Every private write is refused with `LIVE_PRIVATE_WRITE_DISABLED` |
-| anything else | The service refuses to start |
+| anything else | Both services refuse to start |
 
 The default opens rather than closes, which is the opposite of every other
 variable on this page. It reads that way because admission used to be a
@@ -93,8 +95,9 @@ shell always wins. Start from [`.env.example`](../../.env.example).
 
 Every name here reaches production. There is no demo or testnet tier behind
 them — the venues implemented those too differently to keep working, and the
-suites that used them were removed along with their credentials. To exercise the
-product without a venue, use the offline mock described in [Testing](testing.md).
+suites that used them were removed along with their credentials. The default
+anonymous application mode needs no venue credentials, is read-only, and reads
+live public market data.
 
 | Venue | Credentials |
 | --- | --- |

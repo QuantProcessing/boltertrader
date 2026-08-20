@@ -63,6 +63,7 @@ type lifecycleGateway struct {
 	getErrByAccount   map[string]error
 	truth             GatewayRuntimeTruth
 	finalization      RotationCleanupProof
+	lastRuntimeID     string
 }
 
 type createEffectStore struct {
@@ -86,8 +87,14 @@ type ambiguousApplyError struct{ ambiguous bool }
 func (err ambiguousApplyError) Error() string                { return "gateway apply failed" }
 func (err ambiguousApplyError) ResultMayHaveCommitted() bool { return err.ambiguous }
 
+type codedApplyError struct{ code string }
+
+func (err codedApplyError) Error() string             { return err.code }
+func (err codedApplyError) StableFailureCode() string { return err.code }
+
 func (gateway *lifecycleGateway) ApplyDesired(_ context.Context, apply DesiredApply) (GatewayRuntimeTruth, error) {
 	gateway.applyCalls++
+	gateway.lastRuntimeID = apply.Account.RuntimeID
 	if err := gateway.applyErrByAccount[apply.Account.ID]; err != nil {
 		return GatewayRuntimeTruth{}, err
 	}
@@ -95,20 +102,27 @@ func (gateway *lifecycleGateway) ApplyDesired(_ context.Context, apply DesiredAp
 		return GatewayRuntimeTruth{}, gateway.applyErr
 	}
 	if gateway.truth.AccountID != "" {
+		if gateway.truth.RuntimeID == "" {
+			gateway.truth.RuntimeID = apply.Account.RuntimeID
+		}
 		return gateway.truth, nil
 	}
 	routes := make([]GatewayRuntimeRoute, 0, len(apply.Account.Routes))
 	for _, route := range apply.Account.Routes {
 		routes = append(routes, GatewayRuntimeRoute{RouteID: route.ID, Product: route.Product, SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID, RequestedState: route.RequestedState, Ready: route.RequestedState == RouteActive})
 	}
-	return GatewayRuntimeTruth{OperationID: apply.OperationID, AccountID: apply.Account.ID, DesiredStateRevision: apply.Account.DesiredStateRevision, RuntimeGeneration: apply.Account.RuntimeGeneration, CredentialVersion: apply.Account.CredentialVersion, RequestedState: apply.Account.State, Routes: routes, Active: true, Tombstoned: gateway.tombstoned}, nil
+	return GatewayRuntimeTruth{OperationID: apply.OperationID, AccountID: apply.Account.ID, RuntimeID: apply.Account.RuntimeID, DesiredStateRevision: apply.Account.DesiredStateRevision, RuntimeGeneration: apply.Account.RuntimeGeneration, CredentialVersion: apply.Account.CredentialVersion, RequestedState: apply.Account.State, Routes: routes, Active: true, Tombstoned: gateway.tombstoned}, nil
 }
 func (gateway *lifecycleGateway) GetRuntimeTruth(_ context.Context, accountID string) (GatewayRuntimeTruth, error) {
 	gateway.getCalls++
 	if err := gateway.getErrByAccount[accountID]; err != nil {
 		return GatewayRuntimeTruth{}, err
 	}
-	return gateway.truth, nil
+	truth := gateway.truth
+	if truth.RuntimeID == "" {
+		truth.RuntimeID = gateway.lastRuntimeID
+	}
+	return truth, nil
 }
 
 func (gateway *lifecycleGateway) FinalizeRotation(_ context.Context, request RotationCleanupRequest) (RotationCleanupProof, error) {
@@ -184,9 +198,8 @@ func TestExactGatewayActiveTruthRejectsOperationAndRouteMismatch(t *testing.T) {
 		"extra route": func(truth *GatewayRuntimeTruth) {
 			truth.Routes = append(truth.Routes, GatewayRuntimeRoute{RouteID: "extra", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteDisabled})
 		},
-		"duplicate route":  func(truth *GatewayRuntimeTruth) { truth.Routes = append(truth.Routes, truth.Routes[0]) },
-		"field mismatch":   func(truth *GatewayRuntimeTruth) { truth.Routes[0].RouteProfileID = "different" },
-		"active not ready": func(truth *GatewayRuntimeTruth) { truth.Routes[0].Ready = false },
+		"duplicate route": func(truth *GatewayRuntimeTruth) { truth.Routes = append(truth.Routes, truth.Routes[0]) },
+		"field mismatch":  func(truth *GatewayRuntimeTruth) { truth.Routes[0].RouteProfileID = "different" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			truth := base
@@ -196,6 +209,165 @@ func TestExactGatewayActiveTruthRejectsOperationAndRouteMismatch(t *testing.T) {
 				t.Fatal("mismatched runtime truth accepted")
 			}
 		})
+	}
+	notReady := base
+	notReady.Routes = append([]GatewayRuntimeRoute(nil), base.Routes...)
+	notReady.Routes[0].Ready = false
+	if !exactGatewayActiveTruth(operationID, account, notReady) {
+		t.Fatal("applied account fence was coupled to route readiness")
+	}
+}
+
+func TestDurableCreateActivatesAccountWhileRuntimeRoutesWarm(t *testing.T) {
+	store := NewMemoryStore()
+	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+	gateway := &lifecycleGateway{truth: GatewayRuntimeTruth{
+		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "acct_1",
+		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
+		RequestedState: StateCreating, Active: true,
+		Routes: []GatewayRuntimeRoute{{
+			RouteID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT",
+			RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive, Ready: false,
+		}},
+	}}
+	service, err := New(Options{
+		Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+		ID: func() string { return "acct_1" },
+		OperationID: func() secretstore.OperationID {
+			return "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), durableCreateRequest(), "principal_1", "create-warming")
+	if err != nil || created.ID != "acct_1" || created.State != StateActive {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	operation, err := store.GetCredentialOperation(context.Background(), "018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
+	if err != nil || operation.State != OperationActive {
+		t.Fatalf("operation=%+v err=%v", operation, err)
+	}
+}
+
+func TestDurableCreateReturnsAcceptedAccountAfterCandidateProbeFailure(t *testing.T) {
+	store := NewMemoryStore()
+	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+	gateway := &lifecycleGateway{applyErr: errors.New("runtime candidate failed")}
+	service, err := New(Options{
+		Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+		ID: func() string { return "acct_1" },
+		OperationID: func() secretstore.OperationID {
+			return "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), durableCreateRequest(), "principal_1", "create-probe-failed")
+	if err != nil || created.ID != "acct_1" || created.State != StateCreating {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	operation, err := store.GetCredentialOperation(context.Background(), "018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
+	if err != nil || operation.State != OperationApplying {
+		t.Fatalf("operation=%+v err=%v", operation, err)
+	}
+}
+
+func TestReconcilerDiscardsLegacyRevisionDriftOnAppliedCreate(t *testing.T) {
+	store := NewMemoryStore()
+	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+	gateway := &lifecycleGateway{applyErr: errors.New("initial response lost")}
+	service, err := New(Options{
+		Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+		ID: func() string { return "acct_1" },
+		OperationID: func() secretstore.OperationID {
+			return "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), durableCreateRequest(), "principal_1", "create-revision-drift")
+	if err != nil || created.State != StateCreating {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	drifted := created
+	drifted.DesiredStateRevision = 3
+	drifted.UpdatedAt = time.Now().UTC()
+	if err := store.CompareAndSwap(context.Background(), created.ID, created.DesiredStateRevision, drifted); err != nil {
+		t.Fatal(err)
+	}
+
+	gateway.applyErr = nil
+	gateway.truth = GatewayRuntimeTruth{
+		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: created.ID,
+		RequestedState: StateCreating, Active: true,
+		Routes: []GatewayRuntimeRoute{{
+			RouteID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT",
+			RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive, Ready: false,
+		}},
+	}
+	reconciler, err := NewReconciler(store, writer, gateway, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.RunOnce(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.Get(context.Background(), created.ID)
+	if err != nil || recovered.State != StateActive || recovered.DesiredStateRevision != 0 || recovered.LastValidatedAt == nil {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+}
+
+func TestReconcilerKeepsDriftedRevisionWhenTargetReplayStillFails(t *testing.T) {
+	store := NewMemoryStore()
+	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+	gateway := &lifecycleGateway{applyErr: errors.New("initial response lost")}
+	service, err := New(Options{
+		Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+		ID: func() string { return "acct_1" },
+		OperationID: func() secretstore.OperationID {
+			return "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), durableCreateRequest(), "principal_1", "create-revision-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := created
+	drifted.DesiredStateRevision = 3
+	if err := store.CompareAndSwap(context.Background(), created.ID, created.DesiredStateRevision, drifted); err != nil {
+		t.Fatal(err)
+	}
+	gateway.applyErr = codedApplyError{code: "CREDENTIAL_INVALID"}
+	reconciler, err := NewReconciler(store, writer, gateway, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.RunOnce(context.Background(), 10); err == nil {
+		t.Fatal("failed replay reported success")
+	}
+	persisted, err := store.Get(context.Background(), created.ID)
+	if err != nil || persisted.DesiredStateRevision != 3 {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+	operation, err := store.GetCredentialOperation(context.Background(), "018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
+	if err != nil || operation.StableErrorCode != "CREDENTIAL_INVALID" {
+		t.Fatalf("operation=%+v err=%v", operation, err)
+	}
+}
+
+func TestStableApplyFailureCodePreservesActionableGatewayCode(t *testing.T) {
+	if got := stableApplyFailureCode(codedApplyError{code: "CREDENTIAL_EXPIRED"}); got != "CREDENTIAL_EXPIRED" {
+		t.Fatalf("stableApplyFailureCode = %q", got)
+	}
+	if got := stableApplyFailureCode(errors.New("opaque")); got != "GATEWAY_APPLY_FAILED" {
+		t.Fatalf("opaque stableApplyFailureCode = %q", got)
 	}
 }
 
@@ -376,135 +548,27 @@ func TestDurableCreateValidatesGeneratedIdentityBeforeEffects(t *testing.T) {
 	}
 }
 
-func TestRotateAndRemoveRecoverCleanupWindows(t *testing.T) {
-	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
-	gateway := &lifecycleGateway{tombstoned: true}
+func TestCredentialReplacementRequiresDeleteAndRecreate(t *testing.T) {
 	store := NewMemoryStore()
-	ids := []secretstore.OperationID{"018f47a8-2578-7d3c-9d7d-5e4f4a445c33", "018f47a8-2578-7d3c-9d7d-5e4f4a445c34", "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"}
-	service, _ := New(Options{Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway, ID: func() string { return "acct_1" }, OperationID: func() secretstore.OperationID { id := ids[0]; ids = ids[1:]; return id }})
-	created, err := service.Create(context.Background(), CreateRequest{Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret")}, "principal_1")
-	if err != nil {
+	account := validRoutedAccount()
+	account.State = StateActive
+	if err := store.Create(context.Background(), account); err != nil {
 		t.Fatal(err)
 	}
-	active, err := service.Activate(context.Background(), created.ID, created.DesiredStateRevision, "principal_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle := durableCreateRequest().CredentialBundle
-	rotated, err := service.Rotate(context.Background(), active.ID, active.DesiredStateRevision, bundle, "principal_1", "rotate-1")
-	if err != nil || rotated.State != StateActive || rotated.PreviousSecretRef == "" || writer.deleteCalls != 0 {
-		t.Fatalf("rotated=%+v deletes=%d err=%v", rotated, writer.deleteCalls, err)
-	}
-	reconciler, err := NewReconciler(store, writer, gateway, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reconciler.RunOnce(context.Background(), 10); err != nil {
-		t.Fatal(err)
-	}
-	rotated, err = store.Get(context.Background(), rotated.ID)
-	if err != nil || rotated.State != StateActive || rotated.PreviousSecretRef != "" || writer.deleteCalls != 1 {
-		t.Fatalf("reconciled rotation=%+v deletes=%d err=%v", rotated, writer.deleteCalls, err)
-	}
-	service.Hooks.AfterGatewayTombstone = func() error { return errCrash }
-	if _, err := service.Remove(context.Background(), rotated.ID, rotated.DesiredStateRevision, "principal_1", "remove-1"); !errors.Is(err, errCrash) {
-		t.Fatalf("remove crash=%v", err)
-	}
-	service.Hooks = LifecycleHooks{}
-	removed, err := service.Remove(context.Background(), rotated.ID, rotated.DesiredStateRevision, "principal_1", "remove-1")
-	if err != nil || removed.State != StateRemoved || removed.SecretRef != "" || gateway.retireCalls != 2 {
-		t.Fatalf("removed=%+v retires=%d err=%v", removed, gateway.retireCalls, err)
-	}
-	if gateway.lastRetire.DesiredStateRevision != rotated.DesiredStateRevision+1 || gateway.lastRetire.RuntimeGeneration != rotated.RuntimeGeneration || gateway.lastRetire.CredentialVersion != rotated.CredentialVersion {
-		t.Fatalf("retire fence=%+v removed=%+v", gateway.lastRetire, removed)
-	}
-}
-
-func TestRotateReplayFromCleanupPendingReturnsCurrentAccountWithoutReapplying(t *testing.T) {
-	store := NewMemoryStore()
 	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
 	gateway := &lifecycleGateway{}
-	ids := []secretstore.OperationID{"018f47a8-2578-7d3c-9d7d-5e4f4a445c33", "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"}
-	service, err := New(Options{
-		Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
-		ID: func() string { return "acct_rotation_replay" },
-		OperationID: func() secretstore.OperationID {
-			id := ids[0]
-			ids = ids[1:]
-			return id
-		},
-	})
+	service, err := New(Options{Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway})
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := service.Create(context.Background(), CreateRequest{
-		Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary",
-		ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret"),
-	}, "principal_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	active, err := service.Activate(context.Background(), created.ID, created.DesiredStateRevision, "principal_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	originalRevision := active.DesiredStateRevision
-	bundle := durableCreateRequest().CredentialBundle
-	first, err := service.Rotate(context.Background(), active.ID, originalRevision, bundle, "principal_1", "rotate-replay")
-	if err != nil || first.PreviousSecretRef == "" {
-		t.Fatalf("first=%+v err=%v", first, err)
-	}
-	replayed, err := service.Rotate(context.Background(), active.ID, originalRevision, bundle, "principal_1", "rotate-replay")
-	if err != nil || replayed.DesiredStateRevision != first.DesiredStateRevision || replayed.PreviousSecretRef != first.PreviousSecretRef {
-		t.Fatalf("replayed=%+v first=%+v err=%v", replayed, first, err)
-	}
-	if writer.putCalls != 2 || gateway.applyCalls != 1 {
-		t.Fatalf("putCalls=%d applyCalls=%d", writer.putCalls, gateway.applyCalls)
-	}
-}
 
-func TestRotationCleanupBlocksSecondRotation(t *testing.T) {
-	store := NewMemoryStore()
-	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
-	gateway := &lifecycleGateway{}
-	ids := []secretstore.OperationID{"018f47a8-2578-7d3c-9d7d-5e4f4a445c33", "018f47a8-2578-7d3c-9d7d-5e4f4a445c34", "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"}
-	service, err := New(Options{
-		Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
-		ID: func() string { return "acct_double_rotation" },
-		OperationID: func() secretstore.OperationID {
-			id := ids[0]
-			ids = ids[1:]
-			return id
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	_, err = service.Rotate(context.Background(), account.ID, 0, durableCreateRequest().CredentialBundle, "principal_1", "rotate")
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("credential replacement err=%v", err)
 	}
-	created, err := service.Create(context.Background(), CreateRequest{
-		Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary",
-		ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret"),
-	}, "principal_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	active, err := service.Activate(context.Background(), created.ID, created.DesiredStateRevision, "principal_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := service.Rotate(context.Background(), active.ID, active.DesiredStateRevision, durableCreateRequest().CredentialBundle, "principal_1", "rotate-first")
-	if err != nil || first.PreviousSecretRef == "" {
-		t.Fatalf("first=%+v err=%v", first, err)
-	}
-	secondBundle := []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"other-key","apiSecret":"other-secret"}}`)
-	if _, err := service.Rotate(context.Background(), active.ID, first.DesiredStateRevision, secondBundle, "principal_1", "rotate-second"); !errors.Is(err, ErrAccountBlocked) {
-		t.Fatalf("second rotation err=%v", err)
-	}
-	current, err := store.Get(context.Background(), active.ID)
-	if err != nil || current.PreviousSecretRef != first.PreviousSecretRef || current.SecretRef != first.SecretRef || current.DesiredStateRevision != first.DesiredStateRevision {
-		t.Fatalf("current=%+v first=%+v err=%v", current, first, err)
-	}
-	if writer.putCalls != 2 || gateway.applyCalls != 1 {
-		t.Fatalf("putCalls=%d applyCalls=%d", writer.putCalls, gateway.applyCalls)
+	persisted, err := store.Get(context.Background(), account.ID)
+	if err != nil || persisted.SecretRef != account.SecretRef || writer.putCalls != 0 || gateway.applyCalls != 0 {
+		t.Fatalf("persisted=%+v err=%v puts=%d applies=%d", persisted, err, writer.putCalls, gateway.applyCalls)
 	}
 }
 
@@ -920,7 +984,7 @@ func TestRotateAndRemoveRejectMissingIdempotencyKeysWithoutEffects(t *testing.T)
 	}{{name: "missing"}, {name: "blank", keys: []string{" \t "}}} {
 		t.Run("rotate "+key.name, func(t *testing.T) {
 			_, err := service.Rotate(context.Background(), account.ID, account.DesiredStateRevision, durableCreateRequest().CredentialBundle, "principal_1", key.keys...)
-			if !errors.Is(err, ErrValidation) {
+			if !errors.Is(err, ErrInvalidTransition) {
 				t.Fatalf("err=%v", err)
 			}
 		})

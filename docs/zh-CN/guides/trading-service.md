@@ -75,7 +75,9 @@ intervalHours`）再两两相比，价差是 `shortDaily − longDaily`，标题
 
 `GET /api/v1/products/arbitrage/opportunities` 在请求点名的那些 account 之间给这些对儿
 排名。每个对儿带着自己的 `blockers`，只要有一条就不可执行：`funding_interval_unknown`、
-`account_unreachable`、`instrument_unlisted`、`board_stale`。只有空列表才会让下单票活过来。
+`account_unreachable`、`instrument_identity_unresolved`、`board_stale`。是否上架由公开
+instrument directory 决定，账户可达性是另一条独立的执行事实，二者不能互相推断。只有空列表
+才会让下单票活过来。
 
 下单完全复用手动那套形状。`POST /api/v1/products/arbitrage/execution-previews` 返回一份
 封签预览——同一种封签、同一个有效期——只不过它给两条腿都定价、也向两个 account 都取预留。

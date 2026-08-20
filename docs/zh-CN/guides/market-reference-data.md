@@ -17,13 +17,32 @@
 
 ## 参考数据
 
-Gateway 在启动时按 account 加载 Catalog 并持续刷新。它提供 `/v1/instruments`、`/v1/rules`、
-`/v1/capabilities` 和 `/v1/risk-limits`。
+Gateway 直接按每个受信 route profile 加载并刷新公开 Catalog；这个发现过程不需要账户，也不需要
+凭证。之后配置账户只会增加交易资格，不会增加 instrument。Gateway 还提供账户范围内的
+`/v1/rules`、`/v1/capabilities` 和 `/v1/risk-limits`。
 
 Trading 服务把界面需要的部分重新发布为 `/api/v1/catalog/venues` 与
 `/api/v1/catalog/instruments`。Instrument 标识全程使用规范的分段形式——venue、
 environment、product、可选的结算资产，然后才是规范 symbol——绝不使用某个 venue 自己的 symbol
 字符串。见[Account 与 instrument](../concepts/accounts-instruments.md)。
+
+### Instrument 身份边界
+
+输入身份和输出格式各自只有一套：
+
+- 浏览器或 product API 只提交 `instrumentId`，不再并列提交 `venue`、`product`、
+  `settlement` 或 `symbol`。Trading Catalog 负责解析这些事实，因此不可能在一个字段写 Binance、
+  另一个字段却写 OKX 合约。
+- Gateway 的公开 instrument directory 把这个 ID 映射到唯一的 route profile，以及交易所的
+  `nativeId`/`nativeSymbol`。原生身份到 Gateway 为止，绝不再根据展示 symbol 猜回来。
+- 响应保留 `instrumentId` 用于关联、命令和审计。界面有结构化事实时显示
+  `baseAsset` + `quoteAsset`，否则统一由规范 ID formatter 降级解析。原始 ID 只作为诊断 title，
+  不作为主要标签。
+- 账户只增加可交易性，不负责创造 instrument，也不负责判断它是否上架。因此
+  `account_unreachable` 与 `instrument_identity_unresolved` 是两种独立状态。
+
+Instrument picker、行情、K 线、资金费历史、手工下单预览、套利腿、持仓、订单和成交都遵守这份
+契约；任何消费方再单独添加 symbol parser，都属于越过身份边界。
 
 `/v1/risk-limits` 给的是诚实的答案而不是近似的答案：交易所风控限额没有被规范化，于是它报告
 「不可用」并说明原因。它是一个附了理由的占位，而不是一份你可以据以交易的限额表。
@@ -57,7 +76,7 @@ environment、product、可选的结算资产，然后才是规范 symbol——�
 
 ## K 线
 
-`GET /api/v1/candles` 服务于图表。它接受同样的 instrument 坐标，外加一个周期和一个上限，
+`GET /api/v1/candles` 服务于图表。它接受同样的规范 `instrumentId`，外加一个周期和一个上限，
 最多返回五百根 K 线——这与 gateway 自己的上限一致，所以更长的一页就说明它不是来自一个对上限
 有共识的 gateway。
 
@@ -73,15 +92,15 @@ environment、product、可选的结算资产，然后才是规范 symbol——�
 资金费出现在两个 surface 上，而它们不是同一个读取。
 
 `/api/v1/market-data` 上那几个 funding 字段——当前费率、它的观测时间与下次 funding 时间，
-以及上面说的至多二十个历史点——属于「某一个账户上的某一个 instrument」。它们随该 instrument
-的整份 snapshot 一起到来，经由该账户自己的 venue client，也花掉该账户自己的限流预算。
+以及上面说的至多二十个历史点——属于某一个公开 instrument snapshot。它们与盘口、K 线走同一条
+无凭证 route，和有没有配置账户无关。
 
 `GET /api/v1/funding-board` 与 `GET /api/v1/funding-history` 则完全不需要账户。Gateway 是用
 不带凭证构建出来的交易所 client 回答它们的，所以在一个账户都还没声明之前它们就解析得出。
 看板是整张跨所矩阵——按 venue、product 与结算资产各占一列——每列带着自己的当前费率、结算
-周期，以及该交易所提不提供历史。历史是某家交易所上某个 symbol 在某一个窗口内的序列，只有
-`7d` 和 `30d` 两档、别的都不接；开放区间意味着要对交易所接口翻页，而这个读存在的意义就是
-只做一次调用。
+周期，以及该交易所提不提供历史。历史输入是一个规范 `instrumentId` 和一个窗口，只有 `7d` 与
+`30d` 两档；Gateway 先把 ID 解析成精确的 route profile 和交易所原生地址，再调用交易所。
+开放区间意味着要对交易所接口翻页，而这个读存在的意义就是只做一次调用。
 
 各家公布出来的费率不能直接比，因为它们的结算节奏本就不同。任何要给它们排名的东西，都要先
 归一成日率。这段算术，以及它是干什么用的，在 [trading 服务](trading-service.md)里。

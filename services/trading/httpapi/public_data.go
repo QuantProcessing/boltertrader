@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,8 +46,8 @@ type FundingBoardProjection interface {
 
 // FundingHistoryProjection is its own interface rather than a second method on
 // FundingBoardProjection: the board answers one parameterless question about
-// every venue at once, this answers a windowed question about one symbol at one
-// venue, and the two are backed by services with different caching rules.
+// every venue at once, this answers a windowed question about one canonical
+// instrument id, and the two are backed by services with different caching rules.
 type FundingHistoryProjection interface {
 	Get(context.Context, marketdata.FundingHistoryQuery) (marketdata.FundingHistorySeries, error)
 	BudgetStatus(string) marketdata.BudgetStatus
@@ -166,13 +167,25 @@ func (api *PublicDataAPI) catalog(w http.ResponseWriter, r *http.Request, venues
 }
 
 func (api *PublicDataAPI) marketData(w http.ResponseWriter, r *http.Request) {
-	if err := validateQuery(r, []string{"venue", "environment", "product", "instrumentId"}); err != nil {
+	if err := validateQuery(r, []string{"instrumentId"}); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
-	query := marketdata.Query{Venue: r.URL.Query().Get("venue"), Environment: r.URL.Query().Get("environment"), Product: r.URL.Query().Get("product"), InstrumentID: r.URL.Query().Get("instrumentId")}
+	instrument, ok := api.resolveInstrument(w, r, "market-data", "")
+	if !ok {
+		return
+	}
+	query := marketdata.Query{
+		Venue: instrument.Venue, Environment: instrument.Environment,
+		Product: instrument.Product, InstrumentID: instrument.InstrumentID,
+	}
 	fact, err := api.dependencies.MarketData.Get(r.Context(), query)
 	if err != nil {
+		slog.Warn("public market-data read failed",
+			"instrument_id", query.InstrumentID,
+			"venue", query.Venue,
+			"cause", err,
+		)
 		status := http.StatusServiceUnavailable
 		code := "PUBLIC_DATA_NOT_READY"
 		if errors.Is(err, marketdata.ErrRateLimited) {
@@ -194,9 +207,9 @@ func (api *PublicDataAPI) marketData(w http.ResponseWriter, r *http.Request) {
 // which is what the first paint of a chart wants — and validateQuery treats
 // every name it is given as required.
 func (api *PublicDataAPI) candles(w http.ResponseWriter, r *http.Request) {
-	err := validateOptionalQuery(r, []string{"venue", "environment", "product", "instrumentId", "interval", "limit"})
+	err := validateOptionalQuery(r, []string{"instrumentId", "interval", "limit"})
 	if err == nil {
-		for _, name := range []string{"venue", "environment", "product", "instrumentId", "interval"} {
+		for _, name := range []string{"instrumentId", "interval"} {
 			if strings.TrimSpace(r.URL.Query().Get(name)) == "" {
 				err = fmt.Errorf("query field %q is required", name)
 				break
@@ -218,13 +231,23 @@ func (api *PublicDataAPI) candles(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
+	instrument, ok := api.resolveInstrument(w, r, "candles", "")
+	if !ok {
+		return
+	}
 	query := marketdata.CandleQuery{
-		Venue: r.URL.Query().Get("venue"), Environment: r.URL.Query().Get("environment"),
-		Product: r.URL.Query().Get("product"), InstrumentID: r.URL.Query().Get("instrumentId"),
+		Venue: instrument.Venue, Environment: instrument.Environment,
+		Product: instrument.Product, InstrumentID: instrument.InstrumentID,
 		Interval: r.URL.Query().Get("interval"), Limit: limit,
 	}
 	page, err := api.dependencies.Candles.Get(r.Context(), query)
 	if err != nil {
+		slog.Warn("public candle read failed",
+			"instrument_id", query.InstrumentID,
+			"venue", query.Venue,
+			"interval", query.Interval,
+			"cause", err,
+		)
 		status := http.StatusServiceUnavailable
 		code := "PUBLIC_DATA_NOT_READY"
 		if errors.Is(err, marketdata.ErrRateLimited) {
@@ -277,7 +300,7 @@ func (api *PublicDataAPI) fundingBoard(w http.ResponseWriter, r *http.Request) {
 // mean silently truncating the answer, and a funding chart missing its middle
 // looks exactly like a funding chart that is complete.
 func (api *PublicDataAPI) fundingHistory(w http.ResponseWriter, r *http.Request) {
-	err := validateQuery(r, []string{"venue", "environment", "symbol", "window"})
+	err := validateQuery(r, []string{"instrumentId", "window"})
 	var window marketdata.FundingWindow
 	if err == nil {
 		window, err = marketdata.ParseFundingWindow(r.URL.Query().Get("window"))
@@ -286,11 +309,14 @@ func (api *PublicDataAPI) fundingHistory(w http.ResponseWriter, r *http.Request)
 		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
+	instrument, ok := api.resolveInstrument(w, r, "funding-history", "perp")
+	if !ok {
+		return
+	}
 	query := marketdata.FundingHistoryQuery{
-		Venue:       strings.TrimSpace(r.URL.Query().Get("venue")),
-		Environment: strings.TrimSpace(r.URL.Query().Get("environment")),
-		Symbol:      strings.TrimSpace(r.URL.Query().Get("symbol")),
-		Window:      window,
+		InstrumentID: instrument.InstrumentID,
+		Venue:        instrument.Venue,
+		Window:       window,
 	}
 	series, err := api.dependencies.FundingHistory.Get(r.Context(), query)
 	if err != nil {
@@ -320,12 +346,37 @@ func (api *PublicDataAPI) fundingHistory(w http.ResponseWriter, r *http.Request)
 			retryable = false
 		}
 		httpx.WriteError(w, status, code, "funding-history projection is unavailable",
-			map[string]any{"venue": query.Venue, "symbol": query.Symbol}, retryable, httpx.RequestID(r))
+			map[string]any{"venue": query.Venue, "instrumentId": query.InstrumentID}, retryable, httpx.RequestID(r))
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"meta": httpx.Meta(r), "data": series, "rateLimit": api.dependencies.FundingHistory.BudgetStatus(query.Venue),
 	})
+}
+
+// resolveInstrument is the public input boundary for every instrument-scoped
+// market read. A request supplies one canonical InstrumentID; the catalog owns
+// all route and product coordinates derived from it. This makes a mixed request
+// (for example an OKX id beside venue=binance) impossible to express instead of
+// relying on each handler to reject it consistently.
+func (api *PublicDataAPI) resolveInstrument(w http.ResponseWriter, r *http.Request, surface, requiredProduct string) (catalog.Instrument, bool) {
+	instrumentID := strings.TrimSpace(r.URL.Query().Get("instrumentId"))
+	snapshot, err := api.dependencies.Catalog.Snapshot(r.Context())
+	if err != nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "PUBLIC_DATA_NOT_READY", "catalog projection is unavailable", nil, true, httpx.RequestID(r))
+		return catalog.Instrument{}, false
+	}
+	instrument, found := snapshot.Instrument(instrumentID)
+	if !found || !instrument.Ready || (requiredProduct != "" && instrument.Product != requiredProduct) {
+		code := "MARKET_INSTRUMENT_UNKNOWN"
+		if surface == "funding-history" {
+			code = "FUNDING_HISTORY_INSTRUMENT_UNKNOWN"
+		}
+		httpx.WriteError(w, http.StatusNotFound, code, surface+" instrument is unknown",
+			map[string]any{"instrumentId": instrumentID}, false, httpx.RequestID(r))
+		return catalog.Instrument{}, false
+	}
+	return instrument, true
 }
 
 func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {

@@ -311,8 +311,7 @@ func (row legacyCatalogRow) Scan(destinations ...any) error {
 func TestRunEmitsExactNonSecretMigrationPromotionRequest(t *testing.T) {
 	path := writeMapping(t)
 	item := storepkg.MigrationPromotionItem{
-		AccountID: "acct_1", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d11",
-		DesiredStateRevision: 2, RuntimeGeneration: 3, CredentialVersion: 4,
+		AccountID: "acct_1", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d11", RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445e11",
 		RouteSetSHA256: strings.Repeat("a", 64), InputSHA256: strings.Repeat("b", 64),
 	}
 	prior := executeBackfill

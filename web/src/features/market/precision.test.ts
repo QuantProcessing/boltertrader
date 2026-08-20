@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decimalsOf, precisionOf, snapPrice, stepLabel } from "./precision";
+import { decimalsOf, midpointPrice, precisionOf, snapPrice, stepLabel } from "./precision";
 
 /* ---------------------------------------------------------------------------
  * The book's precision is the venue's, and it is arrived at without a float.
@@ -53,6 +53,24 @@ describe("stepLabel", () => {
     expect(stepLabel(0)).toBe("1");
     expect(stepLabel(-1)).toBe("10");
     expect(stepLabel(-2)).toBe("100");
+  });
+});
+
+describe("midpointPrice", () => {
+  it("rounds the exact book midpoint onto the instrument precision", () => {
+    expect(midpointPrice("64241.1", "64241.2", 1)).toBe("64241.2");
+    expect(midpointPrice("1908.63", "1908.65", 2)).toBe("1908.64");
+  });
+
+  it("keeps large decimal prices out of binary floating point", () => {
+    expect(midpointPrice("123456789012345678.8", "123456789012345678.9", 1)).toBe(
+      "123456789012345678.9",
+    );
+  });
+
+  it("refuses absent or invalid book sides", () => {
+    expect(midpointPrice(undefined, "1", 1)).toBeUndefined();
+    expect(midpointPrice("-1", "1", 1)).toBeUndefined();
   });
 });
 

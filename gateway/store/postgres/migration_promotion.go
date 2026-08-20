@@ -96,9 +96,8 @@ func (postgresStore *Store) promoteMigrationPendingSet(ctx context.Context, requ
 			SET active_snapshot_id=head.pending_snapshot_id,pending_snapshot_id=NULL,updated_at=$2
 			FROM gateway_runtime_snapshots snapshot
 			WHERE head.account_id=$1 AND snapshot.snapshot_id=head.pending_snapshot_id
-			  AND snapshot.operation_id=$3 AND snapshot.desired_state_revision=$4
-			  AND snapshot.runtime_generation=$5 AND snapshot.credential_version=$6
-		`, item.AccountID, promotedAt, item.OperationID, item.DesiredStateRevision, item.RuntimeGeneration, item.CredentialVersion)
+			  AND snapshot.operation_id=$3 AND snapshot.runtime_id=$4::uuid
+		`, item.AccountID, promotedAt, item.OperationID, item.RuntimeID)
 		if err != nil {
 			return storepkg.MigrationPromotionResult{}, redactErr("promote migration runtime head", err)
 		}
@@ -134,8 +133,8 @@ func (postgresStore *Store) promoteMigrationPendingSet(ctx context.Context, requ
 func loadMigrationHeads(ctx context.Context, tx pgx.Tx) ([]migrationHead, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT head.account_id,
-		       active.snapshot_id,active.operation_id,active.request_digest,active.desired_state_revision,active.runtime_generation,active.credential_version,active_operation.state,
-		       pending.snapshot_id,pending.operation_id,pending.request_digest,pending.desired_state_revision,pending.runtime_generation,pending.credential_version,pending_operation.state
+		       active.snapshot_id,active.operation_id,active.request_digest,active.runtime_id::text,active_operation.state,
+		       pending.snapshot_id,pending.operation_id,pending.request_digest,pending.runtime_id::text,pending_operation.state
 		FROM gateway_account_runtime_heads head
 		LEFT JOIN gateway_runtime_snapshots active ON active.snapshot_id=head.active_snapshot_id
 		LEFT JOIN gateway_runtime_snapshots pending ON pending.snapshot_id=head.pending_snapshot_id
@@ -149,18 +148,17 @@ func loadMigrationHeads(ctx context.Context, tx pgx.Tx) ([]migrationHead, error)
 	}
 	defer rows.Close()
 	type rawHead struct {
-		accountID                                                                                         domain.AccountID
-		activeSnapshot, activeOperation, pendingSnapshot, pendingOperation                                *uuid.UUID
-		activeInput, pendingInput                                                                         *string
-		activeState, pendingState                                                                         *storepkg.OperationState
-		activeDesired, activeRuntime, activeCredential, pendingDesired, pendingRuntime, pendingCredential *int64
+		accountID                                                          domain.AccountID
+		activeSnapshot, activeOperation, pendingSnapshot, pendingOperation *uuid.UUID
+		activeInput, activeRuntimeID, pendingInput, pendingRuntimeID       *string
+		activeState, pendingState                                          *storepkg.OperationState
 	}
 	var rawHeads []rawHead
 	for rows.Next() {
 		var raw rawHead
 		if err := rows.Scan(&raw.accountID,
-			&raw.activeSnapshot, &raw.activeOperation, &raw.activeInput, &raw.activeDesired, &raw.activeRuntime, &raw.activeCredential, &raw.activeState,
-			&raw.pendingSnapshot, &raw.pendingOperation, &raw.pendingInput, &raw.pendingDesired, &raw.pendingRuntime, &raw.pendingCredential, &raw.pendingState); err != nil {
+			&raw.activeSnapshot, &raw.activeOperation, &raw.activeInput, &raw.activeRuntimeID, &raw.activeState,
+			&raw.pendingSnapshot, &raw.pendingOperation, &raw.pendingInput, &raw.pendingRuntimeID, &raw.pendingState); err != nil {
 			return nil, redactErr("scan migration runtime head", err)
 		}
 		rawHeads = append(rawHeads, raw)
@@ -181,7 +179,7 @@ func loadMigrationHeads(ctx context.Context, tx pgx.Tx) ([]migrationHead, error)
 			if err != nil {
 				return nil, err
 			}
-			head.active = &storepkg.MigrationPromotionItem{AccountID: raw.accountID, OperationID: raw.activeOperation.String(), DesiredStateRevision: *raw.activeDesired, RuntimeGeneration: *raw.activeRuntime, CredentialVersion: *raw.activeCredential, RouteSetSHA256: routeSHA, InputSHA256: *raw.activeInput}
+			head.active = &storepkg.MigrationPromotionItem{AccountID: raw.accountID, OperationID: raw.activeOperation.String(), RuntimeID: *raw.activeRuntimeID, RouteSetSHA256: routeSHA, InputSHA256: *raw.activeInput}
 		}
 		if raw.pendingSnapshot != nil {
 			if raw.pendingState == nil || (*raw.pendingState != storepkg.OperationPrepared && *raw.pendingState != storepkg.OperationCandidateReady) {
@@ -191,7 +189,7 @@ func loadMigrationHeads(ctx context.Context, tx pgx.Tx) ([]migrationHead, error)
 			if err != nil {
 				return nil, err
 			}
-			head.pending = &storepkg.MigrationPromotionItem{AccountID: raw.accountID, OperationID: raw.pendingOperation.String(), DesiredStateRevision: *raw.pendingDesired, RuntimeGeneration: *raw.pendingRuntime, CredentialVersion: *raw.pendingCredential, RouteSetSHA256: routeSHA, InputSHA256: *raw.pendingInput}
+			head.pending = &storepkg.MigrationPromotionItem{AccountID: raw.accountID, OperationID: raw.pendingOperation.String(), RuntimeID: *raw.pendingRuntimeID, RouteSetSHA256: routeSHA, InputSHA256: *raw.pendingInput}
 		}
 		heads = append(heads, head)
 	}

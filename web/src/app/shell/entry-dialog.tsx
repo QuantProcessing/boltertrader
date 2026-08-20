@@ -1,7 +1,7 @@
-import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 
-import { modeStore, useMode } from "@/app/mode";
+import { modeStore, useMode, type Mode } from "@/app/mode";
 import { useSession } from "@/app/session";
 import { Button } from "@/components/ui/button";
 import { DialogContent, DialogRoot } from "@/components/ui/dialog";
@@ -20,10 +20,9 @@ import { LOCALES, localeStore, useLocale, useT, type Locale } from "@/lib/i18n";
  * feature-card grids inside an authenticated product, and this is a door, not a
  * pitch — `text-title` at the largest, no illustration, no marketing.
  *
- * Not dismissible, and that is the point of the disclosure: no `X`, no
- * click-outside, no escape. The two buttons are the two ways out, and both are
- * a decision. The acknowledgement checkbox gates them, so neither can be
- * clicked past.
+ * It is not dismissible: the two buttons are the two ways out, and both are a
+ * decision. The buttons choose whether to continue anonymously or go to login;
+ * authentication, not this dialog, determines whether the product is writable.
  * ------------------------------------------------------------------------- */
 
 /** The four clauses, in the order they are read. Text lives in the dictionary. */
@@ -40,13 +39,23 @@ export function EntryDialog() {
   const locale = useLocale();
   const t = useT();
   const navigate = useNavigate();
+  const location = useLocation();
   const [acknowledged, setAcknowledged] = useState(false);
 
-  // Two conditions, both necessary. No session, because an operator who has
-  // already signed in has answered this by signing in. And no mode chosen yet,
-  // because a visitor who picked read-only is *deliberately* signed out and
-  // must not be asked again every time they change screen.
-  if (status !== "anonymous" || mode !== "undecided") return null;
+  const firstEntry = status === "anonymous" && mode === "undecided";
+
+  useEffect(() => {
+    if (firstEntry) setAcknowledged(false);
+  }, [firstEntry]);
+
+  if (!firstEntry) return null;
+
+  const choose = (next: Exclude<Mode, "undecided">) => {
+    modeStore.choose(next);
+    if (next === "readWrite") {
+      void navigate({ to: "/login", search: { redirect: location.href } });
+    }
+  };
 
   return (
     <DialogRoot open>
@@ -55,9 +64,15 @@ export function EntryDialog() {
         description={t("entry.subtitle")}
         // Radix closes on both by default. A disclosure that can be dismissed
         // without reading it is not one.
-        onEscapeKeyDown={(event) => event.preventDefault()}
-        onPointerDownOutside={(event) => event.preventDefault()}
-        onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeyDown={(event) => {
+          event.preventDefault();
+        }}
+        onPointerDownOutside={(event) => {
+          event.preventDefault();
+        }}
+        onInteractOutside={(event) => {
+          event.preventDefault();
+        }}
       >
         <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 pt-3 pb-4">
           <Segmented<Locale>
@@ -105,20 +120,14 @@ export function EntryDialog() {
               label={t("entry.readOnly")}
               detail={t("entry.readOnly.detail")}
               disabled={!acknowledged}
-              onClick={() => modeStore.choose("readOnly")}
+              onClick={() => choose("readOnly")}
             />
             <ModeChoice
               variant="danger"
               label={t("entry.readWrite")}
               detail={t("entry.readWrite.detail")}
               disabled={!acknowledged}
-              onClick={() => {
-                // The mode is recorded before the navigation so that the login
-                // route does not re-open this dialog behind it, and so that a
-                // visitor who signs in lands in the mode they asked for.
-                modeStore.choose("readWrite");
-                void navigate({ to: "/login", search: { redirect: "/trade" } });
-              }}
+              onClick={() => choose("readWrite")}
             />
           </div>
 

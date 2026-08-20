@@ -19,6 +19,29 @@ type runtimeProjectionFixture struct {
 	items     []AccountRuntimeProjection
 }
 
+type balanceProjectionFixture struct {
+	principal string
+	accountID string
+	items     []AccountBalanceProjection
+}
+
+type positionProjectionFixture struct {
+	principal    string
+	accountID    string
+	instrumentID string
+	items        []AccountPositionProjection
+}
+
+func (fixture *positionProjectionFixture) ListAccountPositions(_ context.Context, principal, accountID, instrumentID string) ([]AccountPositionProjection, error) {
+	fixture.principal, fixture.accountID, fixture.instrumentID = principal, accountID, instrumentID
+	return append([]AccountPositionProjection(nil), fixture.items...), nil
+}
+
+func (fixture *balanceProjectionFixture) ListAccountBalances(_ context.Context, principal, accountID string) ([]AccountBalanceProjection, error) {
+	fixture.principal, fixture.accountID = principal, accountID
+	return append([]AccountBalanceProjection(nil), fixture.items...), nil
+}
+
 func (fixture *runtimeProjectionFixture) ListAccountRuntimes(_ context.Context, principal, accountID string) ([]AccountRuntimeProjection, error) {
 	fixture.principal, fixture.accountID = principal, accountID
 	return fixture.items, nil
@@ -61,9 +84,17 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 			{CommandID: "submitted-command", PrincipalID: testPrincipalID, AccountID: "account-b", LineageID: "submitted-lineage", ProductID: "manual", IdempotencyKey: "submitted-key", CommandKind: "order.place", State: orders.StateSubmitted, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Minute)},
 		},
 	}}
+	balances := &balanceProjectionFixture{items: []AccountBalanceProjection{{
+		AccountID: "account-a", Product: "perp", SettlementAsset: "USDT", Asset: "USDT",
+		Available: "123.45", AvailableMargin: "120", Locked: "0", Total: "123.45",
+	}}}
+	positions := &positionProjectionFixture{items: []AccountPositionProjection{{
+		AccountID: "account-a", InstrumentID: "binance:live:perp:USDT:BTC-USDT", Side: "sell",
+		Quantity: "-0.25", EntryPrice: "65000", MarkPrice: "64000", UnrealizedPnL: "250",
+	}}}
 	principal := func(*http.Request) (string, error) { return testPrincipalID, nil }
 	mux := http.NewServeMux()
-	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: runtimes, Commands: commands, Activity: activity, Principal: principal}); err != nil {
+	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: runtimes, Balances: balances, Positions: positions, Commands: commands, Activity: activity, Principal: principal}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,7 +103,9 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 		contains   []string
 		notContain []string
 	}{
-		{path: "/api/v1/accounts/account-a/runtimes", contains: []string{`"accountId":"account-a"`, `"cancel":true`, `"runtimeVersion":9`}, notContain: []string{`"scaffold":true`, "gateway-adapter-token"}},
+		{path: "/api/v1/accounts/account-a/runtimes", contains: []string{`"accountId":"account-a"`, `"cancel":true`}, notContain: []string{`"scaffold":true`, "gateway-adapter-token", `"runtimeVersion"`}},
+		{path: "/api/v1/balances?accountId=account-a", contains: []string{`"accountId":"account-a"`, `"available":"123.45"`, `"availableMargin":"120"`}, notContain: []string{`"principalId"`, `"credential"`}},
+		{path: "/api/v1/account-positions?accountId=account-a&instrumentId=binance:live:perp:USDT:BTC-USDT", contains: []string{`"quantity":"-0.25"`, `"side":"sell"`, `"markPrice":"64000"`}, notContain: []string{`"principalId"`, `"credential"`}},
 		{path: "/api/v1/commands", contains: []string{`"commandId":"manual-command"`, `"commandId":"submitted-command"`}, notContain: []string{`"scaffold":true`, `"payload"`, `"principalId"`}},
 		{path: "/api/v1/fills?productId=manual", contains: []string{`"fillId":"fill-a"`, `"productId":"manual"`, `"lineageId":"manual-lineage"`}, notContain: []string{`"submitted-lineage"`, `"scaffold":true`}},
 		{path: "/api/v1/activity", contains: []string{`"kind":"account.runtime.updated"`, `"accountId":"account-a"`}, notContain: []string{`"other-command"`, `"scaffold":true`, `"principalId"`}},
@@ -97,6 +130,12 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	}
 	if runtimes.principal != testPrincipalID || runtimes.accountID != "account-a" {
 		t.Fatalf("runtime scope=%q/%q", runtimes.principal, runtimes.accountID)
+	}
+	if balances.principal != testPrincipalID || balances.accountID != "account-a" {
+		t.Fatalf("balance scope=(%q,%q)", balances.principal, balances.accountID)
+	}
+	if positions.principal != testPrincipalID || positions.accountID != "account-a" || positions.instrumentID != "binance:live:perp:USDT:BTC-USDT" {
+		t.Fatalf("position scope=(%q,%q,%q)", positions.principal, positions.accountID, positions.instrumentID)
 	}
 	if len(commands.calls) != 2 {
 		t.Fatalf("command projection calls=%+v", commands.calls)
@@ -123,7 +162,7 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 func TestBrowserProjectionRoutesRejectUnknownFilters(t *testing.T) {
 	principal := func(*http.Request) (string, error) { return testPrincipalID, nil }
 	mux := http.NewServeMux()
-	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: &runtimeProjectionFixture{}, Commands: &commandProjectionFixture{}, Activity: mustActivityLog(t), Principal: principal}); err != nil {
+	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: &runtimeProjectionFixture{}, Balances: &balanceProjectionFixture{}, Commands: &commandProjectionFixture{}, Activity: mustActivityLog(t), Principal: principal}); err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/commands?gatewayUrl=http://gateway", nil)

@@ -1930,8 +1930,11 @@ func safeVenueFailure(venue exchange.Venue) string {
 
 func classifyCode(code string) exchange.ErrorKind {
 	switch code {
-	case "401", "10003", "10004", "10005", "40001", "40002", "40003", "40005":
+	case "401", "-2015", "33004", "10003", "10004", "10007",
+		"40001", "40002", "40003", "40005", "40006", "40009", "40011", "40012":
 		return exchange.KindAuthentication
+	case "10005", "10009", "10010", "40014", "40018", "40301":
+		return exchange.KindPermission
 	case "10006", "429", "42900":
 		return exchange.KindRateLimit
 	case "10001", "40017":
@@ -2443,8 +2446,12 @@ type bybitPrivateWSBackend struct {
 	balances  *bybitPrivateTopicHub[exchange.BalanceEvent]
 }
 type bitgetPrivateWSBackend struct {
-	client *bitgetBase
-	ws     *bitget.PrivateWSClient
+	client    *bitgetBase
+	ws        *bitget.PrivateWSClient
+	orders    *bitgetPrivateTopicHub[exchange.OrderEvent]
+	fills     *bitgetPrivateTopicHub[exchange.FillEvent]
+	positions *bitgetPrivateTopicHub[exchange.PositionEvent]
+	balances  *bitgetPrivateTopicHub[exchange.BalanceEvent]
 }
 
 func newBybitPrivateWSBackend(client *bybitBase) *bybitPrivateWSBackend {
@@ -2589,11 +2596,18 @@ func (hub *bybitPrivateTopicHub[T]) snapshotAll() []streamCallbacks[T] {
 }
 
 func newBitgetPrivateWSBackend(client *bitgetBase) *bitgetPrivateWSBackend {
-	return &bitgetPrivateWSBackend{
+	ws := bitget.NewPrivateWSClientWithProfile(client.profile).
+		WithCredentials(client.apiKey, client.secretKey, client.passphrase)
+	backend := &bitgetPrivateWSBackend{
 		client: client,
-		ws: bitget.NewPrivateWSClientWithProfile(client.profile).
-			WithCredentials(client.apiKey, client.secretKey, client.passphrase),
+		ws:     ws,
 	}
+	instType := client.bitgetPrivateWSInstType()
+	backend.orders = newBitgetPrivateTopicHub[exchange.OrderEvent](ws, bitget.WSArg{InstType: instType, Topic: "order"})
+	backend.fills = newBitgetPrivateTopicHub[exchange.FillEvent](ws, bitget.WSArg{InstType: instType, Topic: "fill"})
+	backend.positions = newBitgetPrivateTopicHub[exchange.PositionEvent](ws, bitget.WSArg{InstType: instType, Topic: "position"})
+	backend.balances = newBitgetPrivateTopicHub[exchange.BalanceEvent](ws, bitget.WSArg{InstType: instType, Topic: "account"})
+	return backend
 }
 
 func (b *bybitPrivateWSBackend) PlaceOrder(ctx context.Context, req exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -2867,105 +2881,111 @@ func (b *bitgetPrivateWSBackend) StartOrders(ctx context.Context, instrument exc
 	if err != nil {
 		return nil, err
 	}
-	ws := b.ws
-	arg := bitget.WSArg{InstType: b.client.bitgetPrivateWSInstType(), Topic: "order"}
-	if err := ws.Subscribe(ctx, arg, func(payload json.RawMessage) {
+	stop, err := b.orders.start(ctx, native, callbacks, func(payload json.RawMessage) {
 		msg, err := bitget.DecodeOrderMessage(payload)
 		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchOrders", err.Error()))
+			b.orders.emitAllError(malformed(b.client.meta, "WatchOrders", err.Error()))
 			return
 		}
 		for _, row := range msg.Data {
-			orders, err := convertBitgetOrders(ctx, b.client.meta, "WatchOrders", []bitget.OrderRecord{row}, native)
+			orders, err := convertBitgetOrders(context.Background(), b.client.meta, "WatchOrders", []bitget.OrderRecord{row}, row.Symbol)
 			if err != nil {
-				callbacks.Error(err)
+				b.orders.emitError(row.Symbol, err)
 				continue
 			}
 			for _, order := range orders {
-				callbacks.Event(exchange.OrderEvent{Kind: exchange.EventDelta, Order: order})
+				b.orders.emit(row.Symbol, exchange.OrderEvent{Kind: exchange.EventDelta, Order: order})
 			}
 		}
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchOrders", err)
 	}
-	return func() error { return ws.Unsubscribe(context.Background(), arg) }, nil
+	return stop, nil
 }
 func (b *bitgetPrivateWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	native, _, err := b.client.symbols(instrument, "WatchFills")
 	if err != nil {
 		return nil, err
 	}
-	ws := b.ws
-	arg := bitget.WSArg{InstType: b.client.bitgetPrivateWSInstType(), Topic: "fill"}
-	if err := ws.Subscribe(ctx, arg, func(payload json.RawMessage) {
+	stop, err := b.fills.start(ctx, native, callbacks, func(payload json.RawMessage) {
 		msg, err := bitget.DecodeFillMessage(payload)
 		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchFills", err.Error()))
+			b.fills.emitAllError(malformed(b.client.meta, "WatchFills", err.Error()))
 			return
 		}
 		for _, row := range msg.Data {
-			fills, err := convertBitgetFills(ctx, b.client.meta, "WatchFills", []bitget.FillRecord{row}, native)
+			fills, err := convertBitgetFills(context.Background(), b.client.meta, "WatchFills", []bitget.FillRecord{row}, row.Symbol)
 			if err != nil {
-				callbacks.Error(err)
+				b.fills.emitError(row.Symbol, err)
 				continue
 			}
 			for _, fill := range fills {
-				callbacks.Event(exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill})
+				b.fills.emit(row.Symbol, exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill})
 			}
 		}
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchFills", err)
 	}
-	return func() error { return ws.Unsubscribe(context.Background(), arg) }, nil
+	return stop, nil
 }
 func (b *bitgetPrivateWSBackend) StartBalances(ctx context.Context, callbacks streamCallbacks[exchange.BalanceEvent]) (func() error, error) {
-	ws := b.ws
-	arg := bitget.WSArg{InstType: b.client.bitgetPrivateWSInstType(), Topic: "account"}
-	if err := ws.Subscribe(ctx, arg, func(payload json.RawMessage) {
+	stop, err := b.balances.start(ctx, "account", callbacks, func(payload json.RawMessage) {
 		msg, err := bitget.DecodeAccountMessage(payload)
 		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchBalances", err.Error()))
+			b.balances.emitAllError(malformed(b.client.meta, "WatchBalances", err.Error()))
 			return
 		}
 		balances, err := bitgetBalances(b.client.meta, "WatchBalances", msg.Data)
 		if err != nil {
-			callbacks.Error(err)
+			b.balances.emitAllError(err)
 			return
 		}
-		callbacks.Event(exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: time.Now().UTC()})
-	}); err != nil {
+		b.balances.emit("account", exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: time.Now().UTC()})
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchBalances", err)
 	}
-	return func() error { return ws.Unsubscribe(context.Background(), arg) }, nil
+	return stop, nil
 }
 func (b *bitgetPrivateWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
 	native, _, err := b.client.symbols(instrument, "WatchPositions")
 	if err != nil {
 		return nil, err
 	}
-	ws := b.ws
-	arg := bitget.WSArg{InstType: b.client.bitgetPrivateWSInstType(), Topic: "position"}
-	if err := ws.Subscribe(ctx, arg, func(payload json.RawMessage) {
+	stop, err := b.positions.start(ctx, native, callbacks, func(payload json.RawMessage) {
 		msg, err := bitget.DecodePositionMessage(payload)
 		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchPositions", err.Error()))
+			b.positions.emitAllError(malformed(b.client.meta, "WatchPositions", err.Error()))
 			return
 		}
-		positions, err := convertBitgetPositions(ctx, b.client.meta, "WatchPositions", msg.Data, native)
-		if err != nil {
-			callbacks.Error(err)
-			return
+		rowsBySymbol := make(map[string][]bitget.PositionRecord)
+		for _, row := range msg.Data {
+			rowsBySymbol[row.Symbol] = append(rowsBySymbol[row.Symbol], row)
 		}
-		callbacks.Event(exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: time.Now().UTC()})
-	}); err != nil {
+		for symbol, rows := range rowsBySymbol {
+			positions, err := convertBitgetPositions(context.Background(), b.client.meta, "WatchPositions", rows, symbol)
+			if err != nil {
+				b.positions.emitError(symbol, err)
+				continue
+			}
+			b.positions.emit(symbol, exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: time.Now().UTC()})
+		}
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchPositions", err)
 	}
-	return func() error { return ws.Unsubscribe(context.Background(), arg) }, nil
+	return stop, nil
 }
 func (b *bitgetPrivateWSBackend) Close() error {
 	if b == nil || b.ws == nil {
 		return nil
 	}
+	b.orders.reset()
+	b.fills.reset()
+	b.positions.reset()
+	b.balances.reset()
 	return b.ws.Close()
 }
 
@@ -2976,6 +2996,7 @@ func (b *bybitWSBackend) StartOrderBook(ctx context.Context, instrument exchange
 	}
 	ws := bybit.NewPublicWSClientWithProfile(b.client.profile, b.client.category)
 	topic := "orderbook.50." + native
+	seenEvent := false
 	if err := ws.Subscribe(ctx, topic, func(payload json.RawMessage) {
 		msg, err := bybit.DecodeOrderBookMessage(payload)
 		if err != nil {
@@ -3001,13 +3022,32 @@ func (b *bybitWSBackend) StartOrderBook(ctx context.Context, instrument exchange
 			callbacks.Error(err)
 			return
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: canonical, Sequence: strconv.FormatInt(msg.Data.UpdateID, 10), Bids: bids, Asks: asks, Time: observedAt})
+		kind, err := bybitOrderBookEventKind(msg.Type)
+		if err != nil {
+			callbacks.Error(malformed(b.client.meta, "WatchOrderBook", err.Error()))
+			return
+		}
+		resync := kind == exchange.EventSnapshot && seenEvent
+		seenEvent = true
+		callbacks.Event(exchange.BookEvent{Kind: kind, Instrument: canonical, Sequence: strconv.FormatInt(msg.Data.UpdateID, 10), Resync: resync, Bids: bids, Asks: asks, Time: observedAt})
 	}); err != nil {
 		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchOrderBook", err)
 	}
 	return bybitPublicStop(ctx, ws, topic), nil
 }
+
+func bybitOrderBookEventKind(raw string) (exchange.EventKind, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "snapshot":
+		return exchange.EventSnapshot, nil
+	case "delta":
+		return exchange.EventDelta, nil
+	default:
+		return "", fmt.Errorf("unsupported order book event type %q", raw)
+	}
+}
+
 func (b *bybitWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchBBO")
 	if err != nil {
@@ -3198,13 +3238,28 @@ func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument exchang
 			callbacks.Error(err)
 			return
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: canonical, Sequence: strconv.FormatInt(row.Seq, 10), Previous: strconv.FormatInt(row.PSeq, 10), Bids: bids, Asks: asks, Time: observedAt})
+		kind, err := bitgetOrderBookEventKind(msg.Action)
+		if err != nil {
+			callbacks.Error(malformed(b.client.meta, "WatchOrderBook", err.Error()))
+			return
+		}
+		callbacks.Event(exchange.BookEvent{Kind: kind, Instrument: canonical, Sequence: strconv.FormatInt(row.Seq, 10), Bids: bids, Asks: asks, Time: observedAt})
 	}); err != nil {
 		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchOrderBook", err)
 	}
 	return bitgetPublicStop(ctx, ws, arg), nil
 }
+
+// Bitget books5 is a bounded full-book channel. Unlike the incremental books
+// channel, every data push replaces all five visible levels.
+func bitgetOrderBookEventKind(raw string) (exchange.EventKind, error) {
+	if strings.EqualFold(strings.TrimSpace(raw), "snapshot") {
+		return exchange.EventSnapshot, nil
+	}
+	return "", fmt.Errorf("books5 requires a snapshot event, got %q", raw)
+}
+
 func (b *bitgetWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchBBO")
 	if err != nil {

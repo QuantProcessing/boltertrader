@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	gate "github.com/QuantProcessing/boltertrader/sdk/gate"
+	"github.com/shopspring/decimal"
 )
 
 type gateFundingBoardLoader struct {
@@ -35,17 +36,20 @@ func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 	if err != nil {
 		return exchange.FundingBoardSnapshot{}, gateNormalizeErr(meta, fundingBoardOperation, err)
 	}
-	type clock struct {
-		interval exchange.OptionalInt
-		next     time.Time
+	type contractInfo struct {
+		interval   exchange.OptionalInt
+		next       time.Time
+		multiplier decimal.Decimal
 	}
-	clocks := map[string]clock{}
+	contractsByName := map[string]contractInfo{}
 	if contracts, err := sdk.ListFuturesContracts(ctx, gate.SettleUSDT); err == nil {
 		for _, contract := range contracts {
+			entry := contractInfo{}
+			entry.multiplier, _ = decimal.NewFromString(contract.QuantoMultiplier)
 			if contract.Status != "" && contract.Status != "trading" {
+				contractsByName[contract.Name] = entry
 				continue
 			}
-			entry := clock{}
 			// funding_interval is published in seconds; the board speaks hours,
 			// and an interval that does not divide into whole hours is Gate
 			// telling us something we cannot render, so it is dropped.
@@ -55,7 +59,7 @@ func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 			if contract.FundingNextApply > 0 {
 				entry.next = time.Unix(int64(contract.FundingNextApply), 0).UTC()
 			}
-			clocks[contract.Name] = entry
+			contractsByName[contract.Name] = entry
 		}
 	}
 
@@ -66,22 +70,24 @@ func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 			continue
 		}
 		base, quote := gateSplitSymbol(row.Contract)
-		next := clocks[row.Contract]
+		contract := contractsByName[row.Contract]
 		entries = append(entries, exchange.FundingBoardEntry{
 			Symbol:          gateCanonicalSymbol(base, quote, row.Contract),
 			NativeSymbol:    row.Contract,
 			BaseAsset:       base,
 			QuoteAsset:      quote,
 			Rate:            rate,
-			IntervalHours:   next.interval,
-			NextFundingTime: next.next,
+			IntervalHours:   contract.interval,
+			NextFundingTime: contract.next,
 			MarkPrice:       fundingOptionalDecimal(row.MarkPrice),
 			IndexPrice:      fundingOptionalDecimal(row.IndexPrice),
-			// total_size is Gate's open size in contracts, which is what its own
-			// interface shows as open interest. It is not a notional, and the
-			// board does not pretend otherwise — the column is labelled in
-			// contracts for every venue that answers in them.
+			// total_size is Gate's open size in contracts. Keep that native value
+			// for provenance, then multiply it by quanto_multiplier and mark price
+			// for the cross-venue U-notional field.
 			OpenInterest: fundingOptionalNonNegative(row.TotalSize),
+			OpenInterestNotional: fundingOpenInterestNotional(
+				row.TotalSize, row.MarkPrice, contract.multiplier,
+			),
 		})
 	}
 	return fundingBoardSnapshot(scope, entries), nil

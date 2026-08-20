@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -80,28 +81,39 @@ func (reconciler *Reconciler) reconcile(ctx context.Context, operation Credentia
 		}
 	}
 	if operation.State == OperationApplying {
+		// Validation timestamps are observational metadata, not desired runtime
+		// configuration. Older builds nevertheless advanced the desired revision
+		// when the operator clicked "validate", so an already-applied create could
+		// never replay with its original operation id. Project that narrow legacy
+		// drift back onto the operation's immutable target fence; the successful
+		// CAS below repairs and activates the account atomically.
+		persistedAccount := account
+		expectedRevision := persistedAccount.DesiredStateRevision
+		account = applyingOperationAccount(persistedAccount, operation)
 		truth, err := reconciler.gateway.ApplyDesired(ctx, DesiredApply{OperationID: operation.ID, Account: account})
 		if err != nil {
+			failureCode := stableApplyFailureCode(err)
 			var resultError ApplyResultError
 			if !errors.As(err, &resultError) || !resultError.ResultMayHaveCommitted() {
-				return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_APPLY_FAILED")
+				return reconciler.recordStableFailure(ctx, persistedAccount, operation, failureCode)
 			}
 			truth, err = reconciler.gateway.GetRuntimeTruth(ctx, account.ID)
 			if err != nil {
-				return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_APPLY_FAILED")
+				return reconciler.recordStableFailure(ctx, persistedAccount, operation, failureCode)
 			}
 		}
 		if !exactGatewayActiveTruth(operation.ID, account, truth) {
-			return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_FENCE_MISMATCH")
+			return reconciler.recordStableFailure(ctx, persistedAccount, operation, "GATEWAY_FENCE_MISMATCH")
 		}
 		account.State = StateActive
 		account.UpdatedAt = reconciler.now().UTC()
+		account.LastValidatedAt = &account.UpdatedAt
 		operation.State = OperationActive
 		if operation.Kind == OperationRotate {
 			operation.State = OperationCleanupPending
 		}
 		operation.StableErrorCode, operation.UpdatedAt = "", account.UpdatedAt
-		if _, _, err := reconciler.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationApplying, ExpectedDesiredStateRevision: account.DesiredStateRevision, Account: account, Operation: operation}); err != nil {
+		if _, _, err := reconciler.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationApplying, ExpectedDesiredStateRevision: expectedRevision, Account: account, Operation: operation}); err != nil {
 			return errors.New("credential recovery promotion failed")
 		}
 	}
@@ -111,9 +123,7 @@ func (reconciler *Reconciler) reconcile(ctx context.Context, operation Credentia
 		}
 		retirement, err := reconciler.gateway.RetireAccount(ctx, RetireRequest{
 			OperationID: operation.ID, AccountID: account.ID,
-			DesiredStateRevision: account.DesiredStateRevision,
-			RuntimeGeneration:    account.RuntimeGeneration,
-			CredentialVersion:    account.CredentialVersion,
+			RuntimeID: account.RuntimeID,
 		})
 		if err != nil || !retirement.Tombstoned || retirement.Blockers.Any() {
 			return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_RETIREMENT_PENDING")
@@ -146,6 +156,28 @@ func (reconciler *Reconciler) reconcile(ctx context.Context, operation Credentia
 		}
 	}
 	return nil
+}
+
+func applyingOperationAccount(account Account, operation CredentialOperation) Account {
+	if operation.Kind != OperationCreate || account.State != StateCreating ||
+		account.DesiredStateRevision <= operation.TargetDesiredStateRevision ||
+		account.RuntimeGeneration != operation.TargetRuntimeGeneration ||
+		account.CredentialVersion != operation.TargetCredentialVersion {
+		return account
+	}
+	account.DesiredStateRevision = operation.TargetDesiredStateRevision
+	return account
+}
+
+func stableApplyFailureCode(err error) string {
+	var coded ApplyFailureCode
+	if errors.As(err, &coded) {
+		code := strings.TrimSpace(coded.StableFailureCode())
+		if code != "" {
+			return code
+		}
+	}
+	return "GATEWAY_APPLY_FAILED"
 }
 
 func (reconciler *Reconciler) reconcileRotationCleanup(ctx context.Context, account Account, operation CredentialOperation) error {

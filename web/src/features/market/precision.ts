@@ -46,6 +46,36 @@ export function precisionOf(instrument: Instrument | null | undefined): Precisio
   };
 }
 
+/**
+ * The displayed midpoint shared by the book and the chart's live price line.
+ *
+ * It is computed as integer decimal arithmetic so a two-second poll cannot
+ * turn `64241.1` and `64241.2` into a long binary-float tail. The result is
+ * rounded half-up onto the instrument's own display precision.
+ */
+export function midpointPrice(
+  bestBid: string | undefined,
+  bestAsk: string | undefined,
+  decimals: number | undefined,
+): string | undefined {
+  const bid = bestBid ? splitDecimal(bestBid) : null;
+  const ask = bestAsk ? splitDecimal(bestAsk) : null;
+  if (!bid || !ask || bid.sign === "-" || ask.sign === "-") return undefined;
+
+  const scale = Math.max(bid.fraction.length, ask.fraction.length);
+  const places = decimals ?? scale;
+  if (places < 0 || places > 18 || scale > 18) return undefined;
+  const units = (parts: NonNullable<typeof bid>) =>
+    BigInt(parts.integer + parts.fraction.padEnd(scale, "0"));
+  const numerator = units(bid) + units(ask);
+  const denominator = 2n * 10n ** BigInt(scale);
+  const scaledNumerator = numerator * 10n ** BigInt(places);
+  const rounded = (scaledNumerator + denominator / 2n) / denominator;
+  const digits = rounded.toString().padStart(places + 1, "0");
+  if (places === 0) return digits;
+  return `${digits.slice(0, -places)}.${digits.slice(-places)}`;
+}
+
 /** The width of a grid, as the number a human reads: `2` → `"0.01"`, `-1` → `"10"`. */
 export function stepLabel(decimals: number): string {
   if (decimals > 0) return `0.${"0".repeat(decimals - 1)}1`;

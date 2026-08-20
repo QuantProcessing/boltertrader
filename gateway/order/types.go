@@ -39,6 +39,7 @@ type PlaceRequest struct {
 	LimitPrice     decimal.Decimal
 	LimitPolicy    exchange.LimitPolicy
 	ReduceOnly     bool
+	Leverage       int
 	WriteFence     account.WriteFence
 }
 
@@ -71,7 +72,7 @@ func (request PlaceRequest) validateIdentity() error {
 }
 
 func validateWriteFence(fence account.WriteFence, accountID domain.AccountID) error {
-	if fence.AccountID != accountID || fence.DesiredStateRevision == 0 || fence.RuntimeGeneration == 0 || fence.CredentialVersion == 0 {
+	if fence.AccountID != accountID || fence.RuntimeID == "" {
 		return fmt.Errorf("%w: order write fence is invalid", exchange.ErrInvalidRequest)
 	}
 	return nil
@@ -133,6 +134,13 @@ type Driver interface {
 	PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error)
 	CancelOrder(context.Context, exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error)
 	LookupExactOrder(context.Context, exchange.ExactOrderLookupRequest) (ExactResult, error)
+}
+
+// LeverageDriver is the perpetual-only precondition used by a durable order.
+// It stays outside exchange.PlaceOrderRequest so that request remains the
+// portable spot/perpetual order surface.
+type LeverageDriver interface {
+	SetLeverage(context.Context, exchange.Instrument, int) error
 }
 
 type CancelRequest struct {
@@ -292,18 +300,17 @@ func newAccountGate() *accountGate {
 }
 
 type durablePlacePayload struct {
-	AccountID            domain.AccountID     `json:"account_id"`
-	RouteID              domain.RouteID       `json:"route_id"`
-	InstrumentID         domain.InstrumentID  `json:"instrument_id"`
-	Side                 exchange.Side        `json:"side"`
-	Type                 exchange.OrderType   `json:"type"`
-	Quantity             string               `json:"quantity"`
-	LimitPrice           string               `json:"limit_price,omitempty"`
-	LimitPolicy          exchange.LimitPolicy `json:"limit_policy,omitempty"`
-	ReduceOnly           bool                 `json:"reduce_only,omitempty"`
-	DesiredStateRevision uint64               `json:"desired_state_revision,omitempty"`
-	RuntimeGeneration    uint64               `json:"runtime_generation,omitempty"`
-	CredentialVersion    uint64               `json:"credential_version,omitempty"`
+	AccountID    domain.AccountID     `json:"account_id"`
+	RouteID      domain.RouteID       `json:"route_id"`
+	InstrumentID domain.InstrumentID  `json:"instrument_id"`
+	Side         exchange.Side        `json:"side"`
+	Type         exchange.OrderType   `json:"type"`
+	Quantity     string               `json:"quantity"`
+	LimitPrice   string               `json:"limit_price,omitempty"`
+	LimitPolicy  exchange.LimitPolicy `json:"limit_policy,omitempty"`
+	ReduceOnly   bool                 `json:"reduce_only,omitempty"`
+	Leverage     int                  `json:"leverage,omitempty"`
+	RuntimeID    string               `json:"runtime_id"`
 }
 
 func canonicalPlacePayload(request PlaceRequest) (json.RawMessage, string, error) {
@@ -313,8 +320,8 @@ func canonicalPlacePayload(request PlaceRequest) (json.RawMessage, string, error
 	payload, err := json.Marshal(durablePlacePayload{
 		AccountID: request.AccountID, RouteID: request.RouteID, InstrumentID: request.InstrumentID,
 		Side: request.Side, Type: request.Type, Quantity: request.Quantity.String(),
-		LimitPrice: request.LimitPrice.String(), LimitPolicy: request.LimitPolicy, ReduceOnly: request.ReduceOnly,
-		DesiredStateRevision: request.WriteFence.DesiredStateRevision, RuntimeGeneration: request.WriteFence.RuntimeGeneration, CredentialVersion: request.WriteFence.CredentialVersion,
+		LimitPrice: request.LimitPrice.String(), LimitPolicy: request.LimitPolicy, ReduceOnly: request.ReduceOnly, Leverage: request.Leverage,
+		RuntimeID: request.WriteFence.RuntimeID,
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("encode durable order payload")
@@ -333,7 +340,7 @@ func decodePlacePayload(payload json.RawMessage) (durablePlacePayload, error) {
 	if err := decoder.Decode(&decoded); err != nil {
 		return durablePlacePayload{}, fmt.Errorf("decode durable order payload")
 	}
-	if decoded.AccountID.Validate() != nil || decoded.RouteID.Validate() != nil || decoded.InstrumentID.Validate() != nil {
+	if decoded.AccountID.Validate() != nil || decoded.RouteID.Validate() != nil || decoded.InstrumentID.Validate() != nil || decoded.RuntimeID == "" || decoded.Leverage < 0 {
 		return durablePlacePayload{}, fmt.Errorf("decode durable order payload")
 	}
 	if _, err := decimal.NewFromString(decoded.Quantity); err != nil {

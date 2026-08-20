@@ -21,6 +21,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
@@ -113,25 +114,18 @@ type authorityRuntimeStatus struct {
 }
 
 type authorityPublicDesiredRuntime struct {
-	AccountID            domain.AccountID     `json:"accountId"`
-	Venue                string               `json:"venue"`
-	VenueEnvironment     string               `json:"venueEnvironment"`
-	DesiredStateRevision uint64               `json:"desiredStateRevision"`
-	RuntimeGeneration    uint64               `json:"runtimeGeneration"`
-	CredentialVersion    uint64               `json:"credentialVersion"`
-	RequestedState       account.RuntimeState `json:"requestedState"`
-	RotationFence        string               `json:"rotationFence,omitempty"`
+	AccountID        domain.AccountID     `json:"accountId"`
+	Venue            string               `json:"venue"`
+	VenueEnvironment string               `json:"venueEnvironment"`
+	RequestedState   account.RuntimeState `json:"requestedState"`
 }
 
 type authorityPublicRuntimeAccount struct {
-	Desired                         authorityPublicDesiredRuntime `json:"desired"`
-	State                           account.RuntimeState          `json:"state"`
-	Ready                           bool                          `json:"ready"`
-	Reason                          string                        `json:"reason,omitempty"`
-	RuntimeVersion                  uint64                        `json:"runtimeVersion"`
-	LastAppliedDesiredStateRevision uint64                        `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    uint64                        `json:"lastAppliedRuntimeGeneration"`
-	ObservedAt                      time.Time                     `json:"observedAt"`
+	Desired    authorityPublicDesiredRuntime `json:"desired"`
+	State      account.RuntimeState          `json:"state"`
+	Ready      bool                          `json:"ready"`
+	Reason     string                        `json:"reason,omitempty"`
+	ObservedAt time.Time                     `json:"observedAt"`
 }
 
 type authorityProjectionReadiness struct {
@@ -149,18 +143,20 @@ type authorityRuntimeCapability struct {
 }
 
 type authorityRuntimeProjection struct {
-	AccountID                       string                       `json:"accountId"`
-	DesiredStateRevision            uint64                       `json:"desiredStateRevision"`
-	RuntimeGeneration               uint64                       `json:"runtimeGeneration"`
-	CredentialVersion               uint64                       `json:"credentialVersion"`
-	RuntimeVersion                  uint64                       `json:"runtimeVersion"`
-	Readiness                       authorityProjectionReadiness `json:"readiness"`
-	WriteReadiness                  authorityProjectionReadiness `json:"writeReadiness"`
-	LastAppliedDesiredStateRevision uint64                       `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    uint64                       `json:"lastAppliedRuntimeGeneration"`
-	BlockedReason                   *string                      `json:"blockedReason"`
-	Capabilities                    []authorityRuntimeCapability `json:"capabilities"`
-	ObservedAt                      time.Time                    `json:"observedAt"`
+	AccountID      string                       `json:"accountId"`
+	Readiness      authorityProjectionReadiness `json:"readiness"`
+	WriteReadiness authorityProjectionReadiness `json:"writeReadiness"`
+	BlockedReason  *string                      `json:"blockedReason"`
+	Capabilities   []authorityRuntimeCapability `json:"capabilities"`
+	ObservedAt     time.Time                    `json:"observedAt"`
+	// Deprecated source-compatibility fields. They are not serialized or
+	// persisted by the simplified account model.
+	DesiredStateRevision            uint64 `json:"-"`
+	RuntimeGeneration               uint64 `json:"-"`
+	CredentialVersion               uint64 `json:"-"`
+	RuntimeVersion                  uint64 `json:"-"`
+	LastAppliedDesiredStateRevision uint64 `json:"-"`
+	LastAppliedRuntimeGeneration    uint64 `json:"-"`
 }
 
 type authorityTradeRules struct {
@@ -240,11 +236,8 @@ type authorityFundingPoint struct {
 // funding-capable route profile.
 //
 // It is a separate projection from authorityMarketData rather than a list of
-// them because the board is read without an account: MarketData is served from
-// a configured account's authenticated client, while every cell here comes from
-// a public endpoint. Folding the two together would mean an operator with no
-// accounts either sees an empty board or sees one and cannot tell which cells
-// required credentials.
+// them because it is a cross-venue bulk read, while MarketData is one selected
+// instrument. Both are credential-free public data.
 type authorityFundingBoard struct {
 	ObservedAt time.Time               `json:"observedAt"`
 	Venues     []authorityFundingVenue `json:"venues"`
@@ -289,17 +282,17 @@ type authorityFundingVenue struct {
 // settlement clock, and binance, okx, and nado leave it out whenever the venue
 // itself omits it, so the zero is reachable on a third of the table.
 type authorityFundingRow struct {
-	Symbol          string    `json:"symbol"`
-	NativeSymbol    string    `json:"nativeSymbol,omitempty"`
-	NativeID        string    `json:"nativeId,omitempty"`
-	BaseAsset       string    `json:"baseAsset,omitempty"`
-	QuoteAsset      string    `json:"quoteAsset,omitempty"`
-	Rate            string    `json:"rate"`
-	IntervalHours   int64     `json:"intervalHours,omitempty"`
-	NextFundingTime time.Time `json:"nextFundingTime,omitzero"`
-	MarkPrice       string    `json:"markPrice,omitempty"`
-	IndexPrice      string    `json:"indexPrice,omitempty"`
-	OpenInterest    string    `json:"openInterest,omitempty"`
+	InstrumentID         string    `json:"instrumentId,omitempty"`
+	Symbol               string    `json:"symbol"`
+	BaseAsset            string    `json:"baseAsset,omitempty"`
+	QuoteAsset           string    `json:"quoteAsset,omitempty"`
+	Rate                 string    `json:"rate"`
+	IntervalHours        int64     `json:"intervalHours,omitempty"`
+	NextFundingTime      time.Time `json:"nextFundingTime,omitzero"`
+	MarkPrice            string    `json:"markPrice,omitempty"`
+	IndexPrice           string    `json:"indexPrice,omitempty"`
+	OpenInterest         string    `json:"openInterest,omitempty"`
+	OpenInterestNotional string    `json:"openInterestNotional,omitempty"`
 }
 
 // authorityFundingHistoryQuery is a struct for the same reason
@@ -311,11 +304,9 @@ type authorityFundingRow struct {
 // product decision that belongs to the service above; what the gateway knows,
 // and the service cannot, is how far back a single venue call actually reaches.
 type authorityFundingHistoryQuery struct {
-	Venue       string
-	Environment string
-	Symbol      string
-	Since       time.Time
-	Until       time.Time
+	InstrumentID string
+	Since        time.Time
+	Until        time.Time
 }
 
 // authorityFundingSeries is one instrument's settled funding on one venue.
@@ -325,13 +316,12 @@ type authorityFundingHistoryQuery struct {
 // response that arrived under the wrong label would render as a real number
 // against the wrong venue rather than as a gap.
 type authorityFundingSeries struct {
-	Venue       string                        `json:"venue"`
-	Environment string                        `json:"environment"`
-	Symbol      string                        `json:"symbol"`
-	Since       time.Time                     `json:"since"`
-	Until       time.Time                     `json:"until"`
-	ObservedAt  time.Time                     `json:"observedAt"`
-	Points      []authorityFundingSeriesPoint `json:"points"`
+	InstrumentID string                        `json:"instrumentId"`
+	Venue        string                        `json:"venue"`
+	Since        time.Time                     `json:"since"`
+	Until        time.Time                     `json:"until"`
+	ObservedAt   time.Time                     `json:"observedAt"`
+	Points       []authorityFundingSeriesPoint `json:"points"`
 }
 
 // authorityFundingSeriesPoint is one settlement.
@@ -352,18 +342,11 @@ func authorityPublicRuntimes(runtimes []account.RuntimeAccount) []authorityPubli
 		result = append(result, authorityPublicRuntimeAccount{
 			Desired: authorityPublicDesiredRuntime{
 				AccountID: runtime.Desired.AccountID, Venue: runtime.Desired.Venue,
-				VenueEnvironment:     runtime.Desired.VenueEnvironment,
-				DesiredStateRevision: runtime.Desired.DesiredStateRevision,
-				RuntimeGeneration:    runtime.Desired.RuntimeGeneration,
-				CredentialVersion:    runtime.Desired.CredentialVersion,
-				RequestedState:       runtime.Desired.RequestedState,
-				RotationFence:        runtime.Desired.RotationFence,
+				VenueEnvironment: runtime.Desired.VenueEnvironment,
+				RequestedState:   runtime.Desired.RequestedState,
 			},
 			State: runtime.State, Ready: runtime.Ready, Reason: runtime.Reason,
-			RuntimeVersion:                  runtime.RuntimeVersion,
-			LastAppliedDesiredStateRevision: runtime.LastAppliedDesiredStateRevision,
-			LastAppliedRuntimeGeneration:    runtime.LastAppliedRuntimeGeneration,
-			ObservedAt:                      runtime.ObservedAt,
+			ObservedAt: runtime.ObservedAt,
 		})
 	}
 	return result
@@ -379,7 +362,7 @@ const (
 
 type authorityReadSource interface {
 	Venues() []authorityVenue
-	Instruments() (authorityCatalogInstruments, error)
+	Instruments(context.Context) (authorityCatalogInstruments, error)
 	MarketData(context.Context, string, string, string, string) (authorityMarketData, error)
 	Candles(context.Context, authorityCandlesQuery) (authorityCandles, error)
 	FundingBoard(context.Context) (authorityFundingBoard, error)
@@ -412,12 +395,22 @@ type authorityMultiCapabilitySource interface {
 type managerAuthorityReads struct {
 	manager  authorityAccountSource
 	profiles *routeprofile.Registry
-	// board serves the funding matrix from public endpoints. It is deliberately
-	// beside manager rather than behind it: every other read on this type walks
-	// reads.manager.Accounts() for a ReadReady route, and the board's whole
-	// point is to answer before any account exists.
+	// markets owns the credential-free catalog, order-book and candle plane.
+	// It is deliberately independent of manager: public facts exist before an
+	// account is configured and remain readable when all accounts are disabled.
+	markets authorityPublicMarketSource
+	// board serves the bulk funding matrix from its own public endpoint loaders.
+	// It stays separate from markets because it refreshes every venue as one
+	// comparable snapshot rather than resolving a selected instrument.
 	board *fundingboard.Source
 	now   func() time.Time
+}
+
+type authorityPublicMarketSource interface {
+	Venues() []string
+	Snapshot(context.Context) (publicmarket.Snapshot, error)
+	MarketData(context.Context, publicmarket.Query, int, int) (publicmarket.Fact, error)
+	Candles(context.Context, publicmarket.Query, string, int) (publicmarket.CandleResult, error)
 }
 
 // clock reports the read's notion of now, in UTC. Tests inject now to make
@@ -566,6 +559,10 @@ func withFundingBoard(board *fundingboard.Source) authorityOption {
 	return func(reads *managerAuthorityReads) { reads.board = board }
 }
 
+func withPublicMarkets(markets authorityPublicMarketSource) authorityOption {
+	return func(reads *managerAuthorityReads) { reads.markets = markets }
+}
+
 func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateStore, manager *account.Manager, options ...authorityOption) (*gatewayAuthority, error) {
 	if ctx == nil || desiredStore == nil || manager == nil {
 		return nil, errors.New("gateway authority dependencies are incomplete")
@@ -625,6 +622,7 @@ func (authority *gatewayAuthority) ApplySnapshot(ctx context.Context, desired st
 	}
 	group, err := authority.manager.BuildCandidate(ctx, pending)
 	if err != nil {
+		reasonCode := account.CandidateFailureReason(err)
 		observedAt := authority.now().UTC()
 		for _, route := range pending.Routes {
 			if route.RequestedState != store.RouteActive {
@@ -632,7 +630,7 @@ func (authority *gatewayAuthority) ApplySnapshot(ctx context.Context, desired st
 			}
 			if observationErr := authority.snapshots.RecordCandidateObservation(ctx, store.CandidateObservation{
 				OperationID: pending.OperationID, ObservationRevision: 1, RouteID: route.RouteID,
-				State: store.CandidateFailed, ReasonCode: "CANDIDATE_BUILD_FAILED", ObservedAt: observedAt,
+				State: store.CandidateFailed, ReasonCode: reasonCode, ObservedAt: observedAt,
 			}); observationErr != nil {
 				return store.PromotionResult{}, observationErr
 			}
@@ -701,7 +699,7 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 	case httpapi.AuthorityCatalogVenues:
 		response.Body = authority.reads.Venues()
 	case httpapi.AuthorityCatalogInstruments:
-		response.Body, err = authority.reads.Instruments()
+		response.Body, err = authority.reads.Instruments(ctx)
 	case httpapi.AuthorityMarketData:
 		venue, environment, product, instrumentID := request.Query.Get("venue"), request.Query.Get("environment"), request.Query.Get("product"), request.Query.Get("instrumentId")
 		if strings.TrimSpace(venue) == "" || strings.TrimSpace(environment) == "" || strings.TrimSpace(product) == "" || strings.TrimSpace(instrumentID) == "" {
@@ -744,15 +742,21 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		// No query to validate and no identity to echo back: the board is the
 		// whole table this gateway can reach, so there is nothing a caller could
 		// ask for that would make one column right and another wrong.
-		response.Body, err = authority.reads.FundingBoard(ctx)
-	case httpapi.AuthorityFundingHistory:
-		query := authorityFundingHistoryQuery{
-			Venue:       strings.TrimSpace(request.Query.Get("venue")),
-			Environment: strings.TrimSpace(request.Query.Get("environment")),
-			Symbol:      strings.TrimSpace(request.Query.Get("symbol")),
+		if len(request.Query) != 0 {
+			err = errors.New("funding board query is not allowed")
+		} else {
+			response.Body, err = authority.reads.FundingBoard(ctx)
 		}
-		if query.Venue == "" || query.Environment == "" || query.Symbol == "" {
-			err = errors.New("funding history composite identity is required")
+	case httpapi.AuthorityFundingHistory:
+		if !authorityQueryExactly(request.Query, "instrumentId", "since", "until") {
+			err = errors.New("funding history query is invalid")
+			break
+		}
+		query := authorityFundingHistoryQuery{
+			InstrumentID: strings.TrimSpace(request.Query.Get("instrumentId")),
+		}
+		if query.InstrumentID == "" {
+			err = errors.New("funding history instrumentId is required")
 			break
 		}
 		if query.Since, err = authorityHistoryBound(request.Query.Get("since")); err != nil {
@@ -763,8 +767,8 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		}
 		var series authorityFundingSeries
 		series, err = authority.reads.FundingHistory(ctx, query)
-		if err == nil && (series.Venue != query.Venue || series.Environment != query.Environment || series.Symbol != query.Symbol) {
-			err = errors.New("funding history composite identity mismatch")
+		if err == nil && series.InstrumentID != query.InstrumentID {
+			err = errors.New("funding history instrument identity mismatch")
 		} else {
 			response.Body = series
 		}
@@ -796,8 +800,20 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 	return response, nil
 }
 
+func authorityQueryExactly(query map[string][]string, fields ...string) bool {
+	if len(query) != len(fields) {
+		return false
+	}
+	for _, field := range fields {
+		if values, ok := query[field]; !ok || len(values) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
 func (authority *gatewayAuthority) retireDesired(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	if request.Retirement == nil || request.AccountID != request.Retirement.AccountID || request.OperationID != request.Retirement.OperationID || request.Retirement.DesiredStateRevision < 2 {
+	if request.Retirement == nil || request.AccountID != request.Retirement.AccountID || request.OperationID != request.Retirement.OperationID || strings.TrimSpace(request.Retirement.RuntimeID) == "" {
 		return httpapi.AuthorityResponse{}, errors.New("runtime retirement request is invalid")
 	}
 	operationID, err := secretstore.ParseOperationID(request.OperationID)
@@ -808,13 +824,11 @@ func (authority *gatewayAuthority) retireDesired(ctx context.Context, request ht
 	retirement := store.RetirementRequest{
 		OperationID: operationID, AccountID: accountID,
 		ExpectedActiveFence: domain.AccountFence{
-			AccountID: accountID, DesiredStateRevision: uint64(request.Retirement.DesiredStateRevision - 1),
-			RuntimeGeneration: uint64(request.Retirement.RuntimeGeneration), CredentialVersion: uint64(request.Retirement.CredentialVersion),
+			AccountID: accountID, RuntimeID: request.Retirement.RuntimeID,
 		},
-		TombstoneRevision: uint64(request.Retirement.DesiredStateRevision),
-		Scope:             authoritySecretScope(),
+		Scope: authoritySecretScope(),
 	}
-	result, err := authority.manager.RetireRuntime(ctx, retirement)
+	_, err = authority.manager.RetireRuntime(ctx, retirement)
 	if err != nil {
 		return httpapi.AuthorityResponse{}, err
 	}
@@ -822,7 +836,7 @@ func (authority *gatewayAuthority) retireDesired(ctx context.Context, request ht
 	if err != nil {
 		return httpapi.AuthorityResponse{}, err
 	}
-	if !state.Tombstoned || state.TombstoneRevision != result.TombstoneRevision || state.Active != nil || state.Pending != nil || len(state.Retiring) != 0 {
+	if !state.Tombstoned || state.Active != nil || state.Pending != nil || len(state.Retiring) != 0 {
 		return httpapi.AuthorityResponse{}, store.ErrOperationConflict
 	}
 	return httpapi.AuthorityResponse{Body: authority.runtimeView(state), Status: http.StatusOK}, nil
@@ -873,12 +887,11 @@ func (authority *gatewayAuthority) finalizeRotation(ctx context.Context, request
 }
 
 func accountFenceFromHTTP(fence httpapi.AccountFence, accountID domain.AccountID) (domain.AccountFence, error) {
-	if fence.AccountID != string(accountID) || fence.DesiredStateRevision <= 0 || fence.RuntimeGeneration <= 0 || fence.CredentialVersion <= 0 {
+	if fence.AccountID != string(accountID) || strings.TrimSpace(fence.RuntimeID) == "" {
 		return domain.AccountFence{}, store.ErrPromotionFenceConflict
 	}
 	result := domain.AccountFence{
-		AccountID: accountID, DesiredStateRevision: uint64(fence.DesiredStateRevision),
-		RuntimeGeneration: uint64(fence.RuntimeGeneration), CredentialVersion: uint64(fence.CredentialVersion),
+		AccountID: accountID, RuntimeID: fence.RuntimeID,
 	}
 	if err := result.Validate(); err != nil {
 		return domain.AccountFence{}, store.ErrPromotionFenceConflict
@@ -888,8 +901,7 @@ func accountFenceFromHTTP(fence httpapi.AccountFence, accountID domain.AccountID
 
 func accountFenceToHTTP(fence domain.AccountFence) httpapi.AccountFence {
 	return httpapi.AccountFence{
-		AccountID: string(fence.AccountID), DesiredStateRevision: int64(fence.DesiredStateRevision),
-		RuntimeGeneration: int64(fence.RuntimeGeneration), CredentialVersion: int64(fence.CredentialVersion),
+		AccountID: string(fence.AccountID), RuntimeID: fence.RuntimeID,
 	}
 }
 
@@ -931,7 +943,7 @@ func desiredSnapshot(request httpapi.DesiredApplyRequest) (store.DesiredSnapshot
 	if err != nil {
 		return store.DesiredSnapshot{}, errors.New("desired secret reference is invalid")
 	}
-	if request.DesiredStateRevision < 1 || request.RuntimeGeneration < 1 || request.CredentialVersion < 1 {
+	if strings.TrimSpace(request.RuntimeID) == "" {
 		return store.DesiredSnapshot{}, errors.New("desired runtime fence is invalid")
 	}
 	// A route profile no longer carries an environment of its own — live is the
@@ -959,8 +971,7 @@ func desiredSnapshot(request httpapi.DesiredApplyRequest) (store.DesiredSnapshot
 		SnapshotID: uuid.New(), OperationID: operationID, AccountID: accountID,
 		Venue: request.Venue, NativeEnvironment: request.NativeEnvironment, SecretRef: secretRef,
 		Fence: domain.AccountFence{
-			AccountID: accountID, DesiredStateRevision: uint64(request.DesiredStateRevision),
-			RuntimeGeneration: uint64(request.RuntimeGeneration), CredentialVersion: uint64(request.CredentialVersion),
+			AccountID: accountID, RuntimeID: request.RuntimeID,
 		},
 		RequestedState: store.DesiredAccountState(request.RequestedState), Routes: routes,
 	}
@@ -1015,12 +1026,7 @@ func (authority *gatewayAuthority) runtimeView(state store.RuntimeState) httpapi
 
 func (authority *gatewayAuthority) enrichRuntimeView(view *httpapi.RuntimeView, active store.ActiveSnapshot) {
 	fence := active.Fence
-	view.DesiredStateRevision = int64(fence.DesiredStateRevision)
-	view.RuntimeGeneration = int64(fence.RuntimeGeneration)
-	view.CredentialVersion = int64(fence.CredentialVersion)
-	view.RuntimeVersion = int64(fence.RuntimeGeneration)
-	view.LastAppliedDesiredStateRevision = int64(fence.DesiredStateRevision)
-	view.LastAppliedRuntimeGeneration = int64(fence.RuntimeGeneration)
+	view.RuntimeID = fence.RuntimeID
 	view.ObservedAt = active.PromotedAt.UTC()
 	if authority.manager == nil {
 		view.Readiness = httpapi.RuntimeProjectionReadiness{Ready: true}
@@ -1127,9 +1133,8 @@ func (authority *gatewayAuthority) snapshotView(snapshot store.DesiredSnapshot, 
 	}
 	active := authority.manager.ActiveSnapshot(snapshot.AccountID)
 	view := httpapi.RuntimeSnapshotView{
-		OperationID:          string(snapshot.OperationID),
-		DesiredStateRevision: int64(snapshot.Fence.DesiredStateRevision), RuntimeGeneration: int64(snapshot.Fence.RuntimeGeneration),
-		CredentialVersion: int64(snapshot.Fence.CredentialVersion), RequestedState: string(snapshot.RequestedState),
+		OperationID: string(snapshot.OperationID),
+		RuntimeID:   snapshot.Fence.RuntimeID, RequestedState: string(snapshot.RequestedState),
 		Routes: make([]httpapi.RuntimeRouteView, 0, len(snapshot.Routes)),
 	}
 	for _, route := range snapshot.Routes {
@@ -1171,6 +1176,17 @@ func (authority *gatewayAuthority) activeRouteLifecycleState(accountID domain.Ac
 }
 
 func (reads managerAuthorityReads) Venues() []authorityVenue {
+	if reads.markets != nil {
+		venues := profileAuthorityVenues(reads.profiles)
+		ready := make(map[string]struct{})
+		for _, venue := range reads.markets.Venues() {
+			ready[venue] = struct{}{}
+		}
+		for index := range venues {
+			_, venues[index].Ready = ready[venues[index].Venue]
+		}
+		return venues
+	}
 	resources := reads.manager.Accounts()
 	venues := profileAuthorityVenues(reads.profiles)
 	indexes := make(map[string]int, len(venues))
@@ -1229,7 +1245,7 @@ func (reads managerAuthorityReads) Runtime(accountID string) (authorityRuntimePr
 	if err != nil {
 		return authorityRuntimeProjection{}, fmt.Errorf("read runtime capability: %w", err)
 	}
-	if runtime.Desired.AccountID != id || runtime.Desired.DesiredStateRevision == 0 || runtime.Desired.RuntimeGeneration == 0 || runtime.Desired.CredentialVersion == 0 || runtime.RuntimeVersion == 0 || runtime.LastAppliedDesiredStateRevision == 0 || runtime.LastAppliedRuntimeGeneration == 0 || runtime.ObservedAt.IsZero() || len(rows) == 0 {
+	if runtime.Desired.AccountID != id || strings.TrimSpace(runtime.Desired.RuntimeID) == "" || runtime.ObservedAt.IsZero() || len(rows) == 0 {
 		return authorityRuntimeProjection{}, errors.New("runtime projection authority is incomplete")
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].RowID < rows[j].RowID })
@@ -1279,16 +1295,35 @@ func (reads managerAuthorityReads) Runtime(accountID string) (authorityRuntimePr
 		blocked = &blockedReason
 	}
 	return authorityRuntimeProjection{
-		AccountID: accountID, DesiredStateRevision: runtime.Desired.DesiredStateRevision, RuntimeGeneration: runtime.Desired.RuntimeGeneration,
-		CredentialVersion: runtime.Desired.CredentialVersion, RuntimeVersion: runtime.RuntimeVersion,
+		AccountID: accountID,
 		Readiness: authorityProjectionReadiness{Ready: readReady, Reason: readReason}, WriteReadiness: authorityProjectionReadiness{Ready: writeReady, Reason: writeReason},
-		LastAppliedDesiredStateRevision: runtime.LastAppliedDesiredStateRevision, LastAppliedRuntimeGeneration: runtime.LastAppliedRuntimeGeneration,
 		BlockedReason: blocked, Capabilities: capabilities,
 		ObservedAt: runtime.ObservedAt.UTC(),
 	}, nil
 }
 
-func (reads managerAuthorityReads) Instruments() (authorityCatalogInstruments, error) {
+func (reads managerAuthorityReads) Instruments(ctx context.Context) (authorityCatalogInstruments, error) {
+	if reads.markets != nil {
+		snapshot, err := reads.markets.Snapshot(ctx)
+		if err != nil {
+			return authorityCatalogInstruments{}, fmt.Errorf("read public market catalog: %w", err)
+		}
+		instruments := make([]authorityInstrument, 0, len(snapshot.Instruments))
+		for _, row := range snapshot.Instruments {
+			instrument := row.Catalog
+			minNotional := ""
+			if instrument.Rules.MinNotional.Valid {
+				minNotional = instrument.Rules.MinNotional.Value.String()
+			}
+			instruments = append(instruments, authorityInstrument{
+				InstrumentID: string(instrument.ID), Venue: string(instrument.Venue), Environment: string(instrument.Environment), Product: string(instrument.Product),
+				Settlement: instrument.Settlement, Symbol: instrument.Symbol, BaseAsset: instrument.BaseAsset, QuoteAsset: instrument.QuoteAsset,
+				Rules: authorityTradeRules{PriceIncrement: instrument.Rules.PriceIncrement.String(), QuantityIncrement: instrument.Rules.QuantityIncrement.String(), MinQuantity: instrument.Rules.MinQuantity.String(), MinNotional: minNotional},
+				Ready: true,
+			})
+		}
+		return authorityCatalogInstruments{Revision: snapshot.Revision, ObservedAt: snapshot.ObservedAt.UTC(), Instruments: instruments}, nil
+	}
 	resources := reads.manager.Accounts()
 	instruments := make([]authorityInstrument, 0)
 	indexes := make(map[string]int)
@@ -1366,6 +1401,14 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 	if err != nil {
 		return authorityFundingBoard{}, err
 	}
+	var instruments publicmarket.Snapshot
+	if reads.markets != nil {
+		// The rate surface and instrument directory are independently public.
+		// A partial directory must not hide an otherwise useful board, so rows
+		// that cannot be joined stay visible with no InstrumentID and are
+		// explicitly non-executable above this boundary.
+		instruments, _ = reads.markets.Snapshot(ctx)
+	}
 	board := authorityFundingBoard{
 		ObservedAt: snapshot.ObservedAt,
 		Venues:     make([]authorityFundingVenue, 0, len(snapshot.Venues)),
@@ -1379,9 +1422,15 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 		}
 		for _, entry := range venue.Entries {
 			row := authorityFundingRow{
-				Symbol: entry.Symbol, NativeSymbol: entry.NativeSymbol, NativeID: entry.NativeID,
+				Symbol:    entry.Symbol,
 				BaseAsset: entry.BaseAsset, QuoteAsset: entry.QuoteAsset,
 				Rate: entry.Rate.String(), NextFundingTime: entry.NextFundingTime,
+			}
+			if instrument, ok := instruments.MatchFundingEntry(venue.RouteProfileID, entry); ok {
+				row.InstrumentID = string(instrument.Catalog.ID)
+				row.Symbol = instrument.Catalog.Symbol
+				row.BaseAsset = instrument.Catalog.BaseAsset
+				row.QuoteAsset = instrument.Catalog.QuoteAsset
 			}
 			if entry.IntervalHours.Valid {
 				row.IntervalHours = entry.IntervalHours.Value
@@ -1395,6 +1444,9 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 			if entry.OpenInterest.Valid {
 				row.OpenInterest = entry.OpenInterest.Value.String()
 			}
+			if entry.OpenInterestNotional.Valid {
+				row.OpenInterestNotional = entry.OpenInterestNotional.Value.String()
+			}
 			column.Rows = append(column.Rows, row)
 		}
 		board.Venues = append(board.Venues, column)
@@ -1405,24 +1457,33 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 // FundingHistory serves one instrument's settled series from the same public
 // source the board is served from.
 //
-// It deliberately does not walk reads.manager.Accounts() the way MarketData and
-// Candles do. Those read a venue through a configured account's authenticated
-// client; this reads the same public endpoints the board already polls, so a
-// chart draws on a gateway with no accounts at all — which is the state an
-// operator comparing venues before funding one is actually in.
+// It reads the same credential-free source as the board, so a chart draws on a
+// gateway with no accounts at all — the state an operator comparing venues
+// before funding one is actually in.
 func (reads managerAuthorityReads) FundingHistory(ctx context.Context, query authorityFundingHistoryQuery) (authorityFundingSeries, error) {
-	if reads.board == nil {
+	if reads.board == nil || reads.markets == nil {
 		return authorityFundingSeries{}, fundingboard.ErrBoardUnavailable
 	}
+	publicSnapshot, err := reads.markets.Snapshot(ctx)
+	if err != nil {
+		return authorityFundingSeries{}, err
+	}
+	instrument, ok := publicSnapshot.Find(query.InstrumentID)
+	if !ok || instrument.Catalog.Product != exchange.ProductPerp {
+		return authorityFundingSeries{}, fundingboard.ErrHistoryUnknownInstrument
+	}
 	snapshot, err := reads.board.History(ctx, fundingboard.HistoryQuery{
-		Venue: query.Venue, Environment: query.Environment, Symbol: query.Symbol,
-		Since: query.Since, Until: query.Until,
+		RouteProfileID: instrument.RouteProfileID,
+		NativeSymbol:   instrument.Canonical.Identity.NativeSymbol,
+		NativeID:       instrument.Canonical.Identity.NativeID,
+		Since:          query.Since,
+		Until:          query.Until,
 	})
 	if err != nil {
 		return authorityFundingSeries{}, err
 	}
 	series := authorityFundingSeries{
-		Venue: query.Venue, Environment: query.Environment, Symbol: query.Symbol,
+		InstrumentID: query.InstrumentID, Venue: string(instrument.Catalog.Venue),
 		Since: query.Since, Until: query.Until, ObservedAt: snapshot.ObservedAt,
 		Points: make([]authorityFundingSeriesPoint, 0, len(snapshot.Points)),
 	}
@@ -1443,6 +1504,11 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 	instrumentID = strings.TrimSpace(instrumentID)
 	if venue == "" || environment == "" || instrumentID == "" || (product != string(exchange.ProductSpot) && product != string(exchange.ProductPerp)) {
 		return authorityMarketData{}, errors.New("market-data venue, environment, product, and instrumentId are required")
+	}
+	if reads.markets != nil {
+		return reads.publicMarketData(ctx, publicmarket.Query{
+			Venue: venue, Environment: environment, Product: product, InstrumentID: instrumentID,
+		})
 	}
 	for _, resource := range reads.manager.Accounts() {
 		if string(resource.Venue) != venue || string(resource.Environment) != environment || string(resource.Product) != product || !resource.ReadReady {
@@ -1568,20 +1634,72 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 	return authorityMarketData{}, errors.New("configured market-data capability is unavailable")
 }
 
-// Candles answers the chart's read.
-//
-// It resolves an account the way MarketData does — scan for the first
-// read-ready route on the requested venue/environment/product that can resolve
-// the instrument — because the internal plane is keyed by the instrument, not
-// by an account: the browser asks for BTCUSDT bars, not for one account's view
-// of them. Candles are public data, so any read-ready route serves.
-//
-// Unlike MarketData this does not fall through to the next account when the
-// venue call fails. Order-book depth is a per-route capability and a route that
-// cannot serve it is worth skipping; Candles is grade A on every supported
-// venue, so a failure here is the venue refusing, and retrying the same refusal
-// against a sibling route would just multiply the latency before the same
-// error.
+func (reads managerAuthorityReads) publicMarketData(ctx context.Context, query publicmarket.Query) (authorityMarketData, error) {
+	fact, err := reads.markets.MarketData(ctx, query, authorityDepthLimit, authorityFundingHistoryLimit)
+	if err != nil {
+		return authorityMarketData{}, fmt.Errorf("read public market-data capability: %w", err)
+	}
+	result := authorityMarketData{
+		Venue: query.Venue, Environment: query.Environment, Product: query.Product, InstrumentID: query.InstrumentID,
+	}
+	if fact.HasMark {
+		result.MarkPrice = fact.Mark.Price.String()
+		result.ObservedAt = fact.Mark.Time.UTC()
+	}
+	if fact.HasFunding {
+		result.FundingRate = fact.Funding.Rate.String()
+		result.FundingObservedAt = fact.Funding.ObservedAt.UTC()
+		result.FundingTime = fact.Funding.FundingTime.UTC()
+		result.NextFundingTime = fact.Funding.NextFundingTime.UTC()
+		if result.FundingObservedAt.IsZero() {
+			return authorityMarketData{}, errors.New("current funding observation time is unavailable")
+		}
+		if fact.Funding.ObservedAt.After(result.ObservedAt) {
+			result.ObservedAt = fact.Funding.ObservedAt.UTC()
+		}
+		if len(fact.FundingHistory.Rates) > authorityFundingHistoryLimit {
+			return authorityMarketData{}, errors.New("funding history exceeds requested bound")
+		}
+		result.FundingHistory = make([]authorityFundingPoint, len(fact.FundingHistory.Rates))
+		for index, rate := range fact.FundingHistory.Rates {
+			if rate.FundingTime.IsZero() {
+				return authorityMarketData{}, errors.New("funding history timestamp is unavailable")
+			}
+			result.FundingHistory[index] = authorityFundingPoint{
+				Rate: rate.Rate.String(), ObservedAt: rate.ObservedAt.UTC(), FundingTime: rate.FundingTime.UTC(),
+			}
+		}
+	}
+	book := fact.Book
+	if len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
+		return authorityMarketData{}, errors.New("bounded two-sided order book is unavailable")
+	}
+	result.Bids, err = projectAuthorityLevels(book.Bids)
+	if err != nil {
+		return authorityMarketData{}, err
+	}
+	result.Asks, err = projectAuthorityLevels(book.Asks)
+	if err != nil {
+		return authorityMarketData{}, err
+	}
+	result.BestBid, result.BestBidSize = result.Bids[0].Price, result.Bids[0].Quantity
+	result.BestAsk, result.BestAskSize = result.Asks[0].Price, result.Asks[0].Quantity
+	if book.Time.IsZero() {
+		if result.ObservedAt.IsZero() {
+			result.ObservedAt = reads.clock()
+		}
+	} else if result.ObservedAt.IsZero() || book.Time.After(result.ObservedAt) {
+		result.ObservedAt = book.Time.UTC()
+	}
+	if result.ObservedAt.IsZero() {
+		return authorityMarketData{}, errors.New("market-data observation time is unavailable")
+	}
+	return result, nil
+}
+
+// Candles answers the chart's credential-free public read. Production resolves
+// the instrument through markets; the account-backed branch below is retained
+// only for focused legacy authority fixtures that do not assemble that source.
 func (reads managerAuthorityReads) Candles(ctx context.Context, query authorityCandlesQuery) (authorityCandles, error) {
 	query.Venue = strings.TrimSpace(query.Venue)
 	query.Environment = strings.TrimSpace(query.Environment)
@@ -1594,6 +1712,9 @@ func (reads managerAuthorityReads) Candles(ctx context.Context, query authorityC
 	}
 	if query.Limit <= 0 || query.Limit > authorityCandleLimitMax {
 		query.Limit = authorityCandleLimitMax
+	}
+	if reads.markets != nil {
+		return reads.publicCandles(ctx, query)
 	}
 	for _, resource := range reads.manager.Accounts() {
 		if string(resource.Venue) != query.Venue || string(resource.Environment) != query.Environment ||
@@ -1656,6 +1777,37 @@ func (reads managerAuthorityReads) Candles(ctx context.Context, query authorityC
 		return result, nil
 	}
 	return authorityCandles{}, errors.New("configured candles capability is unavailable")
+}
+
+func (reads managerAuthorityReads) publicCandles(ctx context.Context, query authorityCandlesQuery) (authorityCandles, error) {
+	page, err := reads.markets.Candles(ctx, publicmarket.Query{
+		Venue: query.Venue, Environment: query.Environment, Product: query.Product, InstrumentID: query.InstrumentID,
+	}, query.Interval, query.Limit)
+	if err != nil {
+		return authorityCandles{}, fmt.Errorf("read public candles capability: %w", err)
+	}
+	result := authorityCandles{
+		Venue: query.Venue, Environment: query.Environment, Product: query.Product,
+		InstrumentID: query.InstrumentID, Interval: query.Interval,
+		Candles: make([]authorityCandle, len(page.Page.Candles)),
+	}
+	for index, candle := range page.Page.Candles {
+		if err := httpapi.ValidCandle(candle); err != nil {
+			return authorityCandles{}, fmt.Errorf("read candles: %w", err)
+		}
+		if candle.OpenTime.After(result.ObservedAt) {
+			result.ObservedAt = candle.OpenTime.UTC()
+		}
+		result.Candles[index] = authorityCandle{
+			OpenTime: candle.OpenTime.UTC(), CloseTime: candle.CloseTime.UTC(),
+			Open: candle.Open.String(), High: candle.High.String(), Low: candle.Low.String(),
+			Close: candle.Close.String(), Volume: candle.Volume.String(), Complete: candle.Complete,
+		}
+	}
+	if result.ObservedAt.IsZero() {
+		result.ObservedAt = reads.clock()
+	}
+	return result, nil
 }
 
 // authorityCandleLimit parses the caller's bound. An absent limit is the
@@ -1800,21 +1952,19 @@ func (authority *gatewayAuthority) runtimeDesired(desired store.DesiredAccount, 
 	}
 	return account.DesiredRuntime{
 		AccountID: desired.AccountID, Venue: desired.Venue, VenueEnvironment: desired.VenueEnvironment,
-		SecretRef: ref, DesiredStateRevision: uint64(desired.DesiredStateRevision),
-		RuntimeGeneration: uint64(desired.RuntimeGeneration), CredentialVersion: uint64(desired.CredentialVersion),
+		SecretRef: ref, RuntimeID: desired.RuntimeID,
 		RequestedState: state, RotationFence: rotationFence,
 	}, nil
 }
 
 func desiredResponse(desired store.DesiredAccount) httpapi.AuthorityResponse {
-	return httpapi.AuthorityResponse{Body: desiredToHTTP(desired), DesiredStateRevision: desired.DesiredStateRevision}
+	return httpapi.AuthorityResponse{Body: desiredToHTTP(desired)}
 }
 
 func desiredToHTTP(desired store.DesiredAccount) httpapi.DesiredAccount {
 	result := httpapi.DesiredAccount{
 		AccountID: string(desired.AccountID), Venue: desired.Venue, VenueEnvironment: desired.VenueEnvironment,
-		SecretRef: "redacted", DesiredStateRevision: desired.DesiredStateRevision,
-		RuntimeGeneration: desired.RuntimeGeneration, CredentialVersion: desired.CredentialVersion,
+		SecretRef: "redacted", RuntimeID: desired.RuntimeID,
 		RequestedState: string(desired.RequestedState),
 	}
 	if desired.RotationFence != nil {
@@ -1853,6 +2003,18 @@ func authorityError(err error) error {
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "ACCOUNT_RUNTIME_BLOCKED"}
 	case errors.Is(err, account.ErrLiveWriteDisabled):
 		return httpapi.AuthorityError{Status: http.StatusForbidden, Code: "LIVE_PRIVATE_WRITE_DISABLED"}
+	case account.CandidateFailureReason(err) == "CREDENTIAL_EXPIRED":
+		return httpapi.AuthorityError{Status: http.StatusUnprocessableEntity, Code: "CREDENTIAL_EXPIRED"}
+	case account.CandidateFailureReason(err) == "CREDENTIAL_INVALID":
+		return httpapi.AuthorityError{Status: http.StatusUnprocessableEntity, Code: "CREDENTIAL_INVALID"}
+	case account.CandidateFailureReason(err) == "CREDENTIAL_PERMISSION_DENIED":
+		return httpapi.AuthorityError{Status: http.StatusUnprocessableEntity, Code: "CREDENTIAL_PERMISSION_DENIED"}
+	case account.CandidateFailureReason(err) == "VENUE_RATE_LIMITED":
+		return httpapi.AuthorityError{Status: http.StatusTooManyRequests, Code: "VENUE_RATE_LIMITED", Retryable: true}
+	case account.CandidateFailureReason(err) == "VENUE_UNAVAILABLE":
+		return httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "VENUE_UNAVAILABLE", Retryable: true}
+	case account.CandidateFailureReason(err) == "VENUE_RESPONSE_INVALID":
+		return httpapi.AuthorityError{Status: http.StatusBadGateway, Code: "VENUE_RESPONSE_INVALID", Retryable: true}
 	case errors.Is(err, fundingboard.ErrBoardUnavailable):
 		// A table where every venue failed is a snapshot, not an error, so
 		// reaching here means the source itself could not be built or has been

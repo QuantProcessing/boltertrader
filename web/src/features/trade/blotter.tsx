@@ -8,11 +8,13 @@ import { isResumable } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
+import { InstrumentName } from "@/components/ui/instrument-name";
 import { Num, Side } from "@/components/ui/num";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
 import { useCancelOrder, useFills, useOrders, usePositions } from "@/features/trade/queries";
 import { formatTimestamp } from "@/lib/format";
+import { instrumentSymbol } from "@/lib/instrument";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -29,14 +31,64 @@ export function Blotter({ instrumentId }: { instrumentId: string | null }) {
   const orders = useOrders();
   const positions = usePositions();
   const fills = useFills();
+
+  return (
+    <BlotterContent
+      instrumentId={instrumentId}
+      orders={orders.data ?? []}
+      positions={positions.data ?? []}
+      fills={fills.data ?? []}
+      ordersLoading={orders.isFetching && orders.data === undefined}
+      positionsLoading={positions.isFetching && positions.data === undefined}
+      fillsLoading={fills.isFetching && fills.data === undefined}
+    />
+  );
+}
+
+/**
+ * The anonymous blotter has the same structure but mounts no principal query.
+ * Keeping it as a different component type is intentional: signing out
+ * unmounts every observer that could still hold the previous session's result.
+ */
+export function ReadOnlyBlotter({ instrumentId }: { instrumentId: string | null }) {
+  return (
+    <BlotterContent
+      instrumentId={instrumentId}
+      orders={[]}
+      positions={[]}
+      fills={[]}
+      ordersLoading={false}
+      positionsLoading={false}
+      fillsLoading={false}
+    />
+  );
+}
+
+function BlotterContent({
+  instrumentId,
+  orders,
+  positions,
+  fills,
+  ordersLoading,
+  positionsLoading,
+  fillsLoading,
+}: {
+  instrumentId: string | null;
+  orders: Command[];
+  positions: Position[];
+  fills: Fill[];
+  ordersLoading: boolean;
+  positionsLoading: boolean;
+  fillsLoading: boolean;
+}) {
   const t = useT();
 
   // Working orders are the reason to look down here, so the count that decides
   // the default tab is the actionable one, not the total.
-  const working = (orders.data ?? []).filter((order) => isResumable(order.state));
+  const working = orders.filter((order) => isResumable(order.state));
 
   return (
-    <Tabs.Root defaultValue="orders" className="flex min-h-0 flex-1 flex-col">
+    <Tabs.Root defaultValue="positions" className="flex min-h-0 flex-1 flex-col">
       {/* `px-0.5` plus the trigger's own `px-2.5` puts the first label on the
           same 12px gutter as the column headers directly beneath it. At `px-2`
           it sat six pixels right of them, which on a deck this short reads as
@@ -45,19 +97,19 @@ export function Blotter({ instrumentId }: { instrumentId: string | null }) {
         className="flex h-row shrink-0 items-center gap-0.5 border-b border-line px-0.5"
         aria-label={t("blotter.label")}
       >
+        <Trigger value="positions" label={t("blotter.positions")} count={positions.length} />
         <Trigger value="orders" label={t("blotter.orders")} count={working.length} />
-        <Trigger value="positions" label={t("blotter.positions")} count={positions.data?.length} />
-        <Trigger value="fills" label={t("blotter.fills")} count={fills.data?.length} />
+        <Trigger value="fills" label={t("blotter.fills")} count={fills.length} />
       </Tabs.List>
 
       <Content value="orders">
-        <OrdersTable orders={orders.data ?? []} loading={orders.isPending} />
+        <OrdersTable orders={orders} loading={ordersLoading} />
       </Content>
       <Content value="positions">
-        <PositionsTable positions={positions.data ?? []} loading={positions.isPending} />
+        <PositionsTable positions={positions} loading={positionsLoading} />
       </Content>
       <Content value="fills">
-        <FillsTable fills={fills.data ?? []} loading={fills.isPending} instrumentId={instrumentId} />
+        <FillsTable fills={fills} loading={fillsLoading} instrumentId={instrumentId} />
       </Content>
     </Tabs.Root>
   );
@@ -105,7 +157,7 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
       id: "instrument",
       header: t("col.instrument"),
       accessorFn: (order) => intentOf(order)?.instrumentId ?? "—",
-      cell: (context) => <span className="text-text">{String(context.getValue() ?? "—")}</span>,
+      cell: (context) => <InstrumentName instrumentId={String(context.getValue() ?? "")} />,
     },
     {
       id: "side",
@@ -224,7 +276,12 @@ function PositionsTable({ positions, loading }: { positions: Position[]; loading
   const t = useT();
 
   const columns: ColumnDef<Position, unknown>[] = [
-    { id: "instrument", header: t("col.instrument"), accessorFn: (position) => position.instrumentId },
+    {
+      id: "instrument",
+      header: t("col.instrument"),
+      accessorFn: (position) => position.instrumentId,
+      cell: (context) => <InstrumentName instrumentId={String(context.getValue() ?? "")} />,
+    },
     {
       id: "quantity",
       header: t("col.quantity"),
@@ -314,7 +371,12 @@ function FillsTable({
       cell: (context) => formatTimestamp(String(context.getValue() ?? "")),
       meta: { width: "104px" },
     },
-    { id: "instrument", header: t("col.instrument"), accessorFn: (fill) => fill.instrumentId },
+    {
+      id: "instrument",
+      header: t("col.instrument"),
+      accessorFn: (fill) => fill.instrumentId,
+      cell: (context) => <InstrumentName instrumentId={String(context.getValue() ?? "")} />,
+    },
     {
       id: "side",
       header: t("col.side"),
@@ -363,7 +425,7 @@ function FillsTable({
           title={t("blotter.empty.fills")}
           // No instrument selected means no name to put in the sentence, and
           // "nothing has executed on  or anywhere else" is worse than silence.
-          detail={instrumentId ? t("blotter.empty.fills.detail", { instrument: instrumentId }) : undefined}
+          detail={instrumentId ? t("blotter.empty.fills.detail", { instrument: instrumentSymbol(instrumentId) }) : undefined}
         />
       }
     />

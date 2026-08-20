@@ -83,13 +83,12 @@ every subsequent response.
 make test-browser
 ```
 
-That installs from the lockfile, type-checks and builds, runs the Vitest unit
-suite, then runs Playwright against the offline mock in `web/src/mocks/`. The
-offline end-to-end spec needs no stack and no credentials. The same mock backs
-`npm --prefix web run dev:mock`, which serves the whole interface with no venue
-behind it.
+That installs from the lockfile, type-checks and builds, and runs the Vitest
+unit suite. It does not start the application, contact a venue, or exercise a
+credentialed browser flow.
 
 A separate live spec exists that places and cancels a real resting order. There
 is no non-production venue behind it any more — it reaches a real exchange and
 spends real funds. It is not part of `make test-browser`; run it deliberately or
-not at all.
+not at all. The normal application has no mock mode: anonymous read-only views
+use live public data through the running stack.

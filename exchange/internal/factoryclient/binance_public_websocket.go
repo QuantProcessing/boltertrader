@@ -33,12 +33,12 @@ type binancePerpPublicWSClient interface {
 	Connect() error
 	Close()
 	SetPostReconnect(func())
-	SubscribeLimitOrderBook(string, int, string, func(*binanceperp.WsDepthEvent) error) error
+	SubscribeIncrementOrderBook(string, string, func(*binanceperp.WsDepthEvent) error) error
 	SubscribeBookTicker(string, func(*binanceperp.WsBookTickerEvent) error) error
 	SubscribeAggTrade(string, func(*binanceperp.WsAggTradeEvent) error) error
 	SubscribeKline(string, string, func(*binanceperp.WsKlineEvent) error) error
 	SubscribeMarkPrice(string, string, func(*binanceperp.WsMarkPriceEvent) error) error
-	UnsubscribeLimitOrderBook(string, int, string) error
+	UnsubscribeIncrementOrderBook(string, string) error
 	UnsubscribeBookTicker(string) error
 	UnsubscribeAggTrade(string) error
 	UnsubscribeKline(string, string) error
@@ -419,9 +419,8 @@ func (backend *binancePerpPublicWSBackend) StartOrderBook(
 	removeLifecycle := backend.lifecycle.Register("book:"+venueSymbol, callbacks.Status, func() {
 		backend.markResyncNextBook()
 	})
-	first := true
-	err = backend.ws.SubscribeLimitOrderBook(venueSymbol, 5, "100ms", func(row *binanceperp.WsDepthEvent) error {
-		event, err := binancePerpWSBookEvent(canonical, row, &first, backend.popResyncNextBook)
+	err = backend.ws.SubscribeIncrementOrderBook(venueSymbol, "100ms", func(row *binanceperp.WsDepthEvent) error {
+		event, err := binancePerpWSBookEvent(canonical, row, backend.popResyncNextBook)
 		if err != nil {
 			emitBinanceWSError(callbacks, err)
 			return nil
@@ -435,7 +434,7 @@ func (backend *binancePerpPublicWSBackend) StartOrderBook(
 	}
 	return func() error {
 		removeLifecycle()
-		if err := backend.ws.UnsubscribeLimitOrderBook(venueSymbol, 5, "100ms"); err != nil {
+		if err := backend.ws.UnsubscribeIncrementOrderBook(venueSymbol, "100ms"); err != nil {
 			return websocketError(backend.meta, "WatchOrderBook", exchange.KindTransport, err.Error())
 		}
 		return nil
@@ -793,7 +792,6 @@ func binanceSpotWSBookLevels(rows [][]string) ([]exchange.BookLevel, error) {
 func binancePerpWSBookEvent(
 	instrument exchange.Instrument,
 	row *binanceperp.WsDepthEvent,
-	first *bool,
 	popResync func() bool,
 ) (exchange.BookEvent, error) {
 	if row == nil {
@@ -802,7 +800,7 @@ func binancePerpWSBookEvent(
 	if row.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "order book instrument mismatch")
 	}
-	if row.FinalUpdateID <= 0 {
+	if row.FirstUpdateID <= 0 || row.FinalUpdateID < row.FirstUpdateID {
 		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "invalid order book sequence")
 	}
 	bids, err := binancePerpWSBookLevels(row.Bids)
@@ -813,8 +811,8 @@ func binancePerpWSBookEvent(
 	if err != nil {
 		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", err.Error())
 	}
-	if *first {
-		*first = false
+	if len(bids) == 0 && len(asks) == 0 {
+		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "order book delta has no levels")
 	}
 	resync := false
 	if popResync != nil {
@@ -826,9 +824,10 @@ func binancePerpWSBookEvent(
 		observedAt = time.UnixMilli(ts).UTC()
 	}
 	return exchange.BookEvent{
-		Kind:       exchange.EventSnapshot,
+		Kind:       exchange.EventDelta,
 		Instrument: instrument,
 		Sequence:   strconv.FormatInt(row.FinalUpdateID, 10),
+		Previous:   strconv.FormatInt(row.FinalUpdateIDLast, 10),
 		Resync:     resync,
 		Bids:       bids,
 		Asks:       asks,
@@ -964,14 +963,11 @@ func binancePerpWSBookLevels(rows [][]interface{}) ([]exchange.BookLevel, error)
 		if err != nil {
 			return nil, fmt.Errorf("order book level price is invalid")
 		}
-		qty, err := positiveDecimal(fmt.Sprint(row[1]))
+		qty, err := binanceSpotDecimalValue(fmt.Sprint(row[1]))
 		if err != nil {
 			return nil, fmt.Errorf("order book level quantity is invalid")
 		}
 		levels = append(levels, exchange.BookLevel{Price: price, Quantity: qty})
-	}
-	if len(levels) == 0 {
-		return nil, fmt.Errorf("order book has no levels")
 	}
 	return levels, nil
 }

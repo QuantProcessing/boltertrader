@@ -8,9 +8,8 @@ import { cn } from "@/lib/utils";
  *
  * Radix supplies the parts that are wrong to hand-write — the focus trap, the
  * escape binding, the `aria-modal` wiring, the inert background — and this file
- * supplies the surface. The overlay and panel classes are the same ones
- * `command-palette.tsx` already uses, because two modals that look like two
- * different products is worse than either of them looking wrong.
+ * supplies the surface. Every modal shares this overlay and panel so dialogs
+ * do not drift into separate visual languages.
  *
  * `Title` is not optional in the Radix sense but it is easy to omit by
  * accident, and a dialog with no accessible name is announced as nothing at

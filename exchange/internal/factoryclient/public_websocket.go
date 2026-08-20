@@ -266,6 +266,7 @@ func (socket *publicWebSocket) WatchOrderBook(
 	if err := socket.validateWatch(ctx, "WatchOrderBook", request); err != nil {
 		return nil, err
 	}
+	contract := newOrderBookContract(socket.meta, request.Instrument)
 	return watchWebSocketTopic(
 		socket,
 		ctx,
@@ -274,7 +275,24 @@ func (socket *publicWebSocket) WatchOrderBook(
 		websocketInstrumentKey(request.Instrument),
 		request,
 		socket.books,
-		socket.backend.StartOrderBook,
+		func(
+			startCtx context.Context,
+			instrument exchange.Instrument,
+			callbacks streamCallbacks[exchange.BookEvent],
+		) (func() error, error) {
+			validated := callbacks
+			validated.Event = func(event exchange.BookEvent) {
+				emit, err := contract.accept(event)
+				if err != nil {
+					callbacks.Error(err)
+					return
+				}
+				if emit {
+					callbacks.Event(event)
+				}
+			}
+			return socket.backend.StartOrderBook(startCtx, instrument, validated)
+		},
 	)
 }
 

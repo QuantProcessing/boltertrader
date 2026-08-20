@@ -82,15 +82,15 @@ does not aggregate responses — the frontend fans out with TanStack Query.
 ```sh
 make test                 # Go, credential-free, short mode
 make test-compose         # compose config, image builds, hardening, smoke, persistence
-cd web && npm run build && npm test && npm run test:e2e
+cd web && npm run build && npm test
 ```
 
 Every suite above is offline, credential-free, and deterministic; none of them
 reaches a venue. There is no credentialed target left to opt into —
 `TestMakefileRecipesNeverEnableCredentialedWrites` reads every Makefile recipe
-and fails the one that arms a write. To click through the product without a
-venue, run `npm --prefix web run dev:mock`, which answers the whole API surface
-from `web/src/mocks/`.
+and fails the one that arms a write. `make up` serves the real application at
+`http://127.0.0.1:18090`; its anonymous default is read-only and reads live
+public market data without a venue credential.
 
 ## Current support
 

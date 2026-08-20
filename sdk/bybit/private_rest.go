@@ -18,7 +18,7 @@ func (c *Client) GetWalletBalance(ctx context.Context, accountType, coin string)
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get wallet balance failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get wallet balance", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }
@@ -30,7 +30,7 @@ func (c *Client) GetAccountInfo(ctx context.Context) (*AccountInfo, error) {
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get account info failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get account info", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }
@@ -42,7 +42,7 @@ func (c *Client) GetAPIKeyInfo(ctx context.Context) (*APIKeyInfo, error) {
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: query api key failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("query api key", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }
@@ -57,7 +57,7 @@ func (c *Client) GetFeeRates(ctx context.Context, category, symbol string) ([]Fe
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get fee rates failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get fee rates", resp.RetCode, resp.RetMsg)
 	}
 	return resp.Result.List, nil
 }
@@ -80,7 +80,7 @@ func (c *Client) GetPositions(ctx context.Context, category, symbol, settleCoin 
 			return nil, err
 		}
 		if resp.RetCode != 0 {
-			return nil, fmt.Errorf("bybit sdk: get positions failed: %d %s", resp.RetCode, resp.RetMsg)
+			return nil, newResponseError("get positions", resp.RetCode, resp.RetMsg)
 		}
 
 		out = append(out, resp.Result.List...)
@@ -109,7 +109,7 @@ func (c *Client) SetLeverage(ctx context.Context, req SetLeverageRequest) error 
 		return nil
 	}
 	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit sdk: set leverage failed: %d %s", resp.RetCode, resp.RetMsg)
+		return newResponseError("set leverage", resp.RetCode, resp.RetMsg)
 	}
 	return nil
 }

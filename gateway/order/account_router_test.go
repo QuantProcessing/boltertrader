@@ -148,6 +148,23 @@ func TestExactDomainStateRejectsUnknownFoundStatus(t *testing.T) {
 	}
 }
 
+func TestExchangeDriverAppliesLeverageBeforeOrder(t *testing.T) {
+	client := &routingLeverageClient{}
+	driver := &exchangeDriver{orders: client}
+	instrument := exchange.Instrument{Identity: exchange.InstrumentIdentity{Product: exchange.ProductPerp}}
+	err := driver.SetLeverage(context.Background(), instrument, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = driver.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Instrument: instrument})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.leverage != 5 || !client.placed || client.sequence != "leverage,order" {
+		t.Fatalf("leverage=%d placed=%v sequence=%q", client.leverage, client.placed, client.sequence)
+	}
+}
+
 type routingRegistry struct {
 	instrument       exchange.Instrument
 	status           account.Status
@@ -203,6 +220,25 @@ func (registry *routingRegistry) ActiveRouteClient(_ domain.AccountID, _, _ stri
 type routingSpotClient struct {
 	exchange.SpotClient
 	lookupResult exchange.ExactOrderLookupResult
+}
+
+type routingLeverageClient struct {
+	routingSpotClient
+	leverage int
+	placed   bool
+	sequence string
+}
+
+func (client *routingLeverageClient) SetLeverage(_ context.Context, request exchange.SetLeverageRequest) (exchange.Leverage, error) {
+	client.leverage = request.Leverage
+	client.sequence = "leverage"
+	return exchange.Leverage{Effective: request.Leverage}, nil
+}
+
+func (client *routingLeverageClient) PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
+	client.placed = true
+	client.sequence += ",order"
+	return exchange.OrderAcknowledgement{}, nil
 }
 
 func (*routingSpotClient) PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {

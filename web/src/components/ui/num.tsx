@@ -7,6 +7,8 @@ interface NumProps extends Omit<ComponentProps<"span">, "children">, FormatOptio
   value: string | null | undefined;
   /** Colour by sign. Only for values where direction is the point: P&L, deltas. */
   directional?: boolean;
+  /** A display unit that belongs to the same tabular value, for example %. */
+  suffix?: string;
 }
 
 /**
@@ -19,6 +21,7 @@ export function Num({
   signed,
   grouped,
   directional = false,
+  suffix,
   className,
   ...props
 }: NumProps) {
@@ -35,6 +38,7 @@ export function Num({
       {...props}
     >
       {formatDecimal(value, { decimals, signed, grouped })}
+      {suffix}
     </span>
   );
 }

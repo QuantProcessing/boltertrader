@@ -18,6 +18,8 @@ import type {
   FundingHistoryQuery,
   FundingHistorySeries,
 } from "@/api/types";
+import { useReadOnly } from "@/app/mode";
+import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 import { tradeKeys } from "@/features/trade/queries";
 
 /* ---------------------------------------------------------------------------
@@ -105,9 +107,12 @@ export function useFundingHistory(
 export function useArbitrageOpportunities(
   accountIds: string[],
 ): UseQueryResult<{ items: ArbitrageOpportunity[]; observedAt: string }> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: fundingKeys.opportunities(accountIds),
     queryFn: ({ signal }) => arbitrage.opportunities(accountIds, signal),
+    enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 15_000,
     placeholderData: (previous) => previous,
     staleTime: 0,
@@ -124,9 +129,12 @@ export function useArbitrageOpportunities(
  * the sooner it is on screen the sooner it can be undone.
  */
 export function useArbitragePositions(): UseQueryResult<ArbitragePair[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: fundingKeys.positions(),
     queryFn: ({ signal }) => arbitrage.positions(signal),
+    enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 5_000,
   });
 }

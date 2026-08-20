@@ -36,8 +36,8 @@ func TestPendingSnapshotSerializationStrictlyMatchesInternalOpenAPI(t *testing.T
 		AccountID: "account-a",
 		Pending: &gatewayhttp.PendingSnapshotView{
 			RuntimeSnapshotView: gatewayhttp.RuntimeSnapshotView{
-				OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", DesiredStateRevision: 2,
-				RuntimeGeneration: 3, CredentialVersion: 4, RequestedState: "rotating",
+				OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33",
+				RuntimeID:   "018f47a8-2578-7d3c-9d7d-5e4f4a445c34", RequestedState: "creating",
 				Routes: []gatewayhttp.RuntimeRouteView{{
 					RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT",
 					RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active", Ready: true,
@@ -224,16 +224,15 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	want := map[string][]string{
 		"/internal/v1/runtime/status": {"get"}, "/internal/v1/runtime/readiness": {"get"},
 		"/internal/v1/runtime/open-orders": {"get"}, "/internal/v1/runtime/positions": {"get"},
-		"/internal/v1/runtime/uncertain-commands":                                        {"get"},
-		"/internal/v1/accounts/desired":                                                  {"get"},
-		"/internal/v1/accounts/desired/{accountId}":                                      {"get"},
-		"/internal/v1/accounts/desired/{accountId}/operations/{operationId}":             {"put"},
-		"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}":            {"put"},
-		"/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}": {"put"},
-		"/internal/v1/accounts/runtime":                                                  {"get"},
-		"/internal/v1/accounts/runtime/{accountId}":                                      {"get"},
-		"/internal/v1/accounts/runtime/{accountId}/events":                               {"get"},
-		"/internal/v1/catalog/venues":                                                    {"get"}, "/internal/v1/catalog/instruments": {"get"},
+		"/internal/v1/runtime/uncertain-commands":                             {"get"},
+		"/internal/v1/accounts/desired":                                       {"get"},
+		"/internal/v1/accounts/desired/{accountId}":                           {"get"},
+		"/internal/v1/accounts/desired/{accountId}/operations/{operationId}":  {"put"},
+		"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}": {"put"},
+		"/internal/v1/accounts/runtime":                                       {"get"},
+		"/internal/v1/accounts/runtime/{accountId}":                           {"get"},
+		"/internal/v1/accounts/runtime/{accountId}/events":                    {"get"},
+		"/internal/v1/catalog/venues":                                         {"get"}, "/internal/v1/catalog/instruments": {"get"},
 		"/internal/v1/market-data": {"get"}, "/internal/v1/candles": {"get"},
 		"/internal/v1/private-events": {"get"},
 		"/internal/v1/funding-board":  {"get"}, "/internal/v1/funding-history": {"get"},
@@ -282,13 +281,9 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		{"/internal/v1/accounts/desired/{accountId}/operations/{operationId}", "put", "202"},
 		{"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}", "put", "200"},
 		{"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}", "put", "202"},
-		{"/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}", "put", "200"},
 	} {
 		got := document.Paths[success.path][success.method].Responses[success.status].Ref
 		wantResponse := "RuntimeView"
-		if strings.Contains(success.path, "rotation-finalizations") {
-			wantResponse = "RotationFinalizationProof"
-		}
 		if got != "#/components/responses/"+wantResponse {
 			t.Errorf("%s %s response %s ref=%q want %s component response", success.method, success.path, success.status, got, wantResponse)
 		}
@@ -300,7 +295,7 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	if got := runtimeEnvelope.Properties["data"].Ref; got != "#/components/schemas/RuntimeView" {
 		t.Errorf("RuntimeView response data schema ref=%q", got)
 	}
-	for _, name := range []string{"DesiredApplyRequest", "RetireRequest", "RotationFinalizationRequest", "RotationFinalizationProof", "AccountFence", "DesiredRuntimeView", "RuntimeView", "WriteFence", "InternalErrorEnvelope"} {
+	for _, name := range []string{"DesiredApplyRequest", "RetireRequest", "DesiredRuntimeView", "RuntimeView", "WriteFence", "InternalErrorEnvelope"} {
 		schema, ok := document.Components.Schemas[name]
 		if !ok {
 			t.Errorf("missing internal schema %s", name)
@@ -310,14 +305,9 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 			t.Errorf("schema %s must reject unknown fields", name)
 		}
 	}
-	proofEnvelope := document.Components.Responses["RotationFinalizationProof"].Content["application/json"].Schema
-	if proofEnvelope.Type != "object" || proofEnvelope.AdditionalProperties != false || !reflect.DeepEqual(proofEnvelope.Required, []string{"data"}) || proofEnvelope.Properties["data"].Ref != "#/components/schemas/RotationFinalizationProof" {
-		t.Errorf("rotation finalization proof envelope=%+v", proofEnvelope)
-	}
 	for _, path := range []string{
 		"/internal/v1/accounts/desired/{accountId}/operations/{operationId}",
 		"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}",
-		"/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}",
 	} {
 		operation := document.Paths[path]["put"]
 		refs := make([]string, 0, len(operation.Parameters))
@@ -339,56 +329,9 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	if _, declared := document.Components.Parameters["ModeAttestation"]; declared || len(document.Components.Headers) != 0 {
 		t.Errorf("mode attestation parameter/header components=%v %v", declared, document.Components.Headers)
 	}
-	finalizationOperation := document.Paths["/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}"]["put"]
-	if finalizationOperation.RequestBody.Ref != "#/components/requestBodies/RotationFinalization" {
-		t.Errorf("rotation finalization request body ref=%q", finalizationOperation.RequestBody.Ref)
-	}
-	finalizationBody := document.Components.RequestBodies["RotationFinalization"]
-	if !finalizationBody.Required || len(finalizationBody.Content) != 1 || finalizationBody.Content["application/json"].Schema.Ref != "#/components/schemas/RotationFinalizationRequest" {
-		t.Errorf("rotation finalization request body=%+v", finalizationBody)
-	}
 	for responseName, response := range document.Components.Responses {
 		if len(response.Headers) != 0 {
 			t.Errorf("%s declares response headers=%v", responseName, response.Headers)
-		}
-	}
-	for _, status := range []string{"400", "401", "404", "409", "500"} {
-		if got := finalizationOperation.Responses[status].Ref; got != "#/components/responses/Error" {
-			t.Errorf("rotation finalization response %s ref=%q", status, got)
-		}
-	}
-	for name, required := range map[string][]string{
-		"AccountFence":                {"accountId", "credentialVersion", "desiredStateRevision", "runtimeGeneration"},
-		"RotationFinalizationRequest": {"accountId", "expectedActiveFence", "expectedRetiringFence", "operationId"},
-		"RotationFinalizationProof":   {"accountId", "activeFence", "completedAt", "operationId", "retiringFence", "retiringState", "secretReferenceState", "tombstoneRevision"},
-	} {
-		schema := document.Components.Schemas[name]
-		sort.Strings(schema.Required)
-		if !reflect.DeepEqual(schema.Required, required) || len(schema.Properties) != len(required) {
-			t.Errorf("%s shape required=%v properties=%v", name, schema.Required, schema.Properties)
-		}
-	}
-	proof := document.Components.Schemas["RotationFinalizationProof"]
-	if !reflect.DeepEqual(proof.Properties["retiringState"].Enum, []string{"retired"}) ||
-		!reflect.DeepEqual(proof.Properties["secretReferenceState"].Enum, []string{"tombstoned"}) ||
-		proof.Properties["completedAt"].Format != "date-time" {
-		t.Errorf("rotation proof terminal fields=%+v", proof.Properties)
-	}
-	requestSchema := document.Components.Schemas["RotationFinalizationRequest"]
-	if operationID := requestSchema.Properties["operationId"]; operationID.Type != "string" || operationID.Format != "uuid" ||
-		requestSchema.Properties["expectedActiveFence"].Ref != "#/components/schemas/AccountFence" ||
-		requestSchema.Properties["expectedRetiringFence"].Ref != "#/components/schemas/AccountFence" {
-		t.Errorf("rotation request refs/formats=%+v", requestSchema.Properties)
-	}
-	if operationID := proof.Properties["operationId"]; operationID.Type != "string" || operationID.Format != "uuid" ||
-		proof.Properties["activeFence"].Ref != "#/components/schemas/AccountFence" ||
-		proof.Properties["retiringFence"].Ref != "#/components/schemas/AccountFence" {
-		t.Errorf("rotation proof refs/formats=%+v", proof.Properties)
-	}
-	for _, name := range []string{"RotationFinalizationRequest", "RotationFinalizationProof"} {
-		forbidden := findForbiddenSchemaFields(name, document.Components.Schemas, []string{"secretRef", "previousSecretRef", "credentialBundle", "providerPath", "gatewayToken", "namespace", "keyVersion"})
-		if len(forbidden) != 0 {
-			t.Errorf("rotation schema %s exposes forbidden fields: %v", name, forbidden)
 		}
 	}
 	for name, required := range map[string][]string{
@@ -412,12 +355,12 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		}
 	}
 	desired := document.Components.Schemas["DesiredApplyRequest"]
-	wantDesired := []string{"accountId", "credentialVersion", "desiredStateRevision", "nativeEnvironment", "operationId", "requestedState", "routes", "runtimeGeneration", "secretRef", "venue"}
+	wantDesired := []string{"accountId", "nativeEnvironment", "operationId", "requestedState", "routes", "runtimeId", "secretRef", "venue"}
 	sort.Strings(desired.Required)
 	if !reflect.DeepEqual(desired.Required, wantDesired) {
 		t.Fatalf("DesiredApplyRequest required=%v want=%v", desired.Required, wantDesired)
 	}
-	wantStates := []string{"active", "creating", "disabled", "drained", "draining", "removed", "removing", "rotating"}
+	wantStates := []string{"active", "creating", "disabled", "removed", "removing"}
 	gotStates := desired.Properties["requestedState"].Enum
 	sort.Strings(gotStates)
 	if !reflect.DeepEqual(gotStates, wantStates) {
@@ -450,7 +393,7 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	if runtimeView.Properties["tombstoned"].Type != "boolean" || !containsString(runtimeView.Required, "tombstoned") {
 		t.Errorf("RuntimeView does not expose explicit tombstone truth: %+v", runtimeView)
 	}
-	for _, field := range []string{"desiredStateRevision", "runtimeGeneration", "credentialVersion", "runtimeVersion", "readiness", "writeReadiness", "lastAppliedDesiredStateRevision", "lastAppliedRuntimeGeneration", "blockedReason", "capabilities", "observedAt"} {
+	for _, field := range []string{"runtimeId", "readiness", "writeReadiness", "blockedReason", "capabilities", "observedAt"} {
 		if _, exists := runtimeView.Properties[field]; !exists {
 			t.Errorf("RuntimeView missing operational field %q: %+v", field, runtimeView.Properties)
 		}
@@ -460,7 +403,7 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 			t.Errorf("RuntimeView unconditional field %q is not required: %v", field, runtimeView.Required)
 		}
 	}
-	activeOnly := []string{"credentialVersion", "desiredStateRevision", "lastAppliedDesiredStateRevision", "lastAppliedRuntimeGeneration", "observedAt", "runtimeGeneration", "runtimeVersion"}
+	activeOnly := []string{"observedAt", "runtimeId"}
 	for _, field := range activeOnly {
 		if containsString(runtimeView.Required, field) {
 			t.Errorf("RuntimeView active-only field %q is unconditionally required: %v", field, runtimeView.Required)
@@ -482,11 +425,11 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		t.Errorf("PendingSnapshotView states=%v want=%v", pendingStates, wantPendingStates)
 	}
 	wantErrors := []string{
-		"ACCOUNT_RUNTIME_BLOCKED", "CANDIDATE_NOT_READY", "DESIRED_ACCOUNT_NOT_FOUND", "DESIRED_STATE_REVISION_CONFLICT",
+		"ACCOUNT_RUNTIME_BLOCKED", "CANDIDATE_NOT_READY", "CREDENTIAL_EXPIRED", "CREDENTIAL_INVALID", "CREDENTIAL_PERMISSION_DENIED", "DESIRED_ACCOUNT_NOT_FOUND", "DESIRED_STATE_REVISION_CONFLICT",
 		"GATEWAY_ADAPTER_AUTH_REQUIRED", "HANDOFF_DRAIN_BLOCKED", "IF_MATCH_REQUIRED", "IF_NONE_MATCH_REQUIRED",
 		"INTERNAL_ERROR", "INVALID_ACCOUNT_TRANSITION", "LIVE_PRIVATE_WRITE_DISABLED",
 		"OPERATION_ID_CONFLICT", "PROMOTION_FENCE_CONFLICT", "RETIRED_SECRET_REFERENCE",
-		"STALE_RUNTIME_FENCE", "VALIDATION_ERROR",
+		"STALE_RUNTIME_FENCE", "VALIDATION_ERROR", "VENUE_RATE_LIMITED", "VENUE_RESPONSE_INVALID", "VENUE_UNAVAILABLE",
 	}
 	gotErrors := document.Components.Schemas["InternalErrorEnvelope"].Properties["error"].Properties["code"].Enum
 	sort.Strings(gotErrors)

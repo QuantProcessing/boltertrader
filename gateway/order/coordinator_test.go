@@ -68,6 +68,30 @@ func TestCoordinatorConcurrentIdempotencyCallsDriverOnce(t *testing.T) {
 	}
 }
 
+func TestCoordinatorAppliesDurablePerpLeverageBeforePlacement(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	fixture.instrument.Identity.Product = exchange.ProductPerp
+	fixture.router.route.Instrument = fixture.instrument
+	fixture.router.route.Product = exchange.ProductPerp
+	fixture.driver.placeAck.Product = exchange.ProductPerp
+	fixture.driver.lookupFallback = notFoundExactResult(fixture.instrument, "1")
+	if report, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil || !report.WriteReady {
+		t.Fatalf("initial recovery = %+v, err=%v", report, err)
+	}
+	request := fixture.placeRequest()
+	request.RouteID = "perp-usdt"
+	request.InstrumentID = "binance:live:perp:USDT:BTC-USDT"
+	request.Leverage = 5
+	if _, err := fixture.coordinator.Place(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.mu.Lock()
+	defer fixture.driver.mu.Unlock()
+	if fixture.driver.leverageCalls != 1 || fixture.driver.leverage != 5 || fixture.driver.sequence != "leverage,order" {
+		t.Fatalf("leverage calls=%d value=%d sequence=%q", fixture.driver.leverageCalls, fixture.driver.leverage, fixture.driver.sequence)
+	}
+}
+
 func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) {
 	for _, race := range []string{"rotation", "drain"} {
 		t.Run(race, func(t *testing.T) {
@@ -1051,6 +1075,9 @@ func (router *recordingFencedRecoveryRouter) RecoveryRequest() (
 type fakeDriver struct {
 	mu             sync.Mutex
 	placeCalls     int
+	leverageCalls  int
+	leverage       int
+	sequence       string
 	cancelCalls    int
 	placeAck       exchange.OrderAcknowledgement
 	placeErr       error
@@ -1140,12 +1167,28 @@ func (driver *fakeDriver) PlaceOrder(_ context.Context, request exchange.PlaceOr
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
 	driver.placeCalls++
+	if driver.sequence != "" {
+		driver.sequence += ","
+	}
+	driver.sequence += "order"
 	ack := driver.placeAck
 	ack.ClientOrderID = request.ClientOrderID
 	if driver.recordAccepted {
 		driver.orders[request.ClientOrderID] = foundExactResult(request.Instrument, request.ClientOrderID, ack.OrderID, domain.StateOpen)
 	}
 	return ack, driver.placeErr
+}
+
+func (driver *fakeDriver) SetLeverage(_ context.Context, _ exchange.Instrument, leverage int) error {
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	driver.leverageCalls++
+	driver.leverage = leverage
+	if driver.sequence != "" {
+		driver.sequence += ","
+	}
+	driver.sequence += "leverage"
+	return nil
 }
 
 func (driver *fakeDriver) CancelOrder(_ context.Context, request exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {

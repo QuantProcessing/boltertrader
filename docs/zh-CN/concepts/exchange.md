@@ -31,8 +31,8 @@ resource，并且在尚未建立连接时调用也是安全的。
 
 Environment 是可选的。`factory.EnvironmentLive` 选择 production endpoint，它是
 唯一的 environment，也是默认值，因此 constructor 会拒绝任何其他取值。demo 与
-testnet profile 已被删除——各交易所的实现差异过大；需要点着看的场景由 `web/`
-的离线 mock 承担。
+testnet profile 已被删除——各交易所的实现差异过大。匿名产品访问默认为只读，读取
+交易所的实时公共数据。
 
 ## Credential-free public read
 

@@ -29,11 +29,7 @@ type AccountLifecycle interface {
 	List(context.Context) ([]lifecycle.Account, error)
 	Get(context.Context, string) (lifecycle.Account, error)
 	Create(context.Context, lifecycle.CreateRequest, string, ...string) (lifecycle.Account, error)
-	UpdateMetadata(context.Context, string, int64, string, []string, string) (lifecycle.Account, error)
-	MarkValidated(context.Context, string, int64, string) (lifecycle.Account, error)
-	Rotate(context.Context, string, int64, []byte, string, ...string) (lifecycle.Account, error)
 	Disable(context.Context, string, int64, lifecycle.Blockers, string) (lifecycle.Account, error)
-	Drain(context.Context, string, int64, lifecycle.Blockers, string) (lifecycle.Account, error)
 	Remove(context.Context, string, int64, string, ...string) (lifecycle.Account, error)
 }
 
@@ -54,11 +50,7 @@ var internalAccountLifecycleRoutes = []Route{
 	{http.MethodGet, "/internal/v1/accounts"},
 	{http.MethodPost, "/internal/v1/accounts"},
 	{http.MethodGet, "/internal/v1/accounts/{accountId}"},
-	{http.MethodPatch, "/internal/v1/accounts/{accountId}"},
-	{http.MethodPost, "/internal/v1/accounts/{accountId}/validate"},
-	{http.MethodPost, "/internal/v1/accounts/{accountId}/rotate"},
 	{http.MethodPost, "/internal/v1/accounts/{accountId}/disable"},
-	{http.MethodPost, "/internal/v1/accounts/{accountId}/drain"},
 	{http.MethodDelete, "/internal/v1/accounts/{accountId}"},
 }
 
@@ -73,11 +65,7 @@ func (handler *InternalHandler) registerAccountLifecycle() {
 	handler.mux.HandleFunc("GET /internal/v1/accounts", handler.listAccountRecords)
 	handler.mux.HandleFunc("POST /internal/v1/accounts", handler.createAccountRecord)
 	handler.mux.HandleFunc("GET /internal/v1/accounts/{accountId}", handler.getAccountRecord)
-	handler.mux.HandleFunc("PATCH /internal/v1/accounts/{accountId}", handler.updateAccountRecord)
-	handler.mux.HandleFunc("POST /internal/v1/accounts/{accountId}/validate", handler.validateAccountRecord)
-	handler.mux.HandleFunc("POST /internal/v1/accounts/{accountId}/rotate", handler.rotateAccountRecord)
 	handler.mux.HandleFunc("POST /internal/v1/accounts/{accountId}/disable", handler.disableAccountRecord)
-	handler.mux.HandleFunc("POST /internal/v1/accounts/{accountId}/drain", handler.drainAccountRecord)
 	handler.mux.HandleFunc("DELETE /internal/v1/accounts/{accountId}", handler.removeAccountRecord)
 }
 
@@ -87,15 +75,6 @@ type createAccountRecordRequest struct {
 	ProductPolicy    []string                 `json:"productPolicy"`
 	Routes           []lifecycle.AccountRoute `json:"routes"`
 	CredentialBundle json.RawMessage          `json:"credentialBundle"`
-}
-
-type updateAccountRecordRequest struct {
-	DisplayName string   `json:"displayName"`
-	ProductIDs  []string `json:"productIds"`
-}
-
-type rotateAccountRecordRequest struct {
-	CredentialBundle json.RawMessage `json:"credentialBundle"`
 }
 
 func (handler *InternalHandler) listAccountRecords(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +88,13 @@ func (handler *InternalHandler) listAccountRecords(w http.ResponseWriter, r *htt
 	}
 	public := make([]lifecycle.PublicAccount, 0, len(accounts))
 	for _, account := range accounts {
+		// Removed rows remain durable for audit and idempotency, but they are no
+		// longer configurable accounts. Returning one here keeps it in every
+		// browser account picker forever after its credential and runtime are
+		// gone.
+		if account.State == lifecycle.StateRemoved {
+			continue
+		}
 		public = append(public, account.Public())
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"accounts": public}})
@@ -160,92 +146,19 @@ func (handler *InternalHandler) createAccountRecord(w http.ResponseWriter, r *ht
 		handler.accountFailure(w, r, err)
 		return
 	}
-	handler.writeAccountRecord(w, http.StatusCreated, account)
-}
-
-func (handler *InternalHandler) updateAccountRecord(w http.ResponseWriter, r *http.Request) {
-	principal, accountID, revision, ok := handler.accountRecordMutation(w, r)
-	if !ok {
-		return
+	status := http.StatusCreated
+	if account.State != lifecycle.StateActive {
+		status = http.StatusAccepted
 	}
-	var request updateAccountRecordRequest
-	if err := decodeStrictJSON(w, r, handler.bodyLimit, &request); err != nil {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	account, err := handler.lifecycle.UpdateMetadata(handler.accountContext(r), accountID, revision, request.DisplayName, request.ProductIDs, principal)
-	if err != nil {
-		handler.accountFailure(w, r, err)
-		return
-	}
-	handler.writeAccountRecord(w, http.StatusOK, account)
-}
-
-func (handler *InternalHandler) validateAccountRecord(w http.ResponseWriter, r *http.Request) {
-	principal, accountID, revision, ok := handler.accountRecordMutation(w, r)
-	if !ok {
-		return
-	}
-	if !handler.expectEmptyAccountBody(w, r) {
-		return
-	}
-	blockers, ok := handler.accountBlockers(w, r, accountID)
-	if !ok {
-		return
-	}
-	// Validation drives a live credential probe against the venue. Doing that
-	// while the account still carries inventory would let a half-checked key be
-	// promoted underneath open orders.
-	if blockers.Any() {
-		handler.accountFailure(w, r, lifecycle.ErrAccountBlocked)
-		return
-	}
-	account, err := handler.lifecycle.MarkValidated(handler.accountContext(r), accountID, revision, principal)
-	if err != nil {
-		handler.accountFailure(w, r, err)
-		return
-	}
-	handler.writeAccountRecord(w, http.StatusOK, account)
-}
-
-func (handler *InternalHandler) rotateAccountRecord(w http.ResponseWriter, r *http.Request) {
-	principal, accountID, revision, ok := handler.accountRecordMutation(w, r)
-	if !ok {
-		return
-	}
-	idempotencyKey, ok := handler.accountIdempotencyKey(w, r)
-	if !ok {
-		return
-	}
-	var request rotateAccountRecordRequest
-	if err := decodeStrictJSON(w, r, handler.bodyLimit, &request); err != nil {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	defer clear(request.CredentialBundle)
-	if err := validateCredentialBundle(request.CredentialBundle); err != nil {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	account, err := handler.lifecycle.Rotate(handler.accountContext(r), accountID, revision, request.CredentialBundle, principal, idempotencyKey)
-	if err != nil {
-		handler.accountFailure(w, r, err)
-		return
-	}
-	handler.writeAccountRecord(w, http.StatusOK, account)
+	handler.writeAccountRecord(w, status, account)
 }
 
 func (handler *InternalHandler) disableAccountRecord(w http.ResponseWriter, r *http.Request) {
 	handler.blockedAccountTransition(w, r, handler.lifecycle.Disable)
 }
 
-func (handler *InternalHandler) drainAccountRecord(w http.ResponseWriter, r *http.Request) {
-	handler.blockedAccountTransition(w, r, handler.lifecycle.Drain)
-}
-
-// blockedAccountTransition hands the blockers to the service instead of
-// refusing here: disable and drain are how an operator responds to inventory
-// they cannot clear, so the service decides which counts stop which transition.
+// blockedAccountTransition hands the blockers to the service so disabling an
+// account can remain explicit about any inventory that still depends on it.
 func (handler *InternalHandler) blockedAccountTransition(w http.ResponseWriter, r *http.Request, transition func(context.Context, string, int64, lifecycle.Blockers, string) (lifecycle.Account, error)) {
 	principal, accountID, revision, ok := handler.accountRecordMutation(w, r)
 	if !ok {
@@ -278,6 +191,19 @@ func (handler *InternalHandler) removeAccountRecord(w http.ResponseWriter, r *ht
 	if !handler.expectEmptyAccountBody(w, r) {
 		return
 	}
+	// Removal is asynchronous. Once it has been accepted the runtime may
+	// already be tombstoned, which makes a fresh blockers query unavailable by
+	// construction. Treat both terminal states as an idempotent observation of
+	// the existing removal instead of asking a runtime that no longer exists.
+	current, err := handler.lifecycle.Get(r.Context(), accountID)
+	if err != nil {
+		handler.accountFailure(w, r, err)
+		return
+	}
+	if current.State == lifecycle.StateRemoving || current.State == lifecycle.StateRemoved {
+		handler.writeAccountRecord(w, http.StatusAccepted, current)
+		return
+	}
 	blockers, ok := handler.accountBlockers(w, r, accountID)
 	if !ok {
 		return
@@ -307,12 +233,7 @@ func (handler *InternalHandler) accountRecordMutation(w http.ResponseWriter, r *
 	if !ok {
 		return "", "", 0, false
 	}
-	revision, err := parseDesiredETag(r.Header.Get("If-Match"))
-	if err != nil {
-		handler.writeError(w, r, http.StatusPreconditionRequired, "IF_MATCH_REQUIRED", false)
-		return "", "", 0, false
-	}
-	return principal, accountID, revision, true
+	return principal, accountID, 0, true
 }
 
 func (handler *InternalHandler) accountBlockers(w http.ResponseWriter, r *http.Request, accountID string) (lifecycle.Blockers, bool) {
@@ -375,7 +296,6 @@ func (handler *InternalHandler) expectEmptyAccountBody(w http.ResponseWriter, r 
 }
 
 func (handler *InternalHandler) writeAccountRecord(w http.ResponseWriter, status int, account lifecycle.Account) {
-	w.Header().Set("ETag", desiredETag(account.DesiredStateRevision))
 	writeJSON(w, status, map[string]any{"data": map[string]any{"account": account.Public()}})
 }
 
@@ -384,7 +304,7 @@ func (handler *InternalHandler) accountFailure(w http.ResponseWriter, r *http.Re
 	case errors.Is(err, lifecycle.ErrNotFound):
 		handler.writeError(w, r, http.StatusNotFound, "ACCOUNT_NOT_FOUND", false)
 	case errors.Is(err, lifecycle.ErrRevisionConflict):
-		handler.writeError(w, r, http.StatusConflict, "DESIRED_STATE_REVISION_CONFLICT", false)
+		handler.writeError(w, r, http.StatusConflict, "ACCOUNT_STATE_CONFLICT", false)
 	case errors.Is(err, lifecycle.ErrIdempotencyConflict):
 		handler.writeError(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", false)
 	case errors.Is(err, lifecycle.ErrInvalidTransition):

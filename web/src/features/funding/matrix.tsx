@@ -1,6 +1,6 @@
 import * as Popover from "@radix-ui/react-popover";
 import { Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
+import type { ColumnDef, SortingState } from "@tanstack/react-table";
 import { ChevronDown, SearchX } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -120,12 +120,12 @@ export interface BoardColumn {
 export interface MatrixRow {
   /** The pair this row is: base and quote, which is what the venues agree on. */
   key: string;
-  /** A venue's own spelling of that pair, for display and for the hedge link. */
+  /** A venue spelling retained only for searching legacy rows. */
   symbol: string;
   baseAsset?: string;
   cells: Record<string, FundingBoardRow>;
   venueCount: number;
-  /** The largest open interest any venue published for this instrument. */
+  /** The largest quote-notional open interest any venue published. */
   openInterest?: string;
   openInterestVenue?: string;
   openInterestValue: number | null;
@@ -219,14 +219,14 @@ export function pivotRows(snapshot: FundingBoardSnapshot): MatrixRow[] {
       entry.venueCount += 1;
       entry.baseAsset ??= row.baseAsset;
 
-      // Seven of the ten venues leave open interest out of their bulk call, so
-      // the row's figure is whichever venue did publish one — the largest, when
-      // more than one did. It is a liquidity qualifier for the instrument, not
-      // a total across venues, and the cell says which venue it came from.
-      const size = magnitude(row.openInterest);
+      // Open interest is only comparable after the Gateway converts venue-native
+      // base units/contracts into quote-stablecoin notional. The row uses the
+      // largest published venue value as a liquidity qualifier, not a partial
+      // cross-venue total; the cell names its source.
+      const size = magnitude(row.openInterestNotional);
       if (size !== null && (entry.openInterestValue === null || size > entry.openInterestValue)) {
         entry.openInterestValue = size;
-        entry.openInterest = row.openInterest;
+        entry.openInterest = row.openInterestNotional;
         entry.openInterestVenue = venue.venue;
       }
     }
@@ -323,11 +323,14 @@ export function FundingMatrix({
   loading: boolean;
 }) {
   const t = useT();
-  const [unit, setUnit] = useState<FundingUnit>("apr");
+  const [unit, setUnit] = useState<FundingUnit>("period");
   const [search, setSearch] = useState("");
   const [minOpenInterest, setMinOpenInterest] = useState("");
   const [crossVenueOnly, setCrossVenueOnly] = useState(true);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: "openInterest", desc: true },
+  ]);
   const now = useCoarseNow();
 
   const columns = useMemo(() => (snapshot ? pivotColumns(snapshot) : []), [snapshot]);
@@ -460,6 +463,8 @@ export function FundingMatrix({
           caption={t("funding.caption")}
           loading={loading}
           loadingRows={12}
+          sorting={sorting}
+          onSortingChange={setSorting}
           empty={
             <EmptyState
               icon={SearchX}
@@ -630,12 +635,12 @@ function buildColumns(
   const instrument: ColumnDef<MatrixEntry, unknown> = {
     id: "symbol",
     header: t("col.instrument"),
-    accessorFn: (entry) => entry.row.symbol,
+    accessorFn: (entry) => entry.row.key,
     cell: (context) => {
       const { row } = context.row.original;
       return (
         <div className="flex flex-col leading-tight">
-          <span className="truncate font-medium text-text">{row.symbol}</span>
+          <span className="truncate font-medium text-text">{row.key}</span>
           <span className="text-micro text-dim">
             {row.venueCount === 1
               ? t("funding.venueCount.one", { count: row.venueCount })
@@ -679,7 +684,7 @@ function buildColumns(
 
   const openInterest: ColumnDef<MatrixEntry, unknown> = {
     id: "openInterest",
-    header: t("strip.openInterest"),
+    header: t("funding.openInterestNotional"),
     accessorFn: (entry) => entry.row.openInterestValue ?? Number.NEGATIVE_INFINITY,
     cell: (context) => {
       const { row } = context.row.original;
@@ -736,7 +741,7 @@ function buildColumns(
           </span>
         );
       }
-      return <Num value={percent.toFixed(decimals)} decimals={decimals} signed directional />;
+      return <Num value={percent.toFixed(decimals)} decimals={decimals} signed directional suffix="%" />;
     },
     meta: { numeric: true, width: "96px" },
   }));
@@ -755,7 +760,7 @@ function buildColumns(
         // without the two venues that make it is a number nobody can act on.
         // The arbitrage page reads them back from here once it exists.
         <div className="flex flex-col items-end leading-tight">
-          <Num value={best.value.toFixed(decimals)} decimals={decimals} className="text-text" />
+          <Num value={best.value.toFixed(decimals)} decimals={decimals} className="text-text" suffix="%" />
           <span className="text-micro text-dim">
             {t("funding.legs", { short: best.short.label, long: best.long.label })}
           </span>
@@ -781,7 +786,7 @@ function buildColumns(
         <Button asChild size="sm" variant="outline">
           <Link
             to="/funding/arbitrage"
-            search={{ symbol: row.symbol, long: best.long.venue, short: best.short.venue }}
+            search={{ symbol: row.key, long: best.long.key, short: best.short.key }}
           >
             {t("funding.hedge")}
           </Link>

@@ -161,5 +161,5 @@ including Aster's documented REST command fallback, so `PlaceOrder` and
 `CancelOrder` spend real funds.
 
 Capability cells in this matrix are implemented/admitted support, not a claim
-that the venue answers today. For click-through work that must not touch a venue
-at all, run the frontend against its offline mock.
+that the venue answers today. Use the application's anonymous read-only mode
+when only live public market data is needed.

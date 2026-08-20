@@ -2,6 +2,8 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 
 import { trading, type ActivityQuery } from "@/api/endpoints";
 import type { ActivityEvent } from "@/api/types";
+import { useReadOnly } from "@/app/mode";
+import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 
 /* ---------------------------------------------------------------------------
  * The event log.
@@ -20,9 +22,12 @@ export const activityKeys = {
 };
 
 export function useActivity(query: ActivityQuery): UseQueryResult<ActivityEvent[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: activityKeys.list(query),
     queryFn: ({ signal }) => trading.activity(query, signal),
+    enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 10_000,
     placeholderData: (previous) => previous,
   });

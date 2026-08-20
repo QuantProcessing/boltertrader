@@ -13,7 +13,6 @@ test-browser:
 	npm --prefix web ci
 	npm --prefix web run build
 	npm --prefix web test
-	npm --prefix web run test:e2e
 
 test-sdk:
 	go test -short ./sdk/...

@@ -53,6 +53,7 @@ type RotationFence struct {
 
 type Account struct {
 	ID                   string
+	RuntimeID            string
 	Venue                string
 	VenueEnvironment     Environment
 	NativeEnvironment    Environment
@@ -72,18 +73,15 @@ type Account struct {
 }
 
 type PublicAccount struct {
-	ID                   string         `json:"accountId"`
-	Venue                string         `json:"venue"`
-	NativeEnvironment    Environment    `json:"nativeEnvironment"`
-	DisplayName          string         `json:"displayName"`
-	ProductPolicy        []string       `json:"productPolicy"`
-	Routes               []AccountRoute `json:"routes,omitempty"`
-	Status               State          `json:"status"`
-	DesiredStateRevision int64          `json:"desiredStateRevision"`
-	RuntimeGeneration    int64          `json:"runtimeGeneration"`
-	CredentialVersion    int64          `json:"credentialVersion"`
-	LastValidatedAt      *time.Time     `json:"lastValidatedAt"`
-	UpdatedAt            time.Time      `json:"updatedAt"`
+	ID                string         `json:"accountId"`
+	Venue             string         `json:"venue"`
+	NativeEnvironment Environment    `json:"nativeEnvironment"`
+	DisplayName       string         `json:"displayName"`
+	ProductPolicy     []string       `json:"productPolicy"`
+	Routes            []AccountRoute `json:"routes,omitempty"`
+	Status            State          `json:"status"`
+	LastValidatedAt   *time.Time     `json:"lastValidatedAt"`
+	UpdatedAt         time.Time      `json:"updatedAt"`
 }
 
 func (account Account) Public() PublicAccount {
@@ -94,14 +92,15 @@ func (account Account) Public() PublicAccount {
 	return PublicAccount{
 		ID: account.ID, Venue: account.Venue, NativeEnvironment: account.NativeEnvironment,
 		DisplayName: account.DisplayName, ProductPolicy: append([]string(nil), productIDs...), Routes: append([]AccountRoute(nil), account.Routes...),
-		Status: account.State, DesiredStateRevision: account.DesiredStateRevision,
-		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
+		Status:          account.State,
 		LastValidatedAt: account.LastValidatedAt, UpdatedAt: account.UpdatedAt,
 	}
 }
 
 func (account Account) Validate() error {
-	if account.ID == "" || account.ID != strings.TrimSpace(account.ID) || account.Venue == "" {
+	legacyFence := account.DesiredStateRevision > 0 && account.RuntimeGeneration > 0 && account.CredentialVersion > 0
+	if account.ID == "" || account.ID != strings.TrimSpace(account.ID) ||
+		(account.RuntimeID == "" && !legacyFence) || account.RuntimeID != strings.TrimSpace(account.RuntimeID) || account.Venue == "" {
 		return errors.New("account identity is invalid")
 	}
 	// Read back from storage, these are just strings, so a row written before
@@ -142,19 +141,17 @@ func (account Account) Validate() error {
 }
 
 type DesiredState struct {
-	AccountID            string         `json:"accountId"`
-	Venue                string         `json:"venue"`
-	VenueEnvironment     Environment    `json:"venueEnvironment"`
-	SecretRef            string         `json:"secretRef"`
-	DesiredStateRevision int64          `json:"desiredStateRevision"`
-	RuntimeGeneration    int64          `json:"runtimeGeneration"`
-	CredentialVersion    int64          `json:"credentialVersion"`
-	RequestedState       State          `json:"requestedState"`
-	Rotation             *RotationFence `json:"rotationFence,omitempty"`
+	AccountID        string         `json:"accountId"`
+	RuntimeID        string         `json:"runtimeId"`
+	Venue            string         `json:"venue"`
+	VenueEnvironment Environment    `json:"venueEnvironment"`
+	SecretRef        string         `json:"secretRef"`
+	RequestedState   State          `json:"requestedState"`
+	Rotation         *RotationFence `json:"rotationFence,omitempty"`
 }
 
 func (account Account) Desired() DesiredState {
-	return DesiredState{AccountID: account.ID, Venue: account.Venue, VenueEnvironment: account.VenueEnvironment, SecretRef: account.SecretRef, DesiredStateRevision: account.DesiredStateRevision, RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion, RequestedState: account.State, Rotation: account.Rotation}
+	return DesiredState{AccountID: account.ID, RuntimeID: account.RuntimeID, Venue: account.Venue, VenueEnvironment: account.VenueEnvironment, SecretRef: account.SecretRef, RequestedState: account.State}
 }
 
 type CreateRequest struct {

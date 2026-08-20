@@ -50,6 +50,9 @@ func TestTableMatchesWhatTheGatewayServes(t *testing.T) {
 	for _, route := range gatewayhttp.InternalAccountLifecycleRoutes() {
 		want = append(want, route.Method+" "+route.Pattern)
 	}
+	for _, route := range gatewayhttp.InternalPublicMarketRoutes() {
+		want = append(want, route.Method+" "+route.Pattern)
+	}
 	sort.Strings(want)
 
 	var got []string
@@ -61,7 +64,7 @@ func TestTableMatchesWhatTheGatewayServes(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	assertSameRoutes(t, "gateway account lifecycle", want, got)
+	assertSameRoutes(t, "gateway browser surface", want, got)
 }
 
 // A gateway route reachable from the browser must land on the internal plane.
@@ -107,23 +110,28 @@ func TestForwardedRoutesDoNotShadowOwnedRoutes(t *testing.T) {
 	}
 }
 
-// Every Public route must be one the trading service classifies as public
-// data. That list is the outer bound on what may be reached without a session,
-// and this is what keeps the auth edge from widening it on its own: adding
-// Public to a route the trading service considers private fails here rather
-// than shipping an unauthenticated read of somebody's ledger.
-func TestPublicRoutesAreTradingPublicData(t *testing.T) {
+// Every Public route must be declared public by the upstream that serves it.
+// Those declarations are the outer bound on what may be reached without a
+// session, and keep the auth edge from widening the carve-out on its own.
+func TestPublicRoutesAreDeclaredPublicData(t *testing.T) {
 	t.Parallel()
 	allowed := make(map[string]struct{})
 	for _, pattern := range tradinghttp.PublicDataRoutes() {
 		allowed[pattern] = struct{}{}
+	}
+	for _, upstreamRoute := range gatewayhttp.InternalPublicMarketRoutes() {
+		for _, route := range Routes() {
+			if route.Upstream == Gateway && route.Method == upstreamRoute.Method && route.UpstreamPath() == upstreamRoute.Pattern {
+				allowed[route.Pattern()] = struct{}{}
+			}
+		}
 	}
 	for _, route := range Routes() {
 		if !route.Public {
 			continue
 		}
 		if _, ok := allowed[route.Pattern()]; !ok {
-			t.Errorf("%s is Public but trading does not classify it as public data", route.Pattern())
+			t.Errorf("%s is Public but its upstream does not classify it as public data", route.Pattern())
 		}
 	}
 }
@@ -170,7 +178,7 @@ func TestRealtimeStreamIsNotPublic(t *testing.T) {
 // Nothing outside the trading service's public-data group is Public — no
 // gateway route, no projection, no product route. Stated as a count so that a
 // Public flag landing on a route this file has never heard of still fails.
-func TestPublicRoutesAreExactlyTheEightExpected(t *testing.T) {
+func TestPublicRoutesAreExactlyTheNineExpected(t *testing.T) {
 	t.Parallel()
 	want := []string{
 		"GET /api/v1/candles",
@@ -179,6 +187,7 @@ func TestPublicRoutesAreExactlyTheEightExpected(t *testing.T) {
 		"GET /api/v1/funding-board",
 		"GET /api/v1/funding-history",
 		"GET /api/v1/market-data",
+		"GET /api/v1/public/ws",
 		"GET /api/v1/system/readiness",
 		"GET /api/v1/system/status",
 	}

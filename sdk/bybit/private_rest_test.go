@@ -97,6 +97,10 @@ func TestClient_GetAPIKeyInfoReturnsRetCodeError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
+	var responseErr *ResponseError
+	if !errors.As(err, &responseErr) || responseErr.Code != 10003 {
+		t.Fatalf("typed response error = %#v, %v", responseErr, err)
+	}
 	if !strings.Contains(err.Error(), "query api key failed: 10003 API key is invalid") {
 		t.Fatalf("unexpected error: %v", err)
 	}

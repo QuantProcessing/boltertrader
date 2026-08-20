@@ -21,12 +21,16 @@ import (
 )
 
 type candidateHandleStub struct {
-	probeErr error
-	closed   bool
+	probeErr   error
+	probeCalls int
+	closed     bool
 }
 
-func (handle *candidateHandleStub) Probe(context.Context) error { return handle.probeErr }
-func (handle *candidateHandleStub) Close() error                { handle.closed = true; return nil }
+func (handle *candidateHandleStub) Probe(context.Context) error {
+	handle.probeCalls++
+	return handle.probeErr
+}
+func (handle *candidateHandleStub) Close() error { handle.closed = true; return nil }
 
 type runtimeSpotClientStub struct{ exchange.SpotClient }
 type runtimePerpClientStub struct {
@@ -439,6 +443,17 @@ func TestCandidatePromotesSpotAndPerpAsOneGeneration(t *testing.T) {
 	routeID, admission, err := manager.ActiveRoute(pending.AccountID, "perp", "USDT")
 	if err != nil || routeID != "perp-usdt" || admission != group.Admission {
 		t.Fatalf("active route=%q admission=%p err=%v", routeID, admission, err)
+	}
+}
+
+func TestCandidateVerifiesAccountCredentialOnceUsingSpotBalanceRoute(t *testing.T) {
+	builder := &candidateBuilderStub{handles: map[domain.RouteID]*candidateHandleStub{}}
+	manager := newRuntimeGroupTestManager(builder)
+	if _, err := manager.BuildCandidate(context.Background(), runtimeGroupPending(t)); err != nil {
+		t.Fatal(err)
+	}
+	if builder.handles["spot"].probeCalls != 1 || builder.handles["perp-usdt"].probeCalls != 0 {
+		t.Fatalf("spot probes=%d perp probes=%d", builder.handles["spot"].probeCalls, builder.handles["perp-usdt"].probeCalls)
 	}
 }
 
@@ -909,7 +924,7 @@ func TestOneFailedRouteDestroysWholeCandidateAndPreservesActive(t *testing.T) {
 	}
 	before := manager.ActiveSnapshot(first.AccountID)
 
-	builder.failRoute = "perp-usdt"
+	builder.failRoute = "spot"
 	next := runtimeGroupPending(t)
 	next.SnapshotID = uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c36")
 	next.Fence.RuntimeGeneration++
@@ -2166,4 +2181,20 @@ func runtimeGroupPending(t *testing.T) store.PendingSnapshot {
 			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: store.RouteActive},
 		},
 	}, OperationState: store.OperationCandidateReady}
+}
+
+func TestCandidateProbeReasonSeparatesExpiredCredentialsFromPermissionsAndTransport(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{exchange.NewError(exchange.KindAuthentication, exchange.ErrorDetails{Code: "33004"}), "CREDENTIAL_EXPIRED"},
+		{exchange.NewError(exchange.KindAuthentication, exchange.ErrorDetails{Code: "10003"}), "CREDENTIAL_INVALID"},
+		{exchange.NewError(exchange.KindPermission, exchange.ErrorDetails{Code: "10005"}), "CREDENTIAL_PERMISSION_DENIED"},
+		{exchange.NewError(exchange.KindTransport, exchange.ErrorDetails{}), "VENUE_UNAVAILABLE"},
+	} {
+		if got := candidateProbeReason(test.err); got != test.want {
+			t.Fatalf("candidateProbeReason(%v) = %q, want %q", test.err, got, test.want)
+		}
+	}
 }

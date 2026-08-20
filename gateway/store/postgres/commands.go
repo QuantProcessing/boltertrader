@@ -216,12 +216,11 @@ func (postgresStore *Store) BeginOrderHandoff(ctx context.Context, request store
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO gateway_order_handoffs(
-			handoff_id, command_id, account_id, route_id, desired_state_revision,
-			runtime_generation, credential_version, state
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,'started')
+			handoff_id, command_id, account_id, route_id, runtime_id, state
+		) VALUES ($1,$2,$3,$4,$5::uuid,'started')
 		ON CONFLICT (handoff_id) DO NOTHING
 	`, request.HandoffID, request.CommandID, request.AccountID, request.RouteID,
-		request.Fence.DesiredStateRevision, request.Fence.RuntimeGeneration, request.Fence.CredentialVersion); err != nil {
+		request.Fence.RuntimeID); err != nil {
 		return store.OrderHandoff{}, redactErr("begin order handoff", err)
 	}
 	handoff, err := loadOrderHandoffWithQuerier(ctx, tx, request.HandoffID)
@@ -264,11 +263,11 @@ func loadOrderHandoffWithQuerier(ctx context.Context, querier snapshotQuerier, h
 	var resolvedAt *time.Time
 	err := querier.QueryRow(ctx, `
 		SELECT handoff_id::text, command_id::text, account_id, route_id,
-		       desired_state_revision, runtime_generation, credential_version,
+		       runtime_id::text,
 		       state, started_at, resolved_at
 		FROM gateway_order_handoffs WHERE handoff_id=$1
 	`, handoffID).Scan(&handoff.HandoffID, &handoff.CommandID, &handoff.AccountID, &handoff.RouteID,
-		&handoff.Fence.DesiredStateRevision, &handoff.Fence.RuntimeGeneration, &handoff.Fence.CredentialVersion,
+		&handoff.Fence.RuntimeID,
 		&handoff.State, &handoff.StartedAt, &resolvedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.OrderHandoff{}, store.ErrNotFound

@@ -228,13 +228,11 @@ type PromotionResult struct {
 }
 
 type MigrationPromotionItem struct {
-	AccountID            domain.AccountID
-	OperationID          string
-	DesiredStateRevision int64
-	RuntimeGeneration    int64
-	CredentialVersion    int64
-	RouteSetSHA256       string
-	InputSHA256          string
+	AccountID      domain.AccountID
+	OperationID    string
+	RuntimeID      string
+	RouteSetSHA256 string
+	InputSHA256    string
 }
 
 type MigrationPromotionRequest struct {
@@ -264,11 +262,15 @@ func (request MigrationPromotionRequest) OperationSetSHA256() (string, error) {
 	seenAccounts := make(map[domain.AccountID]struct{}, len(items))
 	seenOperations := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		if item.AccountID.Validate() != nil || item.DesiredStateRevision < 1 || item.RuntimeGeneration < 1 || item.CredentialVersion < 1 || !validSHA256(item.RouteSetSHA256) || !validSHA256(item.InputSHA256) {
+		if item.AccountID.Validate() != nil || !validSHA256(item.RouteSetSHA256) || !validSHA256(item.InputSHA256) {
 			return "", ErrMigrationPromotionConflict
 		}
 		operationID, err := uuid.Parse(item.OperationID)
 		if err != nil || operationID == uuid.Nil {
+			return "", ErrMigrationPromotionConflict
+		}
+		runtimeID, err := uuid.Parse(item.RuntimeID)
+		if err != nil || runtimeID == uuid.Nil {
 			return "", ErrMigrationPromotionConflict
 		}
 		if _, duplicate := seenAccounts[item.AccountID]; duplicate {
@@ -404,9 +406,6 @@ func (request RetirementRequest) Validate() error {
 	if err := request.ExpectedActiveFence.Validate(); err != nil || request.ExpectedActiveFence.AccountID != request.AccountID {
 		return ErrPromotionFenceConflict
 	}
-	if request.TombstoneRevision != request.ExpectedActiveFence.DesiredStateRevision+1 {
-		return ErrPromotionFenceConflict
-	}
 	return request.Scope.Validate()
 }
 
@@ -417,10 +416,9 @@ func (request RetirementRequest) CanonicalDigest() (string, error) {
 	payload := struct {
 		AccountID           domain.AccountID    `json:"accountId"`
 		ExpectedActiveFence domain.AccountFence `json:"expectedActiveFence"`
-		TombstoneRevision   uint64              `json:"tombstoneRevision"`
 		Namespace           string              `json:"namespace"`
 		KeyVersion          string              `json:"keyVersion"`
-	}{request.AccountID, request.ExpectedActiveFence, request.TombstoneRevision, request.Scope.Namespace, request.Scope.KeyVersion}
+	}{request.AccountID, request.ExpectedActiveFence, request.Scope.Namespace, request.Scope.KeyVersion}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("encode retirement digest: %w", err)
@@ -432,6 +430,7 @@ func (request RetirementRequest) CanonicalDigest() (string, error) {
 type RetirementResult struct {
 	OperationID       secretstore.OperationID
 	AccountID         domain.AccountID
+	RuntimeID         string
 	TombstoneRevision uint64
 	Tombstoned        bool
 	CompletedAt       time.Time
@@ -543,6 +542,7 @@ func (fence RotationFence) Validate() error {
 
 type DesiredAccount struct {
 	AccountID            domain.AccountID
+	RuntimeID            string
 	Venue                string
 	VenueEnvironment     string
 	SecretRef            string
@@ -575,8 +575,8 @@ func (desired DesiredAccount) Validate() error {
 			return err
 		}
 	}
-	if desired.DesiredStateRevision <= 0 || desired.RuntimeGeneration <= 0 || desired.CredentialVersion <= 0 {
-		return fmt.Errorf("desired-state fences must be positive")
+	if desired.RuntimeID == "" && (desired.DesiredStateRevision <= 0 || desired.RuntimeGeneration <= 0 || desired.CredentialVersion <= 0) {
+		return fmt.Errorf("runtime id is required")
 	}
 	if err := desired.RequestedState.Validate(); err != nil {
 		return err
@@ -616,6 +616,7 @@ func ValidateDesiredAccountTransition(from, to DesiredAccountState) error {
 
 type RuntimeFence struct {
 	AccountID            domain.AccountID
+	RuntimeID            string
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
@@ -625,8 +626,8 @@ func (fence RuntimeFence) Validate() error {
 	if err := fence.AccountID.Validate(); err != nil {
 		return err
 	}
-	if fence.DesiredStateRevision <= 0 || fence.RuntimeGeneration <= 0 || fence.CredentialVersion <= 0 {
-		return fmt.Errorf("runtime fence values must be positive")
+	if fence.RuntimeID == "" && (fence.DesiredStateRevision <= 0 || fence.RuntimeGeneration <= 0 || fence.CredentialVersion <= 0) {
+		return fmt.Errorf("runtime id is required")
 	}
 	return nil
 }

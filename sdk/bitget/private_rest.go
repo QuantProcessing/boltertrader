@@ -128,7 +128,7 @@ func (c *Client) GetOrder(ctx context.Context, category, symbol, orderID, client
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get order failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get order", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -404,7 +404,7 @@ func (c *Client) GetAccountAssets(ctx context.Context) (*AccountAssets, error) {
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get account assets failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get account assets", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }

@@ -37,8 +37,8 @@ opened.
 Environment selection is optional. `factory.EnvironmentLive` selects production
 endpoints, it is the only environment, and it is the default, so a constructor
 rejects any other value. Demo and testnet profiles were removed because each
-venue implemented them differently; `web/`'s offline mock replaces them for
-click-through work.
+venue implemented them differently. Anonymous product access is read-only and
+uses live public venue data instead.
 
 ## Credential-free public reads
 

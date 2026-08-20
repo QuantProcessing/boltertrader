@@ -397,18 +397,17 @@ type placeOrderBody struct {
 	// coordinator refuses the placement if the account has since been routed
 	// elsewhere. Required, because an order that does not say which route it
 	// was priced against cannot be checked against one.
-	RouteID              string `json:"route_id"`
-	InstrumentID         string `json:"instrument_id"`
-	IdempotencyKey       string `json:"idempotency_key"`
-	Side                 string `json:"side"`
-	Type                 string `json:"type"`
-	Quantity             string `json:"quantity"`
-	LimitPrice           string `json:"limit_price"`
-	LimitPolicy          string `json:"limit_policy"`
-	ReduceOnly           bool   `json:"reduce_only"`
-	DesiredStateRevision uint64 `json:"desired_state_revision"`
-	RuntimeGeneration    uint64 `json:"runtime_generation"`
-	CredentialVersion    uint64 `json:"credential_version"`
+	RouteID        string `json:"route_id"`
+	InstrumentID   string `json:"instrument_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Side           string `json:"side"`
+	Type           string `json:"type"`
+	Quantity       string `json:"quantity"`
+	LimitPrice     string `json:"limit_price"`
+	LimitPolicy    string `json:"limit_policy"`
+	ReduceOnly     bool   `json:"reduce_only"`
+	Leverage       int    `json:"leverage"`
+	RuntimeID      string `json:"runtime_id"`
 }
 
 func (handler *Handler) placeOrder(w http.ResponseWriter, r *http.Request) {
@@ -458,6 +457,9 @@ func (handler *Handler) placeOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (body placeOrderBody) placeRequest(principal domain.PrincipalID, correlationID domain.EventID) (order.PlaceRequest, error) {
+	if body.Leverage < 0 {
+		return order.PlaceRequest{}, fmt.Errorf("invalid leverage")
+	}
 	accountID, err := parseAccountID(body.AccountID)
 	if err != nil {
 		return order.PlaceRequest{}, err
@@ -510,8 +512,8 @@ func (body placeOrderBody) placeRequest(principal domain.PrincipalID, correlatio
 	return order.PlaceRequest{
 		PrincipalID: principal, AccountID: accountID, RouteID: routeID, InstrumentID: instrumentID,
 		IdempotencyKey: key, CorrelationID: correlationID, Side: side, Type: orderType, Quantity: quantity,
-		LimitPrice: limitPrice, LimitPolicy: policy, ReduceOnly: body.ReduceOnly,
-		WriteFence: account.WriteFence{AccountID: accountID, DesiredStateRevision: body.DesiredStateRevision, RuntimeGeneration: body.RuntimeGeneration, CredentialVersion: body.CredentialVersion},
+		LimitPrice: limitPrice, LimitPolicy: policy, ReduceOnly: body.ReduceOnly, Leverage: body.Leverage,
+		WriteFence: account.WriteFence{AccountID: accountID, RuntimeID: body.RuntimeID},
 	}, nil
 }
 

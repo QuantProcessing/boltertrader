@@ -1,5 +1,6 @@
-import { KeyRound, Plus, ShieldCheck } from "lucide-react";
+import { KeyRound, LockKeyhole, Plus } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { useNavigate } from "@tanstack/react-router";
 
 import { describeError } from "@/api/errors";
 import type {
@@ -12,6 +13,7 @@ import type {
   RuntimeSnapshot,
   Venue,
 } from "@/api/types";
+import { modeStore, useReadOnly } from "@/app/mode";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field, Input, inputClass } from "@/components/ui/field";
@@ -26,36 +28,22 @@ import {
 } from "@/features/settings/credential-form";
 import { useAccounts } from "@/features/market/queries";
 import {
-  isRevisionConflict,
   useAccountRuntimes,
   useCreateAccount,
   useDisableAccount,
-  useDrainAccount,
   useRemoveAccount,
-  useRotateCredential,
-  useValidateAccount,
   useVenues,
 } from "@/features/settings/queries";
 import { formatTimestamp } from "@/lib/format";
-import { useT, type Key } from "@/lib/i18n";
+import { useT, type Key, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
  * Settings: the accounts, and what may be done to them.
  *
- * Two things shape this page.
- *
- * First, the lifecycle is a state machine and the operator is acting on a
- * revision, not on an object. Every mutation carries the `desiredStateRevision`
- * it was launched from, so a stale tab gets a 409 instead of silently undoing
- * somebody else's change. That is why the actions live next to the revision
- * they will send.
- *
- * Second, the gateway's record and trading's runtime are different facts and
- * both are shown. The record says what was asked for; the runtime says what has
- * been applied, and during a rotation it carries an active and a pending
- * generation at the same time. Collapsing the two into one "healthy" light
- * would hide exactly the state an operator opens this page to inspect.
+ * The gateway record says what was requested; the runtime says whether the
+ * immutable account registration is currently usable. Internal runtime
+ * identities and counters are deliberately not operator-facing concepts.
  *
  * Forms expand inline rather than opening dialogs: no dialog component exists
  * here, and inline keeps the account being modified visible while it is edited.
@@ -64,20 +52,105 @@ import { cn } from "@/lib/utils";
 const STATUS_TONE: Record<AccountStatus, StateTone> = {
   creating: "pending",
   active: "ok",
-  rotating: "pending",
-  draining: "warn",
-  drained: "neutral",
   disabled: "neutral",
   removing: "warn",
   removed: "neutral",
 };
 
+const ACCOUNT_STATUS_KEYS: Record<AccountStatus, Key> = {
+  creating: "settings.status.creating",
+  active: "settings.status.active",
+  disabled: "settings.status.disabled",
+  removing: "settings.status.removing",
+  removed: "settings.status.removed",
+};
+
+const RUNTIME_STATE_KEYS: Partial<Record<string, Key>> = {
+  prepared: "settings.runtimeState.prepared",
+  candidate_ready: "settings.runtimeState.candidateReady",
+  candidate_failed: "settings.runtimeState.candidateFailed",
+  applied: "settings.runtimeState.applied",
+};
+
+function accountStatusLabel(status: AccountStatus, t: Translate): string {
+  return t(ACCOUNT_STATUS_KEYS[status]);
+}
+
+function requestedStateLabel(state: string, t: Translate): string {
+  const key = (ACCOUNT_STATUS_KEYS as Record<string, Key>)[state];
+  return key ? t(key) : state;
+}
+
+function runtimeStateLabel(state: string, t: Translate): string {
+  const key = RUNTIME_STATE_KEYS[state];
+  return key ? t(key) : state;
+}
+
 /** Nothing may be asked of an account the gateway is already tearing down. */
 const isTerminal = (status: AccountStatus): boolean => status === "removing" || status === "removed";
 
+const RUNTIME_REASON_KEYS: Partial<Record<string, Key>> = {
+  CREDENTIAL_EXPIRED: "settings.reason.credentialExpired",
+  CREDENTIAL_INVALID: "settings.reason.credentialInvalid",
+  CREDENTIAL_PERMISSION_DENIED: "settings.reason.credentialPermissionDenied",
+  VENUE_RATE_LIMITED: "settings.reason.venueRateLimited",
+  VENUE_UNAVAILABLE: "settings.reason.venueUnavailable",
+  VENUE_RESPONSE_INVALID: "settings.reason.venueResponseInvalid",
+  "live private writes disabled": "settings.reason.liveWritesDisabled",
+  private_stream_connect_failed: "settings.reason.privateStreamConnectFailed",
+  CANDIDATE_BUILD_FAILED: "settings.reason.candidateBuildFailed",
+};
+
+function describeRuntimeReason(reason: string | undefined, t: Translate): string | undefined {
+  if (!reason) return undefined;
+  const key = RUNTIME_REASON_KEYS[reason];
+  return key ? t(key) : reason;
+}
+
 export function SettingsPage() {
+  const readOnly = useReadOnly();
+
+  // A separate child is load-bearing here: the account hooks below must never
+  // mount and briefly expose cached private account data while this tab is
+  // signed out. Conditional calls inside one component would violate the
+  // Rules of Hooks when the session changes.
+  return readOnly ? <ReadOnlySettings /> : <SettingsWorkspace />;
+}
+
+function ReadOnlySettings() {
+  const navigate = useNavigate();
   const t = useT();
-  const accountsQuery = useAccounts();
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex h-bar shrink-0 items-center border-b border-line px-3">
+        <h1 className="text-title font-medium text-text">{t("settings.accounts")}</h1>
+      </header>
+      <EmptyState
+        icon={LockKeyhole}
+        title={t("settings.readOnly.title")}
+        detail={t("settings.readOnly.anonymous")}
+        className="min-h-0 flex-1"
+        action={
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              modeStore.choose("readWrite");
+              void navigate({ to: "/login", search: { redirect: "/settings" } });
+            }}
+          >
+            {t("settings.readOnly.signIn")}
+          </Button>
+        }
+      />
+    </div>
+  );
+}
+
+function SettingsWorkspace() {
+  const t = useT();
+  const accountsQuery = useAccounts({ watchLifecycle: true });
   const venuesQuery = useVenues();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -130,7 +203,7 @@ export function SettingsPage() {
                 <span className="min-w-0 truncate text-base text-text">{account.displayName}</span>
                 <StateBadge
                   tone={STATUS_TONE[account.status]}
-                  label={account.status}
+                  label={accountStatusLabel(account.status, t)}
                   className="ml-auto text-meta text-muted"
                 />
               </span>
@@ -174,19 +247,16 @@ export function SettingsPage() {
 
 /* --- Detail --------------------------------------------------------------- */
 
-function AccountDetail({ account, venue }: { account: Account; venue: Venue | null }) {
+function AccountDetail({ account }: { account: Account; venue: Venue | null }) {
   const toast = useToast();
   const t = useT();
   const runtimes = useAccountRuntimes(account.accountId);
-  const [rotating, setRotating] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
 
-  const validate = useValidateAccount();
   const disable = useDisableAccount();
-  const drain = useDrainAccount();
   const remove = useRemoveAccount();
 
-  const busy = validate.isPending || disable.isPending || drain.isPending || remove.isPending;
+  const busy = disable.isPending || remove.isPending;
   const terminal = isTerminal(account.status);
 
   const runtime = runtimes.data?.find((entry) => entry.accountId === account.accountId) ?? null;
@@ -200,8 +270,8 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
     onError: (error: unknown) =>
       toast.push({
         tone: "danger" as const,
-        title: isRevisionConflict(error) ? t("settings.conflict") : t(failed),
-        detail: isRevisionConflict(error) ? t("settings.conflict.detail") : describeError(error, t),
+        title: t(failed),
+        detail: describeError(error, t),
       }),
   });
 
@@ -209,15 +279,19 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
     <div className="flex flex-col gap-3">
       <Panel
         title={account.displayName}
-        meta={<StateBadge tone={STATUS_TONE[account.status]} label={account.status} />}
+        meta={
+          <StateBadge
+            tone={STATUS_TONE[account.status]}
+            label={accountStatusLabel(account.status, t)}
+          />
+        }
       >
+        <AccountActivationStatus account={account} runtime={runtime} loading={runtimes.isPending} />
+
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-meta md:grid-cols-4">
           <Fact label={t("settings.venue")} value={account.venue} />
           <Fact label={t("settings.environment")} value={account.nativeEnvironment} />
           <Fact label={t("settings.products")} value={account.productPolicy.join(", ")} />
-          <Fact label={t("settings.desiredRevision")} value={String(account.desiredStateRevision)} numeric />
-          <Fact label={t("settings.runtimeGeneration")} value={String(account.runtimeGeneration)} numeric />
-          <Fact label={t("settings.credentialVersion")} value={String(account.credentialVersion)} numeric />
           <Fact
             label={t("settings.lastValidated")}
             value={
@@ -227,29 +301,6 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
         </dl>
 
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-          <Button
-            size="sm"
-            disabled={busy || terminal}
-            onClick={() =>
-              validate.mutate(account, announce("settings.validate.requested", "settings.validate.failed"))
-            }
-          >
-            <ShieldCheck className="size-3.5" aria-hidden="true" /> {t("settings.validate")}
-          </Button>
-          <Button
-            size="sm"
-            disabled={busy || terminal || !venue}
-            onClick={() => setRotating((current) => !current)}
-          >
-            {rotating ? t("settings.cancelRotation") : t("settings.rotateCredential")}
-          </Button>
-          <Button
-            size="sm"
-            disabled={busy || terminal || account.status === "draining" || account.status === "drained"}
-            onClick={() => drain.mutate(account, announce("settings.drain.requested", "settings.drain.failed"))}
-          >
-            {t("settings.drain")}
-          </Button>
           <Button
             size="sm"
             disabled={busy || terminal || account.status === "disabled"}
@@ -285,7 +336,7 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
               <Button
                 size="sm"
                 variant="danger"
-                disabled={busy || account.status === "removed"}
+                disabled={busy || terminal}
                 onClick={() => setConfirmingRemove(true)}
               >
                 {t("settings.remove")}
@@ -302,10 +353,6 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
         ) : null}
       </Panel>
 
-      {rotating && venue ? (
-        <RotateCredential account={account} venue={venue} onDone={() => setRotating(false)} />
-      ) : null}
-
       <Panel title={t("settings.routes")} meta={t("settings.lanes", { count: account.routes?.length ?? 0 })}>
         {account.routes && account.routes.length > 0 ? (
           <ul className="flex flex-col">
@@ -319,6 +366,110 @@ function AccountDetail({ account, venue }: { account: Account; venue: Venue | nu
       </Panel>
 
       <RuntimePanel runtime={runtime} loading={runtimes.isPending} />
+    </div>
+  );
+}
+
+function AccountActivationStatus({
+  account,
+  runtime,
+  loading,
+}: {
+  account: Account;
+  runtime: AccountRuntime | null;
+  loading: boolean;
+}) {
+  const t = useT();
+  const pendingState = runtime?.pending?.state;
+  const failed = pendingState === "candidate_failed";
+  const fullyReady = runtime?.readiness.ready === true && runtime.writeReadiness.ready === true;
+  const shouldShow =
+    account.status === "creating" ||
+    account.status === "removing" ||
+    (account.status === "active" && !fullyReady);
+
+  if (!shouldShow) return null;
+
+  let title = t("settings.setup.validating");
+  let fallbackDetail = t("settings.setup.validating.detail");
+  let tone: StateTone = "pending";
+  let completed = 1;
+  let failedStep: number | null = null;
+
+  if (failed) {
+    title = t("settings.setup.failed");
+    fallbackDetail = t("settings.setup.failed.detail");
+    tone = "danger";
+    failedStep = 1;
+  } else if (account.status === "creating" && (pendingState === "candidate_ready" || runtime?.active)) {
+    title = t("settings.setup.enabling");
+    fallbackDetail = t("settings.setup.enabling.detail");
+    completed = 2;
+  } else if (account.status === "active") {
+    title = runtime?.blockedReason ? t("settings.setup.blocked") : t("settings.setup.syncing");
+    fallbackDetail = runtime?.blockedReason
+      ? t("settings.setup.blocked.detail")
+      : t("settings.setup.syncing.detail");
+    tone = runtime?.blockedReason ? "warn" : "pending";
+    completed = 2;
+  } else if (account.status === "removing") {
+    title = t("settings.setup.removing");
+    fallbackDetail = t("settings.setup.removing.detail");
+    tone = "warn";
+    completed = 2;
+  }
+
+  const reason =
+    describeRuntimeReason(runtime?.pending?.reason, t) ??
+    describeRuntimeReason(runtime?.blockedReason ?? undefined, t) ??
+    describeRuntimeReason(runtime?.writeReadiness.reason, t) ??
+    describeRuntimeReason(runtime?.readiness.reason, t);
+  const steps = [
+    t("settings.setup.step.saved"),
+    t("settings.setup.step.verified"),
+    t("settings.setup.step.enabled"),
+  ];
+
+  return (
+    <div
+      className="mb-3 rounded-card bg-fill px-3 py-2"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <StateBadge tone={tone} label={title} />
+        <span className="text-meta text-muted">
+          {loading && !runtime ? t("settings.runtime.loading") : reason ?? fallbackDetail}
+        </span>
+      </div>
+      {account.status === "creating" ? (
+        <ol className="mt-2 grid grid-cols-3 gap-2" aria-label={t("settings.setup.progress")}>
+          {steps.map((step, index) => {
+            const done = index < completed;
+            const isFailed = failedStep === index;
+            const current = !done && !isFailed && index === completed;
+            return (
+              <li
+                key={step}
+                className={cn(
+                  "flex min-w-0 items-center gap-1.5 text-meta",
+                  done ? "text-muted" : current || isFailed ? "text-text" : "text-dim",
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    done ? "bg-ok" : isFailed ? "bg-danger" : current ? "bg-pending" : "bg-line-strong",
+                  )}
+                />
+                <span className="truncate">{step}</span>
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
     </div>
   );
 }
@@ -381,16 +532,14 @@ function RuntimePanel({ runtime, loading }: { runtime: AccountRuntime | null; lo
           ready={runtime.writeReadiness.ready}
           reason={runtime.writeReadiness.reason}
         />
-        <span className="text-meta text-dim" data-numeric="">
-          {t("settings.applied", {
-            revision: runtime.lastAppliedDesiredStateRevision,
-            generation: runtime.lastAppliedRuntimeGeneration,
-          })}
-        </span>
       </div>
 
       {runtime.blockedReason !== null ? (
-        <p className="mt-2 text-meta text-warn">{t("settings.blocked", { reason: runtime.blockedReason })}</p>
+        <p className="mt-2 text-meta text-warn">
+          {t("settings.blocked", {
+            reason: describeRuntimeReason(runtime.blockedReason, t) ?? runtime.blockedReason,
+          })}
+        </p>
       ) : null}
 
       <div className="mt-3 flex flex-col gap-3 border-t border-line pt-3">
@@ -400,9 +549,9 @@ function RuntimePanel({ runtime, loading }: { runtime: AccountRuntime | null; lo
         {runtime.pending ? (
           <Generation title={t("settings.pending")} snapshot={runtime.pending} tone="pending" />
         ) : null}
-        {runtime.retiring.map((snapshot) => (
+        {runtime.retiring.map((snapshot, index) => (
           <Generation
-            key={`retiring-${snapshot.runtimeGeneration}`}
+            key={`retiring-${index}`}
             title={t("settings.retiring")}
             snapshot={snapshot}
             tone="neutral"
@@ -437,17 +586,13 @@ function Readiness({ label, ready, reason }: { label: string; ready: boolean; re
         label,
         state: ready ? t("settings.ready") : t("settings.notReady"),
       })}
-      detail={reason}
+      detail={describeRuntimeReason(reason, t)}
       className="text-base"
     />
   );
 }
 
-/**
- * One credential generation. During a rotation there are two or three of these
- * at once and the titles are the point — which one is serving traffic, which is
- * proving itself, which is on its way out.
- */
+/** One internal connection snapshot used while creating, serving, or removing. */
 function Generation({
   title,
   snapshot,
@@ -462,23 +607,15 @@ function Generation({
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2">
-        {/* `title` arrives translated: the caller knows which of active,
-            pending or retiring this is, and this component only lays it out. */}
+        {/* The caller labels whether this connection is active, pending, or retiring. */}
         <StateBadge tone={tone} label={title} className="text-base text-text" />
-        <span className="text-meta text-dim" data-numeric="">
-          {t("settings.generation", {
-            revision: snapshot.desiredStateRevision,
-            generation: snapshot.runtimeGeneration,
-            credential: snapshot.credentialVersion,
-          })}
-        </span>
         {/* `requestedState`, the pending `state` and `reason` are the runtime's
             own words and stay in them, same as the blotter's command states. */}
-        <Tag>{snapshot.requestedState}</Tag>
-        {pending ? <Tag>{pending.state}</Tag> : null}
+        <Tag>{requestedStateLabel(snapshot.requestedState, t)}</Tag>
+        {pending ? <Tag>{runtimeStateLabel(pending.state, t)}</Tag> : null}
       </div>
       {pending && pending.reason !== "" ? (
-        <p className="mt-1 text-meta text-muted">{pending.reason}</p>
+        <p className="mt-1 text-meta text-muted">{describeRuntimeReason(pending.reason, t)}</p>
       ) : null}
       <ul className="mt-1 flex flex-col">
         {snapshot.routes.map((route) => (
@@ -488,7 +625,7 @@ function Generation({
             <StateBadge
               tone={route.ready ? "ok" : "warn"}
               label={route.ready ? t("settings.ready") : t("settings.notReady")}
-              detail={route.reason}
+              detail={describeRuntimeReason(route.reason, t)}
               className="w-24 shrink-0 justify-end text-muted"
             />
           </li>
@@ -528,88 +665,6 @@ function Capability({ capability }: { capability: AccountCapability }) {
         )}
       </div>
     </div>
-  );
-}
-
-/* --- Credential writes ---------------------------------------------------- */
-
-function RotateCredential({
-  account,
-  venue,
-  onDone,
-}: {
-  account: Account;
-  venue: Venue;
-  onDone: () => void;
-}) {
-  const toast = useToast();
-  const rotate = useRotateCredential();
-  const t = useT();
-  const [values, setValues] = useState<CredentialValues>({});
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const missing = missingCredentialFields(venue, values);
-    if (missing.length > 0) {
-      // The field names come from the venue's credential schema, so the list
-      // stays in the venue's spelling; only the sentence around it translates.
-      setError(t("settings.stillNeeded", { fields: missing.join(", ") }));
-      return;
-    }
-    setError(null);
-    rotate.mutate(
-      { account, credentialBundle: buildCredentialBundle(venue, values) },
-      {
-        // Cleared either way. A submitted credential does not stay on screen,
-        // and a rejected one is re-entered rather than corrected in place.
-        onSettled: () => setValues({}),
-        onSuccess: () => {
-          toast.push({
-            tone: "ok",
-            title: t("settings.rotate.started"),
-            detail: t("settings.rotate.started.detail"),
-          });
-          onDone();
-        },
-        onError: (rotateError) =>
-          toast.push({
-            tone: "danger",
-            title: isRevisionConflict(rotateError)
-              ? t("settings.conflict")
-              : t("settings.rotate.refused"),
-            detail: isRevisionConflict(rotateError)
-              ? t("settings.conflict.reenter")
-              : describeError(rotateError, t),
-          }),
-      },
-    );
-  };
-
-  return (
-    <Panel
-      title={t("settings.rotateCredential")}
-      meta={`${venue.credentialSchema.authKind} · v${venue.credentialSchema.schemaVersion}`}
-    >
-      <form onSubmit={submit} className="flex max-w-lg flex-col gap-3">
-        <p className="text-meta text-dim">{t("settings.rotate.hint")}</p>
-        <CredentialFields
-          venue={venue}
-          values={values}
-          onChange={(key, value) => setValues((current) => ({ ...current, [key]: value }))}
-          disabled={rotate.isPending}
-        />
-        {error ? <p className="text-meta text-danger">{error}</p> : null}
-        <div className="flex items-center gap-2">
-          <Button type="submit" variant="primary" size="sm" disabled={rotate.isPending}>
-            {rotate.isPending ? t("settings.rotating") : t("settings.rotate")}
-          </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={onDone}>
-            {t("settings.cancel")}
-          </Button>
-        </div>
-      </form>
-    </Panel>
   );
 }
 

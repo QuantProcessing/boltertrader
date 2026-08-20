@@ -5,10 +5,16 @@ import type { Account, Instrument, OrderSide, OrderType } from "@/api/types";
 import { MANUAL_PREVIEW_TTL_MS } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Field, Input, inputClass } from "@/components/ui/field";
-import { Panel } from "@/components/ui/panel";
 import { Segmented } from "@/components/ui/segmented";
 import { useToast } from "@/components/ui/toast";
-import { usePlaceOrder, usePreviewOrder, type SealedPreview } from "@/features/trade/queries";
+import {
+  useAccountBalances,
+  useAccountPositions,
+  usePlaceOrder,
+  usePreviewOrder,
+  type SealedPreview,
+} from "@/features/trade/queries";
+import { decimalsOf } from "@/features/market/precision";
 import { formatDecimal, formatDuration, splitDecimal } from "@/lib/format";
 import { useT, type Key } from "@/lib/i18n";
 
@@ -41,6 +47,9 @@ const ORDER_TYPES: { value: OrderType; labelKey: Key }[] = [
   { value: "market", labelKey: "ticket.type.market" },
 ];
 
+const LEVERAGES = ["1", "2", "3", "5", "10", "20"] as const;
+const POSITION_PERCENTAGES = [25, 50, 75, 100] as const;
+
 /** The confirm button and the success toast, which spell the side differently. */
 const CONFIRM: Record<OrderSide, Key> = { buy: "ticket.confirm.buy", sell: "ticket.confirm.sell" };
 const PLACED: Record<OrderSide, Key> = { buy: "ticket.placed.buy", sell: "ticket.placed.sell" };
@@ -66,10 +75,34 @@ export function OrderTicket({
   const [quantity, setQuantity] = useState("");
   const [timeInForce, setTimeInForce] = useState("GTC");
   const [reduceOnly, setReduceOnly] = useState(false);
+  const [leverage, setLeverage] = useState<(typeof LEVERAGES)[number]>("1");
   const [sealed, setSealed] = useState<SealedPreview | null>(null);
 
   const preview = usePreviewOrder();
   const place = usePlaceOrder();
+  const positions = useAccountPositions(accountId, instrument?.instrumentId ?? "");
+  const balances = useAccountBalances(accountId);
+
+  const positionQuantity = sumDecimals(
+    (positions.data ?? []).map((position) => position.quantity),
+  );
+  const sellablePositionQuantity = sumDecimals(
+    (positions.data ?? [])
+      .filter(
+        (position) =>
+          position.side === "buy" ||
+          (position.side === undefined && !position.quantity.trimStart().startsWith("-")),
+      )
+      .map((position) => position.quantity),
+  );
+  const settlementAsset = instrument?.settlement ?? instrument?.quoteAsset;
+  const availableBalance = balances.data?.find(
+    (balance) =>
+      balance.product === instrument?.product &&
+      (balance.settlementAsset?.toUpperCase() === settlementAsset?.toUpperCase() ||
+        balance.asset.toUpperCase() === settlementAsset?.toUpperCase()),
+  );
+  const quantityDecimals = decimalsOf(instrument?.rules.quantityIncrement);
 
   // Pick the only account, or the first, rather than making the operator choose
   // between one option. Re-runs when the instrument changes the candidate set.
@@ -82,7 +115,7 @@ export function OrderTicket({
   // and confirming it afterwards would send something the operator never saw.
   useEffect(() => {
     setSealed(null);
-  }, [instrument?.instrumentId, accountId, side, orderType, quantity, limitPrice, timeInForce, reduceOnly]);
+  }, [instrument?.instrumentId, accountId, side, orderType, quantity, limitPrice, timeInForce, reduceOnly, leverage]);
 
   const remaining = useSealCountdown(sealed);
   const expired = sealed !== null && remaining <= 0;
@@ -111,6 +144,7 @@ export function OrderTicket({
         limitPrice: orderType === "limit" ? limitPrice : "",
         timeInForce,
         reduceOnly,
+        leverage: instrument.product === "perp" ? Number(leverage) : 0,
       },
       {
         onSuccess: setSealed,
@@ -145,8 +179,15 @@ export function OrderTicket({
   };
 
   return (
-    <Panel title={t("ticket.title")} className="flex min-h-0 flex-col">
-      <div className="flex flex-col gap-3">
+    <section aria-label={t("ticket.title")} className="flex min-h-full flex-col bg-panel">
+      <div className="flex h-bar shrink-0 items-center justify-between border-b border-line px-3">
+        <h2 className="text-title font-semibold text-text">{t("ticket.title")}</h2>
+        <span className="max-w-44 truncate text-meta text-dim" data-numeric="">
+          {instrument ? `${instrument.symbol} · ${instrument.venue}` : "—"}
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-3 p-3">
         {/* Options are rebuilt per render rather than memoised: `useT` returns a
             fresh closure every time, so a `[t]` dependency would never hit. */}
         <Segmented
@@ -157,11 +198,30 @@ export function OrderTicket({
           onChange={setSide}
         />
 
+        <div className="grid grid-cols-2 gap-x-4 border-b border-line pb-2">
+          <TicketStat
+            label={t("ticket.availableMargin")}
+            value={
+              availableBalance
+                ? `${formatDecimal(availableBalance.availableMargin ?? availableBalance.available)} ${settlementAsset ?? availableBalance.asset}`
+                : "—"
+            }
+          />
+          <TicketStat
+            label={t("ticket.position")}
+            value={
+              positions.data
+                ? `${formatDecimal(positionQuantity, { decimals: quantityDecimals })} ${instrument?.baseAsset ?? ""}`
+                : "—"
+            }
+          />
+        </div>
+
         <Field label={t("ticket.account")} required>
           {(field) => (
             <select
               {...field}
-              className={inputClass}
+              className={`${inputClass} h-10`}
               value={accountId}
               onChange={(event) => setAccountId(event.target.value)}
               disabled={accounts.length === 0}
@@ -189,6 +249,16 @@ export function OrderTicket({
           }}
         />
 
+        {instrument?.product === "perp" ? (
+          <Segmented
+            name="leverage"
+            label={t("ticket.leverage")}
+            value={leverage}
+            options={LEVERAGES.map((value) => ({ value, label: `${value}×` }))}
+            onChange={setLeverage}
+          />
+        ) : null}
+
         <Field
           label={`${t("ticket.price")}${instrument?.quoteAsset ? ` (${instrument.quoteAsset})` : ""}`}
           error={priceError}
@@ -198,6 +268,7 @@ export function OrderTicket({
           {(field) => (
             <Input
               {...field}
+              className="h-10 text-right font-mono"
               inputMode="decimal"
               autoComplete="off"
               value={orderType === "market" ? "" : limitPrice}
@@ -208,6 +279,37 @@ export function OrderTicket({
           )}
         </Field>
 
+        {side === "sell" ? (
+          <div className="flex flex-col gap-1">
+            <span className="th">{t("ticket.positionPercent")}</span>
+            <div className="grid grid-cols-4 gap-1 rounded-card bg-fill p-0.5" role="group" aria-label={t("ticket.positionPercent")}>
+              {POSITION_PERCENTAGES.map((percent) => {
+                const nextQuantity = positionPercentQuantity(
+                  sellablePositionQuantity,
+                  percent,
+                  instrument?.rules.quantityIncrement,
+                );
+                return (
+                  <button
+                    key={percent}
+                    type="button"
+                    disabled={nextQuantity === null}
+                    title={nextQuantity === null ? t("ticket.noLongPosition") : undefined}
+                    onClick={() => {
+                      if (nextQuantity === null) return;
+                      setQuantity(nextQuantity);
+                      setReduceOnly(true);
+                    }}
+                    className="h-[30px] rounded-control text-meta text-muted hover:bg-raised hover:text-text disabled:cursor-not-allowed disabled:text-faint"
+                  >
+                    {percent}%
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         <Field
           label={`${t("ticket.quantity")}${instrument?.baseAsset ? ` (${instrument.baseAsset})` : ""}`}
           error={quantityError}
@@ -216,6 +318,7 @@ export function OrderTicket({
           {(field) => (
             <Input
               {...field}
+              className="h-10 text-right font-mono"
               inputMode="decimal"
               autoComplete="off"
               value={quantity}
@@ -230,7 +333,7 @@ export function OrderTicket({
             {(field) => (
               <select
                 {...field}
-                className={inputClass}
+                className={`${inputClass} h-10`}
                 value={timeInForce}
                 onChange={(event) => setTimeInForce(event.target.value)}
                 disabled={orderType === "market"}
@@ -253,11 +356,16 @@ export function OrderTicket({
           </label>
         </div>
 
-        <Notional quantity={quantity} price={limitPrice} asset={instrument?.quoteAsset} active={orderType === "limit"} />
+        <div className="flex flex-col gap-1 border-t border-line pt-2">
+          <Notional quantity={quantity} price={limitPrice} asset={instrument?.quoteAsset} active={orderType === "limit"} />
+          <TicketStat label={t("ticket.estimatedLiquidation")} value="—" />
+          <TicketStat label={t("ticket.positionMargin")} value="—" />
+          <TicketStat label={t("ticket.fee")} value="—" />
+        </div>
 
         {sealed === null ? (
           <Button
-            variant="primary"
+            variant={side}
             size="lg"
             onClick={onReview}
             disabled={!ready || preview.isPending}
@@ -277,7 +385,7 @@ export function OrderTicket({
           />
         )}
       </div>
-    </Panel>
+    </section>
   );
 }
 
@@ -338,7 +446,7 @@ function SealedConfirmation({
           {t("ticket.discard")}
         </Button>
         <Button
-          variant="primary"
+          variant={side}
           size="lg"
           onClick={onConfirm}
           disabled={blocked || expired || placing}
@@ -383,6 +491,40 @@ function isPositiveDecimal(value: string): boolean {
   return !/^0*$/.test(parts.integer) || !/^0*$/.test(parts.fraction);
 }
 
+/** Exact decimal addition for position rows that may be split by lineage. */
+export function sumDecimals(values: string[]): string {
+  const parsed = values.map(splitDecimal).filter((value): value is NonNullable<typeof value> => value !== null);
+  if (parsed.length === 0) return "0";
+  const scale = Math.max(...parsed.map((value) => value.fraction.length));
+  const total = parsed.reduce((sum, value) => {
+    const magnitude = BigInt(value.integer + value.fraction.padEnd(scale, "0"));
+    return sum + (value.sign === "-" ? -magnitude : magnitude);
+  }, 0n);
+  return unitsToDecimal(total, scale);
+}
+
+/** A long-position percentage, floored onto the venue quantity increment. */
+export function positionPercentQuantity(position: string, percent: number, increment: unknown): string | null {
+  const value = splitDecimal(position);
+  const step = typeof increment === "string" ? splitDecimal(increment) : null;
+  if (!value || value.sign === "-" || !step || step.sign === "-" || percent <= 0 || percent > 100) return null;
+  const scale = Math.max(value.fraction.length, step.fraction.length);
+  const units = BigInt(value.integer + value.fraction.padEnd(scale, "0"));
+  const stepUnits = BigInt(step.integer + step.fraction.padEnd(scale, "0"));
+  if (units <= 0n || stepUnits <= 0n) return null;
+  const proportional = (units * BigInt(percent)) / 100n;
+  const rounded = (proportional / stepUnits) * stepUnits;
+  return rounded > 0n ? unitsToDecimal(rounded, scale) : null;
+}
+
+function unitsToDecimal(value: bigint, scale: number): string {
+  const sign = value < 0n ? "-" : "";
+  const digits = (value < 0n ? -value : value).toString().padStart(scale + 1, "0");
+  if (scale === 0) return sign + digits;
+  const fraction = digits.slice(-scale).replace(/0+$/, "");
+  return sign + digits.slice(0, -scale) + (fraction === "" ? "" : `.${fraction}`);
+}
+
 /**
  * Quantity × price, for eyeballing the size before confirming.
  *
@@ -406,17 +548,20 @@ function Notional({
   // Before the early returns, because a hook cannot sit behind a branch.
   const t = useT();
   if (!active || !isPositiveDecimal(quantity) || !isPositiveDecimal(price)) {
-    return <div className="h-4" />;
+    return <TicketStat label={t("ticket.notional")} value="—" />;
   }
   const value = Number.parseFloat(quantity) * Number.parseFloat(price);
-  if (!Number.isFinite(value)) return <div className="h-4" />;
+  if (!Number.isFinite(value)) return <TicketStat label={t("ticket.notional")} value="—" />;
+  return <TicketStat label={t("ticket.notional")} value={`${formatDecimal(value.toFixed(2))} ${asset ?? ""}`} />;
+}
+
+function TicketStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex h-4 items-center justify-between text-meta text-dim">
-      <span>{t("ticket.notional")}</span>
-      <span data-numeric="">
-        {formatDecimal(value.toFixed(2))} {asset ?? ""}
+    <div className="flex min-h-5 items-center justify-between gap-3 text-meta text-dim">
+      <span>{label}</span>
+      <span className="text-muted" data-numeric="">
+        {value}
       </span>
     </div>
   );
 }
-

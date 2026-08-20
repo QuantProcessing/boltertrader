@@ -6563,6 +6563,86 @@
       ]
     },
     {
+      "id": "exchange/factory.NewPublicMarketConnector",
+      "kind": "func",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.Refresh",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.OrderBook",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.Candles",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.FundingRate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.FundingRateHistory",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.MarkPrice",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.WebSocket",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicMarketConnector.Close",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
       "id": "exchange.FundingBoardEntry",
       "kind": "type",
       "coverage": "unit",

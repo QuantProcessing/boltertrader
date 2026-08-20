@@ -1,7 +1,9 @@
 package perp
 
 const (
-	WSPublicBaseURL  = "wss://fstream.binance.com/public/ws"
+	// Use Binance's documented USD-M market-stream origin. The stream manager
+	// converts it to /stream?streams=... for combined subscriptions.
+	WSPublicBaseURL  = "wss://fstream.binance.com/ws"
 	WSMarketBaseURL  = "wss://fstream.binance.com/market/ws"
 	WSPrivateBaseURL = "wss://fstream.binance.com/private/ws"
 	WSBaseURL        = WSPublicBaseURL

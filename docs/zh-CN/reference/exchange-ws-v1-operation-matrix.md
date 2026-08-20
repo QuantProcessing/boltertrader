@@ -156,4 +156,4 @@ Aster 官方 REST command fallback，因此 `PlaceOrder` 与 `CancelOrder` 都�
 真金白银。
 
 本 matrix 中的 capability cell 表示 implemented/admitted support，并不证明该
-venue 今天仍然可用。如果只是需要点着看、完全不想碰 venue，请用前端的离线 mock。
+venue 今天仍然可用。只需要实时公共行情时，请使用应用默认的匿名只读模式。

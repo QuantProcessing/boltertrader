@@ -297,7 +297,6 @@ func (request PlaceOrderRequest) Validate(product Product) error {
 	if product == ProductSpot && request.ReduceOnly {
 		return invalidRequest("reduce-only is available only for perpetual products")
 	}
-
 	switch request.Type {
 	case OrderTypeMarket:
 		if !request.LimitPrice.IsZero() {

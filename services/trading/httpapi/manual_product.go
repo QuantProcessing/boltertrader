@@ -22,6 +22,7 @@ type manualProductHandler struct {
 type manualPreviewRequest struct {
 	AccountID, InstrumentID, Side, OrderType, Quantity, LimitPrice, TimeInForce string
 	ReduceOnly                                                                  bool
+	Leverage                                                                    int
 }
 
 type manualPreview struct {
@@ -45,7 +46,7 @@ type manualPreviewAuthority struct {
 	VenueEnvironment string               `json:"venueEnvironment"`
 	Product          string               `json:"product"`
 	// RouteID is the account route the preview was priced against. It is
-	// sealed here for the same reason the three fences are: the Gateway
+	// sealed here for the same reason as the runtime identity: the Gateway
 	// refuses a placement whose route does not match the account's current
 	// one, so an order must carry the route it was authorized under rather
 	// than whichever route the account happens to hold at submission.
@@ -55,10 +56,8 @@ type manualPreviewAuthority struct {
 }
 
 type manualAccountFence struct {
-	AccountID            string `json:"accountId"`
-	DesiredStateRevision int64  `json:"desiredStateRevision"`
-	RuntimeGeneration    int64  `json:"runtimeGeneration"`
-	CredentialVersion    int64  `json:"credentialVersion"`
+	AccountID string `json:"accountId"`
+	RuntimeID string `json:"runtimeId"`
 }
 
 // ManualAccount is the slice of an account the manual product must see to
@@ -66,17 +65,19 @@ type manualAccountFence struct {
 // account record; this is the read-only projection carried across the wire, so
 // it holds no credential reference.
 //
-// The three fence fields travel together with the identity on purpose. A
-// preview is authorized against the account as it stood when the preview was
-// sealed, and the order is refused if any of them moved in between — a rotated
-// credential or a regenerated runtime must not inherit a prior authorization.
+// RuntimeID is an internal write fence. A preview is authorized against the
+// currently active runtime and cannot be replayed after the account is removed
+// and re-created.
 type ManualAccount struct {
-	ID                   string
-	Venue                string
-	VenueEnvironment     string
-	State                string
-	ProductIDs           []string
-	Routes               []ManualAccountRoute
+	ID               string
+	RuntimeID        string
+	Venue            string
+	VenueEnvironment string
+	State            string
+	ProductIDs       []string
+	Routes           []ManualAccountRoute
+	// Deprecated source-compatibility fields. Gateway reads no longer fill
+	// these and previews never serialize them.
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
@@ -91,6 +92,7 @@ type ManualAccountRoute struct {
 	RouteID         string
 	Product         string
 	SettlementAsset string
+	RouteProfileID  string
 	RequestedState  string
 }
 
@@ -170,6 +172,10 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
+	if !manualLeverageValid(authority.Product, request.Leverage) {
+		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+		return
+	}
 	codec, ok := handler.trading.options.Manual.(manualPreviewCodec)
 	if !ok {
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
@@ -183,8 +189,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 	authority.PrincipalID = principal
 	authority.Request = request
 	authority.AccountFence = manualAccountFence{
-		AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
-		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
+		AccountID: account.ID, RuntimeID: manualRuntimeID(account),
 	}
 	authority.CatalogRevision = snapshot.Revision
 	authority.IssuedAt = now
@@ -201,7 +206,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 
 func validateManualPreview(request manualPreviewRequest) error {
 	quantity, quantityErr := decimal.NewFromString(request.Quantity)
-	if request.AccountID == "" || request.InstrumentID == "" || (request.Side != "buy" && request.Side != "sell") || quantityErr != nil || !quantity.IsPositive() {
+	if request.AccountID == "" || request.InstrumentID == "" || (request.Side != "buy" && request.Side != "sell") || quantityErr != nil || !quantity.IsPositive() || request.Leverage < 0 {
 		return orders.ErrNotFound
 	}
 	switch strings.ToLower(request.OrderType) {
@@ -218,6 +223,16 @@ func validateManualPreview(request manualPreviewRequest) error {
 		return orders.ErrNotFound
 	}
 	return nil
+}
+
+func manualLeverageValid(product string, leverage int) bool {
+	if leverage < 0 {
+		return false
+	}
+	if strings.EqualFold(product, "spot") {
+		return leverage == 0
+	}
+	return strings.EqualFold(product, "perp")
 }
 
 func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +285,7 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 	var authority manualPreviewAuthority
 	now := codec.PreviewNow()
 	if json.Unmarshal(payload, &authority) != nil || authority.PrincipalID != principal ||
-		validateManualPreview(authority.Request) != nil || authority.Venue == "" || authority.VenueEnvironment == "" || authority.CatalogRevision == "" ||
+		validateManualPreview(authority.Request) != nil || !manualLeverageValid(authority.Product, authority.Request.Leverage) || authority.Venue == "" || authority.VenueEnvironment == "" || authority.CatalogRevision == "" ||
 		authority.IssuedAt.IsZero() || authority.ExpiresAt.IsZero() || authority.ExpiresAt.Sub(authority.IssuedAt) != manualPreviewTTL || now.Before(authority.IssuedAt) || !now.Before(authority.ExpiresAt) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -399,8 +414,7 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 		OrderType: "market", Quantity: quantity.Abs().String(), ReduceOnly: true,
 	}
 	authority.AccountFence = manualAccountFence{
-		AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
-		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
+		AccountID: account.ID, RuntimeID: manualRuntimeID(account),
 	}
 	preview := manualPreview{manualPreviewRequest: closeRequest, PrincipalID: principal}
 	handler.submitPlace(w, r, principal, request, preview, authority)
@@ -429,10 +443,9 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 		"instrumentId": preview.InstrumentID, "side": preview.Side, "quantity": preview.Quantity,
 		"orderType": strings.ToLower(preview.OrderType), "limitPrice": preview.LimitPrice,
 		"timeInForce": preview.TimeInForce, "reduceOnly": preview.ReduceOnly,
-		"routeId":              authority.RouteID,
-		"desiredStateRevision": authority.AccountFence.DesiredStateRevision,
-		"runtimeGeneration":    authority.AccountFence.RuntimeGeneration,
-		"credentialVersion":    authority.AccountFence.CredentialVersion,
+		"leverage":  preview.Leverage,
+		"routeId":   authority.RouteID,
+		"runtimeId": authority.AccountFence.RuntimeID,
 	})
 	kind := reservations.KindOpen
 	if preview.ReduceOnly {
@@ -477,18 +490,11 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 }
 
 func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, instrumentID string) (manualPreviewAuthority, bool) {
-	venueID := ""
-	product := ""
-	settlement := ""
-	for _, instrument := range snapshot.Instruments {
-		if instrument.InstrumentID == instrumentID && instrument.Ready {
-			venueID = instrument.Venue
-			product = instrument.Product
-			settlement = instrument.Settlement
-			break
-		}
+	instrument, found := snapshot.Instrument(instrumentID)
+	if !found || !instrument.Ready {
+		return manualPreviewAuthority{}, false
 	}
-	routeID, routed := manualAccountRoute(account, product, settlement)
+	routeID, routed := manualAccountRoute(account, instrument.Product, instrument.Settlement)
 	if !routed {
 		return manualPreviewAuthority{}, false
 	}
@@ -499,8 +505,8 @@ func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, in
 		// test-mode request could resolve only a non-live venue; with live the
 		// one environment left, that clause was false for every test-mode
 		// request and this loop resolved no authority at all.
-		if venue.Venue == venueID && venue.Venue == account.Venue && venue.Environment == account.VenueEnvironment && venue.Ready {
-			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment, Product: product, RouteID: routeID}, true
+		if venue.Venue == instrument.Venue && venue.Venue == account.Venue && venue.Environment == account.VenueEnvironment && venue.Ready {
+			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment, Product: instrument.Product, RouteID: routeID}, true
 		}
 	}
 	return manualPreviewAuthority{}, false
@@ -545,7 +551,7 @@ func manualAccountRoute(account ManualAccount, product, settlement string) (stri
 // one environment left, that check admitted nothing whatsoever in test mode.
 // Readiness is now the account's own state and its grant for this product.
 func manualAccountReady(account ManualAccount) bool {
-	if account.ID == "" || account.RuntimeGeneration < 1 || account.DesiredStateRevision < 1 || account.CredentialVersion < 1 || account.State != manualAccountActive {
+	if account.ID == "" || manualRuntimeID(account) == "" || account.State != manualAccountActive {
 		return false
 	}
 	for _, productID := range account.ProductIDs {
@@ -558,8 +564,17 @@ func manualAccountReady(account ManualAccount) bool {
 
 func manualAccountMatches(account ManualAccount, fence manualAccountFence) bool {
 	return manualAccountReady(account) && account.ID == fence.AccountID &&
-		account.DesiredStateRevision == fence.DesiredStateRevision && account.RuntimeGeneration == fence.RuntimeGeneration &&
-		account.CredentialVersion == fence.CredentialVersion
+		manualRuntimeID(account) == fence.RuntimeID
+}
+
+func manualRuntimeID(account ManualAccount) string {
+	if runtimeID := strings.TrimSpace(account.RuntimeID); runtimeID != "" {
+		return runtimeID
+	}
+	if account.DesiredStateRevision > 0 && account.RuntimeGeneration > 0 && account.CredentialVersion > 0 {
+		return "legacy-runtime"
+	}
+	return ""
 }
 
 func (handler *manualProductHandler) listOrders(w http.ResponseWriter, r *http.Request) {

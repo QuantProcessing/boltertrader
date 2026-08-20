@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/services/authedge/session"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"
@@ -417,6 +419,9 @@ func TestMissingOrInvalidSessionIsUnauthorized(t *testing.T) {
 // skipped it rather than proof the fake happened to say yes.
 func TestPublicRoutesAnswerWithoutASession(t *testing.T) {
 	for _, route := range publicRoutes(t) {
+		if route.WebSocket {
+			continue // Exercised as an actual upgrade below, not as plain HTTP.
+		}
 		t.Run(route.Pattern(), func(t *testing.T) {
 			h := newHarness(t, nil)
 			h.sessions.err = session.ErrInvalidSession
@@ -440,6 +445,60 @@ func TestPublicRoutesAnswerWithoutASession(t *testing.T) {
 				t.Fatalf("%s was sent for an anonymous read: %q", principalHeader, h.trading.header.Get(principalHeader))
 			}
 		})
+	}
+}
+
+func TestPublicWebSocketRelaysGatewayUpgrade(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/public/ws" || r.URL.Query().Get("kind") != "order_book" {
+			t.Errorf("gateway websocket request=%s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		if got := r.Header.Get(authorizationHeader); got != "Bearer "+testToken+"-gateway" {
+			t.Errorf("gateway authorization=%q", got)
+		}
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept upstream websocket: %v", err)
+			return
+		}
+		defer connection.CloseNow()
+		if err := wsjson.Write(r.Context(), connection, map[string]string{"eventType": "snapshot"}); err != nil {
+			t.Errorf("write upstream websocket: %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	sessions := &fakeSessions{err: session.ErrInvalidSession}
+	forwarder, err := New(Options{
+		Trading:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken},
+		Gateway:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken + "-gateway"},
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if _, err := forwarder.Register(mux); err != nil {
+		t.Fatal(err)
+	}
+	edge := httptest.NewServer(mux)
+	defer edge.Close()
+
+	target := "ws" + strings.TrimPrefix(edge.URL, "http") + "/api/v1/public/ws?instrumentId=binance%3Alive%3Aperp%3AUSDT%3ABTC-USDT&kind=order_book"
+	connection, response, err := websocket.Dial(context.Background(), target, nil)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial auth edge websocket: %v", err)
+	}
+	defer connection.CloseNow()
+	var event map[string]string
+	if err := wsjson.Read(context.Background(), connection, &event); err != nil {
+		t.Fatalf("read relayed websocket event: %v", err)
+	}
+	if event["eventType"] != "snapshot" {
+		t.Fatalf("relayed event=%v", event)
 	}
 }
 

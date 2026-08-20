@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ListTree } from "lucide-react";
 
 import type { DepthLevel, Instrument, MarketFact } from "@/api/types";
 import { Num } from "@/components/ui/num";
@@ -28,7 +29,7 @@ import { decimalsOf, snapPrice, stepLabel } from "./precision";
  * ------------------------------------------------------------------------- */
 
 /** Rows per side when both are shown. One side alone gets twice as many. */
-const DEPTH_ROWS = 12;
+const DEPTH_ROWS = 15;
 
 /** The grids offered, as multiples of the instrument's own tick. */
 const STEPS = [1, 10, 100] as const;
@@ -52,16 +53,21 @@ const VIEWS: ReadonlyArray<{ value: View; labelKey: Key; tone?: "buy" | "sell" }
 
 export function OrderBook({
   fact,
+  midPrice,
   instrument,
   quoteAsset,
   baseAsset,
+  unavailable = false,
   onPickPrice,
 }: {
   fact: MarketFact | undefined;
+  /** Shared with the chart's live line so the terminal has one current price. */
+  midPrice?: string;
   /** Carries the venue's tick and lot sizes; null before a market is chosen. */
   instrument: Instrument | null;
   quoteAsset?: string;
   baseAsset?: string;
+  unavailable?: boolean;
   onPickPrice: (price: string) => void;
 }) {
   const [step, setStep] = useState<number>(1);
@@ -85,16 +91,22 @@ export function OrderBook({
     [fact?.bids, decimals],
   );
 
-  const scale = Math.max(asks.at(-1)?.total ?? 0, bids.at(-1)?.total ?? 0);
-  const spread = fact ? spreadOf(fact, quoted) : null;
   const rows = view === "both" ? DEPTH_ROWS : DEPTH_ROWS * 2;
+  const scale = Math.max(asks.slice(0, rows).at(-1)?.total ?? 0, bids.slice(0, rows).at(-1)?.total ?? 0);
+  const spread = fact ? spreadOf(fact, quoted) : null;
 
   return (
     <section aria-label={t("book.label")} className="flex min-h-0 flex-1 flex-col">
-      {/* Which side, and at what grid. The panel needs no title: a red-over-green
-          ladder under Price/Size/Total is not mistakable for anything else, and
-          256px of width is better spent on the numbers. */}
       <div className="flex h-row shrink-0 items-center gap-2 border-b border-line px-3">
+        <ListTree className="size-3.5 text-dim" aria-hidden="true" />
+        <h2 className="text-title font-semibold text-text">{t("book.label")}</h2>
+        <span className="ml-auto truncate text-meta text-dim" data-numeric="">
+          {instrument ? `${instrument.symbol} · ${instrument.venue}` : "—"}
+        </span>
+      </div>
+
+      {/* Which side, and at what grid. */}
+      <div className="flex h-row shrink-0 items-center gap-2 border-b border-line">
         <Segmented
           name="depth-view"
           label={t("book.side")}
@@ -103,9 +115,10 @@ export function OrderBook({
           // every render, so a `[t]` dependency would never hit.
           options={VIEWS.map((entry) => ({ value: entry.value, label: t(entry.labelKey), tone: entry.tone }))}
           onChange={setView}
-          className="flex-1"
+          className="w-[174px] shrink-0"
+          trackClassName="gap-1"
         />
-        <div role="group" aria-label={t("book.grouping")} className="flex shrink-0 items-center gap-0.5">
+        <div role="group" aria-label={t("book.grouping")} className="ml-auto flex shrink-0 items-center gap-1">
           {STEPS.map((multiple) => {
             const label = stepLabel(quoted - exponent(multiple));
             return (
@@ -141,64 +154,70 @@ export function OrderBook({
         <span className="text-right">{t("book.total")}</span>
       </div>
 
-      {view === "bid" ? null : (
-        <div className="flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
-          {/* Reversed so the best ask is adjacent to the spread, not at the top
-              of the screen where it would be furthest from the price it is
-              closest to. */}
-          {asks
-            .slice(0, rows)
-            .reverse()
-            .map((level) => (
-              <Row
-                key={`ask-${level.price}`}
-                level={level}
-                scale={scale}
-                side="ask"
-                decimals={decimals}
-                lot={lot}
-                onPick={onPickPrice}
-              />
-            ))}
-        </div>
-      )}
-
-      {/* The spread, absolute and in basis points. The absolute figure alone
-          says nothing on a five-figure price — 3.0 is wide on ETH and tight on
-          BTC — so the relative one is what makes it readable across markets. */}
-      <div className="flex h-row shrink-0 items-baseline justify-between gap-2 border-y border-line px-3">
-        <Num value={fact?.bestAsk} decimals={quoted} className="text-title font-medium text-down" />
-        {spread === null ? (
-          <span className="text-meta text-dim">—</span>
-        ) : (
-          <span className="flex items-baseline gap-1 text-meta text-dim">
-            <span className="th">{t("book.spread")}</span>
-            <span data-numeric="" className="text-muted">
-              {spread.absolute}
-            </span>
-            <span data-numeric="">{spread.bps} bp</span>
-          </span>
-        )}
-      </div>
-
-      {view === "ask" ? null : (
+      {fact ? (
+        /* The ladder is one stack. Splitting it into two `flex-1` regions put
+           half of the spare height above the asks whenever a venue returned
+           fewer than 15 grouped levels, producing a blank hole in the middle
+           of the book. Any unavoidable remainder now falls after the final bid,
+           while the best ask, spread and best bid remain adjacent. */
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {bids.slice(0, rows).map((level) => (
-            <Row
-              key={`bid-${level.price}`}
-              level={level}
-              scale={scale}
-              side="bid"
-              decimals={decimals}
-              lot={lot}
-              onPick={onPickPrice}
-            />
-          ))}
-        </div>
-      )}
+          {view === "bid"
+            ? null
+            : asks
+                .slice(0, rows)
+                .reverse()
+                .map((level) => (
+                  <Row
+                    key={`ask-${level.price}`}
+                    level={level}
+                    scale={scale}
+                    side="ask"
+                    decimals={decimals}
+                    lot={lot}
+                    onPick={onPickPrice}
+                  />
+                ))}
 
-      {fact ? null : (
-        <div className="flex flex-1 items-center justify-center text-meta text-dim">{t("book.waiting")}</div>
+          {/* The spread, absolute and in basis points. The absolute figure alone
+              says nothing on a five-figure price — 3.0 is wide on ETH and tight
+              on BTC — so the relative one makes it readable across markets. */}
+          <div className="flex h-row shrink-0 items-center justify-between gap-2 border-y border-line px-3">
+            <Num
+              value={midPrice}
+              decimals={quoted}
+              className="text-title font-semibold text-text"
+            />
+            {spread === null ? (
+              <span className="text-meta text-dim">—</span>
+            ) : (
+              <span className="flex items-center gap-1 text-meta text-dim">
+                <span className="th">{t("book.spread")}</span>
+                <span data-numeric="" className="text-muted">
+                  {spread.absolute}
+                </span>
+                <span data-numeric="">{spread.bps} bp</span>
+              </span>
+            )}
+          </div>
+
+          {view === "ask"
+            ? null
+            : bids.slice(0, rows).map((level) => (
+                <Row
+                  key={`bid-${level.price}`}
+                  level={level}
+                  scale={scale}
+                  side="bid"
+                  decimals={decimals}
+                  lot={lot}
+                  onPick={onPickPrice}
+                />
+              ))}
+        </div>
+      ) : (
+        <div className="flex flex-1 items-center justify-center text-meta text-dim">
+          {t(unavailable ? "book.unavailable" : "book.waiting")}
+        </div>
       )}
     </section>
   );
@@ -230,7 +249,7 @@ function Row({
       type="button"
       onClick={() => onPick(level.price)}
       className={cn(
-        "relative grid h-depth w-full shrink-0 items-center gap-2 px-3 text-left",
+        "relative grid h-depth w-full shrink-0 items-center gap-2 px-3 text-left text-meta",
         "hover:bg-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
         COLUMNS,
       )}

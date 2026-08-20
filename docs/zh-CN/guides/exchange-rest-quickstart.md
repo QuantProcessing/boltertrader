@@ -15,8 +15,8 @@ venue-specific ID。每个 network method 都接受 `context.Context`。
 
 每个 client 都连向交易所的 production endpoint。`factory.EnvironmentLive` 是
 唯一的 environment，也是默认值，因此 `factory.WithEnvironment` 可选，且不接受
-其他取值。demo/testnet profile 已被删除——各交易所的实现差异过大；需要点着看
-的场景由 `web/` 的离线 mock 承担。
+其他取值。demo/testnet profile 已被删除——各交易所的实现差异过大。Web 应用默认
+以匿名只读模式运行，并读取交易所的实时公共数据。
 
 ## 构造只读 client
 
@@ -301,7 +301,7 @@ matrix 中的 capability cell 记录的是 compile time 的 admitted support，
 只使用专用账户、显式 symbol、显式 notional bound、serial execution 与 terminal
 cleanup evidence 来对 production 做验证。开始之前请先遵循
 [测试与证据](../reference/testing.md)以及[配置](../reference/configuration.md)。
-如果只是需要点着看、完全不想碰 venue，请用前端的离线 mock，而不是去找 credential。
+只需要公共行情时，请使用应用默认的匿名只读模式。
 
 - [Exchange contract](../../../exchange/contract.go)
 - [Factory API](../../../exchange/factory/factory.go)

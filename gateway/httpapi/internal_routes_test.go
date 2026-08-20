@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 type fakeInternalAuthority struct {
@@ -44,7 +43,7 @@ func TestInternalAuthorityAppliesDesiredThroughStrictOperationIdentity(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"operationId":"` + operationID + `","accountId":"acct_1","venue":"binance","nativeEnvironment":"live","secretRef":"` + opaqueRef + `","desiredStateRevision":2,"runtimeGeneration":3,"credentialVersion":4,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","requestedState":"active"}]}`
+	body := `{"operationId":"` + operationID + `","accountId":"acct_1","runtimeId":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11","venue":"binance","nativeEnvironment":"live","secretRef":"` + opaqueRef + `","requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","requestedState":"active"}]}`
 	path := "/internal/v1/accounts/desired/acct_1/operations/" + operationID
 
 	// A caller the audience check rejects must not reach the authority at all.
@@ -97,7 +96,7 @@ func TestInternalAuthorityRetirementReturnsExplicitTombstoneTruth(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"operationId":"` + operationID + `","accountId":"acct_1","desiredStateRevision":2,"runtimeGeneration":1,"credentialVersion":1}`
+	body := `{"operationId":"` + operationID + `","accountId":"acct_1","runtimeId":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11"}`
 	request := httptest.NewRequest(http.MethodPut, "/internal/v1/accounts/desired/acct_1/retirements/"+operationID, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -110,79 +109,25 @@ func TestInternalAuthorityRetirementReturnsExplicitTombstoneTruth(t *testing.T) 
 	}
 }
 
-func TestInternalAuthorityFinalizesRotationThroughStrictProofRoute(t *testing.T) {
-	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c40"
-	completedAt := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	proof := RotationFinalizationProof{
-		OperationID: operationID, AccountID: "acct_1",
-		ActiveFence:       AccountFence{AccountID: "acct_1", DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 2},
-		RetiringFence:     AccountFence{AccountID: "acct_1", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 1},
-		TombstoneRevision: 3, RetiringState: "retired", SecretReferenceState: "tombstoned", CompletedAt: completedAt,
-	}
-	authority := &fakeInternalAuthority{response: AuthorityResponse{Status: http.StatusOK, Body: proof}}
+func TestInternalAuthorityDoesNotExposeCredentialRotation(t *testing.T) {
+	authority := new(fakeInternalAuthority)
 	handler, err := NewInternalHandler(InternalOptions{Authority: authority, Authenticate: func(*http.Request) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"operationId":"` + operationID + `","accountId":"acct_1","expectedActiveFence":{"accountId":"acct_1","desiredStateRevision":3,"runtimeGeneration":3,"credentialVersion":2},"expectedRetiringFence":{"accountId":"acct_1","desiredStateRevision":2,"runtimeGeneration":2,"credentialVersion":1}}`
-	path := "/internal/v1/accounts/desired/acct_1/rotation-finalizations/" + operationID
-	request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
+	request := httptest.NewRequest(http.MethodPut,
+		"/internal/v1/accounts/desired/acct_1/rotation-finalizations/018f47a8-2578-7d3c-9d7d-5e4f4a445c40",
+		strings.NewReader(`{}`))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || len(authority.requests) != 1 {
-		t.Fatalf("status=%d requests=%+v body=%s", response.Code, authority.requests, response.Body.String())
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d", response.Code)
 	}
-	received := authority.requests[0]
-	if received.Operation != AuthorityFinalizeRotation || received.AccountID != "acct_1" || received.OperationID != operationID || received.RotationFinalization == nil {
-		t.Fatalf("authority request=%+v", received)
-	}
-	for _, forbidden := range []string{`"secretRef":`, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", `"namespace":`, `"provider":`, `"keyVersion":`} {
-		if strings.Contains(response.Body.String(), forbidden) {
-			t.Fatalf("proof leaked %q: %s", forbidden, response.Body.String())
-		}
-	}
-	if !strings.Contains(response.Body.String(), `"retiringState":"retired"`) || !strings.Contains(response.Body.String(), `"secretReferenceState":"tombstoned"`) {
-		t.Fatalf("response is not terminal proof: %s", response.Body.String())
+	if len(authority.requests) != 0 {
+		t.Fatalf("rotation reached authority: %+v", authority.requests)
 	}
 }
 
-func TestRotationFinalizationValidationRejectsIdentityFenceAndShapeConflicts(t *testing.T) {
-	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c40"
-	valid := RotationFinalizationRequest{
-		OperationID: operationID, AccountID: "acct_1",
-		ExpectedActiveFence:   AccountFence{AccountID: "acct_1", DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 2},
-		ExpectedRetiringFence: AccountFence{AccountID: "acct_1", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 1},
-	}
-	if err := valid.validate("acct_1", operationID); err != nil {
-		t.Fatalf("valid request: %v", err)
-	}
-	tests := map[string]func(*RotationFinalizationRequest){
-		"path account": func(request *RotationFinalizationRequest) { request.AccountID = "acct_2" },
-		"path operation": func(request *RotationFinalizationRequest) {
-			request.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c41"
-		},
-		"active account":      func(request *RotationFinalizationRequest) { request.ExpectedActiveFence.AccountID = "acct_2" },
-		"retiring account":    func(request *RotationFinalizationRequest) { request.ExpectedRetiringFence.AccountID = "acct_2" },
-		"revision gap":        func(request *RotationFinalizationRequest) { request.ExpectedActiveFence.DesiredStateRevision++ },
-		"generation gap":      func(request *RotationFinalizationRequest) { request.ExpectedActiveFence.RuntimeGeneration++ },
-		"credential gap":      func(request *RotationFinalizationRequest) { request.ExpectedActiveFence.CredentialVersion++ },
-		"zero retiring fence": func(request *RotationFinalizationRequest) { request.ExpectedRetiringFence.RuntimeGeneration = 0 },
-	}
-	for name, mutate := range tests {
-		t.Run(name, func(t *testing.T) {
-			request := valid
-			mutate(&request)
-			if err := request.validate("acct_1", operationID); err == nil {
-				t.Fatal("invalid request accepted")
-			}
-		})
-	}
-}
-
-// The desired-state plane is read-only apart from the operation-scoped PUTs.
-// Account writes belong to the lifecycle service on /internal/v1/accounts, so
-// these paths must stay unrouted no matter what else gets mounted alongside.
 func TestInternalAuthorityRejectsLegacyDesiredMutationRoutes(t *testing.T) {
 	authority := new(fakeInternalAuthority)
 	handler, err := NewInternalHandler(InternalOptions{Authority: authority, Authenticate: func(*http.Request) error { return nil }})
@@ -221,7 +166,6 @@ func TestInternalAuthorityRouteInventoryIsFrozen(t *testing.T) {
 		{http.MethodGet, "/internal/v1/accounts/desired/{accountId}"},
 		{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/operations/{operationId}"},
 		{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/retirements/{operationId}"},
-		{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}"},
 		{http.MethodGet, "/internal/v1/accounts/runtime"},
 		{http.MethodGet, "/internal/v1/accounts/runtime/{accountId}"},
 		{http.MethodGet, "/internal/v1/accounts/runtime/{accountId}/events"},
@@ -229,6 +173,7 @@ func TestInternalAuthorityRouteInventoryIsFrozen(t *testing.T) {
 		{http.MethodGet, "/internal/v1/catalog/instruments"},
 		{http.MethodGet, "/internal/v1/market-data"},
 		{http.MethodGet, "/internal/v1/candles"},
+		{http.MethodGet, "/internal/v1/public/ws"},
 		{http.MethodGet, "/internal/v1/private-events"},
 		{http.MethodGet, "/internal/v1/funding-board"},
 		{http.MethodGet, "/internal/v1/funding-history"},
@@ -256,7 +201,7 @@ func TestDesiredApplyValidationRejectsUnreachableEnvironmentAndDuplicateRoutes(t
 	desired := DesiredApplyRequest{
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "acct_1", Venue: "binance",
 		NativeEnvironment: "live", SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+		RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445e11", RequestedState: "active",
 		Routes: []DesiredRoute{{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active"}},
 	}
 	if err := desired.validate(desired.AccountID, desired.OperationID); err != nil {
@@ -275,8 +220,7 @@ func TestDesiredApplyValidationRejectsUnreachableEnvironmentAndDuplicateRoutes(t
 
 func TestRuntimeSnapshotViewPublishesSafeOperationIDWithoutSecrets(t *testing.T) {
 	view := RuntimeSnapshotView{
-		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", DesiredStateRevision: 1,
-		RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445e11", RequestedState: "active",
 		Routes: []RuntimeRouteView{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active", Ready: true}},
 	}
 	encoded, err := json.Marshal(view)
@@ -299,7 +243,6 @@ func TestGatewayWriteGateRejectsInternalPUTBeforeDecodeAndDispatch(t *testing.T)
 	for _, path := range []string{
 		"/internal/v1/accounts/desired/a/operations/op",
 		"/internal/v1/accounts/desired/a/retirements/op",
-		"/internal/v1/accounts/desired/a/rotation-finalizations/op",
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, path, strings.NewReader("{")))

@@ -247,17 +247,18 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartOrderBook: %v", err)
 	}
-	if ws.bookSymbol != "ETHUSDT" || ws.bookDepth != 5 || ws.bookInterval != "100ms" {
-		t.Fatalf("perp book args = (%s, %d, %s)", ws.bookSymbol, ws.bookDepth, ws.bookInterval)
+	if ws.bookSymbol != "ETHUSDT" || ws.bookInterval != "100ms" {
+		t.Fatalf("perp book args = (%s, %s)", ws.bookSymbol, ws.bookInterval)
 	}
 	ws.emitDepth(&binanceperp.WsDepthEvent{
-		Symbol:        "ETHUSDT",
-		FinalUpdateID: 9,
-		Bids:          [][]interface{}{{"100.1", "2"}},
-		Asks:          [][]interface{}{{"100.2", "3"}},
+		Symbol:            "ETHUSDT",
+		FirstUpdateID:     8,
+		FinalUpdateID:     9,
+		FinalUpdateIDLast: 7,
+		Bids:              [][]interface{}{{"100.1", "0"}},
 	})
-	if book.Kind != exchange.EventSnapshot || book.Sequence != "9" || book.Time.IsZero() ||
-		!book.Bids[0].Quantity.Equal(decimal.RequireFromString("2")) {
+	if book.Kind != exchange.EventDelta || book.Sequence != "9" || book.Previous != "7" || book.Time.IsZero() ||
+		!book.Bids[0].Quantity.IsZero() {
 		t.Fatalf("perp book event = %+v", book)
 	}
 
@@ -534,7 +535,6 @@ type fakeBinancePerpPublicWSClient struct {
 	postReconnect func()
 
 	bookSymbol, bboSymbol, tradeSymbol string
-	bookDepth                          int
 	bookInterval                       string
 	bookHandler                        func(*binanceperp.WsDepthEvent) error
 	bboHandler                         func(*binanceperp.WsBookTickerEvent) error
@@ -564,8 +564,8 @@ func (ws *fakeBinancePerpPublicWSClient) SetPostReconnect(handler func()) {
 	ws.postReconnect = handler
 }
 
-func (ws *fakeBinancePerpPublicWSClient) SubscribeLimitOrderBook(symbol string, depth int, interval string, handler func(*binanceperp.WsDepthEvent) error) error {
-	ws.bookSymbol, ws.bookDepth, ws.bookInterval = symbol, depth, interval
+func (ws *fakeBinancePerpPublicWSClient) SubscribeIncrementOrderBook(symbol string, interval string, handler func(*binanceperp.WsDepthEvent) error) error {
+	ws.bookSymbol, ws.bookInterval = symbol, interval
 	ws.bookHandler = handler
 	return nil
 }
@@ -594,7 +594,7 @@ func (ws *fakeBinancePerpPublicWSClient) SubscribeMarkPrice(symbol string, inter
 	return nil
 }
 
-func (ws *fakeBinancePerpPublicWSClient) UnsubscribeLimitOrderBook(string, int, string) error {
+func (ws *fakeBinancePerpPublicWSClient) UnsubscribeIncrementOrderBook(string, string) error {
 	return nil
 }
 

@@ -976,7 +976,7 @@ func runtimeSnapshotFixture(t *testing.T, operationID, snapshotID string, genera
 	if err != nil {
 		t.Fatal(err)
 	}
-	fence := domain.AccountFence{AccountID: "account-runtime", DesiredStateRevision: generation, RuntimeGeneration: generation, CredentialVersion: generation}
+	fence := domain.AccountFence{AccountID: "account-runtime", RuntimeID: snapshotID, DesiredStateRevision: generation, RuntimeGeneration: generation, CredentialVersion: generation}
 	return storepkg.DesiredSnapshot{
 		SnapshotID: uuid.MustParse(snapshotID), OperationID: op, AccountID: fence.AccountID,
 		Venue: "binance", NativeEnvironment: "live", SecretRef: ref, Fence: fence,

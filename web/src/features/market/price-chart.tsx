@@ -5,15 +5,20 @@ import {
   type CandlestickData,
   type HistogramData,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
+  LineStyle,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 
-import { CANDLE_INTERVALS, type Candle, type CandleInterval } from "@/api/types";
-import { Segmented } from "@/components/ui/segmented";
+import { CANDLE_INTERVALS, type Candle, type CandleInterval, type Instrument } from "@/api/types";
+import { Num } from "@/components/ui/num";
 import { readChartPalette } from "@/lib/chart-palette";
 import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+
+import { precisionOf } from "./precision";
 
 /* ---------------------------------------------------------------------------
  * The price chart.
@@ -29,14 +34,22 @@ import { useT } from "@/lib/i18n";
  * what keeps a two-second poll from remounting a canvas.
  * ------------------------------------------------------------------------- */
 
-const INTERVAL_OPTIONS = CANDLE_INTERVALS.map((interval) => ({ value: interval, label: interval }));
+const INITIAL_VISIBLE_BARS = 170;
 
 export function PriceChart({
   candles,
+  liveCandle,
+  instrument,
+  livePrice,
   interval,
   onIntervalChange,
 }: {
   candles: Candle[] | undefined;
+  /** The venue's forming bar, delivered by the public WebSocket. */
+  liveCandle?: Candle | null;
+  instrument: Instrument | null;
+  /** The same book midpoint rendered in the order-book centre row. */
+  livePrice?: string;
   interval: CandleInterval;
   onIntervalChange: (next: CandleInterval) => void;
 }) {
@@ -44,7 +57,12 @@ export function PriceChart({
   const chartRef = useRef<IChartApi | null>(null);
   const priceRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const liveLineRef = useRef<IPriceLine | null>(null);
+  const fittedRef = useRef("");
   const t = useT();
+  const latestHistory = candles?.at(-1);
+  const latest = isSameOrNewerCandle(liveCandle, latestHistory) ? liveCandle : latestHistory;
+  const { price, quantity } = precisionOf(instrument);
 
   // Built once. The library takes resolved colours rather than CSS variables,
   // so a chart normally has to be torn down and rebuilt whenever the palette
@@ -66,7 +84,15 @@ export function PriceChart({
         horzLines: { color: palette.line },
       },
       rightPriceScale: { borderColor: palette.line },
-      timeScale: { borderColor: palette.line, timeVisible: true, secondsVisible: false },
+      timeScale: {
+        borderColor: palette.line,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 6,
+        barSpacing: 7,
+        minBarSpacing: 3,
+        fixLeftEdge: true,
+      },
       crosshair: {
         vertLine: { color: palette.lineStrong, labelBackgroundColor: palette.raised },
         horzLine: { color: palette.lineStrong, labelBackgroundColor: palette.raised },
@@ -80,6 +106,10 @@ export function PriceChart({
       borderVisible: false,
       wickUpColor: palette.up,
       wickDownColor: palette.down,
+      // Candles keep their historical close, while the terminal's one live
+      // price label comes from the shared book midpoint below.
+      lastValueVisible: false,
+      priceLineVisible: false,
     });
 
     // An overlay rather than a second pane: volume is context for the bar above
@@ -100,6 +130,7 @@ export function PriceChart({
       chartRef.current = null;
       priceRef.current = null;
       volumeRef.current = null;
+      liveLineRef.current = null;
     };
   }, []);
 
@@ -133,28 +164,109 @@ export function PriceChart({
 
     price.setData(bars);
     volume.setData(volumes);
-  }, [candles]);
+    const fitKey = `${instrument?.venue ?? ""}:${instrument?.instrumentId ?? ""}:${interval}`;
+    if (bars.length > 0 && fittedRef.current !== fitKey) {
+      fittedRef.current = fitKey;
+      chartRef.current?.timeScale().setVisibleLogicalRange({
+        from: Math.max(-0.5, bars.length - INITIAL_VISIBLE_BARS),
+        to: bars.length + 6,
+      });
+    }
+  }, [candles, instrument?.instrumentId, instrument?.venue, interval]);
 
-  // Only on an instrument or interval change. Re-fitting on every poll would
-  // undo whatever the operator had panned or zoomed to two seconds earlier.
+  // Forming bars are hot data. `update` replaces the bar when its timestamp is
+  // unchanged and appends it when a new interval starts, which is exactly the
+  // WebSocket contract and avoids rebuilding the complete series per tick.
   useEffect(() => {
-    chartRef.current?.timeScale().fitContent();
-  }, [interval, candles?.[0]?.openTime]);
+    const price = priceRef.current;
+    const volume = volumeRef.current;
+    if (!price || !volume || !liveCandle || !isSameOrNewerCandle(liveCandle, latestHistory)) return;
+
+    const time = toChartTime(liveCandle.openTime);
+    if (time === null) return;
+    const open = Number.parseFloat(liveCandle.open);
+    const close = Number.parseFloat(liveCandle.close);
+    const high = Number.parseFloat(liveCandle.high);
+    const low = Number.parseFloat(liveCandle.low);
+    const size = Number.parseFloat(liveCandle.volume);
+    if (!Number.isFinite(open) || !Number.isFinite(close) || !Number.isFinite(high) || !Number.isFinite(low)) return;
+
+    const palette = readChartPalette();
+    price.update({ time, open, high, low, close });
+    volume.update({
+      time,
+      value: Number.isFinite(size) ? size : 0,
+      color: close >= open ? palette.upFaint : palette.downFaint,
+    });
+  }, [latestHistory, liveCandle]);
+
+  useEffect(() => {
+    const series = priceRef.current;
+    if (!series) return;
+    const value = Number.parseFloat(livePrice ?? "");
+    if (!Number.isFinite(value)) {
+      if (liveLineRef.current) series.removePriceLine(liveLineRef.current);
+      liveLineRef.current = null;
+      return;
+    }
+    const options = {
+      price: value,
+      color: readChartPalette().up,
+      lineWidth: 1 as const,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: "",
+    };
+    if (liveLineRef.current) liveLineRef.current.applyOptions(options);
+    else liveLineRef.current = series.createPriceLine(options);
+  }, [livePrice]);
+
+  useEffect(() => {
+    const series = priceRef.current;
+    const increment = instrument?.rules.priceIncrement;
+    const minMove = typeof increment === "string" ? Number.parseFloat(increment) : Number.NaN;
+    if (!series || price === undefined || !Number.isFinite(minMove) || minMove <= 0) return;
+    // The price line and the book already share one midpoint; binding the
+    // series to the venue tick also makes their visible decimal width agree.
+    series.applyOptions({ priceFormat: { type: "price", precision: price, minMove } });
+  }, [instrument?.rules.priceIncrement, price]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center justify-between gap-3 border-b border-line px-3">
-        <h2 className="text-base font-medium text-text">{t("chart.price")}</h2>
-        <Segmented
-          name="interval"
-          label={t("chart.interval")}
-          value={interval}
-          // The options are interval codes — `15m`, `1d` — which the venues use
-          // untranslated and an operator types the same way in any language.
-          options={INTERVAL_OPTIONS}
-          onChange={onIntervalChange}
-          className="w-auto"
-        />
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 className="text-title font-semibold text-text">{t("chart.price")}</h2>
+          <span className="truncate text-meta text-dim" data-numeric="">
+            {instrument ? `${instrument.symbol} · ${instrument.venue}` : "—"}
+          </span>
+        </div>
+        <div className="flex items-center rounded-card bg-fill p-0.5" role="radiogroup" aria-label={t("chart.interval")}>
+          {CANDLE_INTERVALS.map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={interval === option}
+              onClick={() => onIntervalChange(option)}
+              className={cn(
+                "h-[26px] rounded-control px-2 text-meta font-medium transition-colors",
+                interval === option ? "bg-raised text-text" : "text-dim hover:text-muted",
+              )}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex h-7 shrink-0 items-center gap-3 px-3 text-meta text-dim">
+        <span className="font-medium text-muted" data-numeric="">
+          {instrument?.baseAsset ?? "—"} · {interval}
+        </span>
+        <LegendValue label="O" value={latest?.open} decimals={price} />
+        <LegendValue label="H" value={latest?.high} decimals={price} />
+        <LegendValue label="L" value={latest?.low} decimals={price} />
+        <LegendValue label="C" value={latest?.close} decimals={price} />
+        <LegendValue label="V" value={latest?.volume} decimals={quantity} />
       </div>
       <div
         ref={containerRef}
@@ -163,6 +275,23 @@ export function PriceChart({
         aria-label={t("chart.label", { interval })}
       />
     </div>
+  );
+}
+
+function isSameOrNewerCandle(candidate: Candle | null | undefined, reference: Candle | undefined): candidate is Candle {
+  if (!candidate) return false;
+  if (!reference) return true;
+  const candidateTime = Date.parse(candidate.openTime);
+  const referenceTime = Date.parse(reference.openTime);
+  return Number.isFinite(candidateTime) && Number.isFinite(referenceTime) && candidateTime >= referenceTime;
+}
+
+function LegendValue({ label, value, decimals }: { label: string; value: string | undefined; decimals: number | undefined }) {
+  return (
+    <span className="flex items-baseline gap-1">
+      <span>{label}</span>
+      <Num value={value} decimals={decimals} className="text-muted" />
+    </span>
   );
 }
 

@@ -152,7 +152,7 @@ func TestProjectionRejectsUntrustedCatalogFacts(t *testing.T) {
 	}
 }
 
-func TestProjectionPreservesCompositeInstrumentIdentityAndExactRules(t *testing.T) {
+func TestProjectionPreservesCanonicalInstrumentIdentityAndExactRules(t *testing.T) {
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	source := &countingSource{snapshot: Snapshot{
 		Revision: "gateway-rev-2", ObservedAt: now,
@@ -161,8 +161,8 @@ func TestProjectionPreservesCompositeInstrumentIdentityAndExactRules(t *testing.
 			{Venue: "bybit", Environment: "live", Ready: true},
 		},
 		Instruments: []Instrument{
-			{InstrumentID: "btc-usdt", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.01", QuantityIncrement: "0.0001", MinQuantity: "0.0001"}},
-			{InstrumentID: "btc-usdt", Venue: "bybit", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001", MinNotional: "5"}},
+			{InstrumentID: "binance:live:spot:BTC-USDT", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.01", QuantityIncrement: "0.0001", MinQuantity: "0.0001"}},
+			{InstrumentID: "bybit:live:perp:USDT:BTC-USDT", Venue: "bybit", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001", MinNotional: "5"}},
 		},
 	}}
 	projection, err := NewProjection(source, time.Minute, func() time.Time { return now })
@@ -173,12 +173,59 @@ func TestProjectionPreservesCompositeInstrumentIdentityAndExactRules(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Venue is what separates these two now. They share an InstrumentID on
-	// purpose — the composite identity is the point — and environment used to be
-	// the third axis distinguishing them, with the second row on testnet. With
-	// one environment left, venue and product carry that alone.
+	// The canonical id itself separates these rows. Venue and product remain
+	// output facts; callers do not submit them as parallel identity inputs.
 	if len(snapshot.Instruments) != 2 || snapshot.Instruments[1].Rules.MinNotional != "5" || snapshot.Instruments[1].Venue != "bybit" || snapshot.Instruments[1].Product != "perp" {
 		t.Fatalf("Snapshot() = %#v", snapshot)
+	}
+	if resolved, ok := snapshot.Instrument("bybit:live:perp:USDT:BTC-USDT"); !ok || resolved.Symbol != "BTC-USDT" {
+		t.Fatalf("resolved=%+v ok=%v", resolved, ok)
+	}
+}
+
+func TestProjectionRejectsInstrumentIDReusedAcrossVenues(t *testing.T) {
+	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	rules := TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}
+	snapshot := Snapshot{
+		Revision: "gateway-rev-duplicate", ObservedAt: now,
+		Venues: []Venue{
+			{Venue: "binance", Environment: "live", Ready: true},
+			{Venue: "bybit", Environment: "live", Ready: true},
+		},
+		Instruments: []Instrument{
+			{InstrumentID: "shared-id", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: rules, Ready: true},
+			{InstrumentID: "shared-id", Venue: "bybit", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: rules, Ready: true},
+		},
+	}
+	projection, err := NewProjection(&countingSource{snapshot: snapshot}, time.Minute, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projection.Snapshot(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicate Gateway instrument") {
+		t.Fatalf("Snapshot() error=%v, want duplicate identity refusal", err)
+	}
+}
+
+func TestProjectionAcceptsZeroOptionalMinimumsAndRejectsNegativeMinimums(t *testing.T) {
+	valid := TradeRules{
+		PriceIncrement: "0.1", QuantityIncrement: "0.001",
+		MinQuantity: "0", MinNotional: "0",
+	}
+	if err := validateRules(valid); err != nil {
+		t.Fatalf("validateRules(zero minimums) = %v", err)
+	}
+
+	for name, mutate := range map[string]func(*TradeRules){
+		"minimum quantity": func(rules *TradeRules) { rules.MinQuantity = "-0.001" },
+		"minimum notional": func(rules *TradeRules) { rules.MinNotional = "-1" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rules := valid
+			mutate(&rules)
+			if err := validateRules(rules); err == nil {
+				t.Fatal("validateRules() error = nil")
+			}
+		})
 	}
 }
 

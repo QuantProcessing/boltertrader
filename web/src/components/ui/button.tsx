@@ -18,6 +18,8 @@ const button = cva(
         // The one filled control. At most one per view — it marks the action
         // the operator came to perform, and loses that meaning if repeated.
         primary: "bg-accent text-accent-fg hover:bg-accent-hover",
+        buy: "bg-buy text-buy-fg hover:brightness-105",
+        sell: "bg-sell text-sell-fg hover:brightness-105",
         outline: "border border-line-strong text-text hover:bg-raised",
         ghost: "text-muted hover:bg-raised hover:text-text",
         // Destructive reads as an outline until hover, because a red block in

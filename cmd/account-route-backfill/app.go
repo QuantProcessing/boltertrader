@@ -77,7 +77,7 @@ type plannedRoute struct {
 type accountPlan struct {
 	AccountID, Venue, NativeEnvironment, Mode, OpaqueReference, RequestedState string
 	DesiredRevision, RuntimeGeneration, CredentialVersion                      int64
-	OperationID, SnapshotID                                                    uuid.UUID
+	OperationID, SnapshotID, RuntimeID                                         uuid.UUID
 	RequestDigest                                                              string
 	Routes                                                                     []plannedRoute
 }
@@ -90,13 +90,11 @@ type backfillResult struct {
 }
 
 type migrationPromotionItemOutput struct {
-	AccountID            string `json:"accountId"`
-	OperationID          string `json:"operationId"`
-	DesiredStateRevision int64  `json:"desiredStateRevision"`
-	RuntimeGeneration    int64  `json:"runtimeGeneration"`
-	CredentialVersion    int64  `json:"credentialVersion"`
-	RouteSetSHA256       string `json:"routeSetSha256"`
-	InputSHA256          string `json:"inputSha256"`
+	AccountID      string `json:"accountId"`
+	OperationID    string `json:"operationId"`
+	RuntimeID      string `json:"runtimeId"`
+	RouteSetSHA256 string `json:"routeSetSha256"`
+	InputSHA256    string `json:"inputSha256"`
 }
 
 type migrationPromotionRequestOutput struct {
@@ -109,8 +107,7 @@ func migrationPromotionRequestOutputFrom(request storepkg.MigrationPromotionRequ
 	output := migrationPromotionRequestOutput{MigrationID: request.MigrationID, FenceSHA256: request.FenceSHA256, Items: make([]migrationPromotionItemOutput, len(request.Items))}
 	for index, item := range request.Items {
 		output.Items[index] = migrationPromotionItemOutput{
-			AccountID: string(item.AccountID), OperationID: item.OperationID,
-			DesiredStateRevision: item.DesiredStateRevision, RuntimeGeneration: item.RuntimeGeneration, CredentialVersion: item.CredentialVersion,
+			AccountID: string(item.AccountID), OperationID: item.OperationID, RuntimeID: item.RuntimeID,
 			RouteSetSHA256: item.RouteSetSHA256, InputSHA256: item.InputSHA256,
 		}
 	}
@@ -121,8 +118,7 @@ func (output migrationPromotionRequestOutput) storeRequest() storepkg.MigrationP
 	request := storepkg.MigrationPromotionRequest{MigrationID: output.MigrationID, FenceSHA256: output.FenceSHA256, Items: make([]storepkg.MigrationPromotionItem, len(output.Items))}
 	for index, item := range output.Items {
 		request.Items[index] = storepkg.MigrationPromotionItem{
-			AccountID: domain.AccountID(item.AccountID), OperationID: item.OperationID,
-			DesiredStateRevision: item.DesiredStateRevision, RuntimeGeneration: item.RuntimeGeneration, CredentialVersion: item.CredentialVersion,
+			AccountID: domain.AccountID(item.AccountID), OperationID: item.OperationID, RuntimeID: item.RuntimeID,
 			RouteSetSHA256: item.RouteSetSHA256, InputSHA256: item.InputSHA256,
 		}
 	}
@@ -332,8 +328,7 @@ func executeProductionBackfill(ctx context.Context, request backfillRequest) (ba
 			return backfillResult{}, fmt.Errorf("PROMOTION_EVIDENCE_INVALID")
 		}
 		result.PromotionItems = append(result.PromotionItems, storepkg.MigrationPromotionItem{
-			AccountID: domain.AccountID(plan.AccountID), OperationID: plan.OperationID.String(),
-			DesiredStateRevision: plan.DesiredRevision, RuntimeGeneration: plan.RuntimeGeneration, CredentialVersion: plan.CredentialVersion,
+			AccountID: domain.AccountID(plan.AccountID), OperationID: plan.OperationID.String(), RuntimeID: plan.RuntimeID.String(),
 			RouteSetSHA256: routeSetSHA, InputSHA256: plan.RequestDigest,
 		})
 	}
@@ -498,6 +493,7 @@ func buildAccountPlans(mode string, accounts []legacyAccount, artifact mappingAr
 		sort.Slice(plan.Routes, func(i, j int) bool { return plan.Routes[i].RouteID < plan.Routes[j].RouteID })
 		plan.OperationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("account-route-backfill/operation/"+account.AccountID))
 		plan.SnapshotID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("account-route-backfill/snapshot/"+account.AccountID))
+		plan.RuntimeID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("account-route-backfill/runtime/"+account.AccountID))
 		digest := sha256.Sum256([]byte(planDigestInput(plan)))
 		plan.RequestDigest = hex.EncodeToString(digest[:])
 		plans = append(plans, plan)
@@ -511,7 +507,7 @@ func mappingKey(venue, environment, product, settlement string) string {
 }
 
 func planDigestInput(plan accountPlan) string {
-	parts := []string{plan.AccountID, plan.Venue, plan.NativeEnvironment, plan.Mode, plan.OpaqueReference, fmt.Sprint(plan.DesiredRevision), fmt.Sprint(plan.RuntimeGeneration), fmt.Sprint(plan.CredentialVersion), plan.RequestedState}
+	parts := []string{plan.AccountID, plan.Venue, plan.NativeEnvironment, plan.Mode, plan.OpaqueReference, plan.RuntimeID.String(), plan.RequestedState}
 	for _, route := range plan.Routes {
 		parts = append(parts, route.RouteID, route.Product, route.SettlementAsset, route.RouteProfileID, route.RequestedState)
 	}
@@ -602,7 +598,7 @@ type gatewayPlanTx interface {
 
 func stageGatewayPlan(ctx context.Context, transaction gatewayPlanTx, plan accountPlan) error {
 	digest := plan.RequestDigest
-	result, err := transaction.Exec(ctx, `INSERT INTO gateway_runtime_snapshots(snapshot_id,account_id,operation_id,request_digest,venue,native_environment,secret_ref,desired_state_revision,runtime_generation,credential_version,requested_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (operation_id) DO NOTHING`, plan.SnapshotID, plan.AccountID, plan.OperationID, digest, plan.Venue, plan.NativeEnvironment, plan.OpaqueReference, plan.DesiredRevision, plan.RuntimeGeneration, plan.CredentialVersion, plan.RequestedState)
+	result, err := transaction.Exec(ctx, `INSERT INTO gateway_runtime_snapshots(snapshot_id,account_id,operation_id,request_digest,venue,native_environment,secret_ref,runtime_id,requested_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (operation_id) DO NOTHING`, plan.SnapshotID, plan.AccountID, plan.OperationID, digest, plan.Venue, plan.NativeEnvironment, plan.OpaqueReference, plan.RuntimeID, plan.RequestedState)
 	if err != nil {
 		return err
 	}

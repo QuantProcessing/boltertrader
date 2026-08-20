@@ -4,10 +4,11 @@ import {
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type OnChangeFn,
   type RowData,
   type SortingState,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
@@ -51,6 +52,11 @@ export interface DataTableProps<TData> {
   loading?: boolean;
   onRowClick?: (row: TData) => void;
   className?: string;
+  /** Optional controlled sorting for screens with an explicit sort control. */
+  sorting?: SortingState;
+  onSortingChange?: OnChangeFn<SortingState>;
+  /** Used when the table owns sorting; stable across later renders. */
+  initialSorting?: SortingState;
 }
 
 export function DataTable<TData>({
@@ -63,14 +69,19 @@ export function DataTable<TData>({
   loadingRows = 3,
   onRowClick,
   className,
+  sorting: controlledSorting,
+  onSortingChange,
+  initialSorting = [],
 }: DataTableProps<TData>) {
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [internalSorting, setInternalSorting] = useState<SortingState>(initialSorting);
+  const sorting = controlledSorting ?? internalSorting;
+  const updateSorting = onSortingChange ?? setInternalSorting;
 
   const table = useReactTable({
     data,
     columns,
     state: { sorting },
-    onSortingChange: setSorting,
+    onSortingChange: updateSorting,
     getRowId,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -139,7 +150,9 @@ export function DataTable<TData>({
                           <ArrowUp className="size-3" aria-hidden="true" />
                         ) : direction === "desc" ? (
                           <ArrowDown className="size-3" aria-hidden="true" />
-                        ) : null}
+                        ) : (
+                          <ArrowUpDown className="size-3 text-faint" aria-hidden="true" />
+                        )}
                       </button>
                     ) : (
                       flexRender(header.column.columnDef.header, header.getContext())

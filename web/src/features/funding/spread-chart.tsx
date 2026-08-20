@@ -80,17 +80,17 @@ interface LegView {
 
 export function SpreadChart({
   symbol,
+  longInstrumentId,
   longVenue,
-  longEnvironment,
+  shortInstrumentId,
   shortVenue,
-  shortEnvironment,
 }: {
-  /** The underlying both legs quote, e.g. `BTC-USDT`. */
+  /** Human-readable underlying; never used to address a venue. */
   symbol: string;
+  longInstrumentId: string;
   longVenue: string;
-  longEnvironment: string;
+  shortInstrumentId: string;
   shortVenue: string;
-  shortEnvironment: string;
 }) {
   const t = useT();
   const [historyWindow, setHistoryWindow] = useState<FundingWindow>("7d");
@@ -99,15 +99,11 @@ export function SpreadChart({
   // fails permanently, and its leg has to be able to say so beside a leg that
   // drew. Coupled, the missing half would take the whole chart down.
   const longHistory = useFundingHistory({
-    venue: longVenue,
-    environment: longEnvironment,
-    symbol,
+    instrumentId: longInstrumentId,
     window: historyWindow,
   });
   const shortHistory = useFundingHistory({
-    venue: shortVenue,
-    environment: shortEnvironment,
-    symbol,
+    instrumentId: shortInstrumentId,
     window: historyWindow,
   });
 

@@ -21,9 +21,9 @@ account-bound client surface entirely, so a board can be read before a single
 account exists.
 
 The optional fields are optional because the venues disagree, not because we
-are being permissive: only Bybit and Gate return open interest in their bulk
-call, and Hyperliquid and Lighter publish a bare rate with no settlement clock
-attached. A consumer must render a missing cell as missing rather than as zero.
+are being permissive: only three venues return open interest in their bulk
+call, and some venues publish no settlement clock. A consumer must render a
+missing cell as missing rather than as zero.
 */
 
 type FundingBoardEntry struct {
@@ -37,7 +37,13 @@ type FundingBoardEntry struct {
 	NextFundingTime time.Time       `json:"next_funding_time,omitempty"`
 	MarkPrice       OptionalDecimal `json:"mark_price"`
 	IndexPrice      OptionalDecimal `json:"index_price"`
-	OpenInterest    OptionalDecimal `json:"open_interest"`
+	// OpenInterest is the venue-native quantity. Depending on the venue this is
+	// base units or contracts and therefore must not be compared across venues.
+	OpenInterest OptionalDecimal `json:"open_interest"`
+	// OpenInterestNotional is OpenInterest converted at the row's mark price
+	// into the quote/settlement stablecoin (USDT or USDC). Cross-venue products
+	// use this field for display, filtering and sorting.
+	OpenInterestNotional OptionalDecimal `json:"open_interest_notional"`
 }
 
 type FundingBoardSnapshot struct {

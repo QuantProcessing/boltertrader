@@ -108,7 +108,7 @@ func (service *Service) createLegacy(ctx context.Context, request CreateRequest,
 		return Account{}, errors.New("credential storage failed")
 	}
 	now := service.now().UTC()
-	account := Account{ID: service.id(), Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: append([]string(nil), request.ProductIDs...), SecretRef: secretRef, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: StateCreating, UpdatedAt: now}
+	account := Account{ID: service.id(), RuntimeID: uuid.NewString(), Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: append([]string(nil), request.ProductIDs...), SecretRef: secretRef, State: StateCreating, UpdatedAt: now}
 	if err := service.store.Create(ctx, account); err != nil {
 		service.cleanupSecret(ctx, secretRef)
 		return Account{}, err
@@ -139,11 +139,30 @@ func (service *Service) UpdateMetadata(ctx context.Context, id string, revision 
 }
 
 func (service *Service) MarkValidated(ctx context.Context, id string, revision int64, principalID string) (Account, error) {
-	return service.mutate(ctx, id, revision, principalID, "account.validate", func(account *Account) error {
-		now := service.now().UTC()
-		account.LastValidatedAt = &now
-		return nil
-	})
+	account, err := service.store.Get(ctx, id)
+	if err != nil {
+		return Account{}, err
+	}
+	if account.DesiredStateRevision != revision {
+		return Account{}, ErrRevisionConflict
+	}
+	if account.PreviousSecretRef != "" {
+		return Account{}, ErrAccountBlocked
+	}
+	// A validation timestamp is an observation, not a change to the desired
+	// runtime. Advancing the desired revision here used to invalidate the
+	// operation id that created the account and could leave an already-verified
+	// account stuck in "creating" forever.
+	now := service.now().UTC()
+	account.LastValidatedAt = &now
+	account.UpdatedAt = now
+	if err := service.store.CompareAndSwap(ctx, id, revision, account); err != nil {
+		return Account{}, err
+	}
+	if err := service.record(ctx, principalID, "account.validate", account.ID, account.UpdatedAt); err != nil {
+		return Account{}, err
+	}
+	return account, nil
 }
 func (service *Service) List(ctx context.Context) ([]Account, error) { return service.store.List(ctx) }
 
@@ -152,10 +171,7 @@ func (service *Service) Activate(ctx context.Context, id string, revision int64,
 }
 
 func (service *Service) Rotate(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string, idempotencyKey ...string) (Account, error) {
-	if len(idempotencyKey) == 0 || strings.TrimSpace(idempotencyKey[0]) == "" {
-		return Account{}, fmt.Errorf("%w: idempotency key is required", ErrValidation)
-	}
-	return service.rotateDurable(ctx, id, revision, secretMaterial, principalID, idempotencyKey[0])
+	return Account{}, ErrInvalidTransition
 }
 
 func (service *Service) rotateLegacy(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string) (Account, error) {
@@ -189,14 +205,11 @@ func (service *Service) ActivateRotation(ctx context.Context, id string, revisio
 }
 
 func (service *Service) Drain(ctx context.Context, id string, revision int64, blockers Blockers, principalID string) (Account, error) {
-	if blockers.Any() {
-		return Account{}, ErrAccountBlocked
-	}
-	return service.transition(ctx, id, revision, StateDraining, principalID, "account.drain", nil)
+	return Account{}, ErrInvalidTransition
 }
 
 func (service *Service) MarkDrained(ctx context.Context, id string, revision int64, principalID string) (Account, error) {
-	return service.transition(ctx, id, revision, StateDrained, principalID, "account.drained", nil)
+	return Account{}, ErrInvalidTransition
 }
 
 func (service *Service) Disable(ctx context.Context, id string, revision int64, blockers Blockers, principalID string) (Account, error) {

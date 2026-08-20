@@ -10,6 +10,7 @@ import type {
   MarketDataQuery,
   MarketFact,
 } from "@/api/types";
+import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 import { useReadOnly } from "@/app/mode";
 
 /* ---------------------------------------------------------------------------
@@ -32,12 +33,9 @@ export const marketKeys = {
   candles: (query: CandleQuery | null) => ["market", "candles", query] as const,
 };
 
-/** The four fields that name a market. An instrument carries all of them. */
+/** The one public input identity. The catalog owns every route coordinate. */
 export function marketOf(instrument: Instrument): MarketDataQuery {
   return {
-    venue: instrument.venue,
-    environment: instrument.environment,
-    product: instrument.product,
     instrumentId: instrument.instrumentId,
   };
 }
@@ -60,12 +58,28 @@ export function useInstruments(): UseQueryResult<Projected<Instrument>> {
  * an empty list and a ticket that already knows how to say "no account for this
  * venue", rather than a 401 behind a panel that looks broken.
  */
-export function useAccounts(): UseQueryResult<Account[]> {
+const LIFECYCLE_IN_FLIGHT = new Set<Account["status"]>([
+  "creating",
+  "removing",
+]);
+
+/** Poll only while the server still owes the operator a lifecycle outcome. */
+export function accountLifecyclePollInterval(accounts: Account[] | undefined): number | false {
+  return accounts?.some((account) => LIFECYCLE_IN_FLIGHT.has(account.status)) === true
+    ? 2_000
+    : false;
+}
+
+export function useAccounts(options: { watchLifecycle?: boolean } = {}): UseQueryResult<Account[]> {
   const readOnly = useReadOnly();
   return useQuery({
     queryKey: marketKeys.accounts(),
     queryFn: ({ signal }) => accounts.list(signal),
     enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
+    refetchInterval: options.watchLifecycle
+      ? (query) => accountLifecyclePollInterval(query.state.data)
+      : false,
     staleTime: 30_000,
   });
 }
@@ -73,17 +87,16 @@ export function useAccounts(): UseQueryResult<Account[]> {
 /**
  * Top of book, depth, mark price and funding for one instrument.
  *
- * Two seconds is the floor that still leaves an operator room to place orders
- * against the same budget. The book is a decision aid here, not a feed — a
- * venue websocket is the right answer for tick-level depth and is not on this
- * surface yet.
+ * The public WebSocket owns tick-level depth. This slower read supplies mark,
+ * funding and a periodic full-book calibration, and is also the fallback for a
+ * venue that temporarily cannot open its stream.
  */
 export function useMarketFact(query: MarketDataQuery | null): UseQueryResult<Metered<MarketFact>> {
   return useQuery({
     queryKey: marketKeys.fact(query),
     queryFn: ({ signal }) => market.data(query as MarketDataQuery, signal),
     enabled: query !== null,
-    refetchInterval: 2_000,
+    refetchInterval: 15_000,
     // Keep the previous instrument's book on screen while the new one loads
     // rather than blanking the panel: an empty book reads as "no liquidity".
     placeholderData: (previous) => previous,
@@ -98,10 +111,10 @@ export function useMarketFact(query: MarketDataQuery | null): UseQueryResult<Met
  * fraction of the bar width redraws the same candles.
  */
 const CANDLE_POLL_MS: Record<CandleInterval, number> = {
-  "1m": 10_000,
-  "5m": 20_000,
-  "15m": 30_000,
-  "30m": 30_000,
+  "1m": 60_000,
+  "5m": 60_000,
+  "15m": 60_000,
+  "30m": 60_000,
   "1h": 60_000,
   "4h": 60_000,
   "12h": 60_000,

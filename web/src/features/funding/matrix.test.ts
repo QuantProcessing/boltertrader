@@ -20,7 +20,7 @@ import { pivotRows } from "@/features/funding/matrix";
  * ------------------------------------------------------------------------- */
 
 function row(symbol: string, base: string, quote: string, extra: Partial<FundingBoardRow> = {}): FundingBoardRow {
-  return { symbol, nativeSymbol: symbol, baseAsset: base, quoteAsset: quote, rate: "0.0001", ...extra };
+  return { symbol, baseAsset: base, quoteAsset: quote, rate: "0.0001", ...extra };
 }
 
 function venue(name: string, settlement: string, rows: FundingBoardRow[]): FundingBoardVenue {
@@ -90,8 +90,18 @@ describe("pivotRows", () => {
   it("takes the largest open interest any venue published, and names it", () => {
     const rows = pivotRows(
       board(
-        venue("binance", "USDT", [row("BTC-USDT", "BTC", "USDT", { openInterest: "1000" })]),
-        venue("okx", "USDT", [row("BTC-USDT-SWAP", "BTC", "USDT", { openInterest: "9000" })]),
+        venue("binance", "USDT", [
+          row("BTC-USDT", "BTC", "USDT", {
+            openInterest: "999999",
+            openInterestNotional: "1000",
+          }),
+        ]),
+        venue("okx", "USDT", [
+          row("BTC-USDT-SWAP", "BTC", "USDT", {
+            openInterest: "1",
+            openInterestNotional: "9000",
+          }),
+        ]),
         venue("bybit", "USDT", [row("BTCUSDT", "BTC", "USDT")]),
       ),
     );

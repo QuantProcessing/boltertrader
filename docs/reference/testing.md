@@ -75,13 +75,11 @@ header there, a different signing domain or chain ID elsewhere — so the suite
 cost more to keep working than the evidence it produced was worth. Nothing in
 Go replaced it, because a replacement would have to spend real money.
 
-Two paths remain, and neither is a test target:
-
-- The offline mock under `web/src/mocks/` answers the whole API surface in the
-  browser. `npm --prefix web run dev:mock` gives you a click-through app with no
-  venue, no credential, and no backend.
-- A real venue, with your own credentials, through the running stack. That is
-  production. This repository claims nothing about it.
+One interactive path remains, and it is not a test target: the running stack.
+An anonymous browser session is read-only and obtains live public market data
+without venue credentials. Signing in and configuring an account enables the
+private and write surfaces; those calls reach production. This repository
+claims nothing about external availability.
 
 ## Gates and serial execution
 

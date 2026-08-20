@@ -3,6 +3,7 @@ package fundingboard
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +43,8 @@ func TestFundingHistoryResolvesNativeIdentifierFromBoard(t *testing.T) {
 	since := time.Unix(1_719_964_800, 0).UTC()
 	until := time.Unix(1_720_051_200, 0).UTC()
 	snapshot, err := source.History(context.Background(), HistoryQuery{
-		Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Since: since, Until: until,
+		RouteProfileID: "binance.perp.usdt.v1", NativeSymbol: "BTCUSDT-native", NativeID: "binance-1",
+		Since: since, Until: until,
 	})
 	if err != nil {
 		t.Fatalf("History: %v", err)
@@ -104,7 +106,9 @@ func TestFundingHistorySearchesEveryColumnOfAVenue(t *testing.T) {
 			// is a column that was not searched.
 			before := histories.refreshes()
 			if _, err := source.History(context.Background(), HistoryQuery{
-				Venue: "bybit", Environment: "live", Symbol: symbol, Since: since, Until: until,
+				RouteProfileID: "bybit.perp." + strings.ToLower(settlement) + ".v1",
+				NativeSymbol:   "BTC" + settlement + "-native", NativeID: "bybit-1",
+				Since: since, Until: until,
 			}); err != nil {
 				t.Fatalf("History for %s: %v", symbol, err)
 			}
@@ -120,7 +124,8 @@ func TestFundingHistorySearchesEveryColumnOfAVenue(t *testing.T) {
 	// A venue whose every column was searched and came up empty still owes the
 	// narrower answer: the venue charts, this symbol is not on it.
 	if _, err := source.History(context.Background(), HistoryQuery{
-		Venue: "bybit", Environment: "live", Symbol: "NOTLISTED-USDT", Since: since, Until: until,
+		RouteProfileID: "bybit.perp.usdt.v1", NativeSymbol: "NOTLISTEDUSDT-native", NativeID: "not-listed",
+		Since: since, Until: until,
 	}); !errors.Is(err, ErrHistoryUnknownInstrument) {
 		t.Fatalf("History for an unlisted symbol = %v, want ErrHistoryUnknownInstrument", err)
 	}
@@ -148,7 +153,7 @@ func TestFundingHistoryWarmsColdColumnOnce(t *testing.T) {
 
 	// No Snapshot first: every column is cold.
 	if _, err := source.History(context.Background(), HistoryQuery{
-		Venue: "binance", Environment: "live", Symbol: "BTC-USDT",
+		RouteProfileID: "binance.perp.usdt.v1", NativeSymbol: "BTCUSDT-native", NativeID: "binance-1",
 		Since: time.Unix(1_719_964_800, 0).UTC(), Until: time.Unix(1_720_051_200, 0).UTC(),
 	}); err != nil {
 		t.Fatalf("History against a cold board: %v", err)
@@ -161,7 +166,7 @@ func TestFundingHistoryWarmsColdColumnOnce(t *testing.T) {
 	// from cache rather than by refreshing ten venues again.
 	before := histories.refreshes()
 	_, err = source.History(context.Background(), HistoryQuery{
-		Venue: "binance", Environment: "live", Symbol: "NOTLISTED-USDT",
+		RouteProfileID: "binance.perp.usdt.v1", NativeSymbol: "NOTLISTEDUSDT-native", NativeID: "not-listed",
 		Since: time.Unix(1_719_964_800, 0).UTC(), Until: time.Unix(1_720_051_200, 0).UTC(),
 	})
 	if !errors.Is(err, ErrHistoryUnknownInstrument) {
@@ -204,12 +209,12 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 			// Nado is a real board column with real rates and no series behind
 			// them. It has to say so rather than draw an empty chart.
 			name:  "charted venue publishes no history",
-			query: HistoryQuery{Venue: "nado", Environment: "live", Symbol: "BTC-USDT0", Since: since, Until: until},
+			query: HistoryQuery{RouteProfileID: "nado.perp.usdt0.v1", NativeSymbol: "BTCUSDT0-native", NativeID: "nado-1", Since: since, Until: until},
 			want:  ErrHistoryUnsupported,
 		},
 		{
 			name:  "venue is not on the board",
-			query: HistoryQuery{Venue: "aster", Environment: "live", Symbol: "BTC-USDT", Since: since, Until: until},
+			query: HistoryQuery{RouteProfileID: "aster.perp.usdt.v1", NativeSymbol: "BTCUSDT-native", NativeID: "aster-1", Since: since, Until: until},
 			want:  ErrHistoryUnsupported,
 		},
 		{
@@ -217,23 +222,23 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 			// environment because it arrives from the browser. Anything else
 			// names endpoints this board cannot reach and must be refused
 			// rather than quietly answered from the live column.
-			name:  "environment is not the one the board tracks",
-			query: HistoryQuery{Venue: "binance", Environment: "demo", Symbol: "BTC-USDT", Since: since, Until: until},
+			name:  "route profile is not on the board",
+			query: HistoryQuery{RouteProfileID: "binance.perp.demo.v1", NativeSymbol: "BTCUSDT-native", Since: since, Until: until},
 			want:  ErrHistoryUnsupported,
 		},
 		{
-			name:  "no symbol",
-			query: HistoryQuery{Venue: "binance", Environment: "live", Since: since, Until: until},
+			name:  "no native identity",
+			query: HistoryQuery{RouteProfileID: "binance.perp.usdt.v1", Since: since, Until: until},
 			want:  ErrHistoryUnsupported,
 		},
 		{
 			name:  "unbounded window",
-			query: HistoryQuery{Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Until: until},
+			query: HistoryQuery{RouteProfileID: "binance.perp.usdt.v1", NativeID: "binance-1", Until: until},
 			want:  ErrHistoryWindow,
 		},
 		{
 			name:  "window ends before it starts",
-			query: HistoryQuery{Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Since: until, Until: since},
+			query: HistoryQuery{RouteProfileID: "binance.perp.usdt.v1", NativeID: "binance-1", Since: until, Until: since},
 			want:  ErrHistoryWindow,
 		},
 		{
@@ -241,7 +246,7 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 			// series that stops early on the venues with row caps, which reads
 			// as funding that was never paid.
 			name:  "window wider than one call",
-			query: HistoryQuery{Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Since: until.Add(-90 * 24 * time.Hour), Until: until},
+			query: HistoryQuery{RouteProfileID: "binance.perp.usdt.v1", NativeID: "binance-1", Since: until.Add(-90 * 24 * time.Hour), Until: until},
 			want:  ErrHistoryWindow,
 		},
 	}
@@ -253,7 +258,7 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 		})
 	}
 
-	valid := HistoryQuery{Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Since: since, Until: until}
+	valid := HistoryQuery{RouteProfileID: "binance.perp.usdt.v1", NativeID: "binance-1", Since: since, Until: until}
 	if err := source.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

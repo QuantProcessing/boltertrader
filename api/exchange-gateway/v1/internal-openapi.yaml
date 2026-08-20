@@ -36,19 +36,13 @@ paths:
       parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
       requestBody: {$ref: '#/components/requestBodies/RetireAccount'}
       responses: {'200': {$ref: '#/components/responses/RuntimeView'}, '202': {$ref: '#/components/responses/RuntimeView'}, '409': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}:
-    put:
-      operationId: finalizeDesiredAccountRotation
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
-      requestBody: {$ref: '#/components/requestBodies/RotationFinalization'}
-      responses: {'200': {$ref: '#/components/responses/RotationFinalizationProof'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/runtime:
     get: {operationId: listRuntimeAccounts, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/accounts/runtime/{accountId}:
     get:
       operationId: getRuntimeAccount
       parameters: [{$ref: '#/components/parameters/AccountID'}]
-      responses: {'200': {description: redacted runtime account, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeAccount'}}}}, default: {$ref: '#/components/responses/Error'}}
+      responses: {'200': {$ref: '#/components/responses/RuntimeView'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/runtime/{accountId}/events:
     get:
       operationId: listRuntimeAccountEvents
@@ -62,6 +56,17 @@ paths:
     get: {operationId: getInternalMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/candles:
     get: {operationId: getInternalCandles, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/public/ws:
+    get:
+      operationId: streamInternalPublicMarket
+      parameters:
+        - {name: instrumentId, in: query, required: true, schema: {type: string}}
+        - {name: kind, in: query, required: true, schema: {type: string, enum: [order_book, candles]}}
+        - {name: interval, in: query, schema: {type: string, enum: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d]}}
+      responses:
+        '101':
+          description: Credential-free live market stream. Order-book connections begin with a snapshot; candle connections update the forming bar. Gaps emit resync_required before closing.
+        default: {$ref: '#/components/responses/Error'}
   /internal/v1/private-events:
     get: {operationId: listInternalPrivateEvents, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/funding-board:
@@ -77,7 +82,6 @@ components:
   requestBodies:
     DesiredApply: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredApplyRequest'}}}}
     RetireAccount: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RetireRequest'}}}}
-    RotationFinalization: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RotationFinalizationRequest'}}}}
   responses:
     RuntimeStatus:
       description: detailed runtime status
@@ -108,15 +112,6 @@ components:
             additionalProperties: false
             required: [data]
             properties: {data: {$ref: '#/components/schemas/RuntimeView'}}
-    RotationFinalizationProof:
-      description: durable redacted rotation finalization proof
-      content:
-        application/json:
-          schema:
-            type: object
-            additionalProperties: false
-            required: [data]
-            properties: {data: {$ref: '#/components/schemas/RotationFinalizationProof'}}
     RuntimeFacts: {description: redacted product-agnostic authority facts, content: {application/json: {schema: {type: object}}}}
     Error: {description: stable redacted error, content: {application/json: {schema: {$ref: '#/components/schemas/InternalErrorEnvelope'}}}}
   schemas:
@@ -146,69 +141,32 @@ components:
     DesiredApplyRequest:
       type: object
       additionalProperties: false
-      required: [operationId, accountId, venue, nativeEnvironment, secretRef, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes]
+      required: [operationId, accountId, runtimeId, venue, nativeEnvironment, secretRef, requestedState, routes]
       properties:
         operationId: {type: string, format: uuid}
         accountId: {type: string, minLength: 1}
+        runtimeId: {type: string, format: uuid}
         venue: {type: string, minLength: 1}
         nativeEnvironment: {type: string, enum: [demo, testnet, live]}
         secretRef: {type: string, pattern: '^[A-Za-z0-9_-]{43}$', description: opaque reference; never credential material}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
-        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
+        requestedState: {type: string, enum: [creating, active, disabled, removing, removed]}
         routes: {type: array, minItems: 1, maxItems: 32, items: {$ref: '#/components/schemas/DesiredRoute'}}
     WriteFence:
       type: object
       additionalProperties: false
-      required: [accountId, routeId, desiredStateRevision, runtimeGeneration, credentialVersion]
+      required: [accountId, routeId, runtimeId]
       properties:
         accountId: {type: string, minLength: 1}
         routeId: {type: string, minLength: 1}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
+        runtimeId: {type: string, format: uuid}
     RetireRequest:
       type: object
       additionalProperties: false
-      required: [operationId, accountId, desiredStateRevision, runtimeGeneration, credentialVersion]
+      required: [operationId, accountId, runtimeId]
       properties:
         operationId: {type: string, format: uuid}
         accountId: {type: string, minLength: 1}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
-    AccountFence:
-      type: object
-      additionalProperties: false
-      required: [accountId, desiredStateRevision, runtimeGeneration, credentialVersion]
-      properties:
-        accountId: {type: string, minLength: 1}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
-    RotationFinalizationRequest:
-      type: object
-      additionalProperties: false
-      required: [operationId, accountId, expectedActiveFence, expectedRetiringFence]
-      properties:
-        operationId: {type: string, format: uuid}
-        accountId: {type: string, minLength: 1}
-        expectedActiveFence: {$ref: '#/components/schemas/AccountFence'}
-        expectedRetiringFence: {$ref: '#/components/schemas/AccountFence'}
-    RotationFinalizationProof:
-      type: object
-      additionalProperties: false
-      required: [operationId, accountId, activeFence, retiringFence, tombstoneRevision, retiringState, secretReferenceState, completedAt]
-      properties:
-        operationId: {type: string, format: uuid}
-        accountId: {type: string, minLength: 1}
-        activeFence: {$ref: '#/components/schemas/AccountFence'}
-        retiringFence: {$ref: '#/components/schemas/AccountFence'}
-        tombstoneRevision: {type: integer, minimum: 1}
-        retiringState: {type: string, enum: [retired]}
-        secretReferenceState: {type: string, enum: [tombstoned]}
-        completedAt: {type: string, format: date-time}
+        runtimeId: {type: string, format: uuid}
     DesiredRuntimeView:
       type: object
       additionalProperties: false
@@ -227,21 +185,16 @@ components:
         - if:
             required: [active]
           then:
-            required: [desiredStateRevision, runtimeGeneration, credentialVersion, runtimeVersion, lastAppliedDesiredStateRevision, lastAppliedRuntimeGeneration, observedAt]
+            required: [runtimeId, observedAt]
       properties:
         accountId: {type: string}
         active: {$ref: '#/components/schemas/RuntimeSnapshotView'}
         pending: {$ref: '#/components/schemas/PendingSnapshotView'}
         retiring: {type: array, items: {$ref: '#/components/schemas/RuntimeSnapshotView'}}
         tombstoned: {type: boolean}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
-        runtimeVersion: {type: integer, minimum: 1}
+        runtimeId: {type: string, format: uuid}
         readiness: {$ref: '#/components/schemas/RuntimeProjectionReadiness'}
         writeReadiness: {$ref: '#/components/schemas/RuntimeProjectionReadiness'}
-        lastAppliedDesiredStateRevision: {type: integer, minimum: 1}
-        lastAppliedRuntimeGeneration: {type: integer, minimum: 1}
         blockedReason: {type: [string, 'null']}
         capabilities: {type: array, items: {$ref: '#/components/schemas/RuntimeCapabilityView'}}
         observedAt: {type: string, format: date-time}
@@ -299,43 +252,23 @@ components:
     RuntimeSnapshotView:
       type: object
       additionalProperties: false
-      required: [operationId, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes]
+      required: [operationId, runtimeId, requestedState, routes]
       properties:
         operationId: {type: string, format: uuid}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
-        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
+        runtimeId: {type: string, format: uuid}
+        requestedState: {type: string, enum: [creating, active, disabled, removing, removed]}
         routes: {type: array, items: {$ref: '#/components/schemas/RouteRuntimeView'}}
     PendingSnapshotView:
       type: object
       additionalProperties: false
-      required: [operationId, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes, state]
+      required: [operationId, runtimeId, requestedState, routes, state]
       properties:
         operationId: {type: string, format: uuid}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
-        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
+        runtimeId: {type: string, format: uuid}
+        requestedState: {type: string, enum: [creating, active, disabled, removing, removed]}
         routes: {type: array, items: {$ref: '#/components/schemas/RouteRuntimeView'}}
         state: {type: string, enum: [prepared, candidate_ready, candidate_failed, applied]}
         reason: {type: string}
-    RuntimeAccount:
-      type: object
-      additionalProperties: false
-      required: [accountId, desiredStateRevision, runtimeGeneration, credentialVersion, runtimeVersion, readiness, writeReadiness, lastAppliedDesiredStateRevision, lastAppliedRuntimeGeneration, observedAt]
-      properties:
-        accountId: {type: string}
-        desiredStateRevision: {type: integer, minimum: 1}
-        runtimeGeneration: {type: integer, minimum: 1}
-        credentialVersion: {type: integer, minimum: 1}
-        runtimeVersion: {type: integer, minimum: 0}
-        readiness: {type: object}
-        writeReadiness: {type: object}
-        lastAppliedDesiredStateRevision: {type: integer, minimum: 0}
-        lastAppliedRuntimeGeneration: {type: integer, minimum: 0}
-        blockedReason: {type: [string, 'null']}
-        observedAt: {type: string, format: date-time}
     InternalErrorEnvelope:
       type: object
       additionalProperties: false
@@ -346,7 +279,7 @@ components:
           additionalProperties: false
           required: [code, message, requestId, retryable]
           properties:
-            code: {type: string, enum: [ACCOUNT_RUNTIME_BLOCKED, CANDIDATE_NOT_READY, DESIRED_ACCOUNT_NOT_FOUND, DESIRED_STATE_REVISION_CONFLICT, GATEWAY_ADAPTER_AUTH_REQUIRED, HANDOFF_DRAIN_BLOCKED, IF_MATCH_REQUIRED, IF_NONE_MATCH_REQUIRED, INTERNAL_ERROR, INVALID_ACCOUNT_TRANSITION, LIVE_PRIVATE_WRITE_DISABLED, OPERATION_ID_CONFLICT, PROMOTION_FENCE_CONFLICT, RETIRED_SECRET_REFERENCE, STALE_RUNTIME_FENCE, VALIDATION_ERROR]}
+            code: {type: string, enum: [ACCOUNT_RUNTIME_BLOCKED, CANDIDATE_NOT_READY, CREDENTIAL_EXPIRED, CREDENTIAL_INVALID, CREDENTIAL_PERMISSION_DENIED, DESIRED_ACCOUNT_NOT_FOUND, DESIRED_STATE_REVISION_CONFLICT, GATEWAY_ADAPTER_AUTH_REQUIRED, HANDOFF_DRAIN_BLOCKED, IF_MATCH_REQUIRED, IF_NONE_MATCH_REQUIRED, INTERNAL_ERROR, INVALID_ACCOUNT_TRANSITION, LIVE_PRIVATE_WRITE_DISABLED, OPERATION_ID_CONFLICT, PROMOTION_FENCE_CONFLICT, RETIRED_SECRET_REFERENCE, STALE_RUNTIME_FENCE, VALIDATION_ERROR, VENUE_RATE_LIMITED, VENUE_RESPONSE_INVALID, VENUE_UNAVAILABLE]}
             message: {type: string}
             requestId: {type: string}
             retryable: {type: boolean}

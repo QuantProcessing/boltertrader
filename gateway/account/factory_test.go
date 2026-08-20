@@ -31,9 +31,9 @@ func (handle *probeClientHandle) spot() (exchange.SpotClient, bool) {
 	return handle.spotClient, true
 }
 func (*probeClientHandle) perp() (exchange.PerpClient, bool) { return nil, false }
-func (*probeClientHandle) exactLookupReady() bool            { return true }
+func (*probeClientHandle) exactLookupReady() bool            { return false }
 
-func TestFactoryCandidateProbeUsesPrivateReadinessWithoutRefreshingPublicInstruments(t *testing.T) {
+func TestFactoryCandidateProbeOnlyReadsBalance(t *testing.T) {
 	spot := &probeSpotClient{}
 	handle := &probeClientHandle{spotClient: spot}
 	route := factoryCandidateRoute{handle: handle}

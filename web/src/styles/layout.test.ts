@@ -41,7 +41,7 @@ function documented(name: string): number {
 }
 
 describe("the layout tokens", () => {
-  it.each(["row", "bar", "depth", "side", "ticket", "deck"])("matches design.md for %s", (name) => {
+  it.each(["row", "nav", "bar", "depth", "side", "ticket", "deck", "content"])("matches design.md for %s", (name) => {
     expect(token(name)).toBe(documented(name));
   });
 
@@ -65,6 +65,7 @@ describe("the layout tokens", () => {
     const diagram = DESIGN.slice(DESIGN.indexOf("│ top nav"), DESIGN.indexOf("└──────"));
     expect(diagram).toContain(`${token("side")}px`);
     expect(diagram).toContain(`${token("ticket")}px`);
+    expect(diagram).toContain(`${token("nav")}px`);
     expect(diagram).toContain(`${token("bar")}px`);
   });
 });

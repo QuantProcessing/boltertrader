@@ -6,6 +6,7 @@ import type { LedgerEntry, Position } from "@/api/types";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/field";
+import { InstrumentName } from "@/components/ui/instrument-name";
 import { Num } from "@/components/ui/num";
 import { Metric } from "@/components/ui/panel";
 import { Tag } from "@/components/ui/state-badge";
@@ -62,7 +63,7 @@ export function PortfolioPage() {
         {selected ? (
           <>
             <div className="min-w-0">
-              <div className="th truncate">{selected.instrumentId}</div>
+              <InstrumentName instrumentId={selected.instrumentId} className="flex" />
               <div className="mt-1 truncate text-meta text-dim">
                 {selected.accountId} · {selected.productId}
               </div>
@@ -178,7 +179,7 @@ function positionColumns(selectedId: string | null, t: Translate): ColumnDef<Pos
               rowIdOf(row.original) === selectedId ? "bg-accent" : "bg-transparent",
             )}
           />
-          <span className="truncate">{row.original.instrumentId}</span>
+          <InstrumentName instrumentId={row.original.instrumentId} />
         </span>
       ),
     },
@@ -253,7 +254,12 @@ function ledgerColumns(t: Translate): ColumnDef<LedgerEntry, unknown>[] {
       cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.occurredAt)}</span>,
     },
     { id: "kind", header: t("col.kind"), accessorKey: "kind", meta: { width: "9rem" } },
-    { id: "instrument", header: t("col.instrument"), accessorKey: "instrumentId" },
+    {
+      id: "instrument",
+      header: t("col.instrument"),
+      accessorKey: "instrumentId",
+      cell: ({ row }) => <InstrumentName instrumentId={row.original.instrumentId} />,
+    },
     { id: "account", header: t("col.account"), accessorKey: "accountId", meta: { width: "12rem" } },
     {
       id: "amount",

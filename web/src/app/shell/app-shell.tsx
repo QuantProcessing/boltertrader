@@ -1,8 +1,11 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, useLocation, useMatches, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
+import { useReadOnly } from "@/app/mode";
 import { useSession } from "@/app/session";
-import { CommandPalette } from "./command-palette";
+import { cn } from "@/lib/utils";
+import { BottomStatus } from "./bottom-status";
 import { EntryDialog } from "./entry-dialog";
 import { TopNav } from "./top-nav";
 
@@ -21,11 +24,13 @@ import { TopNav } from "./top-nav";
  * ------------------------------------------------------------------------- */
 
 export function AppShell() {
-  const [paletteOpen, setPaletteOpen] = useState(false);
   const { status } = useSession();
+  const readOnly = useReadOnly();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const readOnlyRoute = useRouteOpensToReadOnly();
+  const routePresentation = useRoutePresentation();
+  const readOnlyRoute = routePresentation.readOnly;
 
   /**
    * The route guard runs on navigation. This catches the other case: a session
@@ -49,17 +54,33 @@ export function AppShell() {
     void navigate({ to: "/login", search: { redirect: location.href }, replace: true });
   }, [status, readOnlyRoute, navigate, location.href, location.pathname]);
 
+  // Stopping private polling is not enough: React Query keeps the last result
+  // by design. Remove every centrally marked private result when this tab
+  // becomes anonymous so cached private account data cannot remain painted
+  // from the authenticated session.
+  useEffect(() => {
+    if (!readOnly) return;
+    queryClient.removeQueries({ predicate: (query) => query.meta?.privateData === true });
+  }, [queryClient, readOnly]);
+
   if (status === "unknown" || (status === "anonymous" && !readOnlyRoute)) {
     return <div className="h-dvh bg-bg" aria-busy="true" />;
   }
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-bg text-text">
-      <TopNav onOpenPalette={() => setPaletteOpen(true)} />
+      <TopNav />
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <Outlet />
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col overflow-hidden",
+            routePresentation.fullBleed ? "w-full" : "mx-auto w-full max-w-content",
+          )}
+        >
+          <Outlet />
+        </div>
       </main>
-      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+      <BottomStatus />
       <EntryDialog />
     </div>
   );
@@ -76,7 +97,11 @@ export function AppShell() {
  * too, and must still get the whole product. `useReadOnly` in `app/mode` is the
  * one that answers for the viewer.
  */
-function useRouteOpensToReadOnly(): boolean {
+function useRoutePresentation(): { readOnly: boolean; fullBleed: boolean } {
   const matches = useMatches();
-  return matches[matches.length - 1]?.staticData.readOnly === true;
+  const leaf = matches[matches.length - 1]?.staticData;
+  return {
+    readOnly: leaf?.readOnly === true,
+    fullBleed: leaf?.fullBleed === true,
+  };
 }

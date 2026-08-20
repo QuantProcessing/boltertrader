@@ -93,17 +93,18 @@ type HistoryFactory interface {
 	BuildHistory(routeprofile.Profile) (HistoryConnector, error)
 }
 
-// HistoryQuery names one instrument on one charted venue, plus the window.
+// HistoryQuery names one instrument through the route and native identity that
+// only the Gateway is allowed to know, plus the window.
 //
 // A struct rather than positional arguments for the same reason
 // authorityCandlesQuery is one: three of the fields are strings in a row and
 // nothing in the type system would catch a transposition.
 type HistoryQuery struct {
-	Venue       string
-	Environment string
-	Symbol      string
-	Since       time.Time
-	Until       time.Time
+	RouteProfileID string
+	NativeSymbol   string
+	NativeID       string
+	Since          time.Time
+	Until          time.Time
 }
 
 // Snapshot is the whole board: one column per funding-capable route profile.
@@ -424,7 +425,7 @@ func (source *Source) History(ctx context.Context, query HistoryQuery) (exchange
 	if source == nil || ctx == nil || ctx.Err() != nil {
 		return exchange.FundingHistorySnapshot{}, ErrBoardUnavailable
 	}
-	if query.Venue == "" || query.Environment == "" || query.Symbol == "" {
+	if query.RouteProfileID == "" || (query.NativeSymbol == "" && query.NativeID == "") {
 		return exchange.FundingHistorySnapshot{}, ErrHistoryUnsupported
 	}
 	if query.Since.IsZero() || !query.Until.After(query.Since) || query.Until.Sub(query.Since) > maxHistorySpan {
@@ -460,8 +461,7 @@ func (source *Source) History(ctx context.Context, query HistoryQuery) (exchange
 	})
 }
 
-// resolveHistory finds the charted column for a venue and the board row for a
-// symbol on it.
+// resolveHistory finds the exact charted route and its native board row.
 //
 // warm reports whether every candidate column has been read at least once. It
 // is returned separately from the error because "the board has not loaded this
@@ -475,50 +475,35 @@ func (source *Source) resolveHistory(query HistoryQuery) (*column, exchange.Fund
 	if source.closed {
 		return nil, missing, false, ErrBoardUnavailable
 	}
-	// A column no longer carries an environment of its own — live is the only
-	// one the factory can build — but the query still names one, because it
-	// arrives from the browser alongside a venue and a symbol. A query naming
-	// anything else is asking about endpoints this board cannot reach, and is
-	// unsupported rather than silently answered from the live column.
-	if query.Environment != string(exchange.EnvironmentLive) {
-		return nil, missing, true, ErrHistoryUnsupported
-	}
-	// Every matching column is searched, not the first one. A venue does not
-	// name a column: bybit and bitget each stand two, one per settlement asset,
-	// and the registry's ordering puts USDC ahead of USDT. Stopping at the first
-	// match reported every USDT instrument on those two venues as absent from a
-	// board that was carrying it one column over.
-	var (
-		matched bool // some column answers for this venue
-		charted bool // at least one of them has a history surface
-		cold    bool // at least one of them has never been read
-	)
+	var matched bool
 	for _, current := range source.columns {
-		if current.profile.Venue != query.Venue {
+		if current.profile.ID != query.RouteProfileID {
 			continue
 		}
 		matched = true
 		if current.history == nil {
-			continue
+			return nil, missing, true, ErrHistoryUnsupported
 		}
-		charted = true
 		if len(current.entries) == 0 {
-			cold = true
-			continue
+			return nil, missing, false, ErrHistoryUnknownInstrument
 		}
 		for _, candidate := range current.entries {
-			if candidate.Symbol == query.Symbol {
+			if query.NativeID != "" && candidate.NativeID != "" {
+				if candidate.NativeID == query.NativeID {
+					return current, candidate, true, nil
+				}
+				continue
+			}
+			if query.NativeSymbol != "" && candidate.NativeSymbol == query.NativeSymbol {
 				return current, candidate, true, nil
 			}
 		}
+		return nil, missing, true, ErrHistoryUnknownInstrument
 	}
-	if !matched || !charted {
-		// Warm either way: no refresh adds a column, and the caller only
-		// consults warmth to decide whether an unknown instrument is worth
-		// re-reading the board for.
+	if !matched {
 		return nil, missing, true, ErrHistoryUnsupported
 	}
-	return nil, missing, !cold, ErrHistoryUnknownInstrument
+	return nil, missing, true, ErrHistoryUnknownInstrument
 }
 
 func (source *Source) needsRefreshLocked() bool {

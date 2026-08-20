@@ -11,8 +11,8 @@ const (
 	// catalog / market-data / realtime reads it fronts for the gateway.
 	Trading UpstreamName = "trading"
 	// Gateway is the shared capability layer. Only the account lifecycle is
-	// reachable through the browser, and it lives on the gateway's internal
-	// plane because it accepts credential material.
+	// writable through the browser; the other direct route is a credential-free
+	// public market WebSocket. Both live on the Gateway's internal listener.
 	Gateway UpstreamName = "gateway"
 )
 
@@ -31,6 +31,10 @@ type Route struct {
 	// Such a route gets no response deadline — a deadline is what would cut a
 	// healthy event stream off mid-session.
 	Stream bool
+	// WebSocket marks a bidirectional upgrade. It is separate from Stream:
+	// streaming HTTP copies one response body, while a WebSocket must relay
+	// messages in both directions after the 101 handshake.
+	WebSocket bool
 	// Public marks a read that carries no identity at all, so a browser with no
 	// session may make it. Every venue behind these routes publishes the same
 	// numbers to anyone who asks — a book, a candle, a funding rate — and a
@@ -76,6 +80,7 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/catalog/instruments", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/market-data", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/candles", Upstream: Trading, Public: true},
+	{Method: http.MethodGet, Path: "/api/v1/public/ws", Upstream: Gateway, Target: "/internal/v1/public/ws", Public: true, WebSocket: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-board", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-history", Upstream: Trading, Public: true},
 	// Eight of the trading service's nine public-data routes are Public here.
@@ -95,6 +100,8 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/fills", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/activity", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/accounts/{accountId}/runtimes", Upstream: Trading},
+	{Method: http.MethodGet, Path: "/api/v1/balances", Upstream: Trading},
+	{Method: http.MethodGet, Path: "/api/v1/account-positions", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/venues", Upstream: Trading},
 	{Method: http.MethodPost, Path: "/api/v1/products/manual/execution-previews", Upstream: Trading},
 	{Method: http.MethodPost, Path: "/api/v1/products/manual/commands", Upstream: Trading},
@@ -110,12 +117,8 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/accounts", Upstream: Gateway, Target: "/internal/v1/accounts"},
 	{Method: http.MethodPost, Path: "/api/v1/accounts", Upstream: Gateway, Target: "/internal/v1/accounts"},
 	{Method: http.MethodGet, Path: "/api/v1/accounts/{accountId}", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}"},
-	{Method: http.MethodPatch, Path: "/api/v1/accounts/{accountId}", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}"},
 	{Method: http.MethodDelete, Path: "/api/v1/accounts/{accountId}", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}"},
-	{Method: http.MethodPost, Path: "/api/v1/accounts/{accountId}/validate", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}/validate"},
-	{Method: http.MethodPost, Path: "/api/v1/accounts/{accountId}/rotate", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}/rotate"},
 	{Method: http.MethodPost, Path: "/api/v1/accounts/{accountId}/disable", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}/disable"},
-	{Method: http.MethodPost, Path: "/api/v1/accounts/{accountId}/drain", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}/drain"},
 }
 
 // Routes reports the forwarding table. The copy is deliberate: the table is

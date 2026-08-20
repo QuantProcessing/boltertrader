@@ -16,10 +16,8 @@
  * Two consequences of that table are worth stating outright, because both look
  * like bugs from the frontend:
  *
- *   - The gateway's public `/v1/*` plane is NOT reachable. Market data, the
- *     order book and candles all arrive through trading, which fronts the
- *     gateway's internal plane on the browser's behalf. There is no browser
- *     path to `/v1/order-book` and adding one here would not create it.
+ *   - Historical market reads arrive through trading. The credential-free
+ *     public WebSocket is the one narrow Gateway exception.
  *   - `/api/v1/accounts/{id}/runtimes` is a trading projection while every
  *     other `/api/v1/accounts` path is the gateway's account lifecycle. They
  *     differ by suffix alone. That is why the table is explicit and why these
@@ -33,6 +31,8 @@
 import { apiRequest, advanceSessionEpoch, setCsrfToken, type ResponseMeta } from "./client";
 import type {
   Account,
+  AccountBalance,
+  AccountPosition,
   AccountRoute,
   AccountRuntime,
   ActivityEvent,
@@ -159,6 +159,7 @@ export const paths = {
   catalogInstruments: "/api/v1/catalog/instruments",
   marketData: "/api/v1/market-data",
   candles: "/api/v1/candles",
+  publicMarketSocket: "/api/v1/public/ws",
   fundingBoard: "/api/v1/funding-board",
   fundingHistory: "/api/v1/funding-history",
   realtimeStream: "/api/v1/realtime/stream",
@@ -169,6 +170,8 @@ export const paths = {
   command: (commandId: string) => `/api/v1/commands/${encodeURIComponent(commandId)}`,
 
   positions: "/api/v1/positions",
+  balances: "/api/v1/balances",
+  accountPositions: "/api/v1/account-positions",
   ledger: "/api/v1/ledger",
   pnl: "/api/v1/pnl",
   fills: "/api/v1/fills",
@@ -190,10 +193,7 @@ export const paths = {
 
   accounts: "/api/v1/accounts",
   account: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}`,
-  accountValidate: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/validate`,
-  accountRotate: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/rotate`,
   accountDisable: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/disable`,
-  accountDrain: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/drain`,
 } as const;
 
 /* --- Auth ---------------------------------------------------------------- */
@@ -278,9 +278,9 @@ export const market = {
   /**
    * Top of book plus depth, mark price and funding for one instrument.
    *
-   * All four query fields are required and the server rejects an unknown fifth
-   * outright — it is a strict allow-list, not a filter, so passing a stray
-   * `accountId` produces a 400 rather than being ignored.
+   * `instrumentId` is the only query identity. Venue, product and settlement
+   * are catalog facts resolved by the server, so callers cannot send a mixed
+   * identity whose fields disagree. Any second identity field is rejected.
    */
   async data(query: MarketDataQuery, signal?: AbortSignal): Promise<Metered<MarketFact>> {
     const body = await apiRequest<RateLimitedEnvelope<MarketFact>>(paths.marketData, {
@@ -329,12 +329,11 @@ export const funding = {
   },
 
   /**
-   * One venue's settled funding over a named window.
+   * One instrument's settled funding over a named window.
    *
-   * The opposite read from the board in every way that matters: per venue and
-   * per symbol rather than the whole matrix, because no venue offers a bulk
-   * history call — which is also why this belongs to a chosen pair rather than
-   * to the matrix, where it would be hundreds of underlyings times ten venues.
+   * The opposite read from the board in every way that matters: one canonical
+   * instrument id rather than the whole matrix. The server resolves its venue
+   * and native address because no venue offers a bulk history call.
    *
    * `window` is one of two literals. The server will not take a range: every
    * venue's endpoint is paginated, and these are the two spans that come back
@@ -390,6 +389,24 @@ export const trading = {
   /** Trading's own view of an account's runtime — NOT the gateway's account record. */
   accountRuntimes: async (accountId: string, signal?: AbortSignal): Promise<AccountRuntime[]> =>
     items(await apiRequest<ItemsEnvelope<AccountRuntime>>(paths.accountRuntimes(accountId), { signal })),
+};
+
+/** Private account facts projected through trading's principal boundary. */
+export const accountData = {
+  balances: async (accountId: string, signal?: AbortSignal): Promise<AccountBalance[]> =>
+    items(
+      await apiRequest<ItemsEnvelope<AccountBalance>>(paths.balances, {
+        query: { accountId },
+        signal,
+      }),
+    ),
+  positions: async (accountId: string, instrumentId: string, signal?: AbortSignal): Promise<AccountPosition[]> =>
+    items(
+      await apiRequest<ItemsEnvelope<AccountPosition>>(paths.accountPositions, {
+        query: { accountId, instrumentId },
+        signal,
+      }),
+    ),
 };
 
 /**
@@ -621,43 +638,20 @@ export interface CreateAccountRequest {
   credentialBundle: CredentialBundle;
 }
 
-/** `httpapi.updateAccountRecordRequest` — the only two fields a PATCH may change. */
-export interface UpdateAccountRequest {
-  displayName: string;
-  productIds: string[];
-}
-
-/**
- * The desired-state ETag, built from the revision the caller has already read.
- *
- * `gateway/httpapi/internal_routes.go` mints exactly this string and parses
- * exactly this string, so reconstructing it here is not a guess about the
- * server's format — it is the format, and a mismatch is a 428 rather than a
- * silent overwrite. Building it from the `desiredStateRevision` already on the
- * account means no extra read before a mutation.
- */
-const desiredETag = (revision: number): string => `"desired-state-revision-${revision}"`;
-
 /**
  * The account lifecycle, forwarded to the gateway's INTERNAL plane because it
  * accepts credential material.
  *
  * Nothing here ever returns a secret: the gateway's `PublicAccount` has no
- * field for one. A credential is written and then only ever referred to by
- * `credentialVersion`, which is what makes PRODUCT.md's write-only rule an
- * property of the API rather than a discipline in the UI.
+ * field for one. A credential is written once and cannot be read or replaced;
+ * replacement is modeled as removing the account and adding a new one.
  *
  * Three protocol facts every mutation below is written around:
  *
- *   - Every mutation except create carries `If-Match`. Without it the gateway
- *     answers 428 `IF_MATCH_REQUIRED`; with a stale revision it answers 409
- *     `DESIRED_STATE_REVISION_CONFLICT`, which the caller resolves by re-reading
- *     the account rather than by retrying the same write.
- *   - Create, rotate and remove carry `Idempotency-Key`, because each of them
- *     writes credential material or destroys it and a retried request must not
- *     do it twice.
- *   - `validate`, `disable`, `drain` and `remove` send NO body. The gateway
- *     reads the body and rejects anything that is not empty or `{}`.
+ * Credentials are immutable. Create writes them once; changing them means
+ * deleting the account and adding it again. Create and remove carry an
+ * `Idempotency-Key`; disable is a bodyless state change. Accounts expose no
+ * revisions and clients never participate in runtime fencing.
  *
  * Note the envelope: `{data: ...}` with no `meta`.
  */
@@ -679,21 +673,6 @@ export const accounts = {
       })
     ).data.account,
 
-  update: async (
-    accountId: string,
-    revision: number,
-    patch: UpdateAccountRequest,
-    signal?: AbortSignal,
-  ): Promise<Account> =>
-    (
-      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.account(accountId), {
-        method: "PATCH",
-        body: patch,
-        ifMatch: desiredETag(revision),
-        signal,
-      })
-    ).data.account,
-
   /**
    * 202, not 204: removal is accepted rather than done. The credential is only
    * deleted once the runtime confirms the account is tombstoned, so the account
@@ -701,66 +680,23 @@ export const accounts = {
    */
   remove: async (
     accountId: string,
-    revision: number,
     idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<Account> =>
     (
       await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.account(accountId), {
         method: "DELETE",
-        ifMatch: desiredETag(revision),
         idempotencyKey,
         signal,
       })
     ).data.account,
 
-  /** Asks the venue whether the stored credential still works. */
-  validate: async (accountId: string, revision: number, signal?: AbortSignal): Promise<Account> =>
-    (
-      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountValidate(accountId), {
-        method: "POST",
-        ifMatch: desiredETag(revision),
-        signal,
-      })
-    ).data.account,
-
-  /**
-   * Rotation is not atomic and is not meant to look it: the account carries an
-   * `active` and a `pending` runtime at once until the new credential proves
-   * itself. `trading.accountRuntimes` is what shows that state.
-   */
-  rotate: async (
-    accountId: string,
-    revision: number,
-    credentialBundle: CredentialBundle,
-    idempotencyKey: string,
-    signal?: AbortSignal,
-  ): Promise<Account> =>
-    (
-      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountRotate(accountId), {
-        method: "POST",
-        body: { credentialBundle },
-        ifMatch: desiredETag(revision),
-        idempotencyKey,
-        signal,
-      })
-    ).data.account,
-
-  disable: async (accountId: string, revision: number, signal?: AbortSignal): Promise<Account> =>
+  disable: async (accountId: string, signal?: AbortSignal): Promise<Account> =>
     (
       await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountDisable(accountId), {
         method: "POST",
-        ifMatch: desiredETag(revision),
         signal,
       })
     ).data.account,
 
-  drain: async (accountId: string, revision: number, signal?: AbortSignal): Promise<Account> =>
-    (
-      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountDrain(accountId), {
-        method: "POST",
-        ifMatch: desiredETag(revision),
-        signal,
-      })
-    ).data.account,
 };

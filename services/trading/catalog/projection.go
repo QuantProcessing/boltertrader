@@ -81,6 +81,23 @@ type Snapshot struct {
 	Instruments []Instrument `json:"instruments"`
 }
 
+// Instrument resolves the only public input identity accepted above the
+// Gateway boundary. Venue, product, settlement and display symbol are facts
+// attached to that id; callers must not accept them beside the id and then try
+// to decide which value wins when they disagree.
+func (snapshot Snapshot) Instrument(instrumentID string) (Instrument, bool) {
+	instrumentID = strings.TrimSpace(instrumentID)
+	if instrumentID == "" {
+		return Instrument{}, false
+	}
+	for _, instrument := range snapshot.Instruments {
+		if instrument.InstrumentID == instrumentID {
+			return instrument, true
+		}
+	}
+	return Instrument{}, false
+}
+
 type Status struct {
 	Ready      bool          `json:"ready"`
 	Reason     string        `json:"reason"`
@@ -325,7 +342,10 @@ func validate(snapshot Snapshot) error {
 		if err := validateRules(instrument.Rules); err != nil {
 			return err
 		}
-		key := strings.Join([]string{instrument.Venue, instrument.Environment, instrument.Product, instrument.InstrumentID}, "\x00")
+		// InstrumentID is an address, not a venue-local label. Requiring global
+		// uniqueness is what lets every browser and product input carry only this
+		// field while the catalog supplies the rest of the route coordinates.
+		key := instrument.InstrumentID
 		if _, exists := instruments[key]; exists {
 			return fmt.Errorf("duplicate Gateway instrument %q", instrument.InstrumentID)
 		}
@@ -336,16 +356,20 @@ func validate(snapshot Snapshot) error {
 
 func validateRules(rules TradeRules) error {
 	for name, value := range map[string]string{
-		"price increment": rules.PriceIncrement, "quantity increment": rules.QuantityIncrement, "minimum quantity": rules.MinQuantity,
+		"price increment": rules.PriceIncrement, "quantity increment": rules.QuantityIncrement,
 	} {
 		parsed, err := decimal.NewFromString(value)
 		if err != nil || !parsed.IsPositive() {
 			return fmt.Errorf("Gateway instrument %s is invalid", name)
 		}
 	}
+	minimumQuantity, err := decimal.NewFromString(rules.MinQuantity)
+	if err != nil || minimumQuantity.IsNegative() {
+		return fmt.Errorf("Gateway instrument minimum quantity is invalid")
+	}
 	if rules.MinNotional != "" {
 		parsed, err := decimal.NewFromString(rules.MinNotional)
-		if err != nil || !parsed.IsPositive() {
+		if err != nil || parsed.IsNegative() {
 			return fmt.Errorf("Gateway instrument minimum notional is invalid")
 		}
 	}

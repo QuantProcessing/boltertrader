@@ -37,7 +37,7 @@ func TestFundingHistoryWindowIsBounded(t *testing.T) {
 	service := newHistoryService(t, now, historySourceFunc(func(_ context.Context, read FundingHistoryRead) (FundingHistorySeries, error) {
 		seen = read
 		return FundingHistorySeries{
-			Venue: read.Venue, Environment: read.Environment, Symbol: read.Symbol,
+			InstrumentID: read.InstrumentID, Venue: read.Venue,
 			Since: read.Since, Until: read.Until, ObservedAt: now,
 		}, nil
 	}))
@@ -47,7 +47,7 @@ func TestFundingHistoryWindowIsBounded(t *testing.T) {
 		span   time.Duration
 	}{{FundingWindow7d, 7 * 24 * time.Hour}, {FundingWindow30d, 30 * 24 * time.Hour}} {
 		if _, err := service.Get(context.Background(), FundingHistoryQuery{
-			Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: test.window,
+			InstrumentID: "binance:live:perp:USDT:BTC-USDT", Venue: "binance", Window: test.window,
 		}); err != nil {
 			t.Fatalf("%s: %v", test.window, err)
 		}
@@ -75,12 +75,12 @@ func TestFundingHistoryResolvesWindowOnASecondBoundary(t *testing.T) {
 		since, _ := time.Parse(time.RFC3339, read.Since.Format(time.RFC3339))
 		until, _ := time.Parse(time.RFC3339, read.Until.Format(time.RFC3339))
 		return FundingHistorySeries{
-			Venue: read.Venue, Environment: read.Environment, Symbol: read.Symbol,
+			InstrumentID: read.InstrumentID, Venue: read.Venue,
 			Since: since, Until: until, ObservedAt: now,
 		}, nil
 	}))
 	if _, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		InstrumentID: "binance:live:perp:USDT:BTC-USDT", Venue: "binance", Window: FundingWindow7d,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestFundingHistoryRefusesAMisansweredSeries(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	good := func(read FundingHistoryRead) FundingHistorySeries {
 		return FundingHistorySeries{
-			Venue: read.Venue, Environment: read.Environment, Symbol: read.Symbol,
+			InstrumentID: read.InstrumentID, Venue: read.Venue,
 			Since: read.Since, Until: read.Until, ObservedAt: now,
 			Points: []FundingHistoryPoint{
 				{FundingTime: now.Add(-16 * time.Hour), Rate: "0.0001", IntervalHours: 8},
@@ -109,9 +109,11 @@ func TestFundingHistoryRefusesAMisansweredSeries(t *testing.T) {
 		}
 	}
 	for name, damage := range map[string]func(FundingHistorySeries) FundingHistorySeries{
-		"wrong venue":       func(s FundingHistorySeries) FundingHistorySeries { s.Venue = "okx"; return s },
-		"wrong environment": func(s FundingHistorySeries) FundingHistorySeries { s.Environment = "demo"; return s },
-		"wrong symbol":      func(s FundingHistorySeries) FundingHistorySeries { s.Symbol = "ETH-USDT"; return s },
+		"wrong venue": func(s FundingHistorySeries) FundingHistorySeries { s.Venue = "okx"; return s },
+		"wrong instrument": func(s FundingHistorySeries) FundingHistorySeries {
+			s.InstrumentID = "binance:live:perp:USDT:ETH-USDT"
+			return s
+		},
 		"narrowed window": func(s FundingHistorySeries) FundingHistorySeries {
 			s.Since = s.Since.Add(time.Hour)
 			return s
@@ -137,7 +139,7 @@ func TestFundingHistoryRefusesAMisansweredSeries(t *testing.T) {
 			return damage(good(read)), nil
 		}))
 		if _, err := service.Get(context.Background(), FundingHistoryQuery{
-			Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
+			InstrumentID: "binance:live:perp:USDT:BTC-USDT", Venue: "binance", Window: FundingWindow7d,
 		}); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
@@ -154,7 +156,7 @@ func TestFundingHistoryPropagatesUnsupportedVenue(t *testing.T) {
 		return FundingHistorySeries{}, ErrFundingHistoryUnsupported
 	}))
 	_, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "nado", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		InstrumentID: "nado:live:perp:USDT:BTC-USDT", Venue: "nado", Window: FundingWindow7d,
 	})
 	if !errors.Is(err, ErrFundingHistoryUnsupported) {
 		t.Fatalf("err = %v, want ErrFundingHistoryUnsupported", err)
@@ -168,13 +170,13 @@ func TestFundingHistoryNormalisesEveryTimeToUTC(t *testing.T) {
 	zone := time.FixedZone("UTC+8", 8*60*60)
 	service := newHistoryService(t, now, historySourceFunc(func(_ context.Context, read FundingHistoryRead) (FundingHistorySeries, error) {
 		return FundingHistorySeries{
-			Venue: read.Venue, Environment: read.Environment, Symbol: read.Symbol,
+			InstrumentID: read.InstrumentID, Venue: read.Venue,
 			Since: read.Since.In(zone), Until: read.Until.In(zone), ObservedAt: now.In(zone),
 			Points: []FundingHistoryPoint{{FundingTime: now.Add(-8 * time.Hour).In(zone), Rate: "0.0001"}},
 		}, nil
 	}))
 	series, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		InstrumentID: "binance:live:perp:USDT:BTC-USDT", Venue: "binance", Window: FundingWindow7d,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -200,14 +202,14 @@ func TestFundingHistorySpendsTheSharedVenueBudget(t *testing.T) {
 	}
 	service, err := NewFundingHistoryService(historySourceFunc(func(_ context.Context, read FundingHistoryRead) (FundingHistorySeries, error) {
 		return FundingHistorySeries{
-			Venue: read.Venue, Environment: read.Environment, Symbol: read.Symbol,
+			InstrumentID: read.InstrumentID, Venue: read.Venue,
 			Since: read.Since, Until: read.Until, ObservedAt: now,
 		}, nil
 	}), budget, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := FundingHistoryQuery{Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d}
+	query := FundingHistoryQuery{InstrumentID: "binance:live:perp:USDT:BTC-USDT", Venue: "binance", Window: FundingWindow7d}
 	if _, err := service.Get(context.Background(), query); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +219,7 @@ func TestFundingHistorySpendsTheSharedVenueBudget(t *testing.T) {
 	// A different venue draws on its own allowance, so one busy pair cannot
 	// starve the other leg of the very spread it belongs to.
 	if _, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "bybit", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		InstrumentID: "bybit:live:perp:USDT:BTC-USDT", Venue: "bybit", Window: FundingWindow7d,
 	}); err != nil {
 		t.Fatalf("second venue err = %v, want the read to succeed", err)
 	}

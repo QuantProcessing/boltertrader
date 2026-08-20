@@ -10,6 +10,7 @@ import { Num } from "@/components/ui/num";
 import { Metric } from "@/components/ui/panel";
 import { ArbitragePairs } from "@/features/funding/arbitrage-pairs";
 import { ArbitrageTicket } from "@/features/funding/arbitrage-ticket";
+import { arbitrageBlockerLabel } from "@/features/funding/blockers";
 import { useArbitrageOpportunities } from "@/features/funding/queries";
 import { SpreadChart } from "@/features/funding/spread-chart";
 import { useAccounts } from "@/features/market/queries";
@@ -74,7 +75,7 @@ export function ArbitragePage() {
 
   const oriented = useMemo(() => {
     if (!selected) return null;
-    const flipped = search.long !== undefined && search.long === selected.short.venue;
+    const flipped = search.long !== undefined && search.long === selected.short.routeProfileId;
     return flipped
       ? { long: selected.short, short: selected.long }
       : { long: selected.long, short: selected.short };
@@ -90,7 +91,11 @@ export function ArbitragePage() {
     if (!selected || !oriented) return;
     void navigate({
       to: "/funding/arbitrage",
-      search: { symbol: selected.symbol, long: oriented.short.venue, short: oriented.long.venue },
+      search: {
+        symbol: selected.symbol,
+        long: oriented.short.routeProfileId,
+        short: oriented.long.routeProfileId,
+      },
       replace: true,
     });
   };
@@ -170,13 +175,13 @@ export function ArbitragePage() {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {oriented && selected ? (
+          {selected && oriented?.long.instrumentId && oriented.short.instrumentId ? (
             <SpreadChart
               symbol={selected.symbol}
+              longInstrumentId={oriented.long.instrumentId}
               longVenue={oriented.long.venue}
-              longEnvironment={oriented.long.environment}
+              shortInstrumentId={oriented.short.instrumentId}
               shortVenue={oriented.short.venue}
-              shortEnvironment={oriented.short.environment}
             />
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
@@ -279,14 +284,9 @@ function SpreadList({
               <span className="truncate">
                 {item.long.venue} → {item.short.venue}
               </span>
-              {/* Named rather than dotted: "not executable" is a state with a
-                  reason, and the reason is one word long. Underscores out — the
-                  code is the server's key, not a phrase, and it is read here by
-                  someone deciding what to trade. Same transform the pair rows
-                  already apply to a lineage state. */}
               {item.executable ? null : (
                 <span className="shrink-0 text-warn">
-                  {item.blockers[0]?.replace(/_/g, " ") ?? t("arb.blocked")}
+                  {item.blockers[0] ? arbitrageBlockerLabel(item.blockers[0], t) : t("arb.blocked")}
                 </span>
               )}
             </span>

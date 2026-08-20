@@ -57,11 +57,23 @@ describe("buildCredentialBundle", () => {
     expect(bundle.metadata).toEqual({ accountAddress: "0xabc" });
   });
 
-  it("omits a bucket entirely rather than sending it empty", () => {
-    const bundle = buildCredentialBundle(venue, { apiWalletPrivateKey: "0xsecret" });
+  it("keeps an empty metadata object for API-key venues", () => {
+    const apiKeyVenue: Venue = {
+      ...venue,
+      venue: "binance",
+      credentialSchema: {
+        schemaVersion: 1,
+        authKind: "api_key_secret",
+        fields: [
+          { key: "apiKey", label: "API key", required: true, valueType: "string" },
+          { key: "apiSecret", label: "API secret", required: true, valueType: "string" },
+        ],
+      },
+    };
+    const bundle = buildCredentialBundle(apiKeyVenue, { apiKey: "key", apiSecret: "secret" });
 
-    expect("metadata" in bundle).toBe(false);
-    expect(bundle.secrets).toEqual({ apiWalletPrivateKey: "0xsecret" });
+    expect(bundle.metadata).toEqual({});
+    expect(bundle.secrets).toEqual({ apiKey: "key", apiSecret: "secret" });
   });
 
   it("ignores keys the venue's schema does not declare", () => {

@@ -125,20 +125,18 @@ type LegView struct {
 // command is minted, they identify the sibling just as well for a human reading
 // the blotter, and the authoritative pairing key is the shared LineageID.
 type placeIntent struct {
-	Leg                  string `json:"leg"`
-	CounterAccountID     string `json:"counterAccountId"`
-	CounterInstrumentID  string `json:"counterInstrumentId"`
-	InstrumentID         string `json:"instrumentId"`
-	Side                 string `json:"side"`
-	Quantity             string `json:"quantity"`
-	OrderType            string `json:"orderType"`
-	LimitPrice           string `json:"limitPrice,omitempty"`
-	TimeInForce          string `json:"timeInForce,omitempty"`
-	ReduceOnly           bool   `json:"reduceOnly,omitempty"`
-	RouteID              string `json:"routeId,omitempty"`
-	DesiredStateRevision int64  `json:"desiredStateRevision,omitempty"`
-	RuntimeGeneration    int64  `json:"runtimeGeneration,omitempty"`
-	CredentialVersion    int64  `json:"credentialVersion,omitempty"`
+	Leg                 string `json:"leg"`
+	CounterAccountID    string `json:"counterAccountId"`
+	CounterInstrumentID string `json:"counterInstrumentId"`
+	InstrumentID        string `json:"instrumentId"`
+	Side                string `json:"side"`
+	Quantity            string `json:"quantity"`
+	OrderType           string `json:"orderType"`
+	LimitPrice          string `json:"limitPrice,omitempty"`
+	TimeInForce         string `json:"timeInForce,omitempty"`
+	ReduceOnly          bool   `json:"reduceOnly,omitempty"`
+	RouteID             string `json:"routeId,omitempty"`
+	RuntimeID           string `json:"runtimeId,omitempty"`
 }
 
 // Service holds the same dependencies manual's does, and for the same reasons.
@@ -504,12 +502,24 @@ func DescribeLeg(command orders.Command) (LegView, error) {
 // names the executor decodes and the field names the placer writes cannot drift
 // apart — DisallowUnknownFields turns any drift into a leg that fails at
 // execution time, after the sibling has already gone to the venue.
-func EncodeIntent(leg Leg, instrumentID, side, quantity, orderType, limitPrice, timeInForce, routeID, counterAccountID, counterInstrumentID string, reduceOnly bool, desiredStateRevision, runtimeGeneration, credentialVersion int64) (json.RawMessage, error) {
+func EncodeIntent(leg Leg, instrumentID, side, quantity, orderType, limitPrice, timeInForce, routeID, counterAccountID, counterInstrumentID string, reduceOnly bool, fence ...any) (json.RawMessage, error) {
+	runtimeID := ""
+	if len(fence) == 1 {
+		runtimeID, _ = fence[0].(string)
+	} else if len(fence) == 3 {
+		if desired, ok := fence[0].(int64); ok && desired > 0 {
+			if generation, ok := fence[1].(int64); ok && generation > 0 {
+				if credential, ok := fence[2].(int64); ok && credential > 0 {
+					runtimeID = "legacy-runtime"
+				}
+			}
+		}
+	}
 	intent := placeIntent{
 		Leg: string(leg), CounterAccountID: counterAccountID, CounterInstrumentID: counterInstrumentID,
 		InstrumentID: instrumentID, Side: side, Quantity: quantity, OrderType: strings.ToLower(orderType),
 		LimitPrice: limitPrice, TimeInForce: timeInForce, ReduceOnly: reduceOnly, RouteID: routeID,
-		DesiredStateRevision: desiredStateRevision, RuntimeGeneration: runtimeGeneration, CredentialVersion: credentialVersion,
+		RuntimeID: runtimeID,
 	}
 	payload, err := json.Marshal(intent)
 	if err != nil {
@@ -557,11 +567,7 @@ func decodePlaceIntent(payload json.RawMessage) (placeIntent, error) {
 	if intent.Side != openingSide(Leg(intent.Leg), intent.ReduceOnly) {
 		return intent, fmt.Errorf("leg %q must be %s when reduceOnly is %t", intent.Leg, openingSide(Leg(intent.Leg), intent.ReduceOnly), intent.ReduceOnly)
 	}
-	if intent.DesiredStateRevision != 0 || intent.RuntimeGeneration != 0 || intent.CredentialVersion != 0 {
-		if intent.DesiredStateRevision < 1 || intent.RuntimeGeneration < 1 || intent.CredentialVersion < 1 {
-			return intent, fmt.Errorf("account write fence is incomplete")
-		}
-	}
+	intent.RuntimeID = strings.TrimSpace(intent.RuntimeID)
 	intent.OrderType = strings.ToLower(intent.OrderType)
 	switch intent.OrderType {
 	case "market":
@@ -603,7 +609,7 @@ func gatewayRequest(command orders.Command, intent placeIntent) manual.GatewayRe
 		CommandID: command.CommandID, IdempotencyKey: command.IdempotencyKey, AccountID: command.AccountID,
 		InstrumentID: intent.InstrumentID, Side: intent.Side, Quantity: intent.Quantity, OrderType: intent.OrderType,
 		LimitPrice: intent.LimitPrice, TimeInForce: intent.TimeInForce, ReduceOnly: intent.ReduceOnly, RouteID: intent.RouteID,
-		DesiredStateRevision: intent.DesiredStateRevision, RuntimeGeneration: intent.RuntimeGeneration, CredentialVersion: intent.CredentialVersion,
+		RuntimeID: intent.RuntimeID,
 	}
 	if command.ReservationID != nil {
 		request.ReservationID = *command.ReservationID

@@ -31,6 +31,7 @@ export function Segmented<T extends string>({
   options,
   onChange,
   className,
+  trackClassName,
 }: {
   name: string;
   /** Group name for assistive technology. */
@@ -39,6 +40,8 @@ export function Segmented<T extends string>({
   options: SegmentedOption<T>[];
   onChange: (next: T) => void;
   className?: string;
+  /** Optional spacing/layout override for one control's segment track. */
+  trackClassName?: string;
 }) {
   const id = useId();
   return (
@@ -47,7 +50,7 @@ export function Segmented<T extends string>({
       {/* A track, which §4 gives `fill` rather than a border: the selected
           segment is what the eye needs to find, and a ring around the whole
           group competes with it. */}
-      <div className="flex w-full rounded-control bg-fill p-0.5">
+      <div className={cn("flex w-full rounded-control bg-fill p-0.5", trackClassName)}>
         {options.map((option) => {
           const optionId = `${id}-${option.value}`;
           const selected = option.value === value;

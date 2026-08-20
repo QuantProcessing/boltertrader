@@ -75,6 +75,8 @@ func run(ctx context.Context) error {
 		MarketDataProbe:       gatewayClient,
 		RuntimeProbe:          gatewayClient,
 		RuntimeProjection:     gatewayClient,
+		BalanceProjection:     gatewayClient,
+		PositionProjection:    gatewayClient,
 		ManualGateway:         gatewayClient,
 		ManualAccounts:        gatewayClient.Accounts(),
 		ReconciliationGateway: gatewayClient,

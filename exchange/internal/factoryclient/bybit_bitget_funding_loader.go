@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/shopspring/decimal"
 )
 
 type bybitFundingBoardLoader struct {
@@ -57,6 +58,9 @@ func (loader bybitFundingBoardLoader) LoadFundingBoard(ctx context.Context, scop
 			MarkPrice:       fundingOptionalDecimal(row.MarkPrice),
 			IndexPrice:      fundingOptionalDecimal(row.IndexPrice),
 			OpenInterest:    fundingOptionalNonNegative(row.OpenInterest),
+			OpenInterestNotional: fundingOpenInterestNotional(
+				row.OpenInterest, row.MarkPrice, decimal.NewFromInt(1),
+			),
 		})
 	}
 	return fundingBoardSnapshot(scope, entries), nil

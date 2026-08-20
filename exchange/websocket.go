@@ -69,6 +69,12 @@ type Subscription[T any] interface {
 	Close() error
 }
 
+// BookEvent is the venue-neutral order-book contract exposed by Exchange.
+// EventSnapshot replaces the complete visible book. EventDelta mutates only
+// the supplied levels, and a delta level whose quantity is zero deletes that
+// price. Sequence and Previous are opaque venue tokens; when Previous is
+// present it must equal the last accepted Sequence. A snapshot starts a new
+// sequence generation and may therefore reset that relationship.
 type BookEvent struct {
 	Kind       EventKind   `json:"kind,omitempty"`
 	Instrument Instrument  `json:"instrument"`

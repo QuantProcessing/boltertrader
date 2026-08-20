@@ -48,8 +48,10 @@ type Error struct {
 }
 
 var _ lifecycle.ApplyResultError = Error{}
+var _ lifecycle.ApplyFailureCode = Error{}
 
 func (err Error) ResultMayHaveCommitted() bool { return err.MayHaveCommitted }
+func (err Error) StableFailureCode() string    { return err.Code }
 
 func (err Error) Error() string {
 	parts := []string{"gateway authority rejected request", "code=" + err.Code, "account=" + err.AccountID}
@@ -78,9 +80,9 @@ func (client *Client) ApplyDesired(ctx context.Context, apply lifecycle.DesiredA
 	}
 	desired := httpapi.DesiredApplyRequest{
 		OperationID: string(operationID), AccountID: apply.Account.ID,
-		Venue: apply.Account.Venue, NativeEnvironment: string(apply.Account.NativeEnvironment),
-		SecretRef: ref.RawForTrustedBoundary(), DesiredStateRevision: apply.Account.DesiredStateRevision,
-		RuntimeGeneration: apply.Account.RuntimeGeneration, CredentialVersion: apply.Account.CredentialVersion,
+		RuntimeID: apply.Account.RuntimeID,
+		Venue:     apply.Account.Venue, NativeEnvironment: string(apply.Account.NativeEnvironment),
+		SecretRef:      ref.RawForTrustedBoundary(),
 		RequestedState: string(apply.Account.State), Routes: routes,
 	}
 	view, err := client.runtimeView(ctx, httpapi.AuthorityRequest{
@@ -109,13 +111,12 @@ func (client *Client) GetRuntimeTruth(ctx context.Context, accountID string) (li
 func (client *Client) RetireAccount(ctx context.Context, retire lifecycle.RetireRequest) (lifecycle.GatewayRetirement, error) {
 	operationID, err := secretstore.ParseOperationID(string(retire.OperationID))
 	if err != nil || strings.TrimSpace(retire.AccountID) == "" || retire.AccountID != strings.TrimSpace(retire.AccountID) ||
-		retire.DesiredStateRevision < 1 || retire.RuntimeGeneration < 1 || retire.CredentialVersion < 1 {
+		strings.TrimSpace(retire.RuntimeID) == "" {
 		return lifecycle.GatewayRetirement{}, errors.New("gateway retirement request is invalid")
 	}
 	retirement := httpapi.RetireRequest{
 		OperationID: string(operationID), AccountID: retire.AccountID,
-		DesiredStateRevision: retire.DesiredStateRevision, RuntimeGeneration: retire.RuntimeGeneration,
-		CredentialVersion: retire.CredentialVersion,
+		RuntimeID: retire.RuntimeID,
 	}
 	view, err := client.runtimeView(ctx, httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityRetireDesired,
@@ -213,15 +214,13 @@ func responseError(accountID, operationID string) error {
 
 func authorityFence(fence lifecycle.AccountFence) httpapi.AccountFence {
 	return httpapi.AccountFence{
-		AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
-		RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+		AccountID: fence.AccountID, RuntimeID: fence.RuntimeID,
 	}
 }
 
 func lifecycleFence(fence httpapi.AccountFence) lifecycle.AccountFence {
 	return lifecycle.AccountFence{
-		AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
-		RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+		AccountID: fence.AccountID, RuntimeID: fence.RuntimeID,
 	}
 }
 
@@ -235,10 +234,11 @@ func validRequestedState(state string) bool {
 	}
 }
 
-// runtimeTruth reduces the authority's view to what the lifecycle decides on:
-// the active fence and whether every requested route actually came up. A view
-// that contradicts itself is rejected rather than flattened, because the
-// lifecycle would otherwise promote an account the runtime never accepted.
+// runtimeTruth reduces the authority's view to the active account fence while
+// preserving per-route readiness as separate operational state. An applied
+// snapshot proves that the credential passed its private balance check; private
+// streams and write permissions may still be warming and must not keep the
+// account record in "creating" indefinitely.
 func runtimeTruth(view httpapi.RuntimeView, accountID string) (lifecycle.GatewayRuntimeTruth, error) {
 	if view.AccountID != accountID {
 		return lifecycle.GatewayRuntimeTruth{}, fmt.Errorf("gateway runtime truth identity is invalid")
@@ -251,27 +251,20 @@ func runtimeTruth(view httpapi.RuntimeView, accountID string) (lifecycle.Gateway
 		return truth, nil
 	}
 	operationID, err := secretstore.ParseOperationID(view.Active.OperationID)
-	if err != nil || view.Active.DesiredStateRevision < 1 || view.Active.RuntimeGeneration < 1 ||
-		view.Active.CredentialVersion < 1 || !validRequestedState(view.Active.RequestedState) {
+	if err != nil || strings.TrimSpace(view.Active.RuntimeID) == "" || !validRequestedState(view.Active.RequestedState) {
 		return lifecycle.GatewayRuntimeTruth{}, fmt.Errorf("gateway runtime truth fence is invalid")
 	}
-	ready := len(view.Active.Routes) > 0
 	routes := make([]lifecycle.GatewayRuntimeRoute, 0, len(view.Active.Routes))
 	for _, route := range view.Active.Routes {
-		if route.RouteID == "" || route.RouteProfileID == "" || (route.RequestedState == string(lifecycle.RouteActive) && !route.Ready) {
-			ready = false
-		}
 		routes = append(routes, lifecycle.GatewayRuntimeRoute{
 			RouteID: route.RouteID, Product: lifecycle.Product(route.Product), SettlementAsset: route.SettlementAsset,
 			RouteProfileID: route.RouteProfileID, RequestedState: lifecycle.RouteState(route.RequestedState), Ready: route.Ready,
 		})
 	}
 	truth.OperationID = operationID
-	truth.DesiredStateRevision = view.Active.DesiredStateRevision
-	truth.RuntimeGeneration = view.Active.RuntimeGeneration
-	truth.CredentialVersion = view.Active.CredentialVersion
+	truth.RuntimeID = view.Active.RuntimeID
 	truth.RequestedState = lifecycle.State(view.Active.RequestedState)
 	truth.Routes = routes
-	truth.Active = ready
+	truth.Active = true
 	return truth, nil
 }

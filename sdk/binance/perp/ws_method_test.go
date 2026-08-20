@@ -109,7 +109,7 @@ func TestWsMarketClientUsesRoutedEndpoints(t *testing.T) {
 	client := NewWsMarketClient(context.Background())
 	t.Cleanup(client.Close)
 
-	if WSPublicBaseURL != "wss://fstream.binance.com/public/ws" {
+	if WSPublicBaseURL != "wss://fstream.binance.com/ws" {
 		t.Fatalf("unexpected public websocket constant: %s", WSPublicBaseURL)
 	}
 	if WSBaseURL != WSPublicBaseURL {

@@ -191,6 +191,9 @@ func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest)
 	if route.RouteID != "" && route.RouteID != request.RouteID {
 		return Result{}, ErrWriteNotReady
 	}
+	if request.Leverage < 0 || (route.Product != exchange.ProductPerp && request.Leverage != 0) {
+		return Result{}, fmt.Errorf("%w: leverage is available only for perpetual products", exchange.ErrInvalidRequest)
+	}
 	payload, payloadHash, err := canonicalPlacePayload(request)
 	if err != nil {
 		return Result{}, err
@@ -235,7 +238,7 @@ func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest)
 		return result, err
 	}
 	preparedRequest.ClientOrderID = reserved.ClientOrderID
-	result, err = coordinator.dispatch(ctx, route, prepared, preparedRequest, request.RouteID, request.WriteFence)
+	result, err = coordinator.dispatch(ctx, route, prepared, preparedRequest, request.Leverage, request.RouteID, request.WriteFence)
 	if err != nil {
 		markAccountNotReady(gate)
 	}
@@ -603,8 +606,7 @@ func (coordinator *Coordinator) recoverCommand(ctx context.Context, command stor
 		return false, fmt.Errorf("recover durable order payload failed")
 	}
 	fence := domain.AccountFence{
-		AccountID: payload.AccountID, DesiredStateRevision: payload.DesiredStateRevision,
-		RuntimeGeneration: payload.RuntimeGeneration, CredentialVersion: payload.CredentialVersion,
+		AccountID: payload.AccountID, RuntimeID: payload.RuntimeID,
 	}
 	var route Route
 	if recoveryRouter, ok := coordinator.router.(FencedRecoveryRouter); ok {
@@ -627,21 +629,24 @@ func (coordinator *Coordinator) recoverCommand(ctx context.Context, command stor
 		Side: payload.Side, Type: payload.Type, Quantity: quantity, LimitPrice: limitPrice,
 		LimitPolicy: payload.LimitPolicy, ReduceOnly: payload.ReduceOnly,
 	}
+	if payload.Leverage < 0 || (route.Product != exchange.ProductPerp && payload.Leverage != 0) {
+		return false, fmt.Errorf("recover durable order payload failed")
+	}
 	if err := request.Validate(route.Product); err != nil {
 		return false, fmt.Errorf("recover durable order payload failed")
 	}
 	if command.State == domain.StatePrepared {
-		writeFence := account.WriteFence{AccountID: payload.AccountID, DesiredStateRevision: payload.DesiredStateRevision, RuntimeGeneration: payload.RuntimeGeneration, CredentialVersion: payload.CredentialVersion}
+		writeFence := account.WriteFence{AccountID: payload.AccountID, RuntimeID: payload.RuntimeID}
 		if route.CheckWriteFence == nil || validateWriteFence(writeFence, command.AccountID) != nil {
 			return false, ErrWriteNotReady
 		}
-		result, dispatchErr := coordinator.dispatch(ctx, route, command, request, payload.RouteID, writeFence)
+		result, dispatchErr := coordinator.dispatch(ctx, route, command, request, payload.Leverage, payload.RouteID, writeFence)
 		return dispatchErr == nil && result.State != domain.StateUncertain, dispatchErr
 	}
 	return coordinator.reconcile(ctx, route, command)
 }
 
-func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest, routeID domain.RouteID, fence account.WriteFence) (result Result, returnErr error) {
+func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest, leverage int, routeID domain.RouteID, fence account.WriteFence) (result Result, returnErr error) {
 	if route.CheckWriteFence == nil || validateWriteFence(fence, prepared.AccountID) != nil {
 		return resultFromStored(prepared), ErrWriteNotReady
 	}
@@ -649,8 +654,7 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 	if route.Admission != nil {
 		var err error
 		lease, err = route.Admission.Acquire(domain.WriteFence{AccountFence: domain.AccountFence{
-			AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
-			RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+			AccountID: fence.AccountID, RuntimeID: fence.RuntimeID,
 		}, RouteID: routeID})
 		if err != nil {
 			return resultFromStored(prepared), ErrWriteNotReady
@@ -674,6 +678,15 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 	if err := route.CheckWriteFence(fence); err != nil {
 		return resultFromStored(dispatching), ErrWriteNotReady
 	}
+	if leverage > 0 {
+		driver, ok := route.Driver.(LeverageDriver)
+		if !ok {
+			return resultFromStored(dispatching), fmt.Errorf("set leverage precondition: %w", exchange.ErrUnsupported)
+		}
+		if err := driver.SetLeverage(ctx, route.Instrument, leverage); err != nil {
+			return resultFromStored(dispatching), err
+		}
+	}
 	handoffID, err := coordinator.identity.EventID()
 	if err != nil {
 		return resultFromStored(dispatching), ErrOutcomeUncertain
@@ -681,8 +694,7 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 	if _, err := coordinator.store.BeginOrderHandoff(ctx, store.BeginOrderHandoffRequest{
 		HandoffID: handoffID, CommandID: dispatching.CommandID, AccountID: dispatching.AccountID,
 		RouteID: routeID, Fence: domain.AccountFence{
-			AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
-			RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+			AccountID: fence.AccountID, RuntimeID: fence.RuntimeID,
 		},
 	}); err != nil {
 		return resultFromStored(dispatching), ErrOutcomeUncertain

@@ -121,16 +121,15 @@ func TestApplyDesiredCarriesTheWholeDesiredSnapshotAndReducesTheRuntimeView(t *t
 	}
 }
 
-// Active is what promotes an account out of creating, so it may only be true
-// when every route the operator asked to be live actually reports ready: a
-// half-attached account that looked active would take orders it cannot route.
-func TestRuntimeTruthIsActiveOnlyWhenEveryRequestedRouteIsUp(t *testing.T) {
+// Active means the immutable snapshot was promoted. Per-route Ready remains a
+// separate signal used by admission and the settings page; a private stream
+// warming up must not undo successful credential verification.
+func TestRuntimeTruthKeepsRouteReadinessSeparateFromActiveSnapshot(t *testing.T) {
 	tests := map[string]struct {
 		mutate func(*httpapi.RuntimeSnapshotView)
-		active bool
 	}{
-		"all routes ready": {mutate: nil, active: true},
-		"disabled route not up": {active: true, mutate: func(snapshot *httpapi.RuntimeSnapshotView) {
+		"all routes ready": {mutate: nil},
+		"disabled route not up": {mutate: func(snapshot *httpapi.RuntimeSnapshotView) {
 			snapshot.Routes[0].RequestedState = "disabled"
 			snapshot.Routes[0].Ready = false
 		}},
@@ -154,8 +153,8 @@ func TestRuntimeTruthIsActiveOnlyWhenEveryRequestedRouteIsUp(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetRuntimeTruth: %v", err)
 			}
-			if truth.Active != test.active {
-				t.Fatalf("Active = %v, want %v", truth.Active, test.active)
+			if !truth.Active {
+				t.Fatal("promoted snapshot was hidden by route readiness")
 			}
 		})
 	}

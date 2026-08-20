@@ -113,9 +113,81 @@ func TestBitgetBuildersSatisfyExchangeContracts(t *testing.T) {
 		})},
 	}
 
-	var _ exchange.SpotClient = NewBitgetSpot("key", "secret", "passphrase", settings)
-	var _ exchange.PerpClient = NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
-	var _ exchange.PerpClient = NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", settings)
+	spot := NewBitgetSpot("key", "secret", "passphrase", settings)
+	usdtPerp := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
+	usdcPerp := NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", settings)
+	var _ exchange.SpotClient = spot
+	var _ exchange.PerpClient = usdtPerp
+	var _ exchange.PerpClient = usdcPerp
+	if _, ok := spot.(exchange.ExactOrderLookup); !ok {
+		t.Fatalf("%T does not implement ExactOrderLookup", spot)
+	}
+	if _, ok := usdtPerp.(exchange.ExactOrderLookup); !ok {
+		t.Fatalf("%T does not implement ExactOrderLookup", usdtPerp)
+	}
+	if _, ok := usdcPerp.(exchange.ExactOrderLookup); !ok {
+		t.Fatalf("%T does not implement ExactOrderLookup", usdcPerp)
+	}
+}
+
+func TestBitgetExactOrderLookupIsInstrumentScoped(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		product      exchange.Product
+		settlement   string
+		wantCategory string
+		build        func(Settings) any
+	}{
+		{name: "spot", product: exchange.ProductSpot, wantCategory: "spot", build: func(settings Settings) any {
+			return NewBitgetSpot("key", "secret", "passphrase", settings)
+		}},
+		{name: "usdt perp", product: exchange.ProductPerp, settlement: "USDT", wantCategory: "USDT-FUTURES", build: func(settings Settings) any {
+			return NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
+		}},
+		{name: "usdc perp", product: exchange.ProductPerp, settlement: "USDC", wantCategory: "USDC-FUTURES", build: func(settings Settings) any {
+			return NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", settings)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			symbol := "BTC-USDT"
+			if test.settlement == "USDC" {
+				symbol = "BTC-USDC"
+			}
+			instrument := bybitBitgetTestInstrument(exchange.VenueBitget, test.product, symbol)
+			native := instrument.Identity.NativeSymbol
+			var query string
+			settings := bybitBitgetStaticCatalogSettings(t, Settings{
+				Endpoint: "https://exact-order.invalid",
+				HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+					query = request.URL.Query().Encode()
+					if request.URL.Path != "/api/v3/trade/order-info" {
+						return bitgetDataError("40017", "unexpected route"), nil
+					}
+					row := strings.ReplaceAll(bitgetOrderJSON("11", "101", "filled", false), "BTCUSDT", native)
+					return bitgetData(row), nil
+				})},
+			}, exchange.VenueBitget, test.product, symbol)
+			raw := test.build(settings)
+			client, ok := raw.(exchange.ExactOrderLookup)
+			if !ok {
+				t.Fatalf("%T does not implement ExactOrderLookup", raw)
+			}
+			result, err := client.LookupExactOrder(context.Background(), exchange.ExactOrderLookupRequest{
+				Instrument: &instrument, ClientOrderID: "101",
+			})
+			if err != nil {
+				t.Fatalf("LookupExactOrder: %v", err)
+			}
+			if result.Status != exchange.ExactOrderFound || result.Order.Status != "filled" || result.Order.NativeSymbol != native {
+				t.Fatalf("result=%+v", result)
+			}
+			for _, part := range []string{"category=" + test.wantCategory, "symbol=" + native, "clientOid=101"} {
+				if !strings.Contains(query, part) {
+					t.Fatalf("query=%q, missing %q", query, part)
+				}
+			}
+		})
+	}
 }
 
 func TestBitgetUSDCPerpUsesUSDCFuturesProductTypeAndMarginCoin(t *testing.T) {

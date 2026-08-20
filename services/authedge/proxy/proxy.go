@@ -27,6 +27,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	"github.com/QuantProcessing/boltertrader/services/authedge/session"
+	"github.com/coder/websocket"
 )
 
 const (
@@ -202,8 +203,71 @@ func (proxy *Proxy) handler(route Route) http.Handler {
 		if !ok {
 			return
 		}
+		if route.WebSocket {
+			proxy.forwardWebSocket(w, r, outbound)
+			return
+		}
 		proxy.forward(w, r, route, outbound)
 	})
+}
+
+func (proxy *Proxy) forwardWebSocket(w http.ResponseWriter, r *http.Request, outbound *http.Request) {
+	target := *outbound.URL
+	switch target.Scheme {
+	case "http":
+		target.Scheme = "ws"
+	case "https":
+		target.Scheme = "wss"
+	default:
+		httpx.WriteError(w, http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "upstream service is unavailable", nil, true, httpx.RequestID(r))
+		return
+	}
+	upstream, response, err := websocket.Dial(r.Context(), target.String(), &websocket.DialOptions{
+		HTTPClient: proxy.client,
+		HTTPHeader: outbound.Header.Clone(),
+	})
+	// coder/websocket returns the 101 response for a successful upgrade, but its
+	// Body is nil because the connection has already been detached from HTTP.
+	// Only failed handshakes carry a response body to drain.
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "upstream service is unavailable", nil, true, httpx.RequestID(r))
+		return
+	}
+	defer upstream.CloseNow()
+
+	downstream, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer downstream.CloseNow()
+	downstream.SetReadLimit(1 << 20)
+	upstream.SetReadLimit(1 << 20)
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	errors := make(chan error, 2)
+	go relayWebSocket(ctx, upstream, downstream, errors)
+	go relayWebSocket(ctx, downstream, upstream, errors)
+	<-errors
+}
+
+func relayWebSocket(ctx context.Context, destination, source *websocket.Conn, result chan<- error) {
+	for {
+		messageType, payload, err := source.Read(ctx)
+		if err == nil {
+			err = destination.Write(ctx, messageType, payload)
+		}
+		if err != nil {
+			select {
+			case result <- err:
+			case <-ctx.Done():
+			}
+			return
+		}
+	}
 }
 
 func hasSessionCookie(r *http.Request) bool {

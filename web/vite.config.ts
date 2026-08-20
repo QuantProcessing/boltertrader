@@ -24,6 +24,7 @@ export default defineConfig({
       "/api": {
         target: AUTH_EDGE,
         changeOrigin: false,
+        ws: true,
         // The realtime stream is server-sent events. Buffering it would hold
         // every event until the connection closed, which is never.
         configure: (proxy) => {

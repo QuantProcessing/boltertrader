@@ -122,17 +122,20 @@ type arbitragePreview struct {
 }
 
 type arbitrageOpportunityLeg struct {
-	Venue           string    `json:"venue"`
-	Environment     string    `json:"environment"`
-	AccountID       string    `json:"accountId,omitempty"`
-	InstrumentID    string    `json:"instrumentId,omitempty"`
-	Rate            string    `json:"rate"`
-	IntervalHours   int64     `json:"intervalHours,omitempty"`
-	NextFundingTime time.Time `json:"nextFundingTime,omitzero"`
-	MarkPrice       string    `json:"markPrice,omitempty"`
-	OpenInterest    string    `json:"openInterest,omitempty"`
-	DailyRate       string    `json:"dailyRate,omitempty"`
-	Stale           bool      `json:"stale,omitempty"`
+	Venue                string    `json:"venue"`
+	Environment          string    `json:"environment"`
+	RouteProfileID       string    `json:"routeProfileId"`
+	Settlement           string    `json:"settlement,omitempty"`
+	AccountID            string    `json:"accountId,omitempty"`
+	InstrumentID         string    `json:"instrumentId,omitempty"`
+	Rate                 string    `json:"rate"`
+	IntervalHours        int64     `json:"intervalHours,omitempty"`
+	NextFundingTime      time.Time `json:"nextFundingTime,omitzero"`
+	MarkPrice            string    `json:"markPrice,omitempty"`
+	OpenInterest         string    `json:"openInterest,omitempty"`
+	OpenInterestNotional string    `json:"openInterestNotional,omitempty"`
+	DailyRate            string    `json:"dailyRate,omitempty"`
+	Stale                bool      `json:"stale,omitempty"`
 }
 
 type arbitrageOpportunity struct {
@@ -242,19 +245,13 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 		tradingError(w, http.StatusServiceUnavailable, "PUBLIC_DATA_NOT_READY")
 		return
 	}
-	snapshot, err := handler.trading.options.Catalog.Snapshot(r.Context())
-	if err != nil {
-		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
-		return
-	}
-	reachable := handler.reachableVenues(r, principal, snapshot)
+	reachable := handler.reachableProfiles(r, principal)
 
 	// Group the board by underlying, then pick the extremes: the venue paying
 	// the most is the one to be short on, the venue paying the least is the one
 	// to be long on. Any other pairing on the same underlying earns strictly
 	// less, so there is exactly one interesting pair per row.
 	grouped := map[boardKey][]arbitrageOpportunityLeg{}
-	symbols := map[boardKey]string{}
 	for _, venue := range board.Venues {
 		if venue.Unavailable || venue.Product != arbitrageProduct {
 			continue
@@ -265,25 +262,26 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 			}
 			key := boardKey{base: row.BaseAsset, quote: row.QuoteAsset}
 			leg := arbitrageOpportunityLeg{
-				Venue: venue.Venue, Environment: venue.Environment, Rate: row.Rate,
+				Venue: venue.Venue, Environment: venue.Environment,
+				RouteProfileID: venue.RouteProfileID, Settlement: venue.Settlement,
+				InstrumentID: row.InstrumentID, Rate: row.Rate,
 				IntervalHours: row.IntervalHours, NextFundingTime: row.NextFundingTime,
-				MarkPrice: row.MarkPrice, OpenInterest: row.OpenInterest, Stale: venue.Stale,
+				MarkPrice: row.MarkPrice, OpenInterest: row.OpenInterest,
+				OpenInterestNotional: row.OpenInterestNotional, Stale: venue.Stale,
 			}
 			if daily, ok := dailyFundingRate(row.Rate, row.IntervalHours); ok {
 				leg.DailyRate = daily.String()
 			}
-			if account, found := reachable[venueKey{venue: venue.Venue, environment: venue.Environment}]; found {
-				leg.AccountID = account.accountID
-				leg.InstrumentID = account.instruments[key]
+			if accountID, found := reachable[venue.RouteProfileID]; found {
+				leg.AccountID = accountID
 			}
 			grouped[key] = append(grouped[key], leg)
-			symbols[key] = row.Symbol
 		}
 	}
 
 	items := make([]arbitrageOpportunity, 0, len(grouped))
 	for key, legs := range grouped {
-		opportunity, ok := buildOpportunity(key, symbols[key], legs)
+		opportunity, ok := buildOpportunity(key, legs)
 		if !ok {
 			continue
 		}
@@ -314,7 +312,7 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 	})
 }
 
-func buildOpportunity(key boardKey, symbol string, legs []arbitrageOpportunityLeg) (arbitrageOpportunity, bool) {
+func buildOpportunity(key boardKey, legs []arbitrageOpportunityLeg) (arbitrageOpportunity, bool) {
 	// One quote per exchange, so the two extremes below cannot land on the same
 	// one. A hedge with both legs on one exchange is not a hedge — it is
 	// delta-neutral against nothing and pays no spread.
@@ -358,11 +356,8 @@ func buildOpportunity(key boardKey, symbol string, legs []arbitrageOpportunityLe
 	long, short := venues[lowest], venues[highest]
 
 	opportunity := arbitrageOpportunity{
-		Symbol: symbol, BaseAsset: key.base, QuoteAsset: key.quote,
+		Symbol: key.base + "-" + key.quote, BaseAsset: key.base, QuoteAsset: key.quote,
 		Long: long, Short: short, Blockers: []string{},
-	}
-	if opportunity.Symbol == "" {
-		opportunity.Symbol = key.base + "-" + key.quote
 	}
 	longDaily, longOK := decimal.NewFromString(long.DailyRate)
 	shortDaily, shortOK := decimal.NewFromString(short.DailyRate)
@@ -377,7 +372,7 @@ func buildOpportunity(key boardKey, symbol string, legs []arbitrageOpportunityLe
 		opportunity.Blockers = append(opportunity.Blockers, "account_unreachable")
 	}
 	if long.InstrumentID == "" || short.InstrumentID == "" {
-		opportunity.Blockers = append(opportunity.Blockers, "instrument_unlisted")
+		opportunity.Blockers = append(opportunity.Blockers, "instrument_identity_unresolved")
 	}
 	if long.Stale || short.Stale {
 		opportunity.Blockers = append(opportunity.Blockers, "board_stale")
@@ -401,20 +396,13 @@ func compareRates(left, right arbitrageOpportunityLeg) int {
 
 type boardKey struct{ base, quote string }
 
-type venueKey struct{ venue, environment string }
-
-type reachableVenue struct {
-	accountID   string
-	instruments map[boardKey]string
-}
-
-// reachableVenues resolves the caller's named accounts into venues it can trade,
-// and the instrument each venue lists the underlying under. Unknown, foreign or
+// reachableProfiles resolves the caller's named accounts into exact route
+// profiles they can trade. Unknown, foreign or
 // not-ready accounts drop out silently here — the route reports them as
 // unreachable rather than as errors, because an operator with three accounts
 // asking about a twelve-venue board is the normal case, not a fault.
-func (handler *arbitrageProductHandler) reachableVenues(r *http.Request, principal string, snapshot catalog.Snapshot) map[venueKey]reachableVenue {
-	reachable := map[venueKey]reachableVenue{}
+func (handler *arbitrageProductHandler) reachableProfiles(r *http.Request, principal string) map[string]string {
+	reachable := map[string]string{}
 	authority := handler.trading.options.ManualAccounts
 	if authority == nil {
 		return reachable
@@ -428,22 +416,15 @@ func (handler *arbitrageProductHandler) reachableVenues(r *http.Request, princip
 		if err != nil || account.ID != identifier || !arbitrageAccountReady(account) {
 			continue
 		}
-		key := venueKey{venue: account.Venue, environment: account.VenueEnvironment}
-		if _, exists := reachable[key]; exists {
-			continue
-		}
-		entry := reachableVenue{accountID: account.ID, instruments: map[boardKey]string{}}
-		for _, instrument := range snapshot.Instruments {
-			if !instrument.Ready || instrument.Product != arbitrageProduct ||
-				instrument.Venue != account.Venue || instrument.Environment != account.VenueEnvironment {
+		for _, route := range account.Routes {
+			if route.RequestedState != manualAccountActive || route.Product != arbitrageProduct ||
+				strings.TrimSpace(route.RouteProfileID) == "" {
 				continue
 			}
-			if _, routed := manualAccountRoute(account, instrument.Product, instrument.Settlement); !routed {
-				continue
+			if _, exists := reachable[route.RouteProfileID]; !exists {
+				reachable[route.RouteProfileID] = account.ID
 			}
-			entry.instruments[boardKey{base: instrument.BaseAsset, quote: instrument.QuoteAsset}] = instrument.InstrumentID
 		}
-		reachable[key] = entry
 	}
 	return reachable
 }
@@ -564,8 +545,7 @@ func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, 
 			AccountID: account.ID, InstrumentID: side.request.InstrumentID, LimitPrice: side.request.LimitPrice,
 			Venue: route.Venue, VenueEnvironment: route.VenueEnvironment, Product: route.Product, RouteID: route.RouteID,
 			Fence: manualAccountFence{
-				AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
-				RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
+				AccountID: account.ID, RuntimeID: manualRuntimeID(account),
 			},
 		}
 	}
@@ -587,10 +567,9 @@ func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, 
 }
 
 func arbitrageUnderlying(snapshot catalog.Snapshot, instrumentID string) (string, string, bool) {
-	for _, instrument := range snapshot.Instruments {
-		if instrument.InstrumentID == instrumentID && instrument.Ready {
-			return instrument.BaseAsset, instrument.QuoteAsset, instrument.BaseAsset != "" && instrument.QuoteAsset != ""
-		}
+	instrument, found := snapshot.Instrument(instrumentID)
+	if found && instrument.Ready {
+		return instrument.BaseAsset, instrument.QuoteAsset, instrument.BaseAsset != "" && instrument.QuoteAsset != ""
 	}
 	return "", "", false
 }
@@ -814,7 +793,7 @@ func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.
 func arbitrageLegSealed(leg arbitrageLegAuthority) bool {
 	return leg.AccountID != "" && leg.InstrumentID != "" && leg.Venue != "" && leg.VenueEnvironment != "" &&
 		leg.Product == arbitrageProduct && leg.RouteID != "" && leg.Fence.AccountID == leg.AccountID &&
-		leg.Fence.DesiredStateRevision >= 1 && leg.Fence.RuntimeGeneration >= 1 && leg.Fence.CredentialVersion >= 1
+		strings.TrimSpace(leg.Fence.RuntimeID) != ""
 }
 
 // submitLegs places the legs in order and stops at the first one that fails.
@@ -882,7 +861,7 @@ func (handler *arbitrageProductHandler) placeLeg(r *http.Request, principal, lin
 		order.Leg, order.Authority.InstrumentID, side, order.Quantity, order.OrderType,
 		order.LimitPrice, order.TimeInForce, order.Authority.RouteID,
 		order.Counter.AccountID, order.Counter.InstrumentID, order.ReduceOnly,
-		order.Authority.Fence.DesiredStateRevision, order.Authority.Fence.RuntimeGeneration, order.Authority.Fence.CredentialVersion,
+		order.Authority.Fence.RuntimeID,
 	)
 	if err != nil {
 		return orders.Command{}, false, err
@@ -1030,8 +1009,7 @@ func (handler *arbitrageProductHandler) closeAuthority(r *http.Request, principa
 		AccountID: account.ID, InstrumentID: position.InstrumentID,
 		Venue: route.Venue, VenueEnvironment: route.VenueEnvironment, Product: route.Product, RouteID: route.RouteID,
 		Fence: manualAccountFence{
-			AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
-			RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
+			AccountID: account.ID, RuntimeID: manualRuntimeID(account),
 		},
 	}, true
 }
@@ -1236,7 +1214,7 @@ func arbitrageAccountReady(account ManualAccount) bool {
 // manualAccountReady records: the two were only ever cross-checked against each
 // other, and with one environment left the check admitted nothing in test mode.
 func accountReadyFor(account ManualAccount, productID string) bool {
-	if account.ID == "" || account.RuntimeGeneration < 1 || account.DesiredStateRevision < 1 || account.CredentialVersion < 1 || account.State != manualAccountActive {
+	if account.ID == "" || manualRuntimeID(account) == "" || account.State != manualAccountActive {
 		return false
 	}
 	for _, candidate := range account.ProductIDs {

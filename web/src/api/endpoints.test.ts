@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { currentCsrfToken, setCsrfToken } from "./client";
-import { accounts, auth, catalog, manual, market, trading } from "./endpoints";
+import { accountData, accounts, auth, catalog, manual, market, trading } from "./endpoints";
 import type { CredentialBundle } from "./types";
 
 /* ---------------------------------------------------------------------------
@@ -42,9 +42,6 @@ const account = (over: Record<string, unknown> = {}) => ({
   displayName: "Binance",
   productPolicy: ["manual"],
   status: "active",
-  desiredStateRevision: 7,
-  runtimeGeneration: 2,
-  credentialVersion: 1,
   lastValidatedAt: null,
   updatedAt: "2026-08-13T00:00:00Z",
   ...over,
@@ -54,6 +51,7 @@ const bundle: CredentialBundle = {
   schemaVersion: 1,
   venue: "binance",
   authKind: "hmac",
+  metadata: {},
   secrets: { apiKey: "k", apiSecret: "s" },
 };
 
@@ -63,42 +61,27 @@ afterEach(() => {
 });
 
 describe("the account lifecycle", () => {
-  it("builds the If-Match ETag exactly as the gateway mints it", async () => {
+  it("disables an account without exposing revision management", async () => {
     const calls = record({ data: { account: account() } });
 
-    await accounts.validate("acct-1", 7);
+    await accounts.disable("acct-1");
 
-    expect(headersOf(calls[0]!.init)["If-Match"]).toBe('"desired-state-revision-7"');
+    expect(calls[0]!.init.body).toBeUndefined();
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(headersOf(calls[0]!.init)["If-Match"]).toBeUndefined();
   });
 
-  it("sends no body on validate, disable and drain", async () => {
-    const calls = record({ data: { account: account() } });
-
-    await accounts.validate("acct-1", 7);
-    await accounts.disable("acct-1", 7);
-    await accounts.drain("acct-1", 7);
-
-    // The gateway reads the body and rejects anything that is not empty or
-    // `{}`, so an unused `{}` here would be a 400 rather than a no-op.
-    for (const call of calls) {
-      expect(call.init.body).toBeUndefined();
-      expect(call.init.method).toBe("POST");
-    }
-  });
-
-  it("carries an idempotency key on the mutations that write or destroy credential material", async () => {
+  it("carries an idempotency key when credentials are created or destroyed", async () => {
     const calls = record({ data: { account: account() } });
 
     await accounts.create(
       { venue: "binance", displayName: "n", productPolicy: ["manual"], routes: [], credentialBundle: bundle },
       "key-create",
     );
-    await accounts.rotate("acct-1", 7, bundle, "key-rotate");
-    await accounts.remove("acct-1", 7, "key-remove");
+    await accounts.remove("acct-1", "key-remove");
 
     expect(headersOf(calls[0]!.init)["Idempotency-Key"]).toBe("key-create");
-    expect(headersOf(calls[1]!.init)["Idempotency-Key"]).toBe("key-rotate");
-    expect(headersOf(calls[2]!.init)["Idempotency-Key"]).toBe("key-remove");
+    expect(headersOf(calls[1]!.init)["Idempotency-Key"]).toBe("key-remove");
   });
 
   it("omits If-Match on create alone, because there is no revision to match yet", async () => {
@@ -110,14 +93,6 @@ describe("the account lifecycle", () => {
     );
 
     expect(headersOf(calls[0]!.init)["If-Match"]).toBeUndefined();
-  });
-
-  it("wraps a rotation's bundle in the field name the gateway decodes", async () => {
-    const calls = record({ data: { account: account() } });
-
-    await accounts.rotate("acct-1", 7, bundle, "key-rotate");
-
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ credentialBundle: bundle });
   });
 
   it("reads the gateway plane's envelope, which has no meta key", async () => {
@@ -154,6 +129,17 @@ describe("trading envelopes", () => {
     expect(calls[0]!.url).toBe("/api/v1/accounts/acct-1/runtimes");
   });
 
+  it("scopes live venue positions to one owned account and instrument", async () => {
+    const calls = record({ meta: {}, data: { items: [{ quantity: "1" }] } });
+
+    const positions = await accountData.positions("acct-1", "binance:live:perp:USDT:BTC-USDT");
+
+    expect(positions).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      "/api/v1/account-positions?accountId=acct-1&instrumentId=binance%3Alive%3Aperp%3AUSDT%3ABTC-USDT",
+    );
+  });
+
   it("keeps the catalog's bare array and its projection metadata together", async () => {
     record({ meta: {}, data: [{ venue: "binance" }], projection: { revision: "3", staleness: "fresh" } });
 
@@ -167,10 +153,7 @@ describe("trading envelopes", () => {
     record({ meta: {}, data: { candles: [] }, rateLimit: { remaining: 900 } });
 
     const page = await market.candles({
-      venue: "binance",
-      environment: "live",
-      product: "spot",
-      instrumentId: "BTC-USDT",
+      instrumentId: "binance:live:spot:BTC-USDT",
       interval: "1m",
     });
 

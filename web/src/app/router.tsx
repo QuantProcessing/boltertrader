@@ -22,7 +22,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { Outlet, createRootRouteWithContext, createRoute, createRouter, redirect } from "@tanstack/react-router";
 
-import type { ModeStore } from "@/app/mode";
 import type { SessionStore } from "@/app/session";
 import { AppShell } from "@/app/shell/app-shell";
 import { ActivityPage } from "@/routes/activity";
@@ -35,7 +34,6 @@ import { TradePage } from "@/routes/trade";
 
 export interface RouterContext {
   session: SessionStore;
-  mode: ModeStore;
   queryClient: QueryClient;
 }
 
@@ -51,6 +49,8 @@ export interface RouterContext {
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
     readOnly?: boolean;
+    /** The route uses the full viewport rather than the shared reading width. */
+    fullBleed?: boolean;
   }
 }
 
@@ -107,8 +107,8 @@ const appRoute = createRoute({
     if (snapshot.status === "authenticated") return;
     // A signed-out visitor reaches a read-only route on the strength of the
     // route saying so, and nothing else. They are not sent to `/login` and not
-    // asked to choose a mode here: the entry modal renders inside the shell, so
-    // it can put the choice in front of a live market rather than a blank page.
+    // asked to make an entry choice here: the disclosure renders inside the
+    // shell, so it can sit over a live market rather than a blank page.
     if (opensToReadOnly(matches)) return;
     // `location.href` is the full path with search, so signing in returns the
     // operator to the screen they asked for rather than to the default one.
@@ -138,7 +138,9 @@ const indexRoute = createRoute({
  * session. This flag and that table have to agree: opening a route here whose
  * requests the edge still guards renders a screen of 401s.
  *
- * `/portfolio`, `/activity` and `/settings` are private by nature.
+ * `/portfolio` and `/activity` are private by nature. `/settings` opens only
+ * far enough to explain why account configuration requires sign-in; the page
+ * mounts no private query until a session is authenticated.
  * `/funding/arbitrage` looks like it belongs with these two but does not: its
  * `opportunities()` handler asks for an identity before it does anything else,
  * so opening it here would produce exactly that screen of 401s.
@@ -146,7 +148,7 @@ const indexRoute = createRoute({
 const tradeRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/trade",
-  staticData: { readOnly: true },
+  staticData: { readOnly: true, fullBleed: true },
   component: TradePage,
 });
 
@@ -185,7 +187,12 @@ const arbitrageRoute = createRoute({
 
 const portfolioRoute = createRoute({ getParentRoute: () => appRoute, path: "/portfolio", component: PortfolioPage });
 const activityRoute = createRoute({ getParentRoute: () => appRoute, path: "/activity", component: ActivityPage });
-const settingsRoute = createRoute({ getParentRoute: () => appRoute, path: "/settings", component: SettingsPage });
+const settingsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/settings",
+  staticData: { readOnly: true },
+  component: SettingsPage,
+});
 
 const routeTree = rootRoute.addChildren([
   loginRoute,

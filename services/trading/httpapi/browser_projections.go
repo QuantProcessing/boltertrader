@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -57,11 +58,13 @@ type RouteRuntimeProjection struct {
 }
 
 type RuntimeSnapshotProjection struct {
-	DesiredStateRevision int64                    `json:"desiredStateRevision"`
-	RuntimeGeneration    int64                    `json:"runtimeGeneration"`
-	CredentialVersion    int64                    `json:"credentialVersion"`
-	RequestedState       string                   `json:"requestedState"`
-	Routes               []RouteRuntimeProjection `json:"routes"`
+	RuntimeID      string                   `json:"-"`
+	RequestedState string                   `json:"requestedState"`
+	Routes         []RouteRuntimeProjection `json:"routes"`
+	// Deprecated source-compatibility fields; never sent to the browser.
+	DesiredStateRevision int64 `json:"-"`
+	RuntimeGeneration    int64 `json:"-"`
+	CredentialVersion    int64 `json:"-"`
 }
 
 type PendingRuntimeSnapshotProjection struct {
@@ -71,25 +74,75 @@ type PendingRuntimeSnapshotProjection struct {
 }
 
 type AccountRuntimeProjection struct {
-	AccountID                       string                            `json:"accountId"`
-	Active                          *RuntimeSnapshotProjection        `json:"active,omitempty"`
-	Pending                         *PendingRuntimeSnapshotProjection `json:"pending,omitempty"`
-	Retiring                        []RuntimeSnapshotProjection       `json:"retiring"`
-	DesiredStateRevision            int64                             `json:"desiredStateRevision"`
-	RuntimeGeneration               int64                             `json:"runtimeGeneration"`
-	CredentialVersion               int64                             `json:"credentialVersion"`
-	RuntimeVersion                  int64                             `json:"runtimeVersion"`
-	Readiness                       ProjectionReadiness               `json:"readiness"`
-	WriteReadiness                  ProjectionReadiness               `json:"writeReadiness"`
-	LastAppliedDesiredStateRevision int64                             `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    int64                             `json:"lastAppliedRuntimeGeneration"`
-	BlockedReason                   *string                           `json:"blockedReason"`
-	Capabilities                    []AccountCapabilityProjection     `json:"capabilities"`
-	ObservedAt                      time.Time                         `json:"observedAt"`
+	AccountID      string                            `json:"accountId"`
+	RuntimeID      string                            `json:"-"`
+	Active         *RuntimeSnapshotProjection        `json:"active,omitempty"`
+	Pending        *PendingRuntimeSnapshotProjection `json:"pending,omitempty"`
+	Retiring       []RuntimeSnapshotProjection       `json:"retiring"`
+	Readiness      ProjectionReadiness               `json:"readiness"`
+	WriteReadiness ProjectionReadiness               `json:"writeReadiness"`
+	BlockedReason  *string                           `json:"blockedReason"`
+	Capabilities   []AccountCapabilityProjection     `json:"capabilities"`
+	ObservedAt     time.Time                         `json:"observedAt"`
+	// Deprecated source-compatibility fields; never sent to the browser.
+	DesiredStateRevision            int64 `json:"-"`
+	RuntimeGeneration               int64 `json:"-"`
+	CredentialVersion               int64 `json:"-"`
+	RuntimeVersion                  int64 `json:"-"`
+	LastAppliedDesiredStateRevision int64 `json:"-"`
+	LastAppliedRuntimeGeneration    int64 `json:"-"`
 }
 
 type AccountRuntimeProjectionReader interface {
 	ListAccountRuntimes(context.Context, string, string) ([]AccountRuntimeProjection, error)
+}
+
+// AccountBalanceProjection is the browser-safe slice of a venue balance. The
+// Gateway owns the raw resource and its account routing; trading owns the
+// principal-scoped browser projection, so account facts do not bypass the same
+// identity boundary as positions and orders.
+type AccountBalanceProjection struct {
+	AccountID       string `json:"accountId"`
+	Product         string `json:"product"`
+	SettlementAsset string `json:"settlementAsset,omitempty"`
+	Asset           string `json:"asset"`
+	Available       string `json:"available"`
+	AvailableMargin string `json:"availableMargin,omitempty"`
+	Locked          string `json:"locked"`
+	Total           string `json:"total"`
+}
+
+type AccountBalanceProjectionReader interface {
+	ListAccountBalances(context.Context, string, string) ([]AccountBalanceProjection, error)
+}
+
+// AccountPositionProjection is the current venue position for one owned
+// account. Quantity is signed so every browser consumer reads long/short the
+// same way: positive is long, negative is short.
+type AccountPositionProjection struct {
+	AccountID     string `json:"accountId"`
+	InstrumentID  string `json:"instrumentId"`
+	Side          string `json:"side,omitempty"`
+	Quantity      string `json:"quantity"`
+	EntryPrice    string `json:"entryPrice"`
+	MarkPrice     string `json:"markPrice"`
+	UnrealizedPnL string `json:"unrealizedPnl"`
+}
+
+type AccountPositionProjectionReader interface {
+	ListAccountPositions(context.Context, string, string, string) ([]AccountPositionProjection, error)
+}
+
+type FailClosedAccountBalanceProjectionReader struct{}
+
+func (FailClosedAccountBalanceProjectionReader) ListAccountBalances(context.Context, string, string) ([]AccountBalanceProjection, error) {
+	return nil, fmt.Errorf("account balance projection is unavailable")
+}
+
+type FailClosedAccountPositionProjectionReader struct{}
+
+func (FailClosedAccountPositionProjectionReader) ListAccountPositions(context.Context, string, string, string) ([]AccountPositionProjection, error) {
+	return nil, fmt.Errorf("account position projection is unavailable")
 }
 
 type FailClosedAccountRuntimeProjectionReader struct{}
@@ -200,21 +253,65 @@ func (log *ActivityLog) ListActivity(_ context.Context, principal string, query 
 
 type BrowserProjectionRoutesOptions struct {
 	Runtimes  AccountRuntimeProjectionReader
+	Balances  AccountBalanceProjectionReader
+	Positions AccountPositionProjectionReader
 	Commands  CommandProjectionReader
 	Activity  ActivityProjectionReader
 	Principal func(*http.Request) (principalID string, err error)
 }
 
 func RegisterBrowserProjectionRoutes(mux *http.ServeMux, options BrowserProjectionRoutesOptions) error {
-	if mux == nil || options.Runtimes == nil || options.Commands == nil || options.Activity == nil || options.Principal == nil {
+	if mux == nil || options.Runtimes == nil || options.Balances == nil || options.Commands == nil || options.Activity == nil || options.Principal == nil {
 		return httpx.ConfigErr("browser projection route dependencies are incomplete")
+	}
+	if options.Positions == nil {
+		options.Positions = FailClosedAccountPositionProjectionReader{}
 	}
 	handler := &browserProjectionHandler{options: options}
 	mux.HandleFunc("GET /api/v1/accounts/{accountId}/runtimes", handler.accountRuntimes)
+	mux.HandleFunc("GET /api/v1/balances", handler.balances)
+	mux.HandleFunc("GET /api/v1/account-positions", handler.accountPositions)
 	mux.HandleFunc("GET /api/v1/commands", handler.commands)
 	mux.HandleFunc("GET /api/v1/fills", handler.fills)
 	mux.HandleFunc("GET /api/v1/activity", handler.activity)
 	return nil
+}
+
+func (handler *browserProjectionHandler) accountPositions(w http.ResponseWriter, r *http.Request) {
+	principal, ok := handler.identity(w, r)
+	if !ok || !validOptionalQuery(r, []string{"accountId", "instrumentId"}, w) {
+		return
+	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	instrumentID := strings.TrimSpace(r.URL.Query().Get("instrumentId"))
+	if accountID == "" || instrumentID == "" {
+		projectionError(w, r, http.StatusBadRequest, "ACCOUNT_POSITION_SCOPE_REQUIRED")
+		return
+	}
+	items, err := handler.options.Positions.ListAccountPositions(r.Context(), principal, accountID, instrumentID)
+	if err != nil {
+		projectionFailure(w, r, "ACCOUNT_POSITION_PROJECTION_UNAVAILABLE", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
+}
+
+func (handler *browserProjectionHandler) balances(w http.ResponseWriter, r *http.Request) {
+	principal, ok := handler.identity(w, r)
+	if !ok || !validOptionalQuery(r, []string{"accountId"}, w) {
+		return
+	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if accountID == "" {
+		projectionError(w, r, http.StatusBadRequest, "ACCOUNT_ID_REQUIRED")
+		return
+	}
+	items, err := handler.options.Balances.ListAccountBalances(r.Context(), principal, accountID)
+	if err != nil {
+		projectionFailure(w, r, "BALANCE_PROJECTION_UNAVAILABLE", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
 type browserProjectionHandler struct {
@@ -228,7 +325,7 @@ func (handler *browserProjectionHandler) accountRuntimes(w http.ResponseWriter, 
 	}
 	items, err := handler.options.Runtimes.ListAccountRuntimes(r.Context(), principal, r.PathValue("accountId"))
 	if err != nil {
-		projectionError(w, http.StatusServiceUnavailable, "RUNTIME_PROJECTION_UNAVAILABLE")
+		projectionFailure(w, r, "RUNTIME_PROJECTION_UNAVAILABLE", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
@@ -241,7 +338,7 @@ func (handler *browserProjectionHandler) commands(w http.ResponseWriter, r *http
 	}
 	items, err := handler.listCommands(r.Context(), principal, r.URL.Query().Get("productId"))
 	if err != nil {
-		projectionError(w, http.StatusServiceUnavailable, "COMMAND_PROJECTION_UNAVAILABLE")
+		projectionFailure(w, r, "COMMAND_PROJECTION_UNAVAILABLE", err)
 		return
 	}
 	views := make([]CommandProjection, 0, len(items))
@@ -264,7 +361,7 @@ func (handler *browserProjectionHandler) fills(w http.ResponseWriter, r *http.Re
 	}
 	items, err := handler.listCommands(r.Context(), principal, r.URL.Query().Get("productId"))
 	if err != nil {
-		projectionError(w, http.StatusServiceUnavailable, "FILL_PROJECTION_UNAVAILABLE")
+		projectionFailure(w, r, "FILL_PROJECTION_UNAVAILABLE", err)
 		return
 	}
 	result := make([]FillProjection, 0)
@@ -295,7 +392,7 @@ func (handler *browserProjectionHandler) activity(w http.ResponseWriter, r *http
 	}
 	items, err := handler.options.Activity.ListActivity(r.Context(), principal, ActivityQuery{Kind: r.URL.Query().Get("kind"), ProductID: r.URL.Query().Get("productId"), AccountID: r.URL.Query().Get("accountId"), ResourceID: r.URL.Query().Get("resourceId")})
 	if err != nil {
-		projectionError(w, http.StatusServiceUnavailable, "ACTIVITY_PROJECTION_UNAVAILABLE")
+		projectionFailure(w, r, "ACTIVITY_PROJECTION_UNAVAILABLE", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
@@ -336,7 +433,7 @@ func (handler *browserProjectionHandler) listCommands(ctx context.Context, princ
 func (handler *browserProjectionHandler) identity(w http.ResponseWriter, r *http.Request) (string, bool) {
 	principal, err := handler.options.Principal(r)
 	if err != nil || principal == "" {
-		projectionError(w, http.StatusUnauthorized, "AUTH_REQUIRED")
+		projectionError(w, r, http.StatusUnauthorized, "AUTH_REQUIRED")
 		return "", false
 	}
 	return principal, true
@@ -413,15 +510,20 @@ func validOptionalQuery(r *http.Request, allowedFields []string, w http.Response
 	}
 	for field, values := range r.URL.Query() {
 		if _, ok := allowed[field]; !ok || len(values) != 1 || strings.TrimSpace(values[0]) == "" {
-			projectionError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+			projectionError(w, r, http.StatusBadRequest, "VALIDATION_ERROR")
 			return false
 		}
 	}
 	return true
 }
 
-func projectionError(w http.ResponseWriter, status int, code string) {
-	httpx.WriteError(w, status, code, "request rejected", nil, false, "")
+func projectionFailure(w http.ResponseWriter, r *http.Request, code string, err error) {
+	slog.Error("trading projection read failed", "code", code, "method", r.Method, "path", r.URL.Path, "cause", err)
+	projectionError(w, r, http.StatusServiceUnavailable, code)
+}
+
+func projectionError(w http.ResponseWriter, r *http.Request, status int, code string) {
+	httpx.WriteError(w, status, code, "request rejected", nil, status >= http.StatusInternalServerError, httpx.RequestID(r))
 }
 
 func nullableString(value string) any {

@@ -40,7 +40,8 @@ func TestBitgetWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	exerciseBitgetPerpStreams(t, usdtPerp.WebSocket(), usdtInstrument)
 	assertFactoryStringRedacts(t, usdtPerp, `exchange/factory.Client{venue:"bitget", product:"perp", credentials:redacted}`, "key", "secret", "passphrase")
 
-	usdcPerp := NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", settings)
+	usdcSettings := bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBitget, exchange.ProductPerp, "BTC-USDC")
+	usdcPerp := NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", usdcSettings)
 	usdcInstrument := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDC")
 	exercisePerpWebSocketEveryMethod(t, usdcPerp.WebSocket(), usdcInstrument, "31")
 	exerciseBitgetPerpStreams(t, usdcPerp.WebSocket(), usdcInstrument)
@@ -74,6 +75,84 @@ func TestBitgetPublicWebSocketSubscriptionCloseClosesDedicatedSDKClient(t *testi
 		t.Fatalf("second close: %v", err)
 	}
 	waitClosed("Bitget public socket")
+}
+
+func TestBitgetPrivateWebSocketSharesAccountWideTopicsAcrossInstruments(t *testing.T) {
+	wsURL, closeServer := newBitgetScriptedWSServer(t)
+	defer closeServer()
+	catalog, scope := bitgetPrivateMultiInstrumentCatalog(t)
+	client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", Settings{
+		Endpoint:          "https://openapi.invalid",
+		WebSocketEndpoint: wsURL,
+		HTTPClient:        &http.Client{Transport: &bitgetWSAuxTransport{}},
+		InstrumentCatalog: catalog,
+		CatalogScope:      scope,
+	})
+	defer client.WebSocket().Close()
+
+	btc := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
+	eth := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "ETH-USDT")
+
+	btcOrders, err := client.WebSocket().WatchOrders(t.Context(), exchange.WatchRequest{Instrument: btc})
+	if err != nil {
+		t.Fatalf("WatchOrders BTC: %v", err)
+	}
+	ethOrders, err := client.WebSocket().WatchOrders(t.Context(), exchange.WatchRequest{Instrument: eth})
+	if err != nil {
+		t.Fatalf("WatchOrders ETH: %v", err)
+	}
+	_ = btcOrders.Close()
+	_ = ethOrders.Close()
+
+	btcFills, err := client.WebSocket().WatchFills(t.Context(), exchange.WatchRequest{Instrument: btc})
+	if err != nil {
+		t.Fatalf("WatchFills BTC: %v", err)
+	}
+	ethFills, err := client.WebSocket().WatchFills(t.Context(), exchange.WatchRequest{Instrument: eth})
+	if err != nil {
+		t.Fatalf("WatchFills ETH: %v", err)
+	}
+	_ = btcFills.Close()
+	_ = ethFills.Close()
+
+	btcPositions, err := client.WebSocket().WatchPositions(t.Context(), exchange.WatchRequest{Instrument: btc})
+	if err != nil {
+		t.Fatalf("WatchPositions BTC: %v", err)
+	}
+	ethPositions, err := client.WebSocket().WatchPositions(t.Context(), exchange.WatchRequest{Instrument: eth})
+	if err != nil {
+		t.Fatalf("WatchPositions ETH: %v", err)
+	}
+	_ = btcPositions.Close()
+	_ = ethPositions.Close()
+}
+
+func bitgetPrivateMultiInstrumentCatalog(t *testing.T) (exchange.InstrumentCatalog, exchange.CatalogScope) {
+	t.Helper()
+	descriptor := exchange.SourceDescriptor{
+		Name: "bitget-private-multi-instrument", Endpoint: "https://openapi.invalid",
+		WebSocketEndpoint: "wss://private.invalid/ws", Transport: "test",
+	}
+	scope := exchange.CatalogScope{
+		Venue: exchange.VenueBitget, Environment: exchange.EnvironmentLive,
+		Product: exchange.ProductPerp, EndpointFingerprint: descriptor.Fingerprint(),
+	}
+	loader := &mutableBybitBitgetInstrumentLoader{snapshot: exchange.InstrumentSnapshot{
+		SchemaVersion: 1,
+		Scope:         scope,
+		Instruments: []exchange.Instrument{
+			bybitBitgetIdentityInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC", "USDT", "btc-native-id"),
+			bybitBitgetIdentityInstrument(exchange.VenueBitget, exchange.ProductPerp, "ETH", "USDT", "eth-native-id"),
+		},
+	}}
+	catalog := exchange.NewDefaultMemoryCatalog()
+	if err := catalog.RegisterSource(scope, descriptor, loader); err != nil {
+		t.Fatalf("RegisterSource: %v", err)
+	}
+	if _, err := catalog.Refresh(t.Context(), scope); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	return catalog, scope
 }
 
 type bitgetWSAuxTransport struct {
@@ -209,6 +288,8 @@ func newBitgetScriptedWSServer(t *testing.T) (string, func()) {
 			return
 		}
 		publicConnection := false
+		privateSymbol := "BTCUSDT"
+		subscriptions := make(map[string]struct{})
 		defer func() {
 			_ = conn.Close()
 			if publicConnection {
@@ -245,6 +326,9 @@ func newBitgetScriptedWSServer(t *testing.T) (string, func()) {
 				authenticated = true
 				_ = conn.WriteJSON(map[string]any{"event": "login", "code": "0"})
 			case "trade":
+				if len(req.Args) > 0 && req.Args[0].Symbol != "" {
+					privateSymbol = req.Args[0].Symbol
+				}
 				orderID := "ws-11"
 				if req.Topic == "cancel-order" && len(req.Args) > 0 {
 					orderID = req.Args[0].OrderID
@@ -263,11 +347,24 @@ func newBitgetScriptedWSServer(t *testing.T) (string, func()) {
 					_ = conn.WriteJSON(map[string]any{"event": "error", "code": "30001", "msg": "unexpected subscription wire", "arg": arg})
 					return
 				}
+				subscriptionKey := arg.InstType + "|" + arg.Topic + "|" + arg.Symbol
+				if _, exists := subscriptions[subscriptionKey]; exists {
+					_ = conn.WriteJSON(map[string]any{"event": "error", "code": "30001", "msg": "duplicate subscription", "arg": arg})
+					continue
+				}
+				subscriptions[subscriptionKey] = struct{}{}
 				_ = conn.WriteJSON(map[string]any{"event": "subscribe", "code": "0", "arg": arg})
-				_ = conn.WriteMessage(websocket.TextMessage, []byte(bitgetWSEvent(arg.InstType, arg.Topic, arg.Symbol, arg.Interval)))
+				event := bitgetWSEvent(arg.InstType, arg.Topic, arg.Symbol, arg.Interval)
+				if authenticated && privateSymbol != "BTCUSDT" {
+					event = strings.ReplaceAll(event, "BTCUSDT", privateSymbol)
+				}
+				_ = conn.WriteMessage(websocket.TextMessage, []byte(event))
 			case "unsubscribe":
 				if !authenticated {
 					return
+				}
+				for _, arg := range req.Args {
+					delete(subscriptions, arg.InstType+"|"+arg.Topic+"|"+arg.Symbol)
 				}
 				_ = conn.WriteJSON(map[string]any{"event": "unsubscribe", "code": "0", "args": req.Args})
 			}

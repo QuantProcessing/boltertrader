@@ -14,6 +14,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/credential"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 )
 
 var ErrIdempotencyConflict = errors.New("idempotency key conflicts with a different request")
@@ -26,6 +27,7 @@ type DesiredApply struct {
 type GatewayRuntimeTruth struct {
 	OperationID          secretstore.OperationID
 	AccountID            string
+	RuntimeID            string
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
@@ -48,9 +50,14 @@ type ApplyResultError interface {
 	ResultMayHaveCommitted() bool
 }
 
+type ApplyFailureCode interface {
+	StableFailureCode() string
+}
+
 type RetireRequest struct {
 	OperationID          secretstore.OperationID
 	AccountID            string
+	RuntimeID            string
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
@@ -91,7 +98,7 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 	now := service.now().UTC()
 	account.ID = service.id()
 	account.UpdatedAt = now
-	operation := CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Kind: OperationCreate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: digestString(idempotencyKey), RequestDigest: requestDigest, TargetDesiredStateRevision: 1, TargetRuntimeGeneration: 1, TargetCredentialVersion: 1, CreatedAt: now, UpdatedAt: now}
+	operation := CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Kind: OperationCreate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: digestString(idempotencyKey), RequestDigest: requestDigest, CreatedAt: now, UpdatedAt: now}
 	if err := account.Validate(); err != nil {
 		return Account{}, validationError(err)
 	}
@@ -166,19 +173,28 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 	}
 	truth, err := service.gateway.ApplyDesired(ctx, DesiredApply{OperationID: operation.ID, Account: account})
 	if err != nil {
-		return Account{}, errors.New("gateway apply failed")
+		// The draft, encrypted credential reference and applying operation are
+		// already durable. A candidate probe failure is therefore an asynchronous
+		// provisioning state, not a failed create request. The reconciler owns
+		// retries and records the stable failure code for the settings page.
+		return account, nil
 	}
 	if err := callHook(service.Hooks.AfterGatewayApply); err != nil {
 		return Account{}, err
 	}
 	if !exactGatewayActiveTruth(operation.ID, account, truth) {
-		return Account{}, errors.New("gateway active fence mismatch")
+		// A missing or mismatched active snapshot is recoverable after the durable
+		// credential write. The reconciler retries the exact operation; route and
+		// private-stream readiness are deliberately not part of this account-level
+		// proof.
+		return account, nil
 	}
 	if err := callHook(service.Hooks.AfterPromotionObservation); err != nil {
 		return Account{}, err
 	}
 	account.State = StateActive
 	account.UpdatedAt = service.now().UTC()
+	account.LastValidatedAt = &account.UpdatedAt
 	operation.State = OperationActive
 	operation.UpdatedAt = account.UpdatedAt
 	account, _, err = service.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationApplying, ExpectedDesiredStateRevision: account.DesiredStateRevision, Account: account, Operation: operation})
@@ -227,7 +243,7 @@ func (service *Service) normalizeDurableCreate(request CreateRequest) (Account, 
 		clear(material)
 		return Account{}, nil, "", validationError(errors.New("route profile is invalid"))
 	}
-	account := Account{Venue: request.Venue, VenueEnvironment: EnvironmentLive, NativeEnvironment: EnvironmentLive, DisplayName: request.DisplayName, ProductIDs: append([]string(nil), policy...), ProductPolicy: policy, Routes: routes, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: StateCreating}
+	account := Account{RuntimeID: uuid.NewString(), Venue: request.Venue, VenueEnvironment: EnvironmentLive, NativeEnvironment: EnvironmentLive, DisplayName: request.DisplayName, ProductIDs: append([]string(nil), policy...), ProductPolicy: policy, Routes: routes, State: StateCreating}
 	validationAccount := account
 	validationAccount.ID = "pending"
 	if err := validationAccount.Validate(); err != nil {
@@ -393,8 +409,7 @@ func (service *Service) rotateDurable(ctx context.Context, id string, revision i
 
 func exactGatewayActiveTruth(operationID secretstore.OperationID, account Account, truth GatewayRuntimeTruth) bool {
 	if !truth.Active || truth.OperationID != operationID || truth.AccountID != account.ID ||
-		truth.DesiredStateRevision != account.DesiredStateRevision || truth.RuntimeGeneration != account.RuntimeGeneration ||
-		truth.CredentialVersion != account.CredentialVersion || truth.RequestedState != account.State ||
+		truth.RuntimeID != account.RuntimeID || truth.RequestedState != account.State ||
 		len(truth.Routes) != len(account.Routes) {
 		return false
 	}
@@ -413,8 +428,7 @@ func exactGatewayActiveTruth(operationID secretstore.OperationID, account Accoun
 		seen[route.RouteID] = struct{}{}
 		want, ok := desired[route.RouteID]
 		if !ok || route.Product != want.Product || route.SettlementAsset != want.SettlementAsset ||
-			route.RouteProfileID != want.RouteProfileID || route.RequestedState != want.RequestedState ||
-			(route.RequestedState == RouteActive && !route.Ready) {
+			route.RouteProfileID != want.RouteProfileID || route.RequestedState != want.RequestedState {
 			return false
 		}
 	}
@@ -460,9 +474,7 @@ func (service *Service) removeDurable(ctx context.Context, id string, revision i
 	}
 	retirement, err := service.gateway.RetireAccount(ctx, RetireRequest{
 		OperationID: operation.ID, AccountID: id,
-		DesiredStateRevision: account.DesiredStateRevision,
-		RuntimeGeneration:    account.RuntimeGeneration,
-		CredentialVersion:    account.CredentialVersion,
+		RuntimeID: account.RuntimeID,
 	})
 	if err != nil || retirement.Blockers.Any() || !retirement.Tombstoned {
 		return Account{}, ErrAccountBlocked

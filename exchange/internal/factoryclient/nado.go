@@ -1385,7 +1385,7 @@ func nadoBookEvent(book *nadosdk.OrderBook, product nadoProduct, exchangeProduct
 	if err != nil {
 		return exchange.BookEvent{}, err
 	}
-	return exchange.BookEvent{Kind: exchange.EventSnapshot, Instrument: product.instrument, Sequence: book.MaxTimestamp, Previous: book.LastMaxTimestamp, Bids: bids, Asks: asks, Time: at}, nil
+	return exchange.BookEvent{Kind: exchange.EventDelta, Instrument: product.instrument, Sequence: book.MaxTimestamp, Previous: book.LastMaxTimestamp, Bids: bids, Asks: asks, Time: at}, nil
 }
 
 func nadoBBOEvent(ticker *nadosdk.Ticker, product nadoProduct, exchangeProduct exchange.Product, operation string) (exchange.BBOEvent, error) {

@@ -87,9 +87,10 @@ export function buildCredentialBundle(venue: Venue, values: CredentialValues): C
     schemaVersion: venue.credentialSchema.schemaVersion,
     venue: venue.venue,
     authKind: venue.credentialSchema.authKind,
-    // Omitted rather than sent empty: the validator reads the keys that are
-    // present, and an empty object is a shape it has no reason to see.
-    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-    ...(Object.keys(secrets).length > 0 ? { secrets } : {}),
+    // credential.BundleV1 requires both nested objects. In particular,
+    // API-key venues have no metadata fields but the Go decoder still needs
+    // the wire value to be an object, so it must be `{}` rather than absent.
+    metadata,
+    secrets,
   };
 }

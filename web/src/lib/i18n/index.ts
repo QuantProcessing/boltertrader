@@ -9,9 +9,9 @@
  * `en.ts` being the key source gets the one property that actually prevents
  * bugs — a missing translation is a compile error.
  *
- * Same store shape as `session.ts` and `mode.ts`. `localStorage` rather than
- * `sessionStorage`, unlike the mode: a language is a property of the reader and
- * does not need re-asking every tab, whereas a risk disclosure does.
+ * Same store shape as `session.ts` and the entry disclosure store.
+ * `localStorage` rather than `sessionStorage`: a language is a property of the
+ * reader and does not need re-asking every tab, whereas a risk disclosure does.
  * ------------------------------------------------------------------------- */
 
 import { useSyncExternalStore } from "react";

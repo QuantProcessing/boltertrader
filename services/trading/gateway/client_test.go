@@ -257,7 +257,7 @@ func TestGatewayAdapterMarketDataProbeRequiresCatalogIdentityAndReadyInstrument(
 	}
 }
 
-func TestGatewayAdapterMarketDataProbeAcceptsAuthoritativeEmptyCatalog(t *testing.T) {
+func TestGatewayAdapterMarketDataProbeRejectsEmptyPublicCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-empty-catalog","observedAt":"2026-08-11T00:00:00Z","instruments":[]}}`))
 	}))
@@ -266,8 +266,8 @@ func TestGatewayAdapterMarketDataProbeAcceptsAuthoritativeEmptyCatalog(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.CheckMarketDataRoute(context.Background()); err != nil {
-		t.Fatalf("authoritative empty catalog was not accepted as idle-ready: %v", err)
+	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
+		t.Fatal("empty public catalog was accepted as market-data ready")
 	}
 }
 
@@ -396,6 +396,43 @@ func bulkInstruments(count int) []catalog.Instrument {
 	return built
 }
 
+func TestConfiguredGatewayAdapterAcceptsLargeMultiAssetBalancePage(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/internal/v1/accounts/account-a":
+			_, _ = w.Write([]byte(`{"data":{"account":{"accountId":"account-a","venue":"binance","nativeEnvironment":"live","displayName":"Account A","productPolicy":["spot"],"routes":[{"routeId":"spot","product":"spot","routeProfileId":"binance.spot.v1","requestedState":"active"}],"status":"active","lastValidatedAt":null,"updatedAt":"2026-08-20T01:00:00Z"}}}`))
+		case "/internal/v1/accounts/runtime/account-a":
+			_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","runtimeId":"runtime-a","tombstoned":false,"readiness":{"ready":true},"writeReadiness":{"ready":true},"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","runtimeId":"runtime-a","requestedState":"active","routes":[]},"retiring":[],"capabilities":[{"rowId":"binance:spot","venue":"binance","product":"spot","writeReady":true,"operations":{}}],"observedAt":"2026-08-20T01:00:00Z"}}`))
+		case "/v1/balances":
+			items := make([]map[string]any, 400)
+			for index := range items {
+				items[index] = map[string]any{
+					"account_id": "account-a", "product": "spot",
+					"balance": map[string]string{
+						"asset":     fmt.Sprintf("ASSET-%03d-%s", index, strings.Repeat("X", 96)),
+						"available": "1", "locked": "0", "total": "1",
+					},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewClient(server.URL, false, []byte(token), false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := adapter.ListAccountBalances(context.Background(), "browser-a", "account-a")
+	if err != nil || len(items) != 400 || !strings.HasPrefix(items[399].Asset, "ASSET-399-") {
+		t.Fatalf("ListAccountBalances() items=%d err=%v", len(items), err)
+	}
+}
+
 func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewayAccess(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	requests := make([]string, 0, 1)
@@ -481,15 +518,15 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 	}
 
 	manualResult, err := adapter.Execute(context.Background(), manual.GatewayRequest{
-		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:live:spot:BTC-USDT",
-		RouteID:        "spot",
+		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:live:perp:USDT:BTC-USDT",
+		RouteID:        "perp-usdt",
 		IdempotencyKey: "ignored-in-favor-of-command", Side: "buy", Quantity: "2", OrderType: "market",
-		DesiredStateRevision: 11, RuntimeGeneration: 4, CredentialVersion: 3,
+		Leverage: 5, RuntimeID: "runtime-a",
 	})
 	if err != nil || manualResult.State != manual.GatewayStateSubmitted || manualResult.Handoff.Outcome != orders.HandoffAccepted || manualResult.Handoff.Evidence.GatewayOrderID == "" {
 		t.Fatalf("Manual Execute() result=%+v err=%v", manualResult, err)
 	}
-	normalizedPayload := json.RawMessage(`{"accountId":"account-long","instrumentId":"binance:live:perp:BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
+	normalizedPayload := json.RawMessage(`{"accountId":"account-long","instrumentId":"binance:live:perp:BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","runtimeId":"runtime-long"}`)
 	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_child_1", ProductID: "manual", Payload: normalizedPayload}); err != nil {
 		t.Fatal(err)
 	}
@@ -498,8 +535,11 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 	if len(requests) != 2 || requests[0].IdempotencyKey != "command_manual_1" || requests[1].IdempotencyKey != "command_child_1" {
 		t.Fatalf("Gateway requests=%+v", requests)
 	}
-	if requests[0].DesiredStateRevision != 11 || requests[0].RuntimeGeneration != 4 || requests[0].CredentialVersion != 3 {
+	if requests[0].RuntimeID != "runtime-a" || requests[1].RuntimeID != "runtime-long" {
 		t.Fatalf("Manual Gateway request lost account fence: %+v", requests[0])
+	}
+	if requests[0].Leverage != 5 {
+		t.Fatalf("Manual Gateway request lost leverage: %+v", requests[0])
 	}
 }
 
@@ -893,14 +933,14 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.URL.RequestURI()
-		switch r.URL.Query().Get("venue") {
-		case "binance":
-			_, _ = w.Write([]byte(`{"data":{"venue":"binance","environment":"live","symbol":"BTC-USDT","since":"2026-08-07T12:00:00Z","until":"2026-08-14T12:00:00Z","observedAt":"2026-08-14T12:00:01Z","points":[{"fundingTime":"2026-08-14T08:00:00Z","rate":"0.0001","intervalHours":8}]}}`))
-		case "nado":
+		switch r.URL.Query().Get("instrumentId") {
+		case "binance:live:perp:USDT:BTC-USDT":
+			_, _ = w.Write([]byte(`{"data":{"instrumentId":"binance:live:perp:USDT:BTC-USDT","venue":"binance","since":"2026-08-07T12:00:00Z","until":"2026-08-14T12:00:00Z","observedAt":"2026-08-14T12:00:01Z","points":[{"fundingTime":"2026-08-14T08:00:00Z","rate":"0.0001","intervalHours":8}]}}`))
+		case "nado:live:perp:USDT0:BTC-USDT0":
 			refuse(w, "FUNDING_HISTORY_UNSUPPORTED")
-		case "bybit":
+		case "bybit:live:perp:USDT:BTC-USDT":
 			refuse(w, "FUNDING_HISTORY_INSTRUMENT_UNKNOWN")
-		case "gate":
+		case "gate:live:perp:USDT:BTC-USDT":
 			http.Error(w, "no history", http.StatusNotFound)
 		default:
 			http.Error(w, "upstream down", http.StatusServiceUnavailable)
@@ -913,7 +953,7 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 	}
 	source := adapter.FundingHistory()
 	read := marketdata.FundingHistoryRead{
-		Venue: "binance", Environment: "live", Symbol: "BTC-USDT",
+		InstrumentID: "binance:live:perp:USDT:BTC-USDT", Venue: "binance",
 		Since: time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC),
 		Until: time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC),
 	}
@@ -921,7 +961,7 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 	if err != nil {
 		t.Fatalf("FetchFundingHistory: %v", err)
 	}
-	if want := "/internal/v1/funding-history?environment=live&since=2026-08-07T12%3A00%3A00Z&symbol=BTC-USDT&until=2026-08-14T12%3A00%3A00Z&venue=binance"; seen != want {
+	if want := "/internal/v1/funding-history?instrumentId=binance%3Alive%3Aperp%3AUSDT%3ABTC-USDT&since=2026-08-07T12%3A00%3A00Z&until=2026-08-14T12%3A00%3A00Z"; seen != want {
 		t.Errorf("request = %q, want %q", seen, want)
 	}
 	if len(series.Points) != 1 || series.Points[0].Rate != "0.0001" || series.Points[0].IntervalHours != 8 {
@@ -942,6 +982,11 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 	} {
 		refused := read
 		refused.Venue = refusal.venue
+		settlement := "USDT"
+		if refusal.venue == "nado" {
+			settlement = "USDT0"
+		}
+		refused.InstrumentID = refusal.venue + ":live:perp:" + settlement + ":BTC-" + settlement
 		if _, err := source.FetchFundingHistory(context.Background(), refused); !errors.Is(err, refusal.want) {
 			t.Errorf("%s 404 err = %v, want %v", refusal.venue, err, refusal.want)
 		}
@@ -949,6 +994,7 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 
 	transient := read
 	transient.Venue = "okx"
+	transient.InstrumentID = "okx:live:perp:USDT:BTC-USDT-SWAP"
 	_, err = source.FetchFundingHistory(context.Background(), transient)
 	if err == nil || errors.Is(err, marketdata.ErrFundingHistoryUnsupported) ||
 		errors.Is(err, marketdata.ErrFundingHistoryUnknownInstrument) {

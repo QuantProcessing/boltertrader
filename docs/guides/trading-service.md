@@ -94,8 +94,10 @@ assuming eight hours.
 `GET /api/v1/products/arbitrage/opportunities` ranks the pairs across the
 accounts named in the request. Each carries its own `blockers`, and a pair with
 any of them is not executable: `funding_interval_unknown`, `account_unreachable`,
-`instrument_unlisted`, `board_stale`. An empty list is the only thing that makes
-the ticket live.
+`instrument_identity_unresolved`, `board_stale`. Listing is determined by the
+public instrument directory, while account reachability is a separate execution
+fact; one can never be inferred from the other. An empty list is the only thing
+that makes the ticket live.
 
 Placement reuses the manual flow's shape exactly.
 `POST /api/v1/products/arbitrage/execution-previews` returns a sealed preview —

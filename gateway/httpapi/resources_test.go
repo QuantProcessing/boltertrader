@@ -203,6 +203,9 @@ func TestHandlerServesEveryRouteOfAMultiRouteAccount(t *testing.T) {
 	if len(balances.Items) != 2 || usdt.balanceCalls != 1 || usdc.balanceCalls != 1 {
 		t.Fatalf("balances=%d usdt=%d usdc=%d, want one from each route", len(balances.Items), usdt.balanceCalls, usdc.balanceCalls)
 	}
+	if balances.Items[0].AvailableMargin != "80" || balances.Items[1].AvailableMargin != "80" {
+		t.Fatalf("available margins=%q/%q, want normalized account available", balances.Items[0].AvailableMargin, balances.Items[1].AvailableMargin)
+	}
 
 	positions := decodeCollection[positionResource](t, get(t, "/v1/positions?account_id=acct-multi"))
 	if usdt.positionCalls != 1 || usdc.positionCalls != 1 {
@@ -312,6 +315,17 @@ func (client *fakeHTTPPerpClient) OrderBook(_ context.Context, request exchange.
 func (client *fakeHTTPPerpClient) Balances(context.Context) ([]exchange.Balance, error) {
 	client.balanceCalls++
 	return []exchange.Balance{{Asset: "USDT", Total: decimal.NewFromInt(100)}}, nil
+}
+
+func (client *fakeHTTPPerpClient) PerpAccount(context.Context) (exchange.PerpAccount, error) {
+	client.balanceCalls++
+	return exchange.PerpAccount{
+		Balances: []exchange.Balance{
+			{Asset: "OLD-ZERO-ASSET"},
+			{Asset: "USDT", Total: decimal.NewFromInt(100)},
+		},
+		Available: exchange.OptionalDecimal{Value: decimal.NewFromInt(80), Valid: true},
+	}, nil
 }
 
 func (client *fakeHTTPPerpClient) Positions(_ context.Context, request exchange.PositionsRequest) ([]exchange.Position, error) {

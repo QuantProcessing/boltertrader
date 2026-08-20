@@ -23,6 +23,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/observability"
 	"github.com/QuantProcessing/boltertrader/gateway/process"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
+	"github.com/QuantProcessing/boltertrader/internal/livewrite"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
@@ -145,6 +146,7 @@ func (source *metricAccountSourceStub) RouteStatus(accountID domain.AccountID, p
 }
 
 func TestDefaultAccountManagerBuilderSupportsDynamicOnlyRuntime(t *testing.T) {
+	t.Setenv(livewrite.EnvName, "true")
 	builder := defaultBuildAccountManager(nil, nil, authorityCredentialResolver{})
 	built, err := builder(context.Background())
 	if err != nil {
@@ -159,6 +161,13 @@ func TestDefaultAccountManagerBuilderSupportsDynamicOnlyRuntime(t *testing.T) {
 	}
 	if err := manager.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultAccountManagerBuilderRejectsAmbiguousLiveWriteSwitch(t *testing.T) {
+	t.Setenv(livewrite.EnvName, "yes")
+	if _, err := defaultBuildAccountManager(nil, nil, authorityCredentialResolver{})(context.Background()); err == nil {
+		t.Fatal("ambiguous live-write switch was accepted")
 	}
 }
 

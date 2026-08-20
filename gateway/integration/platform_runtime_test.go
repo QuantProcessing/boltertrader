@@ -173,7 +173,7 @@ func TestPlatformRuntimeFailedCandidateKeepsActiveGeneration(t *testing.T) {
 	harness.promote(t, active)
 	before := harness.manager.ActiveSnapshot(active.AccountID)
 
-	harness.builder.setFailRoute("perp-usdt", errors.New("authentication failed: "+credentialCanary+" "+mockProviderIdentity))
+	harness.builder.setFailRoute("spot", errors.New("authentication failed: "+credentialCanary+" "+mockProviderIdentity))
 	next := platformSnapshot(t, "failed", active.AccountID, 2, 2, alternateOpaqueRef().RawForTrustedBoundary(), spotRoute(), perpRoute())
 	harness.store.register(next.DesiredSnapshot)
 	if _, err := harness.manager.BuildCandidate(t.Context(), next); !errors.Is(err, account.ErrCandidateFailed) {

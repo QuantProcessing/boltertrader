@@ -2,7 +2,9 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 
 import { isApiError } from "@/api/errors";
+import { modeStore } from "@/app/mode";
 import { sessionStore } from "@/app/session";
+import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/field";
 import { useT } from "@/lib/i18n";
@@ -30,6 +32,7 @@ export function LoginPage() {
     setError(null);
     try {
       await sessionStore.login(username, password);
+      modeStore.choose("readWrite");
       await navigate({ href: redirect ?? "/trade", replace: true });
     } catch (cause) {
       // The server's message is shown as written. It says "invalid username or
@@ -46,7 +49,10 @@ export function LoginPage() {
     <div className="flex min-h-dvh items-center justify-center bg-bg px-4 text-text">
       <div className="w-full max-w-80">
         <div className="mb-6">
-          <h1 className="text-title font-semibold">{t("login.wordmark")}</h1>
+          <h1 className="flex items-center gap-2 text-title font-semibold">
+            <BrandMark className="size-6" />
+            {t("login.wordmark")}
+          </h1>
           <p className="mt-1 text-meta text-muted">{t("login.subtitle")}</p>
         </div>
 

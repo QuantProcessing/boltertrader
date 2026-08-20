@@ -133,5 +133,4 @@ make down-hard
 ## 后续
 
 [下第一笔订单](first-order.md)会带你走完完整的浏览器闭环，用的是真实 venue account
-和真钱。如果想在完全不接 venue 的情况下走同一个闭环，改跑
-`npm --prefix web run dev:mock`。
+和真钱。登录前，同一个应用默认以只读模式打开，无需交易所凭证并显示实时公共行情。

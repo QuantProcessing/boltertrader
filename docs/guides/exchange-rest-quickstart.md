@@ -17,8 +17,8 @@ exchange I/O; the first client method performs the first network request.
 Every client reaches the venue's production endpoints. `factory.EnvironmentLive`
 is the only environment, and it is the default, so `factory.WithEnvironment` is
 optional and accepts nothing else. Demo and testnet profiles were removed
-because each venue implemented them differently; the offline mock in `web/`
-replaces them for click-through work.
+because each venue implemented them differently. The web application's default
+anonymous mode is read-only and uses live public venue data.
 
 ## Construct a read-only client
 
@@ -312,9 +312,8 @@ not certify that the venue answers today.
 Validate against production only with a dedicated account, explicit symbols,
 explicit notional bounds, serial execution, and terminal cleanup evidence.
 Follow [Testing and evidence](../reference/testing.md) and
-[Configuration](../reference/configuration.md) first. For click-through work
-that must not touch a venue at all, run the frontend against its offline mock
-instead of reaching for credentials.
+[Configuration](../reference/configuration.md) first. Use the default anonymous
+read-only application mode when only public market data is needed.
 
 - [Exchange contracts](../../exchange/contract.go)
 - [Factory API](../../exchange/factory/factory.go)

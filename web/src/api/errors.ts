@@ -13,7 +13,7 @@
  * ------------------------------------------------------------------------- */
 
 // Type-only, so it is erased: `lib/i18n` writes `document.documentElement.lang`
-// at module scope, and this file is reachable from the mock worker.
+// at module scope, while the API error taxonomy must remain side-effect free.
 import type { Translate } from "@/lib/i18n";
 
 /** The `error` object in `internal/httpx.WriteError`'s envelope. */
@@ -99,7 +99,18 @@ export function describeError(error: unknown, t: Translate): string {
   if (isApiError(error)) {
     // `INVALID_RESPONSE` is the one body no server sent — `client.ts` builds it
     // when the JSON will not parse, so its message is ours to say.
-    const message = error.code === "INVALID_RESPONSE" ? t("error.unreadable") : error.message;
+    // The gateway intentionally redacts validation causes because this plane
+    // accepts credentials. Translate its deliberately generic sentence into
+    // something actionable without trying to expose the rejected secret.
+    const genericValidation =
+      error.code === "VALIDATION_ERROR" &&
+      (error.message === "request denied" || error.message === "request is invalid");
+    const message =
+      error.code === "INVALID_RESPONSE"
+        ? t("error.unreadable")
+        : genericValidation
+          ? t("error.validation")
+          : error.message;
     return error.requestId
       ? `${message} (${error.code} · ${error.requestId})`
       : `${message} (${error.code})`;

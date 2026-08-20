@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
 
 import type { CandleInterval, Instrument } from "@/api/types";
-import { Blotter } from "@/features/trade/blotter";
+import { useReadOnly } from "@/app/mode";
+import { Blotter, ReadOnlyBlotter } from "@/features/trade/blotter";
 import { OrderTicket } from "@/features/trade/order-ticket";
 import { InstrumentStrip } from "@/features/market/instrument-strip";
 import { OrderBook } from "@/features/market/order-book";
 import { PriceChart } from "@/features/market/price-chart";
+import { usePublicMarketStreams } from "@/features/market/stream";
+import { decimalsOf, midpointPrice } from "@/features/market/precision";
 import {
   marketOf,
   tradableAccounts,
@@ -33,6 +36,7 @@ const DEFAULT_INTERVAL: CandleInterval = "15m";
 const CHART_BARS = 300;
 
 export function TradePage() {
+  const readOnly = useReadOnly();
   const instruments = useInstruments();
   const accounts = useAccounts();
 
@@ -43,17 +47,50 @@ export function TradePage() {
 
   const catalog = useMemo(() => instruments.data?.items ?? [], [instruments.data]);
 
-  // Falling back to the first tradable instrument rather than leaving the page
-  // empty: an operator who opened the terminal wants to see a market, and the
-  // catalog's own order is the venue's, which is close enough to sensible.
-  const instrument = selected ?? catalog.find((candidate) => candidate.ready) ?? catalog[0] ?? null;
+  // Open on a liquid, recognisable public market. Catalog order is grouped by
+  // connector rather than by usefulness, so taking its first row made the
+  // terminal routinely open on a thin altcoin with no depth and made a healthy
+  // read-only gateway look empty.
+  const instrument = selected ?? preferredInstrument(catalog);
 
   const query = instrument ? marketOf(instrument) : null;
   const fact = useMarketFact(query);
   const candles = useCandles(query ? { ...query, interval, limit: CHART_BARS } : null);
   const today = useCandles(query ? { ...query, interval: "1d", limit: 1 } : null);
+  const stream = usePublicMarketStreams(instrument?.instrumentId, interval);
 
-  const eligible = tradableAccounts(accounts.data ?? [], instrument);
+  // Disabling a private query does not erase a previously cached response.
+  // Filter at the write surface as well so signing out cannot retain an account
+  // (or a sealed preview) from the authenticated session.
+  const eligible = readOnly ? [] : tradableAccounts(accounts.data ?? [], instrument);
+  const restFact = fact.data?.value;
+  const marketFact = useMemo(() => {
+    if (!stream.book) return restFact;
+    return {
+      venue: instrument?.venue ?? restFact?.venue ?? "",
+      environment: instrument?.environment ?? restFact?.environment ?? "live",
+      product: instrument?.product ?? restFact?.product ?? "",
+      instrumentId: instrument?.instrumentId ?? restFact?.instrumentId ?? "",
+      bestBid: stream.book.bids[0]?.price ?? restFact?.bestBid ?? "",
+      bestBidSize: stream.book.bids[0]?.quantity ?? restFact?.bestBidSize ?? "",
+      bestAsk: stream.book.asks[0]?.price ?? restFact?.bestAsk ?? "",
+      bestAskSize: stream.book.asks[0]?.quantity ?? restFact?.bestAskSize ?? "",
+      bids: stream.book.bids,
+      asks: stream.book.asks,
+      markPrice: restFact?.markPrice,
+      fundingRate: restFact?.fundingRate,
+      openInterest: restFact?.openInterest,
+      fundingObservedAt: restFact?.fundingObservedAt,
+      fundingTime: restFact?.fundingTime,
+      nextFundingTime: restFact?.nextFundingTime,
+      observedAt: stream.book.observedAt,
+    };
+  }, [instrument, restFact, stream.book]);
+  const midPrice = midpointPrice(
+    marketFact?.bestBid,
+    marketFact?.bestAsk,
+    decimalsOf(instrument?.rules.priceIncrement),
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -74,23 +111,36 @@ export function TradePage() {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <PriceChart candles={candles.data?.value.candles} interval={interval} onIntervalChange={setInterval} />
+          <PriceChart
+            candles={candles.data?.value.candles}
+            liveCandle={stream.candle}
+            instrument={instrument}
+            livePrice={midPrice}
+            interval={interval}
+            onIntervalChange={setInterval}
+          />
           <div className="flex h-deck shrink-0 flex-col border-t border-line">
-            <Blotter instrumentId={instrument?.instrumentId ?? null} />
+            {readOnly ? (
+              <ReadOnlyBlotter instrumentId={instrument?.instrumentId ?? null} />
+            ) : (
+              <Blotter instrumentId={instrument?.instrumentId ?? null} />
+            )}
           </div>
         </div>
 
         <div className="flex w-side shrink-0 flex-col border-l border-line">
           <OrderBook
-            fact={fact.data?.value}
+            fact={marketFact}
+            midPrice={midPrice}
             instrument={instrument}
             quoteAsset={instrument?.quoteAsset}
             baseAsset={instrument?.baseAsset}
+            unavailable={fact.isError}
             onPickPrice={setLimitPrice}
           />
         </div>
 
-        <div className="w-ticket shrink-0 overflow-y-auto border-l border-line p-3">
+        <div className="w-ticket shrink-0 overflow-y-auto border-l border-line bg-panel">
           <OrderTicket
             instrument={instrument}
             accounts={eligible}
@@ -100,5 +150,24 @@ export function TradePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** A stable first impression without taking the choice away from the picker. */
+export function preferredInstrument(catalog: Instrument[]): Instrument | null {
+  const ready = catalog.filter((candidate) => candidate.ready);
+  const isBtc = (candidate: Instrument) =>
+    candidate.baseAsset.toUpperCase() === "BTC" || candidate.symbol.toUpperCase().startsWith("BTC-");
+  return (
+    ready.find(
+      (candidate) =>
+        candidate.venue.toLowerCase() === "binance" &&
+        candidate.product.toLowerCase().includes("perp") &&
+        isBtc(candidate),
+    ) ??
+    ready.find(isBtc) ??
+    ready[0] ??
+    catalog[0] ??
+    null
   );
 }

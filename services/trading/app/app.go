@@ -85,6 +85,8 @@ type Dependencies struct {
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
+	BalanceProjection     httpapi.AccountBalanceProjectionReader
+	PositionProjection    httpapi.AccountPositionProjectionReader
 	ManualGateway         manual.Gateway
 	ManualAccounts        httpapi.ManualAccountAuthority
 	ReconciliationGateway orders.ReconciliationGateway
@@ -228,6 +230,14 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if runtimeProjection == nil {
 		runtimeProjection = httpapi.FailClosedAccountRuntimeProjectionReader{}
 	}
+	balanceProjection := dependencies.BalanceProjection
+	if balanceProjection == nil {
+		balanceProjection = httpapi.FailClosedAccountBalanceProjectionReader{}
+	}
+	positionProjection := dependencies.PositionProjection
+	if positionProjection == nil {
+		positionProjection = httpapi.FailClosedAccountPositionProjectionReader{}
+	}
 	var manualAccounts httpapi.ManualAccountAuthority = unavailableManualAccounts{}
 	if dependencies.ManualAccounts != nil {
 		manualAccounts = dependencies.ManualAccounts
@@ -284,12 +294,12 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection,
 				Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService,
 				ManualAccounts: manualAccounts,
-				Arbitrage: arbitrageService, FundingBoard: boardService,
+				Arbitrage:      arbitrageService, FundingBoard: boardService,
 				Principal: dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
 				Activity: activityLog,
 			},
 			Projections: &httpapi.BrowserProjectionRoutesOptions{
-				Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog,
+				Runtimes: runtimeProjection, Balances: balanceProjection, Positions: positionProjection, Commands: commandStore, Activity: activityLog,
 				Principal: dependencies.Principal,
 			},
 		},

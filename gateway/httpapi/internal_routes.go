@@ -52,12 +52,13 @@ type RotationFence struct {
 
 type DesiredAccount struct {
 	AccountID            string         `json:"accountId"`
+	RuntimeID            string         `json:"runtimeId"`
 	Venue                string         `json:"venue"`
 	VenueEnvironment     string         `json:"venueEnvironment"`
 	SecretRef            string         `json:"secretRef"`
-	DesiredStateRevision int64          `json:"desiredStateRevision"`
-	RuntimeGeneration    int64          `json:"runtimeGeneration"`
-	CredentialVersion    int64          `json:"credentialVersion"`
+	DesiredStateRevision int64          `json:"-"`
+	RuntimeGeneration    int64          `json:"-"`
+	CredentialVersion    int64          `json:"-"`
 	RequestedState       string         `json:"requestedState"`
 	RotationFence        *RotationFence `json:"rotationFence,omitempty"`
 }
@@ -73,12 +74,13 @@ type DesiredRoute struct {
 type DesiredApplyRequest struct {
 	OperationID          string         `json:"operationId"`
 	AccountID            string         `json:"accountId"`
+	RuntimeID            string         `json:"runtimeId"`
 	Venue                string         `json:"venue"`
 	NativeEnvironment    string         `json:"nativeEnvironment"`
 	SecretRef            string         `json:"secretRef"`
-	DesiredStateRevision int64          `json:"desiredStateRevision"`
-	RuntimeGeneration    int64          `json:"runtimeGeneration"`
-	CredentialVersion    int64          `json:"credentialVersion"`
+	DesiredStateRevision int64          `json:"-"`
+	RuntimeGeneration    int64          `json:"-"`
+	CredentialVersion    int64          `json:"-"`
 	RequestedState       string         `json:"requestedState"`
 	Routes               []DesiredRoute `json:"routes"`
 }
@@ -86,16 +88,18 @@ type DesiredApplyRequest struct {
 type RetireRequest struct {
 	OperationID          string `json:"operationId"`
 	AccountID            string `json:"accountId"`
-	DesiredStateRevision int64  `json:"desiredStateRevision"`
-	RuntimeGeneration    int64  `json:"runtimeGeneration"`
-	CredentialVersion    int64  `json:"credentialVersion"`
+	RuntimeID            string `json:"runtimeId"`
+	DesiredStateRevision int64  `json:"-"`
+	RuntimeGeneration    int64  `json:"-"`
+	CredentialVersion    int64  `json:"-"`
 }
 
 type AccountFence struct {
 	AccountID            string `json:"accountId"`
-	DesiredStateRevision int64  `json:"desiredStateRevision"`
-	RuntimeGeneration    int64  `json:"runtimeGeneration"`
-	CredentialVersion    int64  `json:"credentialVersion"`
+	RuntimeID            string `json:"runtimeId"`
+	DesiredStateRevision int64  `json:"-"`
+	RuntimeGeneration    int64  `json:"-"`
+	CredentialVersion    int64  `json:"-"`
 }
 
 type RotationFinalizationRequest struct {
@@ -128,9 +132,10 @@ type RuntimeRouteView struct {
 
 type RuntimeSnapshotView struct {
 	OperationID          string             `json:"operationId"`
-	DesiredStateRevision int64              `json:"desiredStateRevision"`
-	RuntimeGeneration    int64              `json:"runtimeGeneration"`
-	CredentialVersion    int64              `json:"credentialVersion"`
+	RuntimeID            string             `json:"runtimeId"`
+	DesiredStateRevision int64              `json:"-"`
+	RuntimeGeneration    int64              `json:"-"`
+	CredentialVersion    int64              `json:"-"`
 	RequestedState       string             `json:"requestedState"`
 	Routes               []RuntimeRouteView `json:"routes"`
 }
@@ -161,14 +166,14 @@ type RuntimeView struct {
 	Pending                         *PendingSnapshotView       `json:"pending,omitempty"`
 	Retiring                        []RuntimeSnapshotView      `json:"retiring"`
 	Tombstoned                      bool                       `json:"tombstoned"`
-	DesiredStateRevision            int64                      `json:"desiredStateRevision,omitempty"`
-	RuntimeGeneration               int64                      `json:"runtimeGeneration,omitempty"`
-	CredentialVersion               int64                      `json:"credentialVersion,omitempty"`
-	RuntimeVersion                  int64                      `json:"runtimeVersion,omitempty"`
+	RuntimeID                       string                     `json:"runtimeId,omitempty"`
+	DesiredStateRevision            int64                      `json:"-"`
+	RuntimeGeneration               int64                      `json:"-"`
+	CredentialVersion               int64                      `json:"-"`
 	Readiness                       RuntimeProjectionReadiness `json:"readiness"`
 	WriteReadiness                  RuntimeProjectionReadiness `json:"writeReadiness"`
-	LastAppliedDesiredStateRevision int64                      `json:"lastAppliedDesiredStateRevision,omitempty"`
-	LastAppliedRuntimeGeneration    int64                      `json:"lastAppliedRuntimeGeneration,omitempty"`
+	LastAppliedDesiredStateRevision int64                      `json:"-"`
+	LastAppliedRuntimeGeneration    int64                      `json:"-"`
 	BlockedReason                   *string                    `json:"blockedReason"`
 	Capabilities                    []RuntimeCapabilityView    `json:"capabilities"`
 	ObservedAt                      time.Time                  `json:"observedAt,omitempty"`
@@ -213,6 +218,9 @@ type InternalOptions struct {
 	Authenticate func(*http.Request) error
 	MaxBodyBytes int64
 	WriteReady   func() bool
+	// PublicMarkets is the credential-free exchange stream used by the browser
+	// through the auth edge. It is optional in migration-validation processes.
+	PublicMarkets InternalPublicMarketStreams
 	// Lifecycle is optional. A gateway without a durable account store can
 	// still serve the runtime and catalog surfaces, so the account lifecycle
 	// routes are only mounted when something can answer them.
@@ -223,13 +231,14 @@ type InternalOptions struct {
 }
 
 type InternalHandler struct {
-	authority    InternalAuthority
-	authenticate func(*http.Request) error
-	bodyLimit    int64
-	writeReady   func() bool
-	lifecycle    AccountLifecycle
-	blockers     AccountBlockers
-	mux          *http.ServeMux
+	authority     InternalAuthority
+	authenticate  func(*http.Request) error
+	bodyLimit     int64
+	writeReady    func() bool
+	lifecycle     AccountLifecycle
+	blockers      AccountBlockers
+	publicMarkets InternalPublicMarketStreams
+	mux           *http.ServeMux
 }
 
 var internalRoutes = []Route{
@@ -242,7 +251,6 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/accounts/desired/{accountId}"},
 	{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/operations/{operationId}"},
 	{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/retirements/{operationId}"},
-	{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}"},
 	{http.MethodGet, "/internal/v1/accounts/runtime"},
 	{http.MethodGet, "/internal/v1/accounts/runtime/{accountId}"},
 	{http.MethodGet, "/internal/v1/accounts/runtime/{accountId}/events"},
@@ -250,12 +258,21 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/catalog/instruments"},
 	{http.MethodGet, "/internal/v1/market-data"},
 	{http.MethodGet, "/internal/v1/candles"},
+	{http.MethodGet, "/internal/v1/public/ws"},
 	{http.MethodGet, "/internal/v1/private-events"},
 	{http.MethodGet, "/internal/v1/funding-board"},
 	{http.MethodGet, "/internal/v1/funding-history"},
 }
 
 func InternalRoutes() []Route { return append([]Route(nil), internalRoutes...) }
+
+// InternalPublicMarketRoutes is the intentionally browser-reachable subset of
+// the Gateway internal plane. It contains public venue facts only; account and
+// order capabilities remain absent from the auth edge's Gateway forwarding
+// table.
+func InternalPublicMarketRoutes() []Route {
+	return []Route{{http.MethodGet, "/internal/v1/public/ws"}}
+}
 
 func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.Authority == nil || options.Authenticate == nil {
@@ -267,7 +284,7 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, mux: http.NewServeMux()}
 	handler.register()
 	if handler.lifecycle != nil {
 		handler.registerAccountLifecycle()
@@ -297,7 +314,6 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/accounts/desired/{accountId}", handler.accountRead(AuthorityGetDesired))
 	handler.mux.HandleFunc("PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}", handler.applyDesired)
 	handler.mux.HandleFunc("PUT /internal/v1/accounts/desired/{accountId}/retirements/{operationId}", handler.retireDesired)
-	handler.mux.HandleFunc("PUT /internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}", handler.finalizeRotation)
 	handler.mux.HandleFunc("GET /internal/v1/accounts/runtime", handler.read(AuthorityListRuntimeAccounts))
 	handler.mux.HandleFunc("GET /internal/v1/accounts/runtime/{accountId}", handler.accountRead(AuthorityGetRuntimeAccount))
 	handler.mux.HandleFunc("GET /internal/v1/accounts/runtime/{accountId}/events", handler.accountRead(AuthorityRuntimeEvents))
@@ -305,6 +321,7 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/catalog/instruments", handler.read(AuthorityCatalogInstruments))
 	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.read(AuthorityMarketData))
 	handler.mux.HandleFunc("GET /internal/v1/candles", handler.read(AuthorityCandles))
+	handler.mux.HandleFunc("GET /internal/v1/public/ws", handler.publicMarketStream)
 	handler.mux.HandleFunc("GET /internal/v1/private-events", handler.read(AuthorityPrivateEvents))
 	handler.mux.HandleFunc("GET /internal/v1/funding-board", handler.read(AuthorityFundingBoard))
 	handler.mux.HandleFunc("GET /internal/v1/funding-history", handler.read(AuthorityFundingHistory))
@@ -400,7 +417,7 @@ func (desired DesiredApplyRequest) validate(accountID, operationID string) error
 	if _, err := secretstore.ParseOpaqueRef(desired.SecretRef); err != nil {
 		return errors.New("invalid desired secret reference")
 	}
-	if strings.TrimSpace(desired.Venue) == "" || desired.Venue != strings.TrimSpace(desired.Venue) || len(desired.Venue) > 64 || desired.DesiredStateRevision < 1 || desired.RuntimeGeneration < 1 || desired.CredentialVersion < 1 || !validRequestedState(desired.RequestedState) || len(desired.Routes) < 1 || len(desired.Routes) > 32 {
+	if strings.TrimSpace(desired.Venue) == "" || desired.Venue != strings.TrimSpace(desired.Venue) || len(desired.Venue) > 64 || strings.TrimSpace(desired.RuntimeID) == "" || desired.RuntimeID != strings.TrimSpace(desired.RuntimeID) || !validRequestedState(desired.RequestedState) || len(desired.Routes) < 1 || len(desired.Routes) > 32 {
 		return errors.New("invalid desired account")
 	}
 	// A route profile no longer names an environment, but the request still
@@ -441,7 +458,7 @@ func (desired DesiredApplyRequest) validate(accountID, operationID string) error
 
 func (retirement RetireRequest) validate(accountID, operationID string) error {
 	parsedOperation, err := secretstore.ParseOperationID(retirement.OperationID)
-	if err != nil || string(parsedOperation) != operationID || retirement.AccountID != accountID || strings.TrimSpace(accountID) == "" || retirement.DesiredStateRevision < 2 || retirement.RuntimeGeneration < 1 || retirement.CredentialVersion < 1 {
+	if err != nil || string(parsedOperation) != operationID || retirement.AccountID != accountID || strings.TrimSpace(accountID) == "" || strings.TrimSpace(retirement.RuntimeID) == "" {
 		return errors.New("invalid retirement request")
 	}
 	return nil
@@ -466,7 +483,7 @@ func (request RotationFinalizationRequest) validate(accountID, operationID strin
 }
 
 func (fence AccountFence) validate(accountID string) error {
-	if fence.AccountID != accountID || fence.DesiredStateRevision <= 0 || fence.RuntimeGeneration <= 0 || fence.CredentialVersion <= 0 {
+	if fence.AccountID != accountID || strings.TrimSpace(fence.RuntimeID) == "" {
 		return errors.New("invalid account fence")
 	}
 	return nil

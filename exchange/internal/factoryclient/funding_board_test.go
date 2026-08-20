@@ -21,17 +21,18 @@ import (
 // at least one of these empty, and a board that renders an absent cell as zero
 // invents a number the venue never published.
 type wantEntry struct {
-	symbol        string
-	nativeSymbol  string
-	nativeID      string
-	base          string
-	quote         string
-	rate          string
-	intervalHours int64  // 0 = venue published no interval
-	nextFunding   int64  // unix seconds; 0 = venue published no settlement clock
-	markPrice     string // "" = absent
-	indexPrice    string // "" = absent
-	openInterest  string // "" = absent
+	symbol               string
+	nativeSymbol         string
+	nativeID             string
+	base                 string
+	quote                string
+	rate                 string
+	intervalHours        int64  // 0 = venue published no interval
+	nextFunding          int64  // unix seconds; 0 = venue published no settlement clock
+	markPrice            string // "" = absent
+	indexPrice           string // "" = absent
+	openInterest         string // "" = absent
+	openInterestNotional string // "" = absent; quote-stablecoin notional
 }
 
 // TestFundingBoardLoaderPerVenueShape pins each venue's field mapping and,
@@ -124,6 +125,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 				symbol: "BTC-USDT", nativeSymbol: "BTCUSDT", base: "BTC", quote: "USDT",
 				rate: "0.0001", intervalHours: 8, nextFunding: 1720000000,
 				markPrice: "64000.5", indexPrice: "63999.1", openInterest: "12345.67",
+				openInterestNotional: "790129052.835",
 			}},
 		},
 		{
@@ -159,8 +161,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 						{"contract":"OLD_USDT","mark_price":"1.5","index_price":"1.4","funding_rate":"0.0003","total_size":"0"}
 					]`,
 					"/futures/usdt/contracts": `[
-						{"name":"BTC_USDT","funding_interval":28800,"funding_next_apply":1720000000,"status":"trading"},
-						{"name":"OLD_USDT","funding_interval":28800,"funding_next_apply":1720000000,"status":"delisting"}
+						{"name":"BTC_USDT","quanto_multiplier":"0.001","funding_interval":28800,"funding_next_apply":1720000000,"status":"trading"},
+						{"name":"OLD_USDT","quanto_multiplier":"1","funding_interval":28800,"funding_next_apply":1720000000,"status":"delisting"}
 					]`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
@@ -173,6 +175,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					symbol: "BTC-USDT", nativeSymbol: "BTC_USDT", base: "BTC", quote: "USDT",
 					rate: "0.0001", intervalHours: 8, nextFunding: 1720000000,
 					markPrice: "64000", indexPrice: "63999", openInterest: "98765",
+					openInterestNotional: "6320960",
 				},
 				{
 					// Still quoted by the ticker feed, but delisting, so its
@@ -181,6 +184,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					// is a real answer and stays present.
 					symbol: "OLD-USDT", nativeSymbol: "OLD_USDT", base: "OLD", quote: "USDT",
 					rate: "0.0003", markPrice: "1.5", indexPrice: "1.4", openInterest: "0",
+					openInterestNotional: "0",
 				},
 			},
 		},
@@ -211,6 +215,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 				symbol: "BTC-USDC", nativeSymbol: "BTC", nativeID: "0", base: "BTC", quote: "USDC",
 				rate: "0.0000125", intervalHours: 1,
 				markPrice: "64000.0", indexPrice: "63999.0", openInterest: "1234.5",
+				openInterestNotional: "79008000",
 			}},
 		},
 		{
@@ -338,6 +343,7 @@ func assertFundingEntry(t *testing.T, got exchange.FundingBoardEntry, want wantE
 	assertFundingOptional(t, want.symbol, "MarkPrice", got.MarkPrice, want.markPrice)
 	assertFundingOptional(t, want.symbol, "IndexPrice", got.IndexPrice, want.indexPrice)
 	assertFundingOptional(t, want.symbol, "OpenInterest", got.OpenInterest, want.openInterest)
+	assertFundingOptional(t, want.symbol, "OpenInterestNotional", got.OpenInterestNotional, want.openInterestNotional)
 }
 
 func assertFundingOptional(t *testing.T, symbol, field string, got exchange.OptionalDecimal, want string) {

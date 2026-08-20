@@ -55,7 +55,7 @@ var (
 
 	projectionRoutes = []string{
 		"GET /api/v1/accounts/{accountId}/runtimes", "GET /api/v1/commands",
-		"GET /api/v1/fills", "GET /api/v1/activity",
+		"GET /api/v1/balances", "GET /api/v1/account-positions", "GET /api/v1/fills", "GET /api/v1/activity",
 	}
 )
 

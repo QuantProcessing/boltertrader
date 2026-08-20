@@ -36,8 +36,11 @@ type GatewayRequest struct {
 	TimeInForce                              string
 	RouteID                                  string
 	ReduceOnly                               bool
-	DesiredStateRevision, RuntimeGeneration  int64
-	CredentialVersion                        int64
+	Leverage                                 int
+	RuntimeID                                string
+	// Deprecated source-compatibility fields. New requests use RuntimeID.
+	DesiredStateRevision, RuntimeGeneration int64
+	CredentialVersion                       int64
 }
 
 type GatewayCancelRequest struct {
@@ -78,17 +81,16 @@ type Service struct {
 }
 
 type placeIntent struct {
-	InstrumentID         string `json:"instrumentId"`
-	Side                 string `json:"side"`
-	Quantity             string `json:"quantity"`
-	OrderType            string `json:"orderType"`
-	LimitPrice           string `json:"limitPrice,omitempty"`
-	TimeInForce          string `json:"timeInForce,omitempty"`
-	ReduceOnly           bool   `json:"reduceOnly,omitempty"`
-	RouteID              string `json:"routeId,omitempty"`
-	DesiredStateRevision int64  `json:"desiredStateRevision,omitempty"`
-	RuntimeGeneration    int64  `json:"runtimeGeneration,omitempty"`
-	CredentialVersion    int64  `json:"credentialVersion,omitempty"`
+	InstrumentID string `json:"instrumentId"`
+	Side         string `json:"side"`
+	Quantity     string `json:"quantity"`
+	OrderType    string `json:"orderType"`
+	LimitPrice   string `json:"limitPrice,omitempty"`
+	TimeInForce  string `json:"timeInForce,omitempty"`
+	ReduceOnly   bool   `json:"reduceOnly,omitempty"`
+	Leverage     int    `json:"leverage,omitempty"`
+	RouteID      string `json:"routeId,omitempty"`
+	RuntimeID    string `json:"runtimeId,omitempty"`
 }
 
 // NewService remains as a compile-compatible transition point until app wiring
@@ -389,14 +391,10 @@ func decodePlaceIntent(payload json.RawMessage) (placeIntent, error) {
 		return intent, fmt.Errorf("intent must contain exactly one JSON object")
 	}
 	quantity, err := decimal.NewFromString(intent.Quantity)
-	if intent.InstrumentID == "" || (intent.Side != string(portfolio.SideBuy) && intent.Side != string(portfolio.SideSell)) || err != nil || !quantity.IsPositive() {
+	if intent.InstrumentID == "" || (intent.Side != string(portfolio.SideBuy) && intent.Side != string(portfolio.SideSell)) || err != nil || !quantity.IsPositive() || intent.Leverage < 0 {
 		return intent, fmt.Errorf("instrument, side, and positive quantity are required")
 	}
-	if intent.DesiredStateRevision != 0 || intent.RuntimeGeneration != 0 || intent.CredentialVersion != 0 {
-		if intent.DesiredStateRevision < 1 || intent.RuntimeGeneration < 1 || intent.CredentialVersion < 1 {
-			return intent, fmt.Errorf("account write fence is incomplete")
-		}
-	}
+	intent.RuntimeID = strings.TrimSpace(intent.RuntimeID)
 	intent.OrderType = strings.ToLower(intent.OrderType)
 	switch intent.OrderType {
 	case "market":
@@ -419,7 +417,8 @@ func gatewayRequest(command orders.Command, intent placeIntent) GatewayRequest {
 		CommandID: command.CommandID, IdempotencyKey: command.IdempotencyKey, AccountID: command.AccountID,
 		InstrumentID: intent.InstrumentID, Side: intent.Side, Quantity: intent.Quantity, OrderType: intent.OrderType,
 		LimitPrice: intent.LimitPrice, TimeInForce: intent.TimeInForce, ReduceOnly: intent.ReduceOnly, RouteID: intent.RouteID,
-		DesiredStateRevision: intent.DesiredStateRevision, RuntimeGeneration: intent.RuntimeGeneration, CredentialVersion: intent.CredentialVersion,
+		Leverage:  intent.Leverage,
+		RuntimeID: intent.RuntimeID,
 	}
 	if command.ReservationID != nil {
 		request.ReservationID = *command.ReservationID

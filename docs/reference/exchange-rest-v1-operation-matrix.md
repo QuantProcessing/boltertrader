@@ -160,5 +160,6 @@ certify against: every credentialed call reaches the real venue, and
 `PlaceOrder`, `CancelOrder`, `SetLeverage`, and WebSocket order commands spend
 real funds. Validate against production only with a dedicated account, explicit
 symbols, explicit notional bounds, serial execution, and terminal cleanup
-evidence. For click-through work that must not touch a venue at all, run the
-frontend against its offline mock.
+evidence. For click-through work that must not use credentials or write to a
+venue, run the application anonymously in read-only mode; its public market
+data is still live.

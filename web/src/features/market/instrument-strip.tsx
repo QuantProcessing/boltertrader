@@ -1,11 +1,12 @@
 import * as Popover from "@radix-ui/react-popover";
 import { Command } from "cmdk";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Coins } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { CandlePage, Instrument, MarketFact, RateLimitStatus } from "@/api/types";
 import { formatDecimal } from "@/lib/format";
 import { useT } from "@/lib/i18n";
+import { instrumentDisplaySymbol } from "@/lib/instrument";
 import { cn } from "@/lib/utils";
 
 import { precisionOf } from "./precision";
@@ -58,8 +59,9 @@ export function InstrumentStrip({
   const bar = today?.candles.at(-1);
   const last = bar?.close ?? fact?.markPrice ?? fact?.bestBid;
   const change = bar ? percentChange(bar.open, bar.close) : null;
-  const { price, quantity } = precisionOf(instrument);
+  const { price } = precisionOf(instrument);
   const tone = change === null ? undefined : change >= 0 ? "up" : "down";
+  const funding = percentageOf(fact?.fundingRate);
   const t = useT();
 
   return (
@@ -73,27 +75,58 @@ export function InstrumentStrip({
           between two clusters of a bar, which is the same job the top nav's
           `border-l` already does beside the account menu. */}
       <Cluster fixed>
-        <Readout label={t("strip.last")} value={last} decimals={price} unit={instrument?.quoteAsset} tone={tone} strong />
-        <Readout
-          label={t("strip.today")}
-          value={change === null ? null : `${Math.abs(change).toFixed(2)}`}
-          prefix={change === null ? undefined : change >= 0 ? "+" : "−"}
-          unit="%"
-          tone={tone}
-          strong
-        />
+        {last ? (
+          <Readout label={t("strip.last")} value={last} decimals={price} unit={instrument?.quoteAsset} tone={tone} strong />
+        ) : null}
+        {fact?.markPrice ? <Readout label={t("strip.mark")} value={fact.markPrice} decimals={price} /> : null}
+        {change === null ? null : (
+          <Readout
+            label={t("strip.today")}
+            value={`${Math.abs(change).toFixed(2)}`}
+            prefix={change >= 0 ? "+" : "−"}
+            unit="%"
+            tone={tone}
+            strong
+          />
+        )}
       </Cluster>
 
       <Cluster>
-        <Readout label={t("strip.open")} value={bar?.open} decimals={price} />
-        <Readout label={t("strip.high")} value={bar?.high} decimals={price} />
-        <Readout label={t("strip.low")} value={bar?.low} decimals={price} />
-        <Readout label={t("strip.volume")} value={bar?.volume} decimals={quantity} />
-        <Readout label={t("strip.mark")} value={fact?.markPrice} decimals={price} />
-        {fact?.fundingRate ? <Readout label={t("strip.funding")} value={fact.fundingRate} decimals={6} /> : null}
-        {fact?.openInterest ? (
-          <Readout label={t("strip.openInterest")} value={fact.openInterest} decimals={quantity} />
+        {bar?.volume ? (
+          <Readout
+            label={t("strip.volume")}
+            value={bar.volume}
+            displayValue={compactDecimal(bar.volume)}
+            unit={instrument?.baseAsset}
+          />
         ) : null}
+        {fact?.openInterest ? (
+          <Readout
+            label={t("strip.openInterest")}
+            value={fact.openInterest}
+            displayValue={compactDecimal(fact.openInterest)}
+            unit={instrument?.baseAsset}
+          />
+        ) : null}
+        {fact?.fundingRate && funding !== null ? (
+          <Readout
+            label={t("strip.funding")}
+            value={fact.fundingRate}
+            displayValue={`${funding >= 0 ? "+" : ""}${funding.toFixed(4)}`}
+            unit="%"
+            tone={funding >= 0 ? "up" : "down"}
+          />
+        ) : null}
+        {fact?.nextFundingTime ? (
+          <Readout
+            label={t("strip.nextFunding")}
+            value={fact.nextFundingTime}
+            displayValue={fundingCountdown(fact.nextFundingTime)}
+          />
+        ) : null}
+        {bar?.open ? <Readout label={t("strip.open")} value={bar.open} decimals={price} /> : null}
+        {bar?.high ? <Readout label={t("strip.high")} value={bar.high} decimals={price} /> : null}
+        {bar?.low ? <Readout label={t("strip.low")} value={bar.low} decimals={price} /> : null}
       </Cluster>
 
       {/* The budget being spent belongs to the venue, not to us. Showing what is
@@ -150,6 +183,7 @@ function Cluster({ children, fixed = false }: { children: React.ReactNode; fixed
 function Readout({
   label,
   value,
+  displayValue,
   decimals,
   unit,
   prefix,
@@ -158,6 +192,8 @@ function Readout({
 }: {
   label: string;
   value?: string | null;
+  /** Display-only formatting for percentages, countdowns and magnitudes. */
+  displayValue?: string;
   decimals?: number;
   unit?: string;
   /** A sign that belongs to the value but is not part of the decimal string. */
@@ -180,7 +216,7 @@ function Readout({
           )}
         >
           {prefix}
-          {formatDecimal(value ?? undefined, { decimals })}
+          {displayValue ?? formatDecimal(value ?? undefined, { decimals })}
         </span>
         {/* Dropped along with the value: a bare `USDT` next to an em dash reads
             as a fact about a price that has not arrived. */}
@@ -203,6 +239,41 @@ function percentChange(from: string, to: string): number | null {
   const close = Number.parseFloat(to);
   if (!Number.isFinite(open) || !Number.isFinite(close) || open === 0) return null;
   return ((close - open) / open) * 100;
+}
+
+/** Funding is a fractional wire value; the strip labels it explicitly as %. */
+function percentageOf(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed * 100 : null;
+}
+
+/** Compact display only; the original decimal string never leaves the query. */
+function compactDecimal(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  const absolute = Math.abs(parsed);
+  const units: Array<[number, string]> = [
+    [1_000_000_000, "B"],
+    [1_000_000, "M"],
+    [1_000, "K"],
+  ];
+  for (const [threshold, suffix] of units) {
+    if (absolute >= threshold) return `${formatDecimal((parsed / threshold).toFixed(2))}${suffix}`;
+  }
+  return formatDecimal(value, { decimals: absolute >= 10 ? 2 : 4 });
+}
+
+function fundingCountdown(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return undefined;
+  const seconds = Math.max(0, Math.floor((timestamp - Date.now()) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return [hours, minutes, remainder].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
 /* --- The selector -------------------------------------------------------- */
@@ -333,10 +404,10 @@ function InstrumentPicker({
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger
         className={cn(
-          // `h-8` rather than the bar's own height: a control that fills its bar
-          // edge to edge reads as the bar, and the 2px focus ring at 2px offset
-          // (§11 rule 7) needs the four pixels either side to land on.
-          "flex h-8 min-w-0 shrink-0 items-center gap-1.5 rounded-control border border-line-strong px-2",
+          // Two text lines need an explicit 36px box. `h-8` follows the tighter
+          // global spacing base and resolved below 29px, leaving the symbol and
+          // venue line pressed against both borders.
+          "flex h-[36px] w-[196px] shrink-0 items-center gap-2 rounded-control border border-line-strong px-2",
           "hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         )}
         disabled={loading && instruments.length === 0}
@@ -345,11 +416,14 @@ function InstrumentPicker({
             what an operator reads to know which market is on screen. The full
             instrument id is the identity rather than the label, so it stays
             reachable as a title instead of taking the headline. */}
-        <span className="min-w-0 text-left" title={instrument?.instrumentId}>
-          <span className="block truncate text-base font-semibold text-text" data-numeric="">
-            {instrument?.symbol ?? (loading ? t("strip.loading") : t("strip.select"))}
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-fill text-muted">
+          <Coins className="size-3.5" aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1 text-left" title={instrument?.instrumentId}>
+          <span className="block truncate text-base font-semibold leading-4 text-text" data-numeric="">
+            {instrument ? instrumentDisplaySymbol(instrument) : loading ? t("strip.loading") : t("strip.select")}
           </span>
-          <span className="block truncate th">
+          <span className="block truncate text-micro leading-[13px] text-dim">
             {instrument
               ? `${instrument.venue} · ${instrument.product}${instrument.settlement ? ` · ${instrument.settlement}` : ""}`
               : t("strip.catalog")}
@@ -418,7 +492,7 @@ function InstrumentPicker({
                           instrument id is what identifies the market, so it
                           follows rather than being dropped. */}
                       <span className="shrink-0 font-medium text-text" data-numeric="">
-                        {candidate.symbol}
+                        {instrumentDisplaySymbol(candidate)}
                       </span>
                       <span className="th min-w-0 flex-1 truncate">
                         {candidate.product}

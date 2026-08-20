@@ -13,6 +13,7 @@ import (
 const (
 	lifecycleCreateOperationID = "018f0000-0000-7000-8000-0000000000a1"
 	lifecycleRotateOperationID = "018f0000-0000-7000-8000-0000000000a2"
+	lifecycleRetireOperationID = "018f0000-0000-7000-8000-0000000000a3"
 )
 
 func newLifecycleTestStore(t *testing.T) (*AccountLifecycleStore, context.Context) {
@@ -186,6 +187,42 @@ func TestLifecycleStoreSwapsAccountAndOperationUnderOneFence(t *testing.T) {
 
 	if err := store.CompareAndSwap(ctx, account.ID, 99, loaded); !errors.Is(err, lifecycle.ErrRevisionConflict) {
 		t.Fatalf("stale CompareAndSwap = %v", err)
+	}
+}
+
+func TestLifecycleStoreCommitsCredentialFreeRemovedTerminalState(t *testing.T) {
+	store, ctx := newLifecycleTestStore(t)
+	account := lifecycleTestAccount(t)
+	account.SecretRef = "secret-ref-1"
+	account.State = lifecycle.StateRemoving
+	account.DesiredStateRevision = 2
+	operation := lifecycleTestOperation(account, lifecycleRetireOperationID, lifecycle.OperationRetire, lifecycle.OperationCleanupPending)
+	if err := store.CreateDraft(ctx, account, operation); err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	removed := account
+	removed.SecretRef = ""
+	removed.PreviousSecretRef = ""
+	removed.State = lifecycle.StateRemoved
+	removed.UpdatedAt = time.Unix(1710000200, 0).UTC()
+	completed := operation
+	completed.State = lifecycle.OperationActive
+	completed.UpdatedAt = removed.UpdatedAt
+	request := lifecycle.TransitionRequest{
+		OperationID:                  operation.ID,
+		ExpectedOperationState:       lifecycle.OperationCleanupPending,
+		ExpectedDesiredStateRevision: removed.DesiredStateRevision,
+		Account:                      removed,
+		Operation:                    completed,
+	}
+	settled, settledOperation, err := store.CompareAndSwapAccountAndOperation(ctx, request)
+	if err != nil {
+		t.Fatalf("CompareAndSwapAccountAndOperation: %v", err)
+	}
+	if settled.State != lifecycle.StateRemoved || settled.SecretRef != "" || settled.PreviousSecretRef != "" ||
+		settledOperation.State != lifecycle.OperationActive {
+		t.Fatalf("terminal cleanup = %+v / %+v", settled, settledOperation)
 	}
 }
 

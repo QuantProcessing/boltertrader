@@ -14,8 +14,8 @@ import (
 
 func TestMigrationPromotionOperationSetDigestIsOrderIndependent(t *testing.T) {
 	items := []storepkg.MigrationPromotionItem{
-		{AccountID: "account-b", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d12", DesiredStateRevision: 2, RuntimeGeneration: 3, CredentialVersion: 4, RouteSetSHA256: strings.Repeat("b", 64), InputSHA256: strings.Repeat("c", 64)},
-		{AccountID: "account-a", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d11", DesiredStateRevision: 1, RuntimeGeneration: 2, CredentialVersion: 3, RouteSetSHA256: strings.Repeat("d", 64), InputSHA256: strings.Repeat("e", 64)},
+		{AccountID: "account-b", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d12", RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445e12", RouteSetSHA256: strings.Repeat("b", 64), InputSHA256: strings.Repeat("c", 64)},
+		{AccountID: "account-a", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d11", RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445e11", RouteSetSHA256: strings.Repeat("d", 64), InputSHA256: strings.Repeat("e", 64)},
 	}
 	request := storepkg.MigrationPromotionRequest{MigrationID: "G010", FenceSHA256: strings.Repeat("a", 64), Items: items}
 	first, err := request.OperationSetSHA256()
@@ -30,7 +30,7 @@ func TestMigrationPromotionOperationSetDigestIsOrderIndependent(t *testing.T) {
 }
 
 func TestMigrationPromotionRejectsPartialIdentityAndDuplicateAccount(t *testing.T) {
-	valid := storepkg.MigrationPromotionItem{AccountID: "account-a", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d11", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RouteSetSHA256: strings.Repeat("b", 64), InputSHA256: strings.Repeat("c", 64)}
+	valid := storepkg.MigrationPromotionItem{AccountID: "account-a", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d11", RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445e11", RouteSetSHA256: strings.Repeat("b", 64), InputSHA256: strings.Repeat("c", 64)}
 	for _, items := range [][]storepkg.MigrationPromotionItem{
 		{{AccountID: "account-a"}},
 		{valid, valid},
@@ -129,8 +129,7 @@ func migrationPromotionRequest(t *testing.T, snapshot storepkg.DesiredSnapshot) 
 	return storepkg.MigrationPromotionRequest{
 		MigrationID: "G010", FenceSHA256: strings.Repeat("f", 64),
 		Items: []storepkg.MigrationPromotionItem{{
-			AccountID: snapshot.AccountID, OperationID: snapshot.OperationID.String(),
-			DesiredStateRevision: int64(snapshot.Fence.DesiredStateRevision), RuntimeGeneration: int64(snapshot.Fence.RuntimeGeneration), CredentialVersion: int64(snapshot.Fence.CredentialVersion),
+			AccountID: snapshot.AccountID, OperationID: snapshot.OperationID.String(), RuntimeID: snapshot.Fence.RuntimeID,
 			RouteSetSHA256: routeSHA, InputSHA256: snapshot.RequestDigest,
 		}},
 	}

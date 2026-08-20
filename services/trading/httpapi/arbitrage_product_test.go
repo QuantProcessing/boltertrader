@@ -64,18 +64,18 @@ func (authority arbitrageAccounts) Get(_ context.Context, _, accountID string) (
 }
 
 func readyArbitrageAccounts() arbitrageAccounts {
-	account := func(id, venue string) ManualAccount {
+	account := func(id, venue, profile string) ManualAccount {
 		return ManualAccount{
 			ID: id, Venue: venue, VenueEnvironment: "live",
 			ProductIDs:           []string{arbitrage.ProductID},
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 			State:  manualAccountActive,
-			Routes: []ManualAccountRoute{{RouteID: "perp", Product: "perp", RequestedState: manualAccountActive}},
+			Routes: []ManualAccountRoute{{RouteID: "perp", Product: "perp", RouteProfileID: profile, RequestedState: manualAccountActive}},
 		}
 	}
 	return arbitrageAccounts{accounts: map[string]ManualAccount{
-		"account-long":  account("account-long", "binance"),
-		"account-short": account("account-short", "okx"),
+		"account-long":  account("account-long", "binance", "binance-perp"),
+		"account-short": account("account-short", "okx", "okx-perp"),
 	}}
 }
 
@@ -85,9 +85,9 @@ func readyArbitrageAccounts() arbitrageAccounts {
 type arbitrageBoardFixture struct{}
 
 func (arbitrageBoardFixture) Get(context.Context) (marketdata.BoardSnapshot, error) {
-	row := func(rate string) marketdata.BoardRow {
+	row := func(instrumentID, rate string) marketdata.BoardRow {
 		return marketdata.BoardRow{
-			Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+			InstrumentID: instrumentID, Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 			Rate: rate, IntervalHours: 8, MarkPrice: "50",
 			NextFundingTime: time.Date(2026, time.August, 5, 8, 0, 0, 0, time.UTC),
 		}
@@ -95,8 +95,8 @@ func (arbitrageBoardFixture) Get(context.Context) (marketdata.BoardSnapshot, err
 	return marketdata.BoardSnapshot{
 		ObservedAt: time.Now(),
 		Venues: []marketdata.BoardVenue{
-			{Venue: "binance", Environment: "live", Product: "perp", RouteProfileID: "binance-perp", Rows: []marketdata.BoardRow{row("-0.0001")}},
-			{Venue: "okx", Environment: "live", Product: "perp", RouteProfileID: "okx-perp", Rows: []marketdata.BoardRow{row("0.0003")}},
+			{Venue: "binance", Environment: "live", Product: "perp", RouteProfileID: "binance-perp", Rows: []marketdata.BoardRow{row("BTC-USDT-BINANCE", "-0.0001")}},
+			{Venue: "okx", Environment: "live", Product: "perp", RouteProfileID: "okx-perp", Rows: []marketdata.BoardRow{row("BTC-USDT-OKX", "0.0003")}},
 		},
 	}, nil
 }
@@ -186,6 +186,48 @@ func newArbitrageHarness(t *testing.T, gateway *arbitrageGatewayFixture) arbitra
 const arbitragePreviewBody = `{"long":{"accountId":"account-long","instrumentId":"BTC-USDT-BINANCE"},` +
 	`"short":{"accountId":"account-short","instrumentId":"BTC-USDT-OKX"},` +
 	`"quantity":"2","orderType":"market","timeInForce":"ioc"}`
+
+func TestArbitrageOpportunitiesKeepPublicIdentityIndependentOfAccounts(t *testing.T) {
+	harness := newArbitrageHarness(t, &arbitrageGatewayFixture{})
+	request := httptest.NewRequest(http.MethodGet,
+		"/api/v1/products/arbitrage/opportunities?accountId=account-long&accountId=account-short", nil)
+	response := httptest.NewRecorder()
+	harness.mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Items []arbitrageOpportunity `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Items) != 1 {
+		t.Fatalf("items=%+v", envelope.Data.Items)
+	}
+	item := envelope.Data.Items[0]
+	if item.Symbol != "BTC-USDT" || item.Long.InstrumentID != "BTC-USDT-BINANCE" ||
+		item.Short.InstrumentID != "BTC-USDT-OKX" || item.Long.RouteProfileID != "binance-perp" ||
+		item.Short.RouteProfileID != "okx-perp" || !item.Executable {
+		t.Fatalf("opportunity=%+v", item)
+	}
+
+	response = httptest.NewRecorder()
+	harness.mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet,
+		"/api/v1/products/arbitrage/opportunities", nil))
+	envelope.Data.Items = nil
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || len(envelope.Data.Items) != 1 {
+		t.Fatalf("account-free response=%s err=%v", response.Body.String(), err)
+	}
+	item = envelope.Data.Items[0]
+	if item.Long.InstrumentID == "" || item.Short.InstrumentID == "" ||
+		!slices.Contains(item.Blockers, "account_unreachable") ||
+		slices.Contains(item.Blockers, "instrument_identity_unresolved") {
+		t.Fatalf("account-free opportunity conflated reachability with listing: %+v", item)
+	}
+}
 
 // preview runs the preview route and returns the sealed token the open route
 // spends. Quantity 2 at the fixture's 50 prices each leg at 100 USDT, which used
@@ -377,7 +419,7 @@ func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 
 	// One exchange dated its rate, the other did not. The pair is real and must
 	// survive — unranked, and saying so — because dropping it hides the venue.
-	opportunity, ok := buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
+	opportunity, ok := buildOpportunity(key, []arbitrageOpportunityLeg{
 		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
 		{Venue: "lighter", Environment: "live", Rate: "0.00007"},
 	})
@@ -396,7 +438,7 @@ func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 
 	// One exchange named twice is one exchange, whatever else differs, and
 	// whatever the ranking would have made of the two rates.
-	if _, offered := buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
+	if _, offered := buildOpportunity(key, []arbitrageOpportunityLeg{
 		{Venue: "bybit", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
 		{Venue: "bybit", Environment: "live", Rate: "0.00042", DailyRate: "0.00126"},
 	}); offered {
@@ -404,7 +446,7 @@ func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 	}
 
 	// And an underlying only one exchange quotes is not an opportunity at all.
-	if _, offered := buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
+	if _, offered := buildOpportunity(key, []arbitrageOpportunityLeg{
 		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
 	}); offered {
 		t.Fatal("a single-venue underlying was offered as a hedge")
@@ -412,7 +454,7 @@ func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 
 	// The ranking itself still holds when there is something to rank: long the
 	// venue paying least, short the venue paying most, spread the difference.
-	opportunity, ok = buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
+	opportunity, ok = buildOpportunity(key, []arbitrageOpportunityLeg{
 		{Venue: "bybit", Environment: "live", Rate: "0.00042", DailyRate: "0.00126"},
 		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
 	})

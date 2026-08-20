@@ -32,9 +32,11 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/process"
 	"github.com/QuantProcessing/boltertrader/gateway/publicconn"
+	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
+	"github.com/QuantProcessing/boltertrader/internal/livewrite"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -121,6 +123,21 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		runtimeLifecycle = productionLifecycle
 	}
 	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
+	// publicMarkets backs the catalog, order-book and candle authority without
+	// borrowing an account runtime. Construction is local; venue I/O remains
+	// lazy and one failed venue only removes its own catalog column.
+	var publicMarkets *publicmarket.Source
+	if !validationProfile {
+		marketFactory, marketErr := publicmarket.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
+		if marketErr != nil {
+			return fmt.Errorf("public market factory setup failed")
+		}
+		publicMarkets, marketErr = publicmarket.NewSource(marketFactory, routeprofile.DefaultRegistry())
+		if marketErr != nil {
+			return fmt.Errorf("public market source setup failed")
+		}
+		defer publicMarkets.Close()
+	}
 	// fundingBoard backs /internal/v1/funding-board. It is built here, beside
 	// the process wiring, rather than inside defaultBuildAccountManager because
 	// that constructor early-returns a test-injected manager: assembling the
@@ -160,7 +177,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle})
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets)
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
@@ -183,7 +200,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 					return attachErr
 				}
 			}
-			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, withFundingBoard(fundingBoard))
+			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, withPublicMarkets(publicMarkets), withFundingBoard(fundingBoard))
 			if restoreErr != nil {
 				return restoreErr
 			}
@@ -292,6 +309,7 @@ func defaultInternalHandlerFactory(
 	authorityProvider func() *gatewayAuthority,
 	writeReady func() bool,
 	accountDeps accountLifecycleDeps,
+	publicMarkets httpapi.InternalPublicMarketStreams,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
 		var handler http.Handler
@@ -304,8 +322,9 @@ func defaultInternalHandlerFactory(
 				return nil, fmt.Errorf("internal authority is unavailable")
 			}
 			options := httpapi.InternalOptions{
-				Authority:  authority,
-				WriteReady: writeReady,
+				Authority:     authority,
+				WriteReady:    writeReady,
+				PublicMarkets: publicMarkets,
 				Authenticate: func(request *http.Request) error {
 					if _, ok := auth.Principal(request.Context()); !ok {
 						return errors.New("internal authentication required")
@@ -354,20 +373,15 @@ func (deps accountLifecycleDeps) available() bool {
 // finishes what it starts.
 //
 // The two are returned together because neither is complete alone. A durable
-// create applies the desired state to the runtime and then demands proof that
-// the runtime is *already* serving it — every requested-active route ready —
-// before it promotes the account to active. That proof is not available
-// synchronously: applying a snapshot registers the account's routes, but a
-// route becomes ready only once the venue connection and its private stream
-// are up, which happens on its own schedule some seconds later. The create call
-// therefore loses that race routinely, and leaves behind an account stuck in
-// "creating" with its credential operation stuck in "applying" — a state the
-// manual product refuses to trade on.
+// create applies the desired state to the runtime after one private balance
+// read proves the credential. Promotion of that snapshot is the account-level
+// proof; route private streams and write permissions continue warming as
+// separate readiness signals and do not hold the account in "creating".
 //
 // The reconciler is the designed answer: it rescans operations parked in a
 // recoverable state, re-reads the runtime's truth, and performs the same
-// promotion once the routes really are ready. Creation is eventually
-// consistent by construction, so nothing else has to be.
+// promotion after an interrupted response or process restart. Creation is
+// eventually consistent by construction, so nothing else has to be.
 func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpapi.InternalAuthority) (*lifecycle.Service, *lifecycle.Reconciler, error) {
 	// The namespace and key version are the ones newGatewayCredentialResolver
 	// already refused to start without, so the lifecycle writes into the same
@@ -403,11 +417,10 @@ func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpap
 // credentialReconcileInterval is how often parked credential operations are
 // retried, and credentialReconcileBatch how many are taken per pass.
 //
-// The interval is set by what it is waiting for. The common case is a create
-// that raced ahead of its routes becoming ready, which resolves within seconds
-// of the venue connecting; a slower sweep would leave a freshly created account
-// untradeable for no reason other than the timer. It is not a poll of anything
-// remote — a pass with nothing parked is one indexed query.
+// The interval is set by what it is waiting for. The common case is an
+// interrupted create response or service restart; a slower sweep would leave a
+// verified account untradeable for no reason other than the timer. It is not a
+// poll of anything remote — a pass with nothing parked is one indexed query.
 const (
 	credentialReconcileInterval = 5 * time.Second
 	credentialReconcileBatch    = 32
@@ -710,6 +723,10 @@ func defaultBuildAccountManager(
 		return override
 	}
 	return func(ctx context.Context) (process.AccountManager, error) {
+		allowLiveWrites, err := livewrite.Enabled()
+		if err != nil {
+			return nil, fmt.Errorf("live write configuration")
+		}
 		gatewayCatalog, err := catalog.NewService(5*time.Minute, time.Now)
 		if err != nil {
 			return nil, fmt.Errorf("catalog setup")
@@ -729,6 +746,7 @@ func defaultBuildAccountManager(
 			ExchangeCatalog:         exchangeCatalog,
 			GatewayCatalog:          gatewayCatalog,
 			HTTPClient:              httpClient,
+			AllowLiveWrites:         allowLiveWrites,
 			Lifecycle:               lifecycle,
 			CredentialResolver:      credentialResolver,
 			RuntimeGroupBuilder:     account.NewFactoryRuntimeGroupBuilder(httpClient, exchangeCatalog),
@@ -839,7 +857,7 @@ func defaultVerifyDatabaseAuthority(override func(context.Context, process.Postg
 		if !ok {
 			return postgres.AuthorityResult{}, fmt.Errorf("postgres pool type")
 		}
-		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV8())
+		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV10())
 	}
 }
 

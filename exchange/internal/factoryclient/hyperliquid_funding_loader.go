@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	hyperliquidperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
+	"github.com/shopspring/decimal"
 )
 
 type hyperliquidFundingBoardLoader struct {
@@ -64,6 +65,9 @@ func (loader hyperliquidFundingBoardLoader) LoadFundingBoard(ctx context.Context
 			MarkPrice:     fundingOptionalDecimal(asset.MarkPx),
 			IndexPrice:    fundingOptionalDecimal(asset.OraclePx),
 			OpenInterest:  fundingOptionalNonNegative(asset.OpenInterest),
+			OpenInterestNotional: fundingOpenInterestNotional(
+				asset.OpenInterest, asset.MarkPx, decimal.NewFromInt(1),
+			),
 		})
 	}
 	return fundingBoardSnapshot(scope, entries), nil

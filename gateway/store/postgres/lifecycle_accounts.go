@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
-	"time"
 
 	"database/sql"
 
@@ -35,20 +34,14 @@ type lifecycleExecutor interface {
 }
 
 const lifecycleAccountSelect = `
-	SELECT account_id, venue, venue_environment, display_name, product_ids,
-	       COALESCE(secret_ref, ''), COALESCE(previous_secret_ref, ''),
-	       desired_state_revision, runtime_generation, credential_version, requested_state,
-	       rotation_fence_id, rotation_fence_state,
-	       rotation_from_credential_version, rotation_to_credential_version,
-	       rotation_from_runtime_generation, rotation_to_runtime_generation, rotation_armed_at,
-	       last_validated_at, updated_at
+	SELECT account_id, runtime_id::text, venue, venue_environment, display_name, product_ids,
+	       COALESCE(secret_ref, ''),
+	       requested_state, last_validated_at, updated_at
 	FROM gateway_desired_accounts`
 
 const lifecycleOperationSelect = `
 	SELECT operation_id, principal_id, account_id, kind, state,
 	       idempotency_key_digest, request_digest,
-	       target_desired_state_revision, target_runtime_generation, target_credential_version,
-	       COALESCE(rotation_cleanup_tombstone_revision, 0), rotation_cleanup_completed_at,
 	       COALESCE(secret_ref, ''), COALESCE(stable_error_code, ''), created_at, updated_at
 	FROM gateway_credential_operations`
 
@@ -285,13 +278,10 @@ func (store *AccountLifecycleStore) CompareAndSwapAccountAndOperation(ctx contex
 	tag, err := tx.Exec(ctx, `
 		UPDATE gateway_credential_operations
 		SET state = $3, secret_ref = NULLIF($4, ''), stable_error_code = NULLIF($5, ''),
-		    rotation_cleanup_tombstone_revision = NULLIF($6, 0::bigint),
-		    rotation_cleanup_completed_at = $7, updated_at = $8
+		    updated_at = $6
 		WHERE operation_id = $1 AND state = $2`,
 		string(request.OperationID), request.ExpectedOperationState, request.Operation.State,
-		request.Operation.SecretRef, request.Operation.StableErrorCode,
-		request.Operation.RotationCleanupTombstoneRevision, nullableLifecycleTime(request.Operation.RotationCleanupCompletedAt),
-		request.Operation.UpdatedAt)
+		request.Operation.SecretRef, request.Operation.StableErrorCode, request.Operation.UpdatedAt)
 	if err != nil {
 		return lifecycle.Account{}, lifecycle.CredentialOperation{}, redactErr("swap credential operation", err)
 	}
@@ -305,115 +295,11 @@ func (store *AccountLifecycleStore) CompareAndSwapAccountAndOperation(ctx contex
 }
 
 func (store *AccountLifecycleStore) RecordRotationCleanupProof(ctx context.Context, proof lifecycle.RotationCleanupProof) (lifecycle.CredentialOperation, error) {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return lifecycle.CredentialOperation{}, redactErr("begin rotation cleanup proof", err)
-	}
-	defer tx.Rollback(ctx)
-	operation, err := scanLifecycleOperation(tx.QueryRow(ctx, lifecycleOperationSelect+` WHERE operation_id = $1 FOR UPDATE`, string(proof.OperationID)))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return lifecycle.CredentialOperation{}, lifecycle.ErrNotFound
-	}
-	if err != nil {
-		return lifecycle.CredentialOperation{}, err
-	}
-	account, err := scanLifecycleAccount(tx.QueryRow(ctx, lifecycleAccountSelect+` WHERE account_id = $1 FOR UPDATE`, operation.AccountID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return lifecycle.CredentialOperation{}, lifecycle.ErrNotFound
-	}
-	if err != nil {
-		return lifecycle.CredentialOperation{}, err
-	}
-	if err := lifecycle.ValidateRotationCleanupProof(account, operation, proof); err != nil {
-		return lifecycle.CredentialOperation{}, lifecycle.ErrRevisionConflict
-	}
-	if lifecycle.HasRotationCleanupProof(account, operation) {
-		return operation, nil
-	}
-	tag, err := tx.Exec(ctx, `
-		UPDATE gateway_credential_operations
-		SET rotation_cleanup_tombstone_revision = $2, rotation_cleanup_completed_at = $3,
-		    stable_error_code = NULL, updated_at = $3
-		WHERE operation_id = $1 AND state = 'cleanup_pending'
-		  AND rotation_cleanup_tombstone_revision IS NULL AND rotation_cleanup_completed_at IS NULL`,
-		string(proof.OperationID), proof.TombstoneRevision, proof.CompletedAt.UTC())
-	if err != nil {
-		return lifecycle.CredentialOperation{}, redactErr("record rotation cleanup proof", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return lifecycle.CredentialOperation{}, lifecycle.ErrRevisionConflict
-	}
-	operation.RotationCleanupTombstoneRevision = proof.TombstoneRevision
-	operation.RotationCleanupCompletedAt = proof.CompletedAt.UTC()
-	operation.StableErrorCode = ""
-	operation.UpdatedAt = proof.CompletedAt.UTC()
-	if err := tx.Commit(ctx); err != nil {
-		return lifecycle.CredentialOperation{}, redactErr("commit rotation cleanup proof", err)
-	}
-	return operation, nil
+	return lifecycle.CredentialOperation{}, lifecycle.ErrInvalidTransition
 }
 
 func (store *AccountLifecycleStore) CompleteRotationCleanup(ctx context.Context, completion lifecycle.RotationCleanupCompletion) (lifecycle.Account, lifecycle.CredentialOperation, error) {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, redactErr("begin rotation cleanup completion", err)
-	}
-	defer tx.Rollback(ctx)
-	operation, err := scanLifecycleOperation(tx.QueryRow(ctx, lifecycleOperationSelect+` WHERE operation_id = $1 FOR UPDATE`, string(completion.OperationID)))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, lifecycle.ErrNotFound
-	}
-	if err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, err
-	}
-	account, err := scanLifecycleAccount(tx.QueryRow(ctx, lifecycleAccountSelect+` WHERE account_id = $1 FOR UPDATE`, operation.AccountID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, lifecycle.ErrNotFound
-	}
-	if err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, err
-	}
-	if err := lifecycle.ValidateRotationCleanupCompletion(account, operation, completion); err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, lifecycle.ErrRevisionConflict
-	}
-	account.Routes, err = loadLifecycleRoutes(ctx, tx, account.ID)
-	if err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, err
-	}
-	// The completion already landed; replaying it must be a no-op rather than a
-	// second CAS against a revision that has since moved on.
-	if operation.State == lifecycle.OperationActive && account.PreviousSecretRef == "" {
-		return account, operation, nil
-	}
-	completedAt := completion.CompletedAt.UTC()
-	account.PreviousSecretRef = ""
-	account.Rotation = nil
-	account.State = lifecycle.StateActive
-	account.UpdatedAt = completedAt
-	changed, err := updateLifecycleAccount(ctx, tx, account.ID, account.DesiredStateRevision, normalizeLifecycleAccount(account))
-	if err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, err
-	}
-	if !changed {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, lifecycle.ErrRevisionConflict
-	}
-	tag, err := tx.Exec(ctx, `
-		UPDATE gateway_credential_operations
-		SET state = 'active', stable_error_code = NULL, updated_at = $2
-		WHERE operation_id = $1 AND state = 'cleanup_pending'`, string(operation.ID), completedAt)
-	if err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, redactErr("complete rotation cleanup", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, lifecycle.ErrRevisionConflict
-	}
-	operation.State = lifecycle.OperationActive
-	operation.StableErrorCode = ""
-	operation.UpdatedAt = completedAt
-	if err := tx.Commit(ctx); err != nil {
-		return lifecycle.Account{}, lifecycle.CredentialOperation{}, redactErr("commit rotation cleanup completion", err)
-	}
-	return account, operation, nil
+	return lifecycle.Account{}, lifecycle.CredentialOperation{}, lifecycle.ErrInvalidTransition
 }
 
 func (store *AccountLifecycleStore) ListRecoverableCredentialOperations(ctx context.Context, limit int) ([]lifecycle.CredentialOperation, error) {
@@ -421,7 +307,7 @@ func (store *AccountLifecycleStore) ListRecoverableCredentialOperations(ctx cont
 		return nil, nil
 	}
 	rows, err := store.pool.Query(ctx, lifecycleOperationSelect+`
-		WHERE state IN ('awaiting_material', 'stored', 'applying', 'cleanup_pending')
+		WHERE state IN ('awaiting_material', 'stored', 'applying')
 		ORDER BY created_at, operation_id LIMIT $1`, limit)
 	if err != nil {
 		return nil, redactErr("list recoverable credential operations", err)
@@ -447,23 +333,17 @@ func insertLifecycleAccount(ctx context.Context, executor lifecycleExecutor, acc
 		return err
 	}
 	args := []any{
-		account.ID, account.Venue, account.VenueEnvironment, account.DisplayName, products,
-		account.SecretRef, account.PreviousSecretRef,
-		account.DesiredStateRevision, account.RuntimeGeneration, account.CredentialVersion, account.State,
+		account.ID, account.RuntimeID, account.Venue, account.VenueEnvironment, account.DisplayName, products,
+		account.SecretRef, account.State,
 	}
-	args = append(args, lifecycleRotationArgs(account.Rotation)...)
 	args = append(args, account.LastValidatedAt, account.UpdatedAt)
 	if _, err := executor.Exec(ctx, `
 		INSERT INTO gateway_desired_accounts
-			(account_id, venue, venue_environment, display_name, product_ids,
-			 secret_ref, previous_secret_ref,
-			 desired_state_revision, runtime_generation, credential_version, requested_state,
-			 rotation_fence_id, rotation_fence_state,
-			 rotation_from_credential_version, rotation_to_credential_version,
-			 rotation_from_runtime_generation, rotation_to_runtime_generation, rotation_armed_at,
-			 last_validated_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''),
-		        $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`, args...); err != nil {
+			(account_id, runtime_id, venue, venue_environment, display_name, product_ids,
+			 secret_ref,
+			 requested_state, last_validated_at, updated_at)
+		VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7, ''),
+		        $8, $9, $10)`, args...); err != nil {
 		return redactErr("insert lifecycle account", err)
 	}
 	return nil
@@ -475,28 +355,17 @@ func updateLifecycleAccount(ctx context.Context, executor lifecycleExecutor, id 
 		return false, err
 	}
 	args := []any{
-		id, expected,
+		id, account.RuntimeID,
 		account.Venue, account.VenueEnvironment, account.DisplayName, products,
-		account.SecretRef, account.PreviousSecretRef,
-		account.DesiredStateRevision, account.RuntimeGeneration, account.CredentialVersion, account.State,
+		account.SecretRef, account.State,
 	}
-	args = append(args, lifecycleRotationArgs(account.Rotation)...)
 	args = append(args, account.LastValidatedAt, account.UpdatedAt)
-	// rotation_released_at and rotation_blocked_reason are cleared alongside the
-	// fence: the lifecycle fence only ever reaches 'armed', so leaving a stale
-	// terminal marker behind would describe a fence that no longer exists.
+	_ = expected // kept in the compatibility interface; account versions no longer exist.
 	tag, err := executor.Exec(ctx, `
 		UPDATE gateway_desired_accounts
-		SET venue = $3, venue_environment = $4, display_name = $5, product_ids = $6,
-		    secret_ref = NULLIF($7, ''), previous_secret_ref = NULLIF($8, ''),
-		    desired_state_revision = $9, runtime_generation = $10, credential_version = $11,
-		    requested_state = $12,
-		    rotation_fence_id = $13, rotation_fence_state = $14,
-		    rotation_from_credential_version = $15, rotation_to_credential_version = $16,
-		    rotation_from_runtime_generation = $17, rotation_to_runtime_generation = $18,
-		    rotation_armed_at = $19, rotation_released_at = NULL, rotation_blocked_reason = NULL,
-		    last_validated_at = $20, updated_at = $21
-		WHERE account_id = $1 AND desired_state_revision = $2`, args...)
+		SET runtime_id = $2::uuid, venue = $3, venue_environment = $4, display_name = $5, product_ids = $6,
+		    secret_ref = NULLIF($7, ''), requested_state = $8, last_validated_at = $9, updated_at = $10
+		WHERE account_id = $1`, args...)
 	if err != nil {
 		return false, redactErr("update lifecycle account", err)
 	}
@@ -551,17 +420,11 @@ func insertLifecycleOperation(ctx context.Context, executor lifecycleExecutor, o
 	if _, err := executor.Exec(ctx, `
 		INSERT INTO gateway_credential_operations
 			(operation_id, principal_id, account_id, kind, state,
-			 idempotency_key_digest, request_digest,
-			 target_desired_state_revision, target_runtime_generation, target_credential_version,
-			 rotation_cleanup_tombstone_revision, rotation_cleanup_completed_at,
-			 secret_ref, stable_error_code, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-		        NULLIF($11, 0::bigint), $12, NULLIF($13, ''), NULLIF($14, ''), $15, $16)`,
+			 idempotency_key_digest, request_digest, secret_ref, stable_error_code, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11)`,
 		string(operation.ID), operation.PrincipalID, operation.AccountID, operation.Kind, operation.State,
-		operation.IdempotencyKeyDigest, operation.RequestDigest,
-		operation.TargetDesiredStateRevision, operation.TargetRuntimeGeneration, operation.TargetCredentialVersion,
-		operation.RotationCleanupTombstoneRevision, nullableLifecycleTime(operation.RotationCleanupCompletedAt),
-		operation.SecretRef, operation.StableErrorCode, operation.CreatedAt, operation.UpdatedAt); err != nil {
+		operation.IdempotencyKeyDigest, operation.RequestDigest, operation.SecretRef,
+		operation.StableErrorCode, operation.CreatedAt, operation.UpdatedAt); err != nil {
 		return redactErr("insert credential operation", err)
 	}
 	return nil
@@ -570,15 +433,11 @@ func insertLifecycleOperation(ctx context.Context, executor lifecycleExecutor, o
 func scanLifecycleAccount(row interface{ Scan(...any) error }) (lifecycle.Account, error) {
 	var account lifecycle.Account
 	var products []byte
-	var fenceID, fenceState sql.NullString
-	var fromCredential, toCredential, fromRuntime, toRuntime sql.NullInt64
-	var armedAt, validatedAt sql.NullTime
+	var validatedAt sql.NullTime
 	if err := row.Scan(
-		&account.ID, &account.Venue, &account.VenueEnvironment, &account.DisplayName, &products,
-		&account.SecretRef, &account.PreviousSecretRef,
-		&account.DesiredStateRevision, &account.RuntimeGeneration, &account.CredentialVersion, &account.State,
-		&fenceID, &fenceState, &fromCredential, &toCredential, &fromRuntime, &toRuntime, &armedAt,
-		&validatedAt, &account.UpdatedAt,
+		&account.ID, &account.RuntimeID, &account.Venue, &account.VenueEnvironment, &account.DisplayName, &products,
+		&account.SecretRef,
+		&account.State, &validatedAt, &account.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return lifecycle.Account{}, err
@@ -594,17 +453,6 @@ func scanLifecycleAccount(row interface{ Scan(...any) error }) (lifecycle.Accoun
 	// The consolidated row carries one environment column; the venue environment
 	// and the native environment were provably equal at every construction site.
 	account.NativeEnvironment = account.VenueEnvironment
-	if fenceID.Valid {
-		account.Rotation = &lifecycle.RotationFence{
-			ID:                    fenceID.String,
-			State:                 fenceState.String,
-			FromCredentialVersion: fromCredential.Int64,
-			ToCredentialVersion:   toCredential.Int64,
-			FromRuntimeGeneration: fromRuntime.Int64,
-			ToRuntimeGeneration:   toRuntime.Int64,
-			ArmedAt:               armedAt.Time.UTC(),
-		}
-	}
 	if validatedAt.Valid {
 		value := validatedAt.Time.UTC()
 		account.LastValidatedAt = &value
@@ -614,12 +462,9 @@ func scanLifecycleAccount(row interface{ Scan(...any) error }) (lifecycle.Accoun
 
 func scanLifecycleOperation(row interface{ Scan(...any) error }) (lifecycle.CredentialOperation, error) {
 	var operation lifecycle.CredentialOperation
-	var cleanupCompletedAt sql.NullTime
 	if err := row.Scan(
 		&operation.ID, &operation.PrincipalID, &operation.AccountID, &operation.Kind, &operation.State,
 		&operation.IdempotencyKeyDigest, &operation.RequestDigest,
-		&operation.TargetDesiredStateRevision, &operation.TargetRuntimeGeneration, &operation.TargetCredentialVersion,
-		&operation.RotationCleanupTombstoneRevision, &cleanupCompletedAt,
 		&operation.SecretRef, &operation.StableErrorCode, &operation.CreatedAt, &operation.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -627,29 +472,7 @@ func scanLifecycleOperation(row interface{ Scan(...any) error }) (lifecycle.Cred
 		}
 		return lifecycle.CredentialOperation{}, redactErr("scan credential operation", err)
 	}
-	if cleanupCompletedAt.Valid {
-		operation.RotationCleanupCompletedAt = cleanupCompletedAt.Time.UTC()
-	}
 	return operation, nil
-}
-
-func lifecycleRotationArgs(rotation *lifecycle.RotationFence) []any {
-	if rotation == nil {
-		return []any{nil, nil, nil, nil, nil, nil, nil}
-	}
-	return []any{
-		rotation.ID, rotation.State,
-		rotation.FromCredentialVersion, rotation.ToCredentialVersion,
-		rotation.FromRuntimeGeneration, rotation.ToRuntimeGeneration,
-		rotation.ArmedAt.UTC(),
-	}
-}
-
-func nullableLifecycleTime(value time.Time) any {
-	if value.IsZero() {
-		return nil
-	}
-	return value.UTC()
 }
 
 func encodeLifecycleProductIDs(account lifecycle.Account) ([]byte, error) {

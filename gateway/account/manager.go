@@ -22,9 +22,9 @@ import (
 )
 
 var (
-	ErrUnknownAccount      = errors.New("unknown account")
-	ErrProductMismatch     = errors.New("account product mismatch")
-	ErrManagerClosed       = errors.New("account manager closed")
+	ErrUnknownAccount    = errors.New("unknown account")
+	ErrProductMismatch   = errors.New("account product mismatch")
+	ErrManagerClosed     = errors.New("account manager closed")
 	ErrRuntimeExists     = errors.New("runtime account already exists")
 	ErrRuntimeRevision   = errors.New("runtime desired-state revision conflict")
 	ErrRuntimeBlocked    = errors.New("runtime transition blocked")
@@ -67,6 +67,7 @@ const (
 
 type DesiredRuntime struct {
 	AccountID            domain.AccountID `json:"accountId"`
+	RuntimeID            string           `json:"runtimeId"`
 	Venue                string           `json:"venue"`
 	VenueEnvironment     string           `json:"venueEnvironment"`
 	SecretRef            secret.OpaqueRef `json:"secretRef"`
@@ -79,13 +80,13 @@ type DesiredRuntime struct {
 
 func (desired DesiredRuntime) Fence() WriteFence {
 	return WriteFence{
-		AccountID: desired.AccountID, DesiredStateRevision: desired.DesiredStateRevision,
-		RuntimeGeneration: desired.RuntimeGeneration, CredentialVersion: desired.CredentialVersion,
+		AccountID: desired.AccountID, RuntimeID: desired.RuntimeID,
 	}
 }
 
 type WriteFence struct {
 	AccountID            domain.AccountID `json:"accountId"`
+	RuntimeID            string           `json:"runtimeId"`
 	DesiredStateRevision uint64           `json:"desiredStateRevision"`
 	RuntimeGeneration    uint64           `json:"runtimeGeneration"`
 	CredentialVersion    uint64           `json:"credentialVersion"`
@@ -1324,8 +1325,7 @@ func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 	} else {
 		active := manager.ActiveSnapshot(fence.AccountID)
 		if active == nil || active.Fence != (domain.AccountFence{
-			AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
-			RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+			AccountID: fence.AccountID, RuntimeID: fence.RuntimeID,
 		}) {
 			return ErrStaleWriteFence
 		}

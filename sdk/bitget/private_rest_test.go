@@ -40,6 +40,38 @@ func TestOrderCommandsReturnTypedResponseError(t *testing.T) {
 	}
 }
 
+func TestPrivateReadinessReadsReturnTypedResponseError(t *testing.T) {
+	client := NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL("https://example.test").WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"code":"40001","msg":"invalid credential","data":{}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})})
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "get order", run: func() error {
+			_, err := client.GetOrder(context.Background(), "spot", "BTCUSDT", "11", "")
+			return err
+		}},
+		{name: "get account assets", run: func() error {
+			_, err := client.GetAccountAssets(context.Background())
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.run()
+			var responseErr *ResponseError
+			if !errors.As(err, &responseErr) || responseErr.Code != "40001" {
+				t.Fatalf("error=%v (%T), want typed response error code 40001", err, err)
+			}
+		})
+	}
+}
+
 func TestOrderCommandsDecodeHTTPErrorCodeWithoutLeakingResponseMessage(t *testing.T) {
 	const responseSecret = "SENTINEL_BITGET_HTTP_ERROR_MESSAGE"
 	client := NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL("https://example.test").WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {

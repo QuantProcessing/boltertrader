@@ -53,6 +53,41 @@ func TestAllVenueQueryNormalizersRedactUnderlyingErrors(t *testing.T) {
 	}
 }
 
+func TestBybitCredentialFailuresKeepAuthenticationAndPermissionDistinct(t *testing.T) {
+	for _, test := range []struct {
+		code string
+		kind exchange.ErrorKind
+	}{
+		{code: "10003", kind: exchange.KindAuthentication},
+		{code: "10004", kind: exchange.KindAuthentication},
+		{code: "10005", kind: exchange.KindPermission},
+		{code: "10010", kind: exchange.KindPermission},
+	} {
+		if got := classifyCode(test.code); got != test.kind {
+			t.Fatalf("classifyCode(%q) = %q, want %q", test.code, got, test.kind)
+		}
+	}
+}
+
+func TestBitgetCredentialFailuresKeepAuthenticationAndPermissionDistinct(t *testing.T) {
+	for _, test := range []struct {
+		code string
+		kind exchange.ErrorKind
+	}{
+		{code: "40006", kind: exchange.KindAuthentication},
+		{code: "40009", kind: exchange.KindAuthentication},
+		{code: "40011", kind: exchange.KindAuthentication},
+		{code: "40012", kind: exchange.KindAuthentication},
+		{code: "40014", kind: exchange.KindPermission},
+		{code: "40018", kind: exchange.KindPermission},
+		{code: "40301", kind: exchange.KindPermission},
+	} {
+		if got := classifyCode(test.code); got != test.kind {
+			t.Fatalf("classifyCode(%q) = %q, want %q", test.code, got, test.kind)
+		}
+	}
+}
+
 func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 	const canary = "SECRET-MUTATION-CANARY"
 	type outcome struct {

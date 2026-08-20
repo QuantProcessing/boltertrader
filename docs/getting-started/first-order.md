@@ -12,8 +12,8 @@ or testnet environment to fall back on any more. Use a dedicated, deliberately
 underfunded account whose credential has no withdrawal rights, and hold no
 unrelated order or position in the product scope you are about to touch. The
 order below is priced to rest rather than fill, and step 8 cancels it. To see
-the same loop without a venue behind it, run `npm --prefix web run dev:mock`
-instead. Read [Prerequisites](prerequisites.md) first if you have not.
+live public markets without enabling account access, stay in the default
+read-only mode. Read [Prerequisites](prerequisites.md) first if you have not.
 
 ## 1. Open the interface
 

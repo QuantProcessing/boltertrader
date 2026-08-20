@@ -73,9 +73,9 @@ server-sent 流——`/api/v1/realtime/stream`——由外壳持有并分发给�
 make test-browser
 ```
 
-它会按 lockfile 安装依赖、做类型检查与构建、跑 Vitest 单元套件，然后用 Playwright 打
-`web/src/mocks/` 里的离线 mock。离线端到端 spec 既不需要栈也不需要凭证。同一套 mock
-也支撑 `npm --prefix web run dev:mock`，它能在完全不接 venue 的情况下提供整个界面。
+它会按 lockfile 安装依赖、做类型检查与构建并运行 Vitest 单元套件。它不会启动应用、
+访问 venue，也不会执行带凭证的浏览器流程。
 
 另有一份 live spec，会真实下一笔挂单再撤掉。它背后已经没有非生产 venue 了——它打的是
 真交易所，花的是真钱。它不属于 `make test-browser`；要么明确地去跑它，要么就别跑。
+正常应用不再有 mock 模式：匿名只读页面经由运行中的真实栈读取实时公共数据。

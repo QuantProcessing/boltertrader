@@ -60,3 +60,19 @@ func AccountConsolidationMigrationSQL() string {
 	}
 	return string(data)
 }
+
+func TerminalAccountSecretRefsMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/009_terminal_account_secret_refs.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func SimpleAccountsMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/010_simple_accounts.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

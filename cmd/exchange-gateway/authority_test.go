@@ -20,6 +20,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
@@ -34,18 +35,33 @@ func TestManagerAuthorityReadsPropagatesConfiguredCatalogFailure(t *testing.T) {
 		resources:     []account.Resource{{AccountID: "broken", ReadReady: false}},
 		instrumentErr: errors.New("configured catalog unavailable"),
 	}}
-	if _, err := reads.Instruments(); err == nil {
+	if _, err := reads.Instruments(context.Background()); err == nil {
 		t.Fatal("configured-account catalog failure was published as successful truth")
 	}
 }
 
-// This used to run twice, once per runtime mode, because the catalog was the
-// one surface that had to publish the same profiles either way. There is one
-// mode now, so the loop is gone and what it was guarding — that the catalog
-// enumerates venues with no account behind them, and reports none of them ready
-// — is asserted once.
-func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) {
-	authority, err := newGatewayAuthority(context.Background(), newMemoryDesiredStore(), newAuthorityManager(t, newAuthorityLifecycle()))
+// Public venue and instrument discovery is Gateway state, not account state.
+// A fresh install must open the trader before it has credentials to configure.
+func TestGatewayAuthorityCatalogAndMarketDataExistWithoutAccounts(t *testing.T) {
+	observedAt := time.Date(2026, 8, 19, 1, 2, 3, 0, time.UTC)
+	markets := staticPublicMarkets{snapshot: publicmarket.Snapshot{
+		Revision: "public-catalog", ObservedAt: observedAt,
+		Instruments: []publicmarket.Instrument{{Catalog: catalog.Instrument{
+			ID: "binance:live:perp:USDT:BTC-USDT", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
+			Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+			Rules: catalog.Rules{PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"), MinQuantity: decimal.RequireFromString("0.001")},
+		}}},
+	}, fact: publicmarket.Fact{
+		Book: exchange.OrderBook{Time: observedAt,
+			Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(2)}},
+			Asks: []exchange.BookLevel{{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(3)}},
+		},
+	}}
+	manager := newAuthorityManager(t, newAuthorityLifecycle())
+	if len(manager.Accounts()) != 0 {
+		t.Fatal("test manager unexpectedly has an account")
+	}
+	authority, err := newGatewayAuthority(context.Background(), newMemoryDesiredStore(), manager, withPublicMarkets(markets))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +75,7 @@ func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) 
 	}
 	seen := make(map[string]struct{}, len(venues))
 	for _, venue := range venues {
-		if venue.Environment != string(exchange.EnvironmentLive) || venue.Ready {
+		if venue.Environment != string(exchange.EnvironmentLive) || !venue.Ready {
 			t.Fatalf("venue=%+v", venue)
 		}
 		key := venue.Venue + "\x00" + venue.Environment
@@ -73,9 +89,45 @@ func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) 
 		t.Fatal(err)
 	}
 	instruments, ok := instrumentsResponse.Body.(authorityCatalogInstruments)
-	if !ok || instruments.Revision == "" || instruments.ObservedAt.IsZero() || len(instruments.Instruments) != 0 {
+	if !ok || instruments.Revision == "" || instruments.ObservedAt.IsZero() || len(instruments.Instruments) != 1 || !instruments.Instruments[0].Ready {
 		t.Fatalf("instruments=%T %+v", instrumentsResponse.Body, instrumentsResponse.Body)
 	}
+	marketResponse, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityMarketData, Query: map[string][]string{
+		"venue": {"binance"}, "environment": {"live"}, "product": {"perp"}, "instrumentId": {"binance:live:perp:USDT:BTC-USDT"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fact, ok := marketResponse.Body.(authorityMarketData); !ok || fact.BestBid != "100" || fact.BestAsk != "101" {
+		t.Fatalf("market=%T %+v", marketResponse.Body, marketResponse.Body)
+	}
+}
+
+type staticPublicMarkets struct {
+	snapshot publicmarket.Snapshot
+	fact     publicmarket.Fact
+	candles  publicmarket.CandleResult
+	err      error
+}
+
+func (markets staticPublicMarkets) Venues() []string {
+	return []string{"aster", "binance", "bitget", "bybit", "gate", "hyperliquid", "lighter", "nado", "okx"}
+}
+
+func (markets staticPublicMarkets) Snapshot(context.Context) (publicmarket.Snapshot, error) {
+	return markets.snapshot, markets.err
+}
+
+func (markets staticPublicMarkets) MarketData(_ context.Context, query publicmarket.Query, _, _ int) (publicmarket.Fact, error) {
+	result := markets.fact
+	result.Query = query
+	return result, markets.err
+}
+
+func (markets staticPublicMarkets) Candles(_ context.Context, query publicmarket.Query, _ string, _ int) (publicmarket.CandleResult, error) {
+	result := markets.candles
+	result.Query = query
+	return result, markets.err
 }
 
 func TestManagerAuthorityReadsPreservesCompositeCatalogFacts(t *testing.T) {
@@ -89,7 +141,7 @@ func TestManagerAuthorityReadsPreservesCompositeCatalogFacts(t *testing.T) {
 			},
 		}}},
 	}
-	got, err := (managerAuthorityReads{manager: accounts}).Instruments()
+	got, err := (managerAuthorityReads{manager: accounts}).Instruments(context.Background())
 	if err != nil || len(got.Instruments) != 1 || got.Revision == "" || got.ObservedAt.IsZero() {
 		t.Fatalf("Instruments() = %+v, %v", got, err)
 	}
@@ -109,12 +161,12 @@ func TestManagerAuthorityReadsAggregatesCatalogAuthorityDeterministically(t *tes
 		"binance-perp": {Revision: "revision-b", LoadedAt: oldest.Add(time.Minute)},
 		"binance-spot": {Revision: "revision-a", LoadedAt: oldest},
 	}
-	first, err := (managerAuthorityReads{manager: &fakeAuthorityAccounts{resources: resources, snapshots: snapshots}}).Instruments()
+	first, err := (managerAuthorityReads{manager: &fakeAuthorityAccounts{resources: resources, snapshots: snapshots}}).Instruments(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	slices.Reverse(resources)
-	second, err := (managerAuthorityReads{manager: &fakeAuthorityAccounts{resources: resources, snapshots: snapshots}}).Instruments()
+	second, err := (managerAuthorityReads{manager: &fakeAuthorityAccounts{resources: resources, snapshots: snapshots}}).Instruments(context.Background())
 	if err != nil || first.Revision != second.Revision || !first.ObservedAt.Equal(oldest) || !second.ObservedAt.Equal(oldest) {
 		t.Fatalf("first=%+v second=%+v err=%v", first, second, err)
 	}
@@ -619,11 +671,26 @@ func TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells(
 	accounts := &fakeAuthorityAccounts{}
 	reads := managerAuthorityReads{
 		manager: accounts,
+		markets: staticPublicMarkets{snapshot: publicmarket.Snapshot{Instruments: []publicmarket.Instrument{{
+			RouteProfileID: "binance.perp.usdt.v1",
+			Catalog: catalog.Instrument{
+				ID: "binance:live:perp:USDT:BTC-USDT", Venue: exchange.VenueBinance,
+				Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp,
+				Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+			},
+			Canonical: exchange.Instrument{Identity: exchange.InstrumentIdentity{
+				Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT",
+				NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT",
+			}},
+		}}}},
 		board: newTestFundingBoardSource(t, exchange.FundingBoardEntry{
 			Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 			Rate:          decimal.RequireFromString("-0.00042"),
 			IntervalHours: exchange.OptionalInt{Value: 8, Valid: true},
 			MarkPrice:     exchange.OptionalDecimal{Value: decimal.RequireFromString("64000.5"), Valid: true},
+			OpenInterestNotional: exchange.OptionalDecimal{
+				Value: decimal.RequireFromString("790129052.835"), Valid: true,
+			},
 		}),
 		now: func() time.Time { return observedAt },
 	}
@@ -651,12 +718,12 @@ func TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells(
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, absent := range []string{"openInterest", "indexPrice", "\"valid\"", "\"value\"", "0001-01-01"} {
+	for _, absent := range []string{"\"openInterest\":", "indexPrice", "nativeSymbol", "nativeId", "\"valid\"", "\"value\"", "0001-01-01"} {
 		if strings.Contains(string(encoded), absent) {
 			t.Fatalf("board JSON carries %q for a cell no venue quoted: %s", absent, encoded)
 		}
 	}
-	for _, present := range []string{"\"rate\":\"-0.00042\"", "\"markPrice\":\"64000.5\"", "\"intervalHours\":8"} {
+	for _, present := range []string{"\"instrumentId\":\"binance:live:perp:USDT:BTC-USDT\"", "\"rate\":\"-0.00042\"", "\"markPrice\":\"64000.5\"", "\"openInterestNotional\":\"790129052.835\"", "\"intervalHours\":8"} {
 		if !strings.Contains(string(encoded), present) {
 			t.Fatalf("board JSON is missing %s: %s", present, encoded)
 		}
@@ -680,6 +747,15 @@ func TestGatewayAuthorityFundingBoardWithoutSourceIsUnavailable(t *testing.T) {
 	if !errors.As(err, &authorityErr) || authorityErr.Status != http.StatusServiceUnavailable ||
 		authorityErr.Code != "FUNDING_BOARD_UNAVAILABLE" || !authorityErr.Retryable {
 		t.Fatalf("error=%T %v", err, err)
+	}
+}
+
+func TestAuthorityErrorPreservesCandidateCredentialFailure(t *testing.T) {
+	err := authorityError(account.CandidateFailure{RouteID: "perp-usdc", ReasonCode: "CREDENTIAL_EXPIRED"})
+	var authorityErr httpapi.AuthorityError
+	if !errors.As(err, &authorityErr) || authorityErr.Status != http.StatusUnprocessableEntity ||
+		authorityErr.Code != "CREDENTIAL_EXPIRED" || authorityErr.Retryable {
+		t.Fatalf("authorityError = %+v", authorityErr)
 	}
 }
 
@@ -741,13 +817,14 @@ func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t 
 	}
 	fundingTime := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	authority.reads = staticAuthorityReads{fundingSeries: authorityFundingSeries{
+		Venue:      "binance",
 		ObservedAt: time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC),
 		Points:     []authorityFundingSeriesPoint{{FundingTime: fundingTime, Rate: "-0.00042", IntervalHours: 8}},
 	}}
 	query := func(mutate func(map[string][]string)) map[string][]string {
 		values := map[string][]string{
-			"venue": {"binance"}, "environment": {"live"}, "symbol": {"BTC-USDT"},
-			"since": {"2026-08-07T16:00:00+08:00"}, "until": {"2026-08-14T16:00:00+08:00"},
+			"instrumentId": {"binance:live:perp:USDT:BTC-USDT"},
+			"since":        {"2026-08-07T16:00:00+08:00"}, "until": {"2026-08-14T16:00:00+08:00"},
 		}
 		mutate(values)
 		return values
@@ -765,7 +842,7 @@ func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t 
 	// The offset is normalised away rather than carried, so two legs quoted by
 	// venues on different clocks land on one axis.
 	wantSince := time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)
-	if series.Venue != "binance" || series.Environment != "live" || series.Symbol != "BTC-USDT" ||
+	if series.InstrumentID != "binance:live:perp:USDT:BTC-USDT" || series.Venue != "binance" ||
 		!series.Since.Equal(wantSince) || series.Since.Location() != time.UTC {
 		t.Fatalf("series identity=%+v", series)
 	}
@@ -775,10 +852,9 @@ func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t 
 	}
 
 	for name, mutate := range map[string]func(map[string][]string){
-		"no venue":       func(values map[string][]string) { delete(values, "venue") },
-		"no environment": func(values map[string][]string) { delete(values, "environment") },
-		"blank symbol":   func(values map[string][]string) { values["symbol"] = []string{"  "} },
-		"no since":       func(values map[string][]string) { delete(values, "since") },
+		"no instrument":    func(values map[string][]string) { delete(values, "instrumentId") },
+		"blank instrument": func(values map[string][]string) { values["instrumentId"] = []string{"  "} },
+		"no since":         func(values map[string][]string) { delete(values, "since") },
 		// A bound that lost its unit somewhere upstream still parses as an
 		// integer, into a different decade, and the only symptom is an empty
 		// chart. Both of these must be refused at the boundary, not carried.
@@ -816,7 +892,7 @@ func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t 
 type relabelingFundingReads struct{ staticAuthorityReads }
 
 func (relabelingFundingReads) FundingHistory(context.Context, authorityFundingHistoryQuery) (authorityFundingSeries, error) {
-	return authorityFundingSeries{Venue: "bybit", Environment: "live", Symbol: "BTC-USDT"}, nil
+	return authorityFundingSeries{InstrumentID: "bybit:live:perp:USDT:BTC-USDT", Venue: "bybit"}, nil
 }
 
 func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
@@ -931,7 +1007,7 @@ func (reads staticAuthorityReads) Venues() []authorityVenue {
 	return append([]authorityVenue(nil), reads.venues...)
 }
 
-func (reads staticAuthorityReads) Instruments() (authorityCatalogInstruments, error) {
+func (reads staticAuthorityReads) Instruments(context.Context) (authorityCatalogInstruments, error) {
 	return authorityCatalogInstruments{Revision: "static-catalog", ObservedAt: time.Now().UTC(), Instruments: append([]authorityInstrument(nil), reads.instruments...)}, reads.err
 }
 
@@ -959,7 +1035,7 @@ func (reads staticAuthorityReads) FundingHistory(_ context.Context, query author
 	// response whose identity does not match the request, so a stub returning a
 	// zero-valued one would fail every caller for a reason unrelated to what
 	// the test is asserting.
-	series.Venue, series.Environment, series.Symbol = query.Venue, query.Environment, query.Symbol
+	series.InstrumentID = query.InstrumentID
 	series.Since, series.Until = query.Since, query.Until
 	return series, reads.err
 }

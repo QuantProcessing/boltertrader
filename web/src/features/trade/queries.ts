@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 
-import { manual, trading } from "@/api/endpoints";
-import type { Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
+import { accountData, manual, trading } from "@/api/endpoints";
+import type { AccountBalance, AccountPosition, Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
+import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 
 /* ---------------------------------------------------------------------------
  * The order path, and the ledgers it moves.
@@ -24,6 +25,8 @@ import { useReadOnly } from "@/app/mode";
 export const tradeKeys = {
   orders: () => ["manual", "orders"] as const,
   positions: () => ["trading", "positions"] as const,
+  balances: (accountId: string) => ["trading", "balances", accountId] as const,
+  accountPositions: (accountId: string, instrumentId: string) => ["trading", "account-positions", accountId, instrumentId] as const,
   fills: () => ["trading", "fills"] as const,
 };
 
@@ -46,6 +49,7 @@ export function useOrders(): UseQueryResult<Command[]> {
     queryKey: tradeKeys.orders(),
     queryFn: ({ signal }) => manual.orders(signal),
     enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
     // Working orders change when the venue says so, and the reconciler is what
     // hears it. Five seconds is how long a fill can sit unseen.
     refetchInterval: 5_000,
@@ -58,6 +62,29 @@ export function usePositions(): UseQueryResult<Position[]> {
     queryKey: tradeKeys.positions(),
     queryFn: ({ signal }) => trading.positions({}, signal),
     enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
+    refetchInterval: 5_000,
+  });
+}
+
+export function useAccountBalances(accountId: string): UseQueryResult<AccountBalance[]> {
+  const readOnly = useReadOnly();
+  return useQuery({
+    queryKey: tradeKeys.balances(accountId),
+    queryFn: ({ signal }) => accountData.balances(accountId, signal),
+    enabled: !readOnly && accountId !== "",
+    meta: PRIVATE_QUERY_META,
+    refetchInterval: 5_000,
+  });
+}
+
+export function useAccountPositions(accountId: string, instrumentId: string): UseQueryResult<AccountPosition[]> {
+  const readOnly = useReadOnly();
+  return useQuery({
+    queryKey: tradeKeys.accountPositions(accountId, instrumentId),
+    queryFn: ({ signal }) => accountData.positions(accountId, instrumentId, signal),
+    enabled: !readOnly && accountId !== "" && instrumentId !== "",
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 5_000,
   });
 }
@@ -68,6 +95,7 @@ export function useFills(): UseQueryResult<Fill[]> {
     queryKey: tradeKeys.fills(),
     queryFn: ({ signal }) => trading.fills({}, signal),
     enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 10_000,
   });
 }
@@ -132,5 +160,7 @@ export function useCancelOrder() {
 function invalidateLedgers(queryClient: ReturnType<typeof useQueryClient>): void {
   void queryClient.invalidateQueries({ queryKey: tradeKeys.orders() });
   void queryClient.invalidateQueries({ queryKey: tradeKeys.positions() });
+  void queryClient.invalidateQueries({ queryKey: ["trading", "account-positions"] });
+  void queryClient.invalidateQueries({ queryKey: ["trading", "balances"] });
   void queryClient.invalidateQueries({ queryKey: tradeKeys.fills() });
 }

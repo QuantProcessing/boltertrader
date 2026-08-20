@@ -52,7 +52,7 @@ between them and no border unless §5 says so.
 |---|---|---|---|
 | `--bt-bg` | `oklch(0.145 0.012 285)` | `#09090f` | The page. Nothing else. |
 | `--bt-panel` | `oklch(0.185 0.012 285)` | `#121218` | Every `Panel`, the top bar, the instrument strip. |
-| `--bt-overlay` | `oklch(0.207 0.011 285)` | `#17171d` | Popovers, dialogs, the command palette. |
+| `--bt-overlay` | `oklch(0.207 0.011 285)` | `#17171d` | Popovers and dialogs. |
 | `--bt-raised` | `oklch(0.232 0.010 286)` | `#1d1d22` | Row hover, selected row, skeletons, inset wells. |
 
 `raised` is the lightest surface any text sits on, which is why §3 solves every
@@ -216,11 +216,14 @@ Lighter's tighter base is what lets a 34px row hold 13px text with real padding.
 | Token | Value | Use |
 |---|---|---|
 | `--spacing-row` | 34px | Table rows, list rows |
-| `--spacing-bar` | 44px | Top nav, instrument strip. Also the touch-target floor. |
+| `--spacing-nav` | 52px | Primary navigation and workspace identity. |
+| `--spacing-bar` | 44px | Instrument strip and panel toolbars. Also the touch-target floor. |
+| `--spacing-status` | 24px | Persistent connectivity strip at the bottom edge. |
 | `--spacing-depth` | 22px | Order-book depth rows — tighter, because the book is only numbers |
-| `--spacing-side` | 256px | Order book, spread list — the narrow column |
-| `--spacing-ticket` | 320px | The ticket, which holds a form rather than a list |
-| `--spacing-deck` | 256px | Blotter, ledger, open pairs — the lower shelf |
+| `--spacing-side` | 340px | Order book, spread list — wide enough for three stable numeric columns |
+| `--spacing-ticket` | 340px | The ticket, which holds a form rather than a list |
+| `--spacing-deck` | 190px | Blotter, ledger, open pairs — the lower shelf |
+| `--spacing-content` | 1600px | Maximum centered content width outside the trade terminal |
 
 The last three are the §9 layout, named so it can only be stated once. They are
 absolute rather than steps of the scale for exactly that reason: written as
@@ -261,18 +264,26 @@ The shell is `h-dvh`, a flex column, and **the page never scrolls**. Each panel
 owns its own overflow. This is what makes the terminal a fixed instrument rather
 than a document.
 
+The trade route alone is full-bleed because the chart and order book benefit
+directly from every horizontal pixel. Funding, arbitrage, portfolio, activity
+and settings use a centered `--spacing-content` maximum. On a 1920px viewport
+that leaves 160px on each side, shortens scan lines, and keeps related facts in
+one visual field; below 1600px those routes still use all available width.
+
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ top nav                                    44px, --panel │
+│ top nav                                    52px, --panel │
 ├──────────────────────────────────────────────────────────┤
 │ instrument strip                           44px, --panel │
 ├───────────────────────────────┬───────────┬──────────────┤
 │ price chart                   │           │              │
 │                               │   book    │   ticket     │
-│                     flex-1    │   256px   │   320px      │
+│                     flex-1    │   340px   │   340px      │
 ├───────────────────────────────┤  --side   │  --ticket    │
-│ blotter               256px   │           │              │
+│ blotter               190px   │           │              │
 │                       --deck  │           │              │
+├──────────────────────────────────────────────────────────┤
+│ connectivity                              24px, --status │
 └───────────────────────────────┴───────────┴──────────────┘
 ```
 
@@ -288,6 +299,26 @@ Lighter makes its panels a user-rearrangeable `react-grid-layout`. **We do not
 adopt that**, and the omission is deliberate: a drag handle on every panel is a
 way to break a working layout mid-session, and the arrangement above is already
 the one a rearrangeable grid converges on.
+
+### Reference anatomy
+
+The measurements below were taken from Lighter's BTC trade screen at a
+1920×929 CSS viewport and translated onto the stable layout above. They are the
+acceptance target for the trade route, not optional decoration.
+
+| Region | Required anatomy |
+|---|---|
+| Header | 52px high; brand and filled active navigation at the left. Anonymous visitors see a compact read-only label and Sign in; authenticated operators see their identity and workspace menu. There is no independent mode switch. No underline navigation. |
+| Market strip | 44px high; a compact two-line instrument selector, then Last/Today as the leading facts, followed by mark, volume, open interest, funding and the next funding time when the venue publishes them. |
+| Chart | 34px title/interval toolbar plus a compact OHLCV legend. On first load, the newest 160–180 bars fill the plot with a small right offset; there is no large unused history gutter. |
+| Order book | Title row, view/grouping row, three 12px tabular columns, 15 visible levels per side at desktop height, depth bars behind the figures, and a distinct mid/spread row. |
+| Ticket | A full-height flat panel, not a rounded card. Side is the first decision, followed by account, order type, price/quantity, TIF/reduce-only, an honest summary, and one side-coloured review action. |
+| Blotter | 190px shelf; Positions first, then Open orders and Trade history. The active tab is filled, columns remain dense, and disabled private queries render a truthful empty state instead of permanent skeletons. |
+
+The reference is a style source, not a data licence. Bolter never fabricates an
+index price, leverage, margin, liquidation price, fee or account balance merely
+because Lighter has a slot for it. When the backend does not publish a value,
+the corresponding row is absent or displays an em dash.
 
 ---
 
@@ -309,6 +340,20 @@ order, which is the venue's.
 Instruments that are not tradable are **shown and marked**, never hidden. An
 operator looking for a market that is halted needs to find it and see why; an
 empty result teaches them nothing.
+
+### Identity and labels
+
+`instrumentId` is an internal address and the only instrument identity accepted
+as UI input. Components must not reconstruct venue-native symbols or submit a
+second venue/product/symbol identity beside it. The Catalog supplies route facts
+and the Gateway alone converts the canonical id into a native id or symbol.
+
+Primary labels use structured `baseAsset` and `quoteAsset` facts. Positions,
+orders, fills and any fallback-only response use the shared `InstrumentName`
+renderer, which turns a canonical id into a human pair plus venue/product
+context. The raw address remains in the title for support. Account reachability
+is rendered separately from listing/identity state: having no account never
+makes a public instrument “unlisted.”
 
 ---
 

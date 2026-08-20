@@ -2,6 +2,8 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 
 import { trading, type LedgerQuery, type PositionQuery } from "@/api/endpoints";
 import type { LedgerEntry, PnLSnapshot, Position } from "@/api/types";
+import { useReadOnly } from "@/app/mode";
+import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 
 /* ---------------------------------------------------------------------------
  * The ledgers behind a position.
@@ -43,9 +45,12 @@ export function pnlKeyOf(position: Position): PnLKey {
 }
 
 export function usePortfolioPositions(query: PositionQuery): UseQueryResult<Position[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: portfolioKeys.positions(query),
     queryFn: ({ signal }) => trading.positions(query, signal),
+    enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 5_000,
     // Changing the account filter should swap the rows, not blank the table
     // and re-flash a loading state over a list that is mostly the same.
@@ -61,9 +66,12 @@ export function usePortfolioPositions(query: PositionQuery): UseQueryResult<Posi
  * it at the book's rate would only cost requests.
  */
 export function useLedger(query: LedgerQuery): UseQueryResult<LedgerEntry[]> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: portfolioKeys.ledger(query),
     queryFn: ({ signal }) => trading.ledger(query, signal),
+    enabled: !readOnly,
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 15_000,
     placeholderData: (previous) => previous,
   });
@@ -71,10 +79,12 @@ export function useLedger(query: LedgerQuery): UseQueryResult<LedgerEntry[]> {
 
 /** Disabled until every attribution field is known — see the note above. */
 export function usePnL(key: PnLKey | null): UseQueryResult<PnLSnapshot> {
+  const readOnly = useReadOnly();
   return useQuery({
     queryKey: portfolioKeys.pnl(key),
     queryFn: ({ signal }) => trading.pnl(key as PnLKey, signal),
-    enabled: key !== null,
+    enabled: !readOnly && key !== null,
+    meta: PRIVATE_QUERY_META,
     refetchInterval: 15_000,
   });
 }

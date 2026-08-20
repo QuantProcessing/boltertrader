@@ -25,7 +25,7 @@ import (
 
 func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting","desired_state_revision":1,"runtime_generation":2,"credential_version":3}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting","runtime_id":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11"}`
 
 	unauthorized := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewBufferString(body)))
@@ -52,7 +52,7 @@ func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *test
 	if fixture.orders.place.PrincipalID == "" || fixture.orders.place.AccountID != "acct-a" ||
 		fixture.orders.place.RouteID != "spot" ||
 		fixture.orders.place.Quantity.String() != "0.001" || fixture.orders.place.WriteFence != (account.WriteFence{
-		AccountID: "acct-a", DesiredStateRevision: 1, RuntimeGeneration: 2, CredentialVersion: 3,
+		AccountID: "acct-a", RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445e11",
 	}) {
 		t.Fatalf("place request=%+v", fixture.orders.place)
 	}

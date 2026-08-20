@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,30 @@ var (
 	ErrCandidateMismatch    = errors.New("runtime candidate fence mismatch")
 	ErrRuntimeCleanupFailed = errors.New("runtime cleanup failed")
 )
+
+const candidateCredentialProbeTimeout = 10 * time.Second
+
+// CandidateFailure is the safe, persisted explanation for an atomic runtime
+// candidate rejection. It never contains a venue message or credential
+// material; callers may expose ReasonCode to an operator.
+type CandidateFailure struct {
+	RouteID    domain.RouteID
+	ReasonCode string
+}
+
+func (failure CandidateFailure) Error() string {
+	return ErrCandidateFailed.Error() + ": " + failure.ReasonCode
+}
+
+func (failure CandidateFailure) Unwrap() error { return ErrCandidateFailed }
+
+func CandidateFailureReason(err error) string {
+	var failure CandidateFailure
+	if errors.As(err, &failure) && failure.ReasonCode != "" {
+		return failure.ReasonCode
+	}
+	return "CANDIDATE_BUILD_FAILED"
+}
 
 type GroupState string
 
@@ -411,10 +436,26 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 			return nil, ErrCandidateFailed
 		}
 		runtime.Handle = handle
-		if err := handle.Probe(ctx); err != nil {
-			group.destroy()
-			return nil, ErrCandidateFailed
-		}
+	}
+	// Credentials belong to the account, not to each configured route. Probing
+	// every spot/settlement route made account creation both slow and brittle:
+	// one credential was asked the same question several times before the
+	// runtime could be promoted. Verify it once with a private balance read,
+	// preferring spot when present because it is the least product-specific
+	// account endpoint. Route/private-stream readiness is observed separately
+	// after promotion.
+	probeRoute, probeDefinition := candidateCredentialProbe(group)
+	if probeRoute == nil {
+		group.destroy()
+		return nil, ErrCandidateFailed
+	}
+	probeCtx, cancelProbe := context.WithTimeout(ctx, candidateCredentialProbeTimeout)
+	err = probeRoute.Probe(probeCtx)
+	cancelProbe()
+	if err != nil {
+		logCandidateProbeFailure(pending, probeDefinition, err)
+		group.destroy()
+		return nil, CandidateFailure{RouteID: probeDefinition.RouteID, ReasonCode: candidateProbeReason(err)}
 	}
 	if !lifecycleLocked {
 		manager.closeMu.Lock()
@@ -442,6 +483,66 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 	}
 	manager.groupMu.Unlock()
 	return group, nil
+}
+
+func candidateCredentialProbe(group *RuntimeGroup) (CandidateRoute, store.RouteDefinition) {
+	var fallback *RouteRuntime
+	for _, definition := range group.Snapshot.Routes {
+		runtime := group.Routes[definition.RouteID]
+		if runtime == nil || runtime.Definition.RequestedState != store.RouteActive || runtime.Handle == nil {
+			continue
+		}
+		if fallback == nil {
+			fallback = runtime
+		}
+		if runtime.Definition.Product == string(exchange.ProductSpot) {
+			return runtime.Handle, runtime.Definition
+		}
+	}
+	if fallback == nil {
+		return nil, store.RouteDefinition{}
+	}
+	return fallback.Handle, fallback.Definition
+}
+
+func candidateProbeReason(err error) string {
+	var venueErr *exchange.Error
+	if errors.As(err, &venueErr) {
+		details := venueErr.Details()
+		if details.Code == "33004" || details.Code == "-2015" {
+			return "CREDENTIAL_EXPIRED"
+		}
+		switch venueErr.Kind() {
+		case exchange.KindAuthentication:
+			return "CREDENTIAL_INVALID"
+		case exchange.KindPermission:
+			return "CREDENTIAL_PERMISSION_DENIED"
+		case exchange.KindRateLimit:
+			return "VENUE_RATE_LIMITED"
+		case exchange.KindTransport, exchange.KindDeadlineExceeded, exchange.KindCanceled:
+			return "VENUE_UNAVAILABLE"
+		case exchange.KindMalformedResponse:
+			return "VENUE_RESPONSE_INVALID"
+		}
+	}
+	return "CANDIDATE_BUILD_FAILED"
+}
+
+func logCandidateProbeFailure(pending store.PendingSnapshot, route store.RouteDefinition, err error) {
+	attributes := []any{
+		"account_id", pending.AccountID,
+		"operation_id", pending.OperationID,
+		"venue", pending.Venue,
+		"route_id", route.RouteID,
+	}
+	var venueErr *exchange.Error
+	if errors.As(err, &venueErr) {
+		details := venueErr.Details()
+		attributes = append(attributes, "kind", venueErr.Kind(), "venue_code", details.Code, "operation", details.Operation)
+	} else {
+		attributes = append(attributes, "kind", "unclassified")
+	}
+	slog.Warn("runtime candidate route probe failed", attributes...)
 }
 
 func (manager *Manager) PromoteCandidate(ctx context.Context, group *RuntimeGroup) (store.PromotionResult, error) {
@@ -836,9 +937,7 @@ func (manager *Manager) publishControlPlaneRuntime(snapshot store.DesiredSnapsho
 	}
 	desired := DesiredRuntime{
 		AccountID: snapshot.AccountID, Venue: snapshot.Venue, VenueEnvironment: snapshot.NativeEnvironment,
-		SecretRef:            ref,
-		DesiredStateRevision: snapshot.Fence.DesiredStateRevision, RuntimeGeneration: snapshot.Fence.RuntimeGeneration,
-		CredentialVersion: snapshot.Fence.CredentialVersion, RequestedState: RuntimeStateActive,
+		SecretRef: ref, RuntimeID: snapshot.Fence.RuntimeID, RequestedState: RuntimeStateActive,
 	}
 	manager.runtimes[snapshot.AccountID] = appliedRuntime(desired, RuntimeStateActive, true, version)
 	return nil
@@ -987,8 +1086,7 @@ func (manager *Manager) markRuntimeRestoreReady(snapshot store.DesiredSnapshot) 
 	defer manager.mu.Unlock()
 	runtime, ok := manager.runtimes[snapshot.AccountID]
 	if !ok || runtime.Desired.Fence() != (WriteFence{
-		AccountID: snapshot.AccountID, DesiredStateRevision: snapshot.Fence.DesiredStateRevision,
-		RuntimeGeneration: snapshot.Fence.RuntimeGeneration, CredentialVersion: snapshot.Fence.CredentialVersion,
+		AccountID: snapshot.AccountID, RuntimeID: snapshot.Fence.RuntimeID,
 	}) {
 		return ErrCandidateMismatch
 	}
@@ -1090,9 +1188,7 @@ func (manager *Manager) recordRuntimeRestoreFailure(snapshot store.DesiredSnapsh
 	}
 	desired := DesiredRuntime{
 		AccountID: snapshot.AccountID, Venue: snapshot.Venue, VenueEnvironment: snapshot.NativeEnvironment,
-		SecretRef:            ref,
-		DesiredStateRevision: snapshot.Fence.DesiredStateRevision, RuntimeGeneration: snapshot.Fence.RuntimeGeneration,
-		CredentialVersion: snapshot.Fence.CredentialVersion, RequestedState: RuntimeStateActive,
+		SecretRef: ref, RuntimeID: snapshot.Fence.RuntimeID, RequestedState: RuntimeStateActive,
 	}
 	runtime := appliedRuntime(desired, RuntimeStateActive, false, 1)
 	runtime.Reason = ErrCandidateFailed.Error()

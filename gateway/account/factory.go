@@ -47,25 +47,25 @@ type factoryRuntimeGroupBuilder struct {
 type factoryCandidateRoute struct{ handle clientHandle }
 
 func (route factoryCandidateRoute) Probe(ctx context.Context) error {
-	if ctx == nil || route.handle == nil || !route.handle.exactLookupReady() {
-		return fmt.Errorf("private route readiness failed")
+	if ctx == nil || route.handle == nil {
+		return fmt.Errorf("credential balance verification failed")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if client, ok := route.handle.spot(); ok {
 		if _, err := client.Balances(ctx); err != nil {
-			return fmt.Errorf("private route readiness failed")
+			return fmt.Errorf("credential balance verification failed: %w", err)
 		}
 		return nil
 	}
 	if client, ok := route.handle.perp(); ok {
 		if _, err := client.Balances(ctx); err != nil {
-			return fmt.Errorf("private route readiness failed")
+			return fmt.Errorf("credential balance verification failed: %w", err)
 		}
 		return nil
 	}
-	return fmt.Errorf("private route readiness failed")
+	return fmt.Errorf("credential balance verification failed")
 }
 
 func (route factoryCandidateRoute) Close() error { return route.handle.close() }

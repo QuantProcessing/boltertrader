@@ -197,6 +197,7 @@ services:
     # newGatewayCredentialResolver treats a partial set as a misconfiguration
     # rather than as "no store", and refuses to start.
     environment:
+      BT_LIVE_PRIVATE_WRITES_ENABLED: ${BT_LIVE_PRIVATE_WRITES_ENABLED:-true}
       BT_SECRET_KEY_SOURCE: file
       BT_SECRET_MASTER_KEY_FILE: /etc/boltertrader/secrets/stack/secret_master_key
       BT_SECRET_MASTER_KEY_VERSION: v1
@@ -252,6 +253,7 @@ services:
     build: *build
     entrypoint: ["/usr/local/bin/trading"]
     environment:
+      BT_LIVE_PRIVATE_WRITES_ENABLED: ${BT_LIVE_PRIVATE_WRITES_ENABLED:-true}
       # 0.0.0.0 inside the container, with the opt-in that cmd/trading requires
       # for a non-loopback bind. The port is published to 127.0.0.1 below, so
       # the reachable surface is still loopback-only — but the process has to
