@@ -256,7 +256,7 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 			combined.ObservedAt = result.snapshot.LoadedAt.UTC()
 		}
 		for _, instrument := range result.snapshot.Instruments {
-			canonical, err := result.column.catalog.Resolve(ctx, result.column.accountID, instrument.ID)
+			canonical, err := result.column.catalog.ResolveLastKnown(ctx, result.column.accountID, instrument.ID)
 			if err != nil {
 				continue
 			}
@@ -441,7 +441,7 @@ func (source *Source) resolvePublicID(ctx context.Context, instrumentID string) 
 		if err != nil {
 			continue
 		}
-		instrument, err := current.catalog.Resolve(ctx, current.accountID, domain.InstrumentID(instrumentID))
+		instrument, err := current.catalog.ResolveLastKnown(ctx, current.accountID, domain.InstrumentID(instrumentID))
 		if err == nil {
 			return current, instrument, nil
 		}
@@ -466,7 +466,7 @@ func (source *Source) resolve(ctx context.Context, query Query) (*column, exchan
 		if err != nil {
 			continue
 		}
-		instrument, err := current.catalog.Resolve(ctx, current.accountID, domain.InstrumentID(query.InstrumentID))
+		instrument, err := current.catalog.ResolveLastKnown(ctx, current.accountID, domain.InstrumentID(query.InstrumentID))
 		if err == nil {
 			return current, instrument, nil
 		}

@@ -37,6 +37,30 @@ func TestProjectionReportsSourceFailureAsUnavailable(t *testing.T) {
 	}
 }
 
+func TestProjectionServesLastValidatedSnapshotWhenRefreshFails(t *testing.T) {
+	now := time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)
+	source := &countingSource{snapshot: Snapshot{Revision: "gateway-rev-1", ObservedAt: now}}
+	projection, err := NewProjection(source, time.Minute, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := projection.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(2 * time.Minute)
+	source.err = errors.New("Gateway request timed out")
+	got, err := projection.Snapshot(context.Background())
+	if err != nil || got.Revision != first.Revision {
+		t.Fatalf("Snapshot() = %#v, %v; want last validated snapshot", got, err)
+	}
+	status := projection.Status()
+	if !status.Ready || status.Reason != ReasonStale {
+		t.Fatalf("Status() = %#v, want readable stale projection", status)
+	}
+}
+
 func TestProjectionCoalescesGatewayFacts(t *testing.T) {
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	source := &countingSource{snapshot: Snapshot{
@@ -354,9 +378,9 @@ func TestProjectionRejectsMissingOrInexactInstrumentFacts(t *testing.T) {
 	}
 }
 
-func TestProjectionRejectsMissingOrStaleObservationTime(t *testing.T) {
+func TestProjectionRejectsMissingOrFutureObservationTime(t *testing.T) {
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
-	for name, observedAt := range map[string]time.Time{"missing": {}, "stale": now.Add(-2 * time.Minute), "future": now.Add(time.Second)} {
+	for name, observedAt := range map[string]time.Time{"missing": {}, "future": now.Add(time.Second)} {
 		t.Run(name, func(t *testing.T) {
 			snapshot := Snapshot{
 				Revision: "gateway-rev", ObservedAt: observedAt, Venues: []Venue{{Venue: "binance", Environment: "live", Ready: true}},
@@ -367,5 +391,20 @@ func TestProjectionRejectsMissingOrStaleObservationTime(t *testing.T) {
 				t.Fatal("Snapshot() error = nil")
 			}
 		})
+	}
+}
+
+func TestProjectionAcceptsLastKnownGatewayObservation(t *testing.T) {
+	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	snapshot := Snapshot{
+		Revision: "gateway-rev", ObservedAt: now.Add(-2 * time.Minute), Venues: []Venue{{Venue: "binance", Environment: "live", Ready: true}},
+		Instruments: []Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}}},
+	}
+	projection, _ := NewProjection(&countingSource{snapshot: snapshot}, time.Minute, func() time.Time { return now })
+	if _, err := projection.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot() = %v, want last-known catalog", err)
+	}
+	if status := projection.Status(); !status.Ready || status.Reason != ReasonStale {
+		t.Fatalf("Status() = %#v, want readable stale projection", status)
 	}
 }

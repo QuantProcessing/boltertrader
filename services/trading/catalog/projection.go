@@ -196,8 +196,8 @@ func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, e
 				snapshot, err = enrichBrowserVenues(snapshot)
 			}
 			age := projection.now().UTC().Sub(snapshot.ObservedAt)
-			if err == nil && (age > projection.ttl || age < 0) {
-				err = fmt.Errorf("Gateway catalog facts are stale or future-dated")
+			if err == nil && age < 0 {
+				err = fmt.Errorf("Gateway catalog facts are future-dated")
 			}
 			if err != nil {
 				reason = ReasonInvalidFacts
@@ -209,13 +209,22 @@ func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, e
 			projection.snapshot = clone(snapshot)
 			projection.loaded = true
 			projection.reason = "ready"
-		} else {
+		} else if !projection.loaded {
 			projection.reason = reason
 		}
+		fallback := clone(projection.snapshot)
+		hasFallback := projection.loaded
 		close(wait)
 		projection.inFlight = nil
 		projection.mu.Unlock()
 		if err != nil {
+			// A catalog is low-frequency identity data. Once a snapshot has
+			// passed validation, a delayed venue refresh must not erase the
+			// terminal's route directory. Private writes retain their own strict
+			// freshness fence in gateway/catalog.Service.Resolve.
+			if hasFallback {
+				return fallback, nil
+			}
 			return Snapshot{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 		return clone(snapshot), nil
@@ -307,12 +316,11 @@ func (projection *Projection) Status() Status {
 	if age < 0 {
 		age = 0
 	}
-	ready := age <= projection.ttl
 	reason := projection.reason
-	if !ready {
+	if age > projection.ttl {
 		reason = ReasonStale
 	}
-	return Status{Ready: ready, Reason: reason, Revision: projection.snapshot.Revision, ObservedAt: projection.snapshot.ObservedAt, Age: age}
+	return Status{Ready: true, Reason: reason, Revision: projection.snapshot.Revision, ObservedAt: projection.snapshot.ObservedAt, Age: age}
 }
 
 func validate(snapshot Snapshot) error {

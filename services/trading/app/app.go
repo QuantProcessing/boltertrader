@@ -112,9 +112,9 @@ type Service struct {
 	boardStream marketdata.BoardStream
 }
 
-// catalogTTL is how long the catalog projection's facts stay valid; after it,
-// Status reports the projection stale and readiness goes red. catalogRefresh is
-// how often Run renews them.
+// catalogTTL is how long the catalog projection's facts are considered fresh;
+// after it, Status reports a degraded stale reason while the last validated
+// directory remains readable. catalogRefresh is how often Run renews it.
 //
 // The refresh has to be strictly shorter than the TTL, and by enough to absorb
 // a slow fetch or a missed tick: facts renewed only once they have already
@@ -127,10 +127,9 @@ type Service struct {
 // cannot make it smaller. The Gateway republishes on its own timer (once a
 // minute) and vouches for a catalog for two minutes; a TTL under that rejects
 // facts the authority that produced them still considers current, and the
-// service reports a working Gateway unready for whatever fraction of each cycle
-// the two numbers disagree by. Matching the Gateway's own validity window makes
-// this a real detector instead: it goes red when the Gateway has actually
-// stopped republishing, which is a full cycle missed, and not before.
+// service reports a stale directory for whatever fraction of each cycle the
+// two numbers disagree by. Matching the Gateway's own validity window keeps the
+// degradation signal meaningful without blanking public reads.
 const (
 	catalogTTL            = 2 * time.Minute
 	catalogRefresh        = catalogTTL / 3

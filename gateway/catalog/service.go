@@ -206,6 +206,21 @@ func (service *Service) Snapshot(accountID domain.AccountID) (Snapshot, error) {
 }
 
 func (service *Service) Resolve(ctx context.Context, accountID domain.AccountID, instrumentID domain.InstrumentID) (exchange.Instrument, error) {
+	return service.resolve(ctx, accountID, instrumentID, true)
+}
+
+// ResolveLastKnown resolves an instrument from the last successfully published
+// snapshot without applying the command-readiness freshness fence.
+//
+// This is intentionally narrower than Resolve: public market reads can keep
+// using a venue's last real directory while a low-frequency catalog refresh is
+// delayed, but account commands must still refuse a stale route. Callers must
+// never use this method to authorize or construct a private write.
+func (service *Service) ResolveLastKnown(ctx context.Context, accountID domain.AccountID, instrumentID domain.InstrumentID) (exchange.Instrument, error) {
+	return service.resolve(ctx, accountID, instrumentID, false)
+}
+
+func (service *Service) resolve(ctx context.Context, accountID domain.AccountID, instrumentID domain.InstrumentID, requireFresh bool) (exchange.Instrument, error) {
 	if ctx == nil {
 		return exchange.Instrument{}, fmt.Errorf("catalog resolve context is required")
 	}
@@ -218,7 +233,7 @@ func (service *Service) Resolve(ctx context.Context, accountID domain.AccountID,
 	if !ok || state.snapshot.Generation == 0 {
 		return exchange.Instrument{}, fmt.Errorf("%w: no snapshot for account", ErrCatalogUnavailable)
 	}
-	if service.isStale(state.snapshot) {
+	if requireFresh && service.isStale(state.snapshot) {
 		return exchange.Instrument{}, ErrCatalogStale
 	}
 	instrument, ok := state.canonical[instrumentID]

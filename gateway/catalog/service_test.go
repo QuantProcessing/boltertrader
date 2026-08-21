@@ -155,6 +155,9 @@ func TestServiceRetainsLastKnownGoodAndRejectsStaleCommandResolution(t *testing.
 	if _, err := service.Resolve(context.Background(), accountID, first.Instruments[0].ID); !errors.Is(err, ErrCatalogStale) {
 		t.Fatalf("stale Resolve error = %v, want ErrCatalogStale", err)
 	}
+	if resolved, err := service.ResolveLastKnown(context.Background(), accountID, first.Instruments[0].ID); err != nil || resolved.Identity.NativeID != instrument.Identity.NativeID {
+		t.Fatalf("stale ResolveLastKnown = %+v, err=%v", resolved, err)
+	}
 	if got, err := service.Snapshot(accountID); err != nil || got.Revision != first.Revision {
 		t.Fatalf("stale read snapshot = %+v, err=%v", got, err)
 	}
