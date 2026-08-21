@@ -234,6 +234,18 @@ type FundingRateData struct {
 	Time                 int64  `json:"time"`
 }
 
+// FundingInfo is the public per-symbol settlement-clock configuration. The
+// interval is not part of premiumIndex and cannot be assumed to be eight hours:
+// Aster may publish four-hour or other adjusted schedules per contract.
+type FundingInfo struct {
+	Symbol               string  `json:"symbol"`
+	InterestRate         string  `json:"interestRate"`
+	Time                 int64   `json:"time"`
+	FundingIntervalHours int64   `json:"fundingIntervalHours"`
+	FundingFeeCap        float64 `json:"fundingFeeCap"`
+	FundingFeeFloor      float64 `json:"fundingFeeFloor"`
+}
+
 type TimeInForce string
 
 const (

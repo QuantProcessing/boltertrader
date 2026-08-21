@@ -168,6 +168,12 @@ type PerpDex struct {
 	FullName string `json:"fullName,omitempty"`
 }
 
+type PerpAnnotation struct {
+	Category    string   `json:"category"`
+	Description string   `json:"description,omitempty"`
+	Keywords    []string `json:"keywords,omitempty"`
+}
+
 // PerpPosition
 type PerpPosition struct {
 	AssetPositions []struct {

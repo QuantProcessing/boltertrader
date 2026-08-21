@@ -101,6 +101,9 @@ type Metrics struct {
 	streamTotal       *prometheus.CounterVec
 	catalogAge        *prometheus.GaugeVec
 	catalogVersion    *prometheus.GaugeVec
+	fundingFeedState  *prometheus.GaugeVec
+	fundingLastUpdate *prometheus.GaugeVec
+	fundingReconnects *prometheus.GaugeVec
 	postgresDuration  *prometheus.HistogramVec
 	inFlight          prometheus.Gauge
 	shutdownTotal     *prometheus.CounterVec
@@ -149,6 +152,18 @@ func NewMetrics() *Metrics {
 			Name: "gateway_catalog_snapshot_version",
 			Help: "Monotonic generation of the current instrument Catalog snapshot.",
 		}, []string{"venue", "product", "environment"}),
+		fundingFeedState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_funding_market_feed_state",
+			Help: "Current funding-market feed state; exactly one bounded state label is 1 per route.",
+		}, []string{"venue", "route", "state"}),
+		fundingLastUpdate: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_funding_market_last_success_unixtime",
+			Help: "Unix timestamp of the last accepted funding-market patch by route.",
+		}, []string{"venue", "route"}),
+		fundingReconnects: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_funding_market_reconnect_total",
+			Help: "Funding-market reconnect attempts by route in the current process.",
+		}, []string{"venue", "route"}),
 		postgresDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "gateway_postgres_operation_duration_seconds",
 			Help:    "PostgreSQL operation latency by bounded operation and safe error class.",
@@ -172,6 +187,9 @@ func NewMetrics() *Metrics {
 		metrics.streamTotal,
 		metrics.catalogAge,
 		metrics.catalogVersion,
+		metrics.fundingFeedState,
+		metrics.fundingLastUpdate,
+		metrics.fundingReconnects,
 		metrics.postgresDuration,
 		metrics.inFlight,
 		metrics.shutdownTotal,
@@ -299,6 +317,35 @@ func (metrics *Metrics) SetCatalogSnapshot(states []CatalogState, now time.Time)
 		metrics.catalogAge.WithLabelValues(labels...).Set(age)
 		metrics.catalogVersion.WithLabelValues(labels...).Set(float64(state.Generation))
 	}
+}
+
+// ObserveFundingMarket implements fundingboard.Observer without importing the
+// collector package. Venue and route are drawn from the bounded route registry;
+// state is collapsed to the three public lifecycle values.
+func (metrics *Metrics) ObserveFundingMarket(venue, route, state string, lastSuccess time.Time, reconnects uint64) {
+	if metrics == nil {
+		return
+	}
+	venue = safeVenue(venue)
+	route = safeFundingRoute(route)
+	switch state {
+	case "live", "degraded", "unavailable":
+	default:
+		state = "unavailable"
+	}
+	for _, candidate := range []string{"live", "degraded", "unavailable"} {
+		value := float64(0)
+		if candidate == state {
+			value = 1
+		}
+		metrics.fundingFeedState.WithLabelValues(venue, route, candidate).Set(value)
+	}
+	last := float64(0)
+	if !lastSuccess.IsZero() {
+		last = float64(lastSuccess.UTC().Unix())
+	}
+	metrics.fundingLastUpdate.WithLabelValues(venue, route).Set(last)
+	metrics.fundingReconnects.WithLabelValues(venue, route).Set(float64(reconnects))
 }
 
 func (metrics *Metrics) RecordCommand(operation CommandOperation, outcome CommandOutcome) {
@@ -453,6 +500,16 @@ func safeVenue(value string) string {
 	return safeFixed(strings.ToLower(value), []string{
 		"binance", "okx", "lighter", "hyperliquid", "bybit",
 		"bitget", "gate", "aster", "nado",
+	})
+}
+
+func safeFundingRoute(value string) string {
+	return safeFixed(value, []string{
+		"aster.perp.usdt.v1", "binance.perp.usdt.v1",
+		"bitget.perp.usdc.v1", "bitget.perp.usdt.v1",
+		"bybit.perp.usdc.v1", "bybit.perp.usdt.v1",
+		"gate.perp.usdt.v1", "hyperliquid.perp.usdc.v1",
+		"lighter.perp.usdc.v1", "nado.perp.usdt0.v1", "okx.perp.usdt.v1",
 	})
 }
 

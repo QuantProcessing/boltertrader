@@ -248,6 +248,17 @@ func (c *Client) GetAllFundingRates(ctx context.Context) ([]FundingRateData, err
 	return res, nil
 }
 
+// GetFundingInfo returns the current public settlement interval for every
+// perpetual. It is separate from premiumIndex on Aster's V3 API.
+func (c *Client) GetFundingInfo(ctx context.Context) ([]FundingInfo, error) {
+	var res []FundingInfo
+	err := c.Get(ctx, "/fapi/v3/fundingInfo", nil, false, &res)
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 // AggTradesQuery is the full parameter set for /fapi/v3/aggTrades.
 type AggTradesQuery struct {
 	Symbol    string

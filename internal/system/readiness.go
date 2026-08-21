@@ -70,12 +70,34 @@ func (service *Readiness) snapshot(requireAll bool) Snapshot {
 		evaluators[name] = evaluator
 	}
 	service.mu.RUnlock()
+
+	// Evaluators are independent component probes. Running them serially makes
+	// the readiness endpoint's latency the sum of every downstream timeout — a
+	// pair of healthy, two-second-bounded probes can therefore exceed the
+	// caller's five-second health-check deadline during a cold start. Capture
+	// one concurrent result per evaluator, then assemble the deterministic
+	// snapshot below from those values.
+	evaluated := make(map[string]Component, len(evaluators))
+	var evaluatedMu sync.Mutex
+	var evaluatedGroup sync.WaitGroup
+	for name, evaluator := range evaluators {
+		evaluatedGroup.Add(1)
+		go func() {
+			defer evaluatedGroup.Done()
+			component := evaluator()
+			evaluatedMu.Lock()
+			evaluated[name] = component
+			evaluatedMu.Unlock()
+		}()
+	}
+	evaluatedGroup.Wait()
+
 	components := make(map[string]Component, len(RequiredComponents))
 	ready := true
 	for _, name := range RequiredComponents {
 		component, ok := stored[name]
-		if evaluator := evaluators[name]; evaluator != nil {
-			component, ok = evaluator(), true
+		if evaluatedComponent, exists := evaluated[name]; exists {
+			component, ok = evaluatedComponent, true
 		}
 		if !ok {
 			component = Component{Reason: "not_reported"}
@@ -90,17 +112,16 @@ func (service *Readiness) snapshot(requireAll bool) Snapshot {
 		if _, ok := components[name]; ok {
 			continue
 		}
-		if evaluator := evaluators[name]; evaluator != nil {
-			component = evaluator()
+		if evaluatedComponent, exists := evaluated[name]; exists {
+			component = evaluatedComponent
 		}
 		component.Details = cloneDetails(component.Details)
 		components[name] = component
 	}
-	for name, evaluator := range evaluators {
+	for name, component := range evaluated {
 		if _, ok := components[name]; ok {
 			continue
 		}
-		component := evaluator()
 		component.Details = cloneDetails(component.Details)
 		components[name] = component
 	}

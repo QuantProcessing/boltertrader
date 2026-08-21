@@ -20,7 +20,15 @@ import { pivotRows } from "@/features/funding/matrix";
  * ------------------------------------------------------------------------- */
 
 function row(symbol: string, base: string, quote: string, extra: Partial<FundingBoardRow> = {}): FundingBoardRow {
-  return { symbol, baseAsset: base, quoteAsset: quote, rate: "0.0001", ...extra };
+  return {
+    symbol,
+    baseAsset: base,
+    quoteAsset: quote,
+    marketFamily: "venue_perpetual",
+    assetClass: "unknown",
+    rate: "0.0001",
+    ...extra,
+  };
 }
 
 function venue(name: string, settlement: string, rows: FundingBoardRow[]): FundingBoardVenue {
@@ -32,6 +40,7 @@ function venue(name: string, settlement: string, rows: FundingBoardRow[]): Fundi
     routeProfileId: `${name}.perp.${settlement.toLowerCase()}.v1`,
     stale: false,
     unavailable: false,
+    status: "live",
     rows,
   };
 }
@@ -41,6 +50,18 @@ function board(...venues: FundingBoardVenue[]): FundingBoardSnapshot {
 }
 
 describe("pivotRows", () => {
+  it("treats an unavailable venue with null rows as an empty column", () => {
+    const unavailable = {
+      ...venue("okx", "USDT", []),
+      unavailable: true,
+      status: "unavailable" as const,
+      rows: null,
+    } as unknown as FundingBoardVenue;
+
+    expect(() => pivotRows(board(unavailable))).not.toThrow();
+    expect(pivotRows(board(unavailable))).toEqual([]);
+  });
+
   it("puts okx's -SWAP spelling on the same row as everyone else's", () => {
     const rows = pivotRows(
       board(
@@ -81,7 +102,12 @@ describe("pivotRows", () => {
   });
 
   it("falls back to the symbol when a venue publishes no assets", () => {
-    const bare: FundingBoardRow = { symbol: "MYSTERY-PERP", rate: "0.0001" };
+    const bare: FundingBoardRow = {
+      symbol: "MYSTERY-PERP",
+      marketFamily: "venue_perpetual",
+      assetClass: "unknown",
+      rate: "0.0001",
+    };
     const rows = pivotRows(board(venue("binance", "USDT", [bare])));
 
     expect(rows[0]?.key).toBe("MYSTERY-PERP");
@@ -100,6 +126,7 @@ describe("pivotRows", () => {
           row("BTC-USDT-SWAP", "BTC", "USDT", {
             openInterest: "1",
             openInterestNotional: "9000",
+            openInterestNotionalAsset: "USD",
           }),
         ]),
         venue("bybit", "USDT", [row("BTCUSDT", "BTC", "USDT")]),
@@ -108,5 +135,6 @@ describe("pivotRows", () => {
 
     expect(rows[0]?.openInterest).toBe("9000");
     expect(rows[0]?.openInterestVenue).toBe("okx");
+    expect(rows[0]?.openInterestAsset).toBe("USD");
   });
 });

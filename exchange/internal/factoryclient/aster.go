@@ -828,16 +828,6 @@ func asterResponseSymbolMatchesFilter(rawSymbol string, filterNative string) boo
 	return filterNative == "" || rawSymbol == filterNative
 }
 
-func asterCanonical(native string) string {
-	if strings.Contains(native, "-") {
-		return native
-	}
-	if strings.HasSuffix(native, "USDT") && len(native) > 4 {
-		return native[:len(native)-4] + "-USDT"
-	}
-	return native
-}
-
 func asterSpotFilters(filters []asterspot.SymbolFilter) (decimal.Decimal, decimal.Decimal, decimal.Decimal, exchange.OptionalDecimal, error) {
 	return asterFilters(len(filters), func(i int) (string, string, string, string, string) {
 		f := filters[i]
@@ -1621,7 +1611,7 @@ func (backend *asterPerpWSBackend) StartCandles(ctx context.Context, instrument 
 }
 
 func (backend *asterSpotWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
-	native, canonical, err := asterSymbols(instrument, "WatchOrders", exchange.ProductSpot)
+	native, _, err := asterSymbols(instrument, "WatchOrders", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
@@ -1634,7 +1624,7 @@ func (backend *asterSpotWSBackend) StartOrders(ctx context.Context, instrument e
 		if !active() {
 			return
 		}
-		if event == nil || asterCanonical(event.Symbol) != canonical {
+		if event == nil || event.Symbol != native {
 			return
 		}
 		order, err := asterOrder(exchange.ProductSpot, native, event.OrderID, event.ClientOrderID, event.Side, event.OrderType, event.TimeInForce, event.Quantity, event.Price, event.CumulativeFilledQuantity, event.OrderStatus, false)
@@ -1647,7 +1637,7 @@ func (backend *asterSpotWSBackend) StartOrders(ctx context.Context, instrument e
 	return stop, nil
 }
 func (backend *asterSpotWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
-	native, canonical, err := asterSymbols(instrument, "WatchFills", exchange.ProductSpot)
+	native, _, err := asterSymbols(instrument, "WatchFills", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
@@ -1660,7 +1650,7 @@ func (backend *asterSpotWSBackend) StartFills(ctx context.Context, instrument ex
 		if !active() {
 			return
 		}
-		if event == nil || event.TradeID <= 0 || asterCanonical(event.Symbol) != canonical {
+		if event == nil || event.TradeID <= 0 || event.Symbol != native {
 			return
 		}
 		price, qty, err := parse2(event.LastExecutedPrice, event.LastExecutedQuantity)
@@ -1735,7 +1725,7 @@ func (backend *asterSpotWSBackend) Close() error {
 }
 
 func (backend *asterPerpWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
-	native, canonical, err := asterSymbols(instrument, "WatchOrders", exchange.ProductPerp)
+	native, _, err := asterSymbols(instrument, "WatchOrders", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
@@ -1748,7 +1738,7 @@ func (backend *asterPerpWSBackend) StartOrders(ctx context.Context, instrument e
 		if !active() {
 			return
 		}
-		if event == nil || asterCanonical(event.Order.Symbol) != canonical {
+		if event == nil || event.Order.Symbol != native {
 			return
 		}
 		order, err := asterOrder(exchange.ProductPerp, native, event.Order.OrderID, event.Order.ClientOrderID, event.Order.Side, event.Order.OrderType, event.Order.TimeInForce, event.Order.OriginalQty, event.Order.OriginalPrice, event.Order.AccumulatedFilledQty, event.Order.OrderStatus, event.Order.IsReduceOnly)
@@ -1761,7 +1751,7 @@ func (backend *asterPerpWSBackend) StartOrders(ctx context.Context, instrument e
 	return stop, nil
 }
 func (backend *asterPerpWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
-	native, canonical, err := asterSymbols(instrument, "WatchFills", exchange.ProductPerp)
+	native, _, err := asterSymbols(instrument, "WatchFills", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
@@ -1774,7 +1764,7 @@ func (backend *asterPerpWSBackend) StartFills(ctx context.Context, instrument ex
 		if !active() {
 			return
 		}
-		if event == nil || event.Order.TradeID <= 0 || asterCanonical(event.Order.Symbol) != canonical {
+		if event == nil || event.Order.TradeID <= 0 || event.Order.Symbol != native {
 			return
 		}
 		price, qty, err := parse2(event.Order.LastFilledPrice, event.Order.LastFilledQty)
@@ -1825,7 +1815,7 @@ func (backend *asterPerpWSBackend) StartBalances(ctx context.Context, callbacks 
 	return stop, nil
 }
 func (backend *asterPerpWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
-	native, canonical, err := asterSymbols(instrument, "WatchPositions", exchange.ProductPerp)
+	native, _, err := asterSymbols(instrument, "WatchPositions", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
@@ -1843,7 +1833,7 @@ func (backend *asterPerpWSBackend) StartPositions(ctx context.Context, instrumen
 		}
 		positions := make([]exchange.Position, 0, len(event.UpdateData.Positions))
 		for _, row := range event.UpdateData.Positions {
-			if asterCanonical(row.Symbol) != canonical {
+			if row.Symbol != native {
 				continue
 			}
 			qty, entry, err := parse2(row.PositionAmount, row.EntryPrice)

@@ -81,6 +81,48 @@ func loadInternalSchemas(t *testing.T) map[string]internalSchema {
 	return document.Components.Schemas
 }
 
+func TestInternalFundingBoardWebSocketDeclaresResnapshotProtocol(t *testing.T) {
+	data, err := os.ReadFile("../../api/exchange-gateway/v1/internal-openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Description string `yaml:"description"`
+				Content     map[string]struct {
+					Schema struct {
+						Ref string `yaml:"$ref"`
+					} `yaml:"schema"`
+				} `yaml:"content"`
+			} `yaml:"responses"`
+		} `yaml:"paths"`
+		Components struct {
+			Schemas map[string]internalSchema `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	switching := document.Paths["/internal/v1/funding-board/ws"]["get"].Responses["101"]
+	description := strings.ToLower(switching.Description)
+	for _, phrase := range []string{"complete snapshot", "venue_status", "resync_required", "closed"} {
+		if !strings.Contains(description, phrase) {
+			t.Errorf("funding-board ws description must contain %q: %s", phrase, description)
+		}
+	}
+	if ref := switching.Content["application/json"].Schema.Ref; ref != "#/components/schemas/FundingBoardStreamEvent" {
+		t.Fatalf("funding-board ws message schema=%q", ref)
+	}
+	event := document.Components.Schemas["FundingBoardStreamEvent"]
+	if !reflect.DeepEqual(event.Required, []string{"eventType", "sequence", "observedAt"}) {
+		t.Fatalf("FundingBoardStreamEvent required=%v", event.Required)
+	}
+	if got, want := event.Properties["eventType"].Enum, []string{"snapshot", "upsert", "venue_status", "resync_required"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FundingBoardStreamEvent event types=%v want=%v", got, want)
+	}
+}
+
 func validateInternalSchema(value any, schema internalSchema, schemas map[string]internalSchema, path string) error {
 	if schema.Ref != "" {
 		const prefix = "#/components/schemas/"
@@ -234,8 +276,10 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		"/internal/v1/accounts/runtime/{accountId}/events":                    {"get"},
 		"/internal/v1/catalog/venues":                                         {"get"}, "/internal/v1/catalog/instruments": {"get"},
 		"/internal/v1/market-data": {"get"}, "/internal/v1/candles": {"get"},
+		"/internal/v1/public/ws":      {"get"},
 		"/internal/v1/private-events": {"get"},
-		"/internal/v1/funding-board":  {"get"}, "/internal/v1/funding-history": {"get"},
+		"/internal/v1/funding-board":  {"get"}, "/internal/v1/funding-board/ws": {"get"},
+		"/internal/v1/funding-history": {"get"},
 	}
 	if len(document.Paths) != len(want) {
 		t.Fatalf("internal paths=%d want=%d", len(document.Paths), len(want))

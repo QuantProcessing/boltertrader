@@ -77,33 +77,40 @@ than left holding capacity.
 
 ## The arbitrage product
 
-The second product trades the funding spread rather than the price. It takes one
-instrument on two venues, goes long where funding is cheapest and short where it
-is dearest, and holds a delta-flat pair that earns the difference. It is a
-cross-venue perpetual hedge and nothing else: no single-venue basis, no spot leg,
-no dated contract.
+The arbitrage product has two strategy families rather than treating every
+ticker alike. **Crypto Continuous** offers spot-perpetual basis and cross-venue
+perpetual funding. **TradFi Perpetual** offers perpetual funding and cross-venue
+same-asset perpetual price spread. Asset class comes from the normalized public
+catalog; a ticker name is never guessed into crypto, equity, or commodity.
+An exact canonical spot/perpetual pair may enter the basis workspace while
+retaining `assetClass=unknown`; the topology identifies the strategy without
+inventing an economic classification.
 
 Rates are not comparable as published. Venues settle funding on their own
 schedule — four hours here, eight there — so a raw rate says nothing until it is
 normalized. Every rate is converted to a daily figure (`rate × 24 ÷
 intervalHours`) before any two are compared, the spread is `shortDaily −
 longDaily`, and the headline APR is that spread times 365. A venue that will not
-say what its interval is cannot be ranked, and the service says so instead of
-assuming eight hours.
+say what its quoted period is remains visible on the funding board but is not
+emitted as an arbitrage opportunity; the service never assumes eight hours.
 
-`GET /api/v1/products/arbitrage/opportunities` ranks the pairs across the
-accounts named in the request. Each carries its own `blockers`, and a pair with
-any of them is not executable: `funding_interval_unknown`, `account_unreachable`,
-`instrument_identity_unresolved`, `board_stale`. Listing is determined by the
-public instrument directory, while account reachability is a separate execution
-fact; one can never be inferred from the other. An empty list is the only thing
-that makes the ticket live.
+`GET /api/v1/products/arbitrage/opportunities` is a public read and ranks purely
+from Trading's local catalog and funding-market projection. Anonymous callers
+see every public opportunity; only authenticated callers may add `accountId`
+parameters to calculate execution reachability. Each item carries blockers.
+Funding strategies require a fresh rate and published interval; basis and price
+spread require fresh prices; OI is display and ranking context and never blocks
+execution. Listing is determined by the public instrument directory, while
+account reachability is a separate execution fact; one can never be inferred
+from the other.
 
 Placement reuses the manual flow's shape exactly.
 `POST /api/v1/products/arbitrage/execution-previews` returns a sealed preview —
-the same seal, the same expiry — except that it prices both legs and reserves
-against both accounts. It also carries `warnings`, which are not blockers and do
-not stop a confirm: `fees_excluded` says the quoted spread is gross,
+the same seal, the same expiry — except that it reads a fresh BBO for both legs
+directly through Gateway and reserves against both accounts. The opportunity
+projection is deliberately not trusted for executable prices. Either BBO being
+unavailable or older than two seconds rejects the preview. It also carries
+`warnings`, which are not blockers and do not stop a confirm: `fees_excluded` says the quoted spread is gross,
 `negative_spread` says the ranking inverted between the read and the preview,
 `funding_rate_unavailable` and `board_stale` say a leg's number is older than it
 looks.
@@ -180,24 +187,25 @@ calls:
 - `/api/v1/realtime/stream` — the single server-sent stream the interface holds
   open.
 
-Two reads are not projections and do not pretend to be.
-`/api/v1/funding-board` and `/api/v1/funding-history` are served from the
-gateway's credential-free public plane, which needs no account to answer. The
-board is the whole matrix, one column per venue-product-settlement; the history
-is one instrument on one venue over a bounded window, `7d` or `30d` and nothing
-else — an open range would mean paginating a venue call, which is the thing this
-read is built to avoid. A venue with no history surface is reported unavailable
-rather than empty. See
-[Market and reference data](market-reference-data.md).
+The funding board and opportunities are resident projections. Trading consumes
+Gateway's internal funding-board WebSocket: the first snapshot replaces local
+state, later upserts are applied in sequence, and reconnect always replaces the
+projection from a new full snapshot. Browser reads every five seconds only run
+local calculations and never trigger a venue request.
+
+`/api/v1/funding-history` is intentionally different: it is an on-demand read
+from Gateway's credential-free public plane for one instrument and a bounded
+window, `7d` or `30d`. Historical candles and funding are not preheated or
+persisted. A venue with no history surface is reported unavailable rather than
+empty. See [Market and reference data](market-reference-data.md).
 
 Collection responses are enveloped as `{"data":{"items":[…]}}`, with a `meta`
 object alongside `data`. Single-resource responses put the resource directly in
 `data`. A client that reads `data.items` on a single resource, or `data` on a
 collection, is reading the wrong shape. The board and the history are single
 resources by that rule, not collections: `data` is the snapshot or the series
-itself, with its columns under `venues` and its readings under `points`. Both
-also carry a third top-level key, `rateLimit`, which is what is left of the
-venue budget the read spent.
+itself, with its columns under `venues` and its readings under `points`. A board
+read has no venue-rate budget because it is served entirely from memory.
 
 ## Storage
 

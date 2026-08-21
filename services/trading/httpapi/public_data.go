@@ -41,7 +41,6 @@ type CandlesProjection interface {
 // venue, because the board is one Gateway read rather than one read per venue.
 type FundingBoardProjection interface {
 	Get(context.Context) (marketdata.BoardSnapshot, error)
-	BudgetStatus() marketdata.BudgetStatus
 }
 
 // FundingHistoryProjection is its own interface rather than a second method on
@@ -287,9 +286,7 @@ func (api *PublicDataAPI) fundingBoard(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, status, code, "funding-board projection is unavailable", nil, true, httpx.RequestID(r))
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"meta": httpx.Meta(r), "data": snapshot, "rateLimit": api.dependencies.FundingBoard.BudgetStatus(),
-	})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": snapshot})
 }
 
 // fundingHistory serves one leg of a spread over a named window.

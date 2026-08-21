@@ -20,6 +20,10 @@ func newInstrument(
 	minNotional exchange.OptionalDecimal,
 	contractMultiplier exchange.OptionalDecimal,
 ) exchange.Instrument {
+	marketFamily := exchange.MarketFamilySpot
+	if product == exchange.ProductPerp {
+		marketFamily = exchange.MarketFamilyVenuePerpetual
+	}
 	return exchange.Instrument{
 		Identity: exchange.InstrumentIdentity{
 			Venue:        venue,
@@ -39,6 +43,10 @@ func newInstrument(
 		},
 		Encoding: exchange.InstrumentEncoding{
 			ContractMultiplier: contractMultiplier,
+		},
+		Metadata: exchange.InstrumentMetadata{
+			MarketFamily: marketFamily,
+			AssetClass:   exchange.AssetClassUnknown,
 		},
 	}
 }

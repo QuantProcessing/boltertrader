@@ -274,6 +274,48 @@ func TestDurableCreateReturnsAcceptedAccountAfterCandidateProbeFailure(t *testin
 	}
 }
 
+func TestFailedCreatingAccountCanBeRemoved(t *testing.T) {
+	store := NewMemoryStore()
+	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+	gateway := &lifecycleGateway{applyErr: errors.New("runtime candidate failed")}
+	operationIDs := []secretstore.OperationID{
+		"018f47a8-2578-7d3c-9d7d-5e4f4a445c33",
+		"018f47a8-2578-7d3c-9d7d-5e4f4a445c34",
+	}
+	service, err := New(Options{
+		Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+		ID: func() string { return "acct_1" },
+		OperationID: func() secretstore.OperationID {
+			id := operationIDs[0]
+			operationIDs = operationIDs[1:]
+			return id
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), durableCreateRequest(), "principal_1", "create-failed")
+	if err != nil || created.State != StateCreating {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+
+	removed, err := service.Remove(context.Background(), created.ID, created.DesiredStateRevision, "principal_1", "remove-failed-create")
+	if err != nil || removed.State != StateRemoved || removed.SecretRef != "" {
+		t.Fatalf("removed=%+v err=%v", removed, err)
+	}
+	createOperation, err := store.GetCredentialOperation(context.Background(), "018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
+	if err != nil || createOperation.State != OperationAbandoned || createOperation.StableErrorCode != "ACCOUNT_REMOVED_DURING_CREATION" {
+		t.Fatalf("create operation=%+v err=%v", createOperation, err)
+	}
+	retireOperation, err := store.GetCredentialOperation(context.Background(), "018f47a8-2578-7d3c-9d7d-5e4f4a445c34")
+	if err != nil || retireOperation.State != OperationActive {
+		t.Fatalf("retire operation=%+v err=%v", retireOperation, err)
+	}
+	if gateway.retireCalls != 1 || gateway.lastRetire.AccountID != created.ID || gateway.lastRetire.RuntimeID != created.RuntimeID || writer.deleteCalls != 1 {
+		t.Fatalf("retire=%+v calls=%d secret deletes=%d", gateway.lastRetire, gateway.retireCalls, writer.deleteCalls)
+	}
+}
+
 func TestReconcilerDiscardsLegacyRevisionDriftOnAppliedCreate(t *testing.T) {
 	store := NewMemoryStore()
 	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}

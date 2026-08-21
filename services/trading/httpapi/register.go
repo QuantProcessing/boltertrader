@@ -81,7 +81,10 @@ func Routes() []string {
 // is the outer bound on what it is allowed to decide that about — its contract
 // test compares its own carve-out against this, so widening one without the
 // other fails rather than drifts.
-func PublicDataRoutes() []string { return append([]string(nil), publicDataRoutes...) }
+func PublicDataRoutes() []string {
+	routes := append([]string(nil), publicDataRoutes...)
+	return append(routes, "GET /api/v1/products/arbitrage/opportunities")
+}
 
 // Register mounts every configured group on mux and reports the routes it now
 // owns. The caller needs that list because it is the one deciding what the

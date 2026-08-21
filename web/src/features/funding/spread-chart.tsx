@@ -15,13 +15,18 @@ import { describeError, isApiError } from "@/api/errors";
 import {
   FUNDING_HISTORY_INSTRUMENT_UNKNOWN,
   FUNDING_HISTORY_UNSUPPORTED,
-  FUNDING_WINDOWS,
   type FundingHistoryPoint,
   type FundingHistorySeries,
-  type FundingWindow,
 } from "@/api/types";
-import { Segmented, type SegmentedOption } from "@/components/ui/segmented";
+import { Segmented } from "@/components/ui/segmented";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
+import { HistoryNavigator } from "@/features/arbitrage/history-navigator";
+import {
+  ARBITRAGE_HISTORY_WINDOWS,
+  fundingWindowFor,
+  trimToArbitrageWindow,
+  type ArbitrageHistoryWindow,
+} from "@/features/arbitrage/history-window";
 import { useFundingHistory } from "@/features/funding/queries";
 import { readChartPalette } from "@/lib/chart-palette";
 import { useT, type Translate } from "@/lib/i18n";
@@ -37,7 +42,7 @@ import { cn } from "@/lib/utils";
  *
  * The history is fetched per venue and per underlying because no venue offers a
  * bulk history call — which is also why this lives on a chosen pair rather than
- * on the matrix, where it would be hundreds of underlyings times ten venues.
+ * on the matrix, where it would be hundreds of underlyings times nine venues.
  * Two calls here; the matrix would be thousands.
  *
  * Both legs are drawn as a daily rate, normalised from each venue's own funding
@@ -56,13 +61,6 @@ import { cn } from "@/lib/utils";
  * regardless: half a spread is still worth seeing, as long as it is labelled as
  * half.
  * ------------------------------------------------------------------------- */
-
-// The labels are codes — `7d`, `30d` — so this one can stay at module scope:
-// there is nothing in it for a locale to change.
-const WINDOW_OPTIONS: SegmentedOption<FundingWindow>[] = FUNDING_WINDOWS.map((value) => ({
-  value,
-  label: value,
-}));
 
 /** Why a leg has no line, in the board's own vocabulary for the same condition. */
 interface LegNote {
@@ -93,18 +91,19 @@ export function SpreadChart({
   shortVenue: string;
 }) {
   const t = useT();
-  const [historyWindow, setHistoryWindow] = useState<FundingWindow>("7d");
+  const [historyWindow, setHistoryWindow] = useState<ArbitrageHistoryWindow>("7d");
+  const queryWindow = fundingWindowFor(historyWindow);
 
   // Two queries rather than one paired read: a venue that publishes no history
   // fails permanently, and its leg has to be able to say so beside a leg that
   // drew. Coupled, the missing half would take the whole chart down.
   const longHistory = useFundingHistory({
     instrumentId: longInstrumentId,
-    window: historyWindow,
+    window: queryWindow,
   });
   const shortHistory = useFundingHistory({
     instrumentId: shortInstrumentId,
-    window: historyWindow,
+    window: queryWindow,
   });
 
   // `t` is deliberately out of the dependency arrays: `useT()` returns a fresh
@@ -119,9 +118,18 @@ export function SpreadChart({
     () => readLeg(shortHistory, t),
     [shortHistory.data, shortHistory.error, shortHistory.isPending],
   );
+  const longPoints = useMemo(
+    () => trimToArbitrageWindow(longLeg.points, historyWindow),
+    [historyWindow, longLeg.points],
+  );
+  const shortPoints = useMemo(
+    () => trimToArbitrageWindow(shortLeg.points, historyWindow),
+    [historyWindow, shortLeg.points],
+  );
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const spreadRef = useRef<ISeriesApi<"Line"> | null>(null);
   const longRef = useRef<ISeriesApi<"Line"> | null>(null);
   const shortRef = useRef<ISeriesApi<"Line"> | null>(null);
 
@@ -158,26 +166,33 @@ export function SpreadChart({
       // Percent per day, which is the unit the board and the ticket both quote.
       // Four decimals because a hedge worth opening can live in the fourth.
       type: "custom" as const,
-      formatter: (value: number) => `${value.toFixed(4)}%`,
+      formatter: (value: number) => `${value.toFixed(4)}%/d`,
       minMove: 0.0001,
     };
 
     const long = chart.addSeries(LineSeries, {
       color: palette.up,
-      lineWidth: 2,
+      lineWidth: 1,
       priceLineVisible: false,
       priceFormat: format,
     });
     const short = chart.addSeries(LineSeries, {
       color: palette.down,
+      lineWidth: 1,
+      priceLineVisible: false,
+      priceFormat: format,
+    });
+    const spread = chart.addSeries(LineSeries, {
+      color: palette.muted,
       lineWidth: 2,
       priceLineVisible: false,
+      lastValueVisible: true,
       priceFormat: format,
     });
 
     // Zero is the only meaningful reference on this chart: which side of it a
     // leg sits on decides who paid whom at that settlement.
-    long.createPriceLine({
+    spread.createPriceLine({
       price: 0,
       color: palette.lineStrong,
       lineWidth: 1,
@@ -187,33 +202,38 @@ export function SpreadChart({
     });
 
     chartRef.current = chart;
+    spreadRef.current = spread;
     longRef.current = long;
     shortRef.current = short;
 
     return () => {
       chart.remove();
       chartRef.current = null;
+      spreadRef.current = null;
       longRef.current = null;
       shortRef.current = null;
     };
   }, []);
 
   useEffect(() => {
+    const spread = spreadRef.current;
     const long = longRef.current;
     const short = shortRef.current;
-    if (!long || !short) return;
+    if (!spread || !long || !short) return;
 
-    long.setData(longLeg.points);
-    short.setData(shortLeg.points);
+    long.setData(longPoints);
+    short.setData(shortPoints);
+    spread.setData(fundingSpreadSeries(longPoints, shortPoints));
     // Re-fit on every change, unlike the price chart. The data only changes when
     // the pair or the window changes, and both of those replace the span
     // outright — there is nothing an operator could have panned to that a fit
     // would take away.
     chartRef.current?.timeScale().fitContent();
-  }, [longLeg.points, shortLeg.points]);
+  }, [longPoints, shortPoints]);
 
-  const drew = longLeg.points.length > 0 || shortLeg.points.length > 0;
+  const drew = longPoints.length > 0 || shortPoints.length > 0;
   const pending = longHistory.isPending || shortHistory.isPending;
+  const spreadPoints = useMemo(() => fundingSpreadSeries(longPoints, shortPoints), [longPoints, shortPoints]);
 
   const notes: string[] = [];
   if (longLeg.note) notes.push(t("funding.note", { venue: longVenue, detail: longLeg.note.detail }));
@@ -222,9 +242,10 @@ export function SpreadChart({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center justify-between gap-3 border-b border-line px-3">
-        <h2 className="shrink-0 text-base font-medium text-text">{t("funding.history")}</h2>
+        <h2 className="shrink-0 text-base font-medium text-text">{t("arb.history.funding")}</h2>
         <div className="flex min-w-0 items-center gap-3 overflow-x-auto">
           <div className="flex items-center gap-3 text-meta text-dim">
+            <LegendLeg side={t("arb.history.netFunding")} venue="" tone="neutral" note={null} />
             <LegendLeg side={t("arb.long")} venue={longVenue} tone="up" note={longLeg.note} />
             <LegendLeg side={t("arb.short")} venue={shortVenue} tone="down" note={shortLeg.note} />
           </div>
@@ -232,14 +253,14 @@ export function SpreadChart({
             name="funding-window"
             label={t("funding.window")}
             value={historyWindow}
-            options={WINDOW_OPTIONS}
+            options={ARBITRAGE_HISTORY_WINDOWS}
             onChange={setHistoryWindow}
             className="w-auto shrink-0"
           />
         </div>
       </div>
 
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={containerRef}
           className="absolute inset-0"
@@ -254,27 +275,20 @@ export function SpreadChart({
         {drew ? null : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-panel px-6 text-center">
             <p className="text-base text-dim">{pending ? t("funding.reading") : t("funding.noHistory")}</p>
-            <p className="text-meta text-dim">
-              {pending
-                ? t("funding.reading.detail", {
-                    window: historyWindow,
-                    long: longVenue,
-                    short: shortVenue,
-                  })
-                : notes.join(" ")}
-            </p>
+            {!pending && notes.length > 0 ? <p className="text-meta text-dim">{notes.join(" ")}</p> : null}
           </div>
         )}
       </div>
 
-      <div className="shrink-0 border-t border-line px-3 py-1.5 text-meta text-dim">
-        <p>{t("funding.footnote")}</p>
-        {drew && notes.length > 0 ? (
+      {drew ? <HistoryNavigator points={spreadPoints.length > 0 ? spreadPoints : longPoints.length > 0 ? longPoints : shortPoints} tone={spreadPoints.length > 0 ? "neutral" : longPoints.length > 0 ? "up" : "down"} label={t("arb.history.navigator")} /> : null}
+
+      {drew && notes.length > 0 ? (
+        <div className="shrink-0 border-t border-line px-3 py-1.5 text-meta text-dim">
           <p className="text-warn" role="status">
             {notes.join(" ")}
           </p>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -289,13 +303,16 @@ function LegendLeg({
   /** Already translated by the caller — one word, and it reads as a label here. */
   side: string;
   venue: string;
-  tone: "up" | "down";
+  tone: "neutral" | "up" | "down";
   note: LegNote | null;
 }) {
   return (
     <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-      <span aria-hidden className={cn("h-0.5 w-3 rounded-full", tone === "up" ? "bg-up" : "bg-down")} />
-      {side} {venue}
+      <span
+        aria-hidden
+        className={cn("w-3 rounded-full", tone === "neutral" ? "h-0.5 bg-muted" : tone === "up" ? "h-px bg-up" : "h-px bg-down")}
+      />
+      {side}{venue ? ` ${venue}` : ""}
       {note ? <StateBadge tone={note.tone} label={note.label} detail={note.detail} /> : null}
     </span>
   );
@@ -392,4 +409,24 @@ function toDailySeries(points: FundingHistoryPoint[] | undefined): LineData[] {
     data.push({ time: (at / 1000) as UTCTimestamp, value: ((rate * 24) / hours) * 100 });
   }
   return data;
+}
+
+/** Short minus long, carried forward whenever either venue settles. */
+function fundingSpreadSeries(long: LineData[], short: LineData[]): LineData[] {
+  const events = [
+    ...long.flatMap((point) => ("value" in point ? [{ ...point, leg: "long" as const }] : [])),
+    ...short.flatMap((point) => ("value" in point ? [{ ...point, leg: "short" as const }] : [])),
+  ].sort((left, right) => Number(left.time) - Number(right.time));
+  let longValue: number | undefined;
+  let shortValue: number | undefined;
+  const result: LineData[] = [];
+  for (const event of events) {
+    if (event.leg === "long") longValue = event.value;
+    else shortValue = event.value;
+    if (longValue === undefined || shortValue === undefined) continue;
+    const next: LineData = { time: event.time, value: shortValue - longValue };
+    if (result.at(-1)?.time === next.time) result[result.length - 1] = next;
+    else result.push(next);
+  }
+  return result;
 }

@@ -55,16 +55,21 @@ type RouteProfile struct {
 }
 
 type Instrument struct {
-	InstrumentID string     `json:"instrumentId"`
-	Venue        string     `json:"venue"`
-	Environment  string     `json:"environment"`
-	Product      string     `json:"product"`
-	Settlement   string     `json:"settlement,omitempty"`
-	Symbol       string     `json:"symbol"`
-	BaseAsset    string     `json:"baseAsset"`
-	QuoteAsset   string     `json:"quoteAsset"`
-	Rules        TradeRules `json:"rules"`
-	Ready        bool       `json:"ready"`
+	InstrumentID         string     `json:"instrumentId"`
+	Venue                string     `json:"venue"`
+	Environment          string     `json:"environment"`
+	Product              string     `json:"product"`
+	Settlement           string     `json:"settlement,omitempty"`
+	Symbol               string     `json:"symbol"`
+	BaseAsset            string     `json:"baseAsset"`
+	QuoteAsset           string     `json:"quoteAsset"`
+	MarketFamily         string     `json:"marketFamily"`
+	AssetClass           string     `json:"assetClass"`
+	ClassificationSource string     `json:"classificationSource,omitempty"`
+	RawAssetType         string     `json:"rawAssetType,omitempty"`
+	RawCategories        []string   `json:"rawCategories,omitempty"`
+	Rules                TradeRules `json:"rules"`
+	Ready                bool       `json:"ready"`
 }
 
 type TradeRules struct {
@@ -339,6 +344,12 @@ func validate(snapshot Snapshot) error {
 		if instrument.Product != "spot" && instrument.Product != "perp" {
 			return fmt.Errorf("Gateway instrument product is unsupported")
 		}
+		if instrument.MarketFamily != "" && !knownMarketFamily(instrument.MarketFamily) {
+			return fmt.Errorf("Gateway instrument market family is unsupported")
+		}
+		if instrument.AssetClass != "" && !knownAssetClass(instrument.AssetClass) {
+			return fmt.Errorf("Gateway instrument asset class is unsupported")
+		}
 		if err := validateRules(instrument.Rules); err != nil {
 			return err
 		}
@@ -376,6 +387,24 @@ func validateRules(rules TradeRules) error {
 	return nil
 }
 
+func knownMarketFamily(value string) bool {
+	switch value {
+	case "spot", "venue_perpetual", "builder_perpetual":
+		return true
+	default:
+		return false
+	}
+}
+
+func knownAssetClass(value string) bool {
+	switch value {
+	case "unknown", "crypto", "equity", "commodity", "index", "fx", "rates", "pre_ipo", "rwa_other":
+		return true
+	default:
+		return false
+	}
+}
+
 func clone(snapshot Snapshot) Snapshot {
 	snapshot.Venues = append([]Venue(nil), snapshot.Venues...)
 	for index := range snapshot.Venues {
@@ -384,5 +413,8 @@ func clone(snapshot Snapshot) Snapshot {
 		snapshot.Venues[index].RouteProfiles = append([]RouteProfile(nil), snapshot.Venues[index].RouteProfiles...)
 	}
 	snapshot.Instruments = append([]Instrument(nil), snapshot.Instruments...)
+	for index := range snapshot.Instruments {
+		snapshot.Instruments[index].RawCategories = append([]string(nil), snapshot.Instruments[index].RawCategories...)
+	}
 	return snapshot
 }

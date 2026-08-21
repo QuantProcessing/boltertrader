@@ -23,6 +23,7 @@ import { useToast } from "@/components/ui/toast";
 import {
   buildCredentialBundle,
   CredentialFields,
+  invalidCredentialFields,
   missingCredentialFields,
   type CredentialValues,
 } from "@/features/settings/credential-form";
@@ -98,6 +99,10 @@ const RUNTIME_REASON_KEYS: Partial<Record<string, Key>> = {
   VENUE_RESPONSE_INVALID: "settings.reason.venueResponseInvalid",
   "live private writes disabled": "settings.reason.liveWritesDisabled",
   private_stream_connect_failed: "settings.reason.privateStreamConnectFailed",
+  private_stream_starting: "settings.reason.privateStreamStarting",
+  capability_not_promoted: "settings.reason.capabilityNotPromoted",
+  capability_write_disabled: "settings.reason.capabilityNotPromoted",
+  exact_lookup_unavailable: "settings.reason.exactLookupUnavailable",
   CANDIDATE_BUILD_FAILED: "settings.reason.candidateBuildFailed",
 };
 
@@ -288,9 +293,8 @@ function AccountDetail({ account }: { account: Account; venue: Venue | null }) {
       >
         <AccountActivationStatus account={account} runtime={runtime} loading={runtimes.isPending} />
 
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-meta md:grid-cols-4">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-meta md:grid-cols-3">
           <Fact label={t("settings.venue")} value={account.venue} />
-          <Fact label={t("settings.environment")} value={account.nativeEnvironment} />
           <Fact label={t("settings.products")} value={account.productPolicy.join(", ")} />
           <Fact
             label={t("settings.lastValidated")}
@@ -382,11 +386,15 @@ function AccountActivationStatus({
   const t = useT();
   const pendingState = runtime?.pending?.state;
   const failed = pendingState === "candidate_failed";
-  const fullyReady = runtime?.readiness.ready === true && runtime.writeReadiness.ready === true;
+  // A multi-route account can have a promoted trading route next to an
+  // intentionally read-only route. That is partial capability, not a failed
+  // account: the exact route still gates every write at execution time.
+  const hasWritableRoute = runtime?.capabilities.some((capability) => capability.writeReady) === true;
+  const operational = runtime?.readiness.ready === true && hasWritableRoute;
   const shouldShow =
     account.status === "creating" ||
     account.status === "removing" ||
-    (account.status === "active" && !fullyReady);
+    (account.status === "active" && !operational);
 
   if (!shouldShow) return null;
 
@@ -516,6 +524,16 @@ function RuntimePanel({ runtime, loading }: { runtime: AccountRuntime | null; lo
     );
   }
 
+  const writableRouteCount = runtime.capabilities.filter((capability) => capability.writeReady).length;
+  const anyWritable = writableRouteCount > 0;
+  const partiallyWritable = anyWritable && writableRouteCount < runtime.capabilities.length;
+  const writeDetail = partiallyWritable
+    ? t("settings.writePartiallyReady.detail", {
+        ready: writableRouteCount,
+        total: runtime.capabilities.length,
+      })
+    : describeRuntimeReason(runtime.writeReadiness.reason, t);
+
   return (
     <Panel
       title={t("settings.runtime")}
@@ -529,12 +547,13 @@ function RuntimePanel({ runtime, loading }: { runtime: AccountRuntime | null; lo
         />
         <Readiness
           label={t("settings.write")}
-          ready={runtime.writeReadiness.ready}
-          reason={runtime.writeReadiness.reason}
+          ready={runtime.writeReadiness.ready || anyWritable}
+          state={partiallyWritable ? t("settings.partiallyReady") : undefined}
+          detail={writeDetail}
         />
       </div>
 
-      {runtime.blockedReason !== null ? (
+      {runtime.blockedReason !== null && !anyWritable ? (
         <p className="mt-2 text-meta text-warn">
           {t("settings.blocked", {
             reason: describeRuntimeReason(runtime.blockedReason, t) ?? runtime.blockedReason,
@@ -574,7 +593,19 @@ function RuntimePanel({ runtime, loading }: { runtime: AccountRuntime | null; lo
   );
 }
 
-function Readiness({ label, ready, reason }: { label: string; ready: boolean; reason?: string }) {
+function Readiness({
+  label,
+  ready,
+  reason,
+  state,
+  detail,
+}: {
+  label: string;
+  ready: boolean;
+  reason?: string;
+  state?: string;
+  detail?: string;
+}) {
   const t = useT();
   return (
     <StateBadge
@@ -584,9 +615,9 @@ function Readiness({ label, ready, reason }: { label: string; ready: boolean; re
       // between two Chinese words reads as a typesetting mistake.
       label={t("settings.readiness", {
         label,
-        state: ready ? t("settings.ready") : t("settings.notReady"),
+        state: state ?? (ready ? t("settings.ready") : t("settings.notReady")),
       })}
-      detail={describeRuntimeReason(reason, t)}
+      detail={detail ?? describeRuntimeReason(reason, t)}
       className="text-base"
     />
   );
@@ -619,19 +650,30 @@ function Generation({
       ) : null}
       <ul className="mt-1 flex flex-col">
         {snapshot.routes.map((route) => (
-          <li key={route.routeId} className="flex h-row items-center gap-3 text-meta">
-            <span className="min-w-0 flex-1 truncate text-base">{route.routeId}</span>
-            <span className="shrink-0 text-dim">{route.product}</span>
-            <StateBadge
-              tone={route.ready ? "ok" : "warn"}
-              label={route.ready ? t("settings.ready") : t("settings.notReady")}
-              detail={describeRuntimeReason(route.reason, t)}
-              className="w-24 shrink-0 justify-end text-muted"
-            />
-          </li>
+          <RuntimeRouteRow key={route.routeId} route={route} />
         ))}
       </ul>
     </div>
+  );
+}
+
+function RuntimeRouteRow({ route }: { route: RuntimeSnapshot["routes"][number] }) {
+  const t = useT();
+  // A write-policy gate does not mean the route connection failed. The
+  // capability section below remains the source of truth for whether it can
+  // accept private writes.
+  const connected = route.ready || route.reason === "capability_not_promoted";
+  return (
+    <li className="flex h-row items-center gap-3 text-meta">
+      <span className="min-w-0 flex-1 truncate text-base">{route.routeId}</span>
+      <span className="shrink-0 text-dim">{route.product}</span>
+      <StateBadge
+        tone={connected ? "ok" : "warn"}
+        label={connected ? t("settings.ready") : t("settings.notReady")}
+        detail={describeRuntimeReason(route.reason, t)}
+        className="w-24 shrink-0 justify-end text-muted"
+      />
+    </li>
   );
 }
 
@@ -717,6 +759,11 @@ function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (acc
     const missing = missingCredentialFields(venue, values);
     if (missing.length > 0) {
       setError(t("settings.stillNeeded", { fields: missing.join(", ") }));
+      return;
+    }
+    const invalid = invalidCredentialFields(venue, values);
+    if (invalid.length > 0) {
+      setError(t("settings.invalidFields", { fields: invalid.join(", ") }));
       return;
     }
     setError(null);

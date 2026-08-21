@@ -319,13 +319,12 @@ export const funding = {
    * per-period/APR switch — is therefore client-side by construction, which is
    * also what lets them all be instant.
    *
-   * The read costs the Gateway one call no matter how many columns come back,
-   * and `rateLimit` is charged to the board's own budget line rather than to any
-   * venue, so polling this cannot starve the order ticket's quotes.
+   * The read only copies Trading's local projection. It carries no venue
+   * rate-limit budget because no exchange request happens on this path.
    */
-  async board(signal?: AbortSignal): Promise<Metered<FundingBoardSnapshot>> {
-    const body = await apiRequest<RateLimitedEnvelope<FundingBoardSnapshot>>(paths.fundingBoard, { signal });
-    return { value: body.data, rateLimit: body.rateLimit };
+  async board(signal?: AbortSignal): Promise<FundingBoardSnapshot> {
+    const body = await apiRequest<DataEnvelope<FundingBoardSnapshot>>(paths.fundingBoard, { signal });
+    return body.data;
   },
 
   /**

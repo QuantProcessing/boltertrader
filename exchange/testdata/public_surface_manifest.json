@@ -4141,6 +4141,180 @@
   ],
   "symbols": [
     {
+      "id": "exchange/factory.NewPublicFundingMarketFeed",
+      "kind": "func",
+      "coverage": "unit",
+      "tests": ["TestPublicFundingMarketFeedBootstrap"]
+    },
+    {
+      "id": "exchange.FundingMarketFact",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFact.Key",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeed",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeed.Bootstrap",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeed.Stream",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeed.Status",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeed.Close",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeedState",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeedStatus",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeedUnavailable",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeedDegraded",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFeedLive",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketField",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketField.Has",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldIdentity",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldFunding",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldFundingInterval",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldNextFundingTime",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldMarkPrice",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldIndexPrice",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldOpenInterest",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldOpenInterestNotional",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketFieldAll",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketPatch",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketPatch.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketPatchKind",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketPatchSnapshot",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
+      "id": "exchange.FundingMarketPatchDelta",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+    },
+    {
       "id": "exchange.AckAcceptedPending",
       "kind": "const",
       "coverage": "contract",
@@ -4195,6 +4369,66 @@
       "tests": [
         "TestOrderAcknowledgementStates"
       ]
+    },
+    {
+      "id": "exchange.AssetClass",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassCommodity",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassCrypto",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassEquity",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassFX",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassIndex",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassPreIPO",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassRWAOther",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassRates",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.AssetClassUnknown",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
     },
     {
       "id": "exchange.Balance",
@@ -4720,6 +4954,12 @@
       ]
     },
     {
+      "id": "exchange.Instrument.EffectiveMetadata",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
       "id": "exchange.Instrument.NativeSymbol",
       "kind": "method",
       "coverage": "contract",
@@ -4754,6 +4994,30 @@
         "TestInstrumentContractIsCompleteExecutionDescriptor",
         "TestInstrumentValidationRequiresPositiveEncodingScales"
       ]
+    },
+    {
+      "id": "exchange.InstrumentCategories",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.InstrumentCategories.MarshalJSON",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.InstrumentCategories.UnmarshalJSON",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.InstrumentCategories.Values",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
     },
     {
       "id": "exchange.InstrumentCatalog",
@@ -4844,6 +5108,12 @@
         "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
         "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
       ]
+    },
+    {
+      "id": "exchange.InstrumentMetadata",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
     },
     {
       "id": "exchange.InstrumentRules",
@@ -5099,6 +5369,30 @@
       ]
     },
     {
+      "id": "exchange.MarketFamily",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.MarketFamilyBuilderPerpetual",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.MarketFamilySpot",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
+      "id": "exchange.MarketFamilyVenuePerpetual",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+    },
+    {
       "id": "exchange.MarketREST",
       "kind": "interface",
       "coverage": "contract",
@@ -5230,6 +5524,12 @@
       "tests": [
         "TestNormalizedErrorKindsAndMetadata"
       ]
+    },
+    {
+      "id": "exchange.NewInstrumentCategories",
+      "kind": "func",
+      "coverage": "unit",
+      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
     },
     {
       "id": "exchange.NewMemoryCatalog",

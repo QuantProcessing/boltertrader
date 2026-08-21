@@ -273,8 +273,7 @@ func TestPlatformRuntimeLiveWritesRemainDenied(t *testing.T) {
 	})
 	harness.promote(t, pending)
 	fence := account.WriteFence{
-		AccountID: pending.AccountID, DesiredStateRevision: pending.Fence.DesiredStateRevision,
-		RuntimeGeneration: pending.Fence.RuntimeGeneration, CredentialVersion: pending.Fence.CredentialVersion,
+		AccountID: pending.AccountID, RuntimeID: pending.Fence.RuntimeID,
 	}
 	if err := harness.manager.CheckWriteFence(fence); !errors.Is(err, account.ErrLiveWriteDisabled) {
 		t.Fatalf("live write fence err=%v", err)
@@ -680,9 +679,10 @@ func platformSnapshot(t *testing.T, seed string, accountID domain.AccountID, rev
 	if err != nil {
 		t.Fatal(err)
 	}
-	fence := domain.AccountFence{AccountID: accountID, DesiredStateRevision: revision, RuntimeGeneration: generation, CredentialVersion: generation}
+	snapshotID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("snapshot-"+seed))
+	fence := domain.AccountFence{AccountID: accountID, RuntimeID: snapshotID.String(), DesiredStateRevision: revision, RuntimeGeneration: generation, CredentialVersion: generation}
 	return store.PendingSnapshot{DesiredSnapshot: store.DesiredSnapshot{
-		SnapshotID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("snapshot-"+seed)), OperationID: operation,
+		SnapshotID: snapshotID, OperationID: operation,
 		AccountID: accountID, Venue: "binance", NativeEnvironment: "live", SecretRef: ref,
 		Fence: fence, RequestedState: store.DesiredActive, Routes: routes, CreatedAt: time.Now().UTC(),
 	}, OperationState: store.OperationCandidateReady}

@@ -195,7 +195,7 @@ func bitgetFundingHistoryPageBody(firstIndex, lastIndex int64) string {
 // TestFundingHistoryLoaderPerVenueShape pins each venue's reply to the series a
 // chart is drawn from.
 //
-// The seven cases are not seven copies of one assertion. Every venue here
+// The eight cases are not eight copies of one assertion. Every venue here
 // disagrees with the others about something load-bearing — the direction rows
 // arrive in, whether stamps are seconds or milliseconds, which of two rate
 // fields was actually charged, whether the sign lives in the rate or beside it,
@@ -252,6 +252,38 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 					"startTime": fmt.Sprint(fundingHistoryStamp(0)),
 					"endTime":   fmt.Sprint(fundingHistoryStamp(24)),
 					"limit":     "1000",
+				})
+			},
+		},
+		{
+			name: "aster uses the public v3 history endpoint and drops malformed rates",
+			build: func(t *testing.T) (exchange.FundingHistoryLoader, exchange.FundingHistoryRequest, *fundingHistoryFixture) {
+				fixture := newFundingHistoryFixture(t, map[string][]string{
+					"/fapi/v3/fundingRate": {`[
+						{"symbol":"BTCUSDT","fundingRate":"0.0001","fundingTime":1719964800000},
+						{"symbol":"BTCUSDT","fundingRate":"bad","fundingTime":1719993600000},
+						{"symbol":"BTCUSDT","fundingRate":"-0.0002","fundingTime":1720022400000}
+					]`},
+				})
+				request := exchange.FundingHistoryRequest{
+					Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT",
+					Scope: fundingBoardScope(exchange.VenueAster, "USDT"),
+					Since: fundingHistoryTime(0), Until: fundingHistoryTime(24),
+				}
+				return NewAsterFundingHistoryLoader(fixture.settings()), request, fixture
+			},
+			want: []wantHistoryPoint{
+				{millis: fundingHistoryStamp(0), rate: "0.0001"},
+				{millis: fundingHistoryStamp(16), rate: "-0.0002", interval: 16},
+			},
+			assert: func(t *testing.T, fixture *fundingHistoryFixture) {
+				calls := fixture.callsFor("/fapi/v3/fundingRate")
+				if len(calls) != 1 {
+					t.Fatalf("aster issued %d calls, want 1", len(calls))
+				}
+				assertFundingHistoryQuery(t, calls[0].query, map[string]string{
+					"symbol": "BTCUSDT", "startTime": fmt.Sprint(fundingHistoryStamp(0)),
+					"endTime": fmt.Sprint(fundingHistoryStamp(24)), "limit": "1000",
 				})
 			},
 		},
@@ -599,6 +631,7 @@ func fundingHistoryLoaderBuilders() []struct {
 		build func(Settings) exchange.FundingHistoryLoader
 	}{
 		{name: "binance", build: NewBinanceFundingHistoryLoader},
+		{name: "aster", build: NewAsterFundingHistoryLoader},
 		{name: "okx", build: NewOKXFundingHistoryLoader},
 		{name: "bybit", build: NewBybitFundingHistoryLoader},
 		{name: "bitget", build: func(settings Settings) exchange.FundingHistoryLoader {

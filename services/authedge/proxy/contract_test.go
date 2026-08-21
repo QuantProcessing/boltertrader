@@ -155,8 +155,8 @@ func TestPublicRoutesAreReads(t *testing.T) {
 // It replays a principal-scoped buffer and answers 401 on an empty identity by
 // itself, so marking it would widen the unauthenticated surface to a route
 // that could only refuse. Pinned by name because the reason lives in a
-// different service: someone reconciling the two lists would otherwise see
-// eight of nine and reasonably "fix" the ninth.
+// different service: someone reconciling the two lists could otherwise
+// reasonably "fix" it.
 func TestRealtimeStreamIsNotPublic(t *testing.T) {
 	t.Parallel()
 	const pattern = "GET /api/v1/realtime/stream"
@@ -175,10 +175,9 @@ func TestRealtimeStreamIsNotPublic(t *testing.T) {
 	}
 }
 
-// Nothing outside the trading service's public-data group is Public — no
-// gateway route, no projection, no product route. Stated as a count so that a
+// Nothing outside the trading service's public-data group is Public. Stated as a count so that a
 // Public flag landing on a route this file has never heard of still fails.
-func TestPublicRoutesAreExactlyTheNineExpected(t *testing.T) {
+func TestPublicRoutesAreExactlyTheTenExpected(t *testing.T) {
 	t.Parallel()
 	want := []string{
 		"GET /api/v1/candles",
@@ -188,6 +187,7 @@ func TestPublicRoutesAreExactlyTheNineExpected(t *testing.T) {
 		"GET /api/v1/funding-history",
 		"GET /api/v1/market-data",
 		"GET /api/v1/public/ws",
+		"GET /api/v1/products/arbitrage/opportunities",
 		"GET /api/v1/system/readiness",
 		"GET /api/v1/system/status",
 	}

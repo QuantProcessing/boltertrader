@@ -100,11 +100,22 @@ func (request RotationCleanupRequest) Validate() error {
 	}
 	if strings.TrimSpace(request.AccountID) == "" || request.AccountID != strings.TrimSpace(request.AccountID) ||
 		request.ExpectedActiveFence.Validate() != nil || request.ExpectedRetiringFence.Validate() != nil ||
-		request.ExpectedActiveFence.AccountID != request.AccountID || request.ExpectedRetiringFence.AccountID != request.AccountID ||
-		request.ExpectedActiveFence.DesiredStateRevision <= 1 || request.ExpectedActiveFence.RuntimeGeneration <= 1 || request.ExpectedActiveFence.CredentialVersion <= 1 ||
-		request.ExpectedActiveFence.DesiredStateRevision-1 != request.ExpectedRetiringFence.DesiredStateRevision ||
-		request.ExpectedActiveFence.RuntimeGeneration-1 != request.ExpectedRetiringFence.RuntimeGeneration ||
-		request.ExpectedActiveFence.CredentialVersion-1 != request.ExpectedRetiringFence.CredentialVersion {
+		request.ExpectedActiveFence.AccountID != request.AccountID || request.ExpectedRetiringFence.AccountID != request.AccountID {
+		return errors.New("rotation cleanup fence is invalid")
+	}
+	active, retiring := request.ExpectedActiveFence, request.ExpectedRetiringFence
+	if active.RuntimeID != "" || retiring.RuntimeID != "" {
+		if active.RuntimeID == "" || retiring.RuntimeID == "" || active.RuntimeID == retiring.RuntimeID {
+			return errors.New("rotation cleanup fence is invalid")
+		}
+		return nil
+	}
+	// Compatibility for durable rotations created before RuntimeID became the
+	// ownership fence. New requests use only the branch above.
+	if active.DesiredStateRevision <= 1 || active.RuntimeGeneration <= 1 || active.CredentialVersion <= 1 ||
+		active.DesiredStateRevision-1 != retiring.DesiredStateRevision ||
+		active.RuntimeGeneration-1 != retiring.RuntimeGeneration ||
+		active.CredentialVersion-1 != retiring.CredentialVersion {
 		return errors.New("rotation cleanup fence is invalid")
 	}
 	return nil
@@ -124,8 +135,10 @@ type RotationCleanupProof struct {
 func (proof RotationCleanupProof) ValidateFor(request RotationCleanupRequest) error {
 	if request.Validate() != nil || proof.OperationID != request.OperationID || proof.AccountID != request.AccountID ||
 		proof.ActiveFence != request.ExpectedActiveFence || proof.RetiringFence != request.ExpectedRetiringFence ||
-		proof.TombstoneRevision != request.ExpectedActiveFence.DesiredStateRevision ||
 		proof.RetiringState != "retired" || proof.SecretReferenceState != "tombstoned" || proof.CompletedAt.IsZero() {
+		return errors.New("rotation cleanup proof is invalid")
+	}
+	if request.ExpectedActiveFence.RuntimeID == "" && proof.TombstoneRevision != request.ExpectedActiveFence.DesiredStateRevision {
 		return errors.New("rotation cleanup proof is invalid")
 	}
 	return nil

@@ -52,11 +52,10 @@ Twenty product rows exist, all of them spot or perp.
   dated contracts are outside the slice.
 - **No options.** No venue, no row.
 - **Gate USDC-linear perp** is deferred; Gate's perp row is USDT-linear.
-- **Aster perp (`ATP`) has no funding surface.** It is the only perp row without
-  one.
 - **Nado perp (`NDP`) has no funding-rate history.** It quotes a current rate and
-  no past ones, so it is the one funding-board column whose history series is
-  reported unavailable rather than empty. Every other perp column resolves one.
+  no past ones, so its history is unavailable rather than an empty series. The
+  current realtime board remains available; every other perp route has on-demand
+  settled-rate history.
 - **Account funding payments** — the per-account history of what funding
   actually cost — resolve on four rows only: `BNP`, `LIP`, `BYU`, `GTU`. The
   other perp rows expose the funding rate without the payment history. This is a

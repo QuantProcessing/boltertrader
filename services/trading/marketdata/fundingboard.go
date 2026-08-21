@@ -2,6 +2,7 @@ package marketdata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -55,6 +56,9 @@ type BoardVenue struct {
 	ObservedAt     time.Time  `json:"observedAt,omitzero"`
 	Stale          bool       `json:"stale"`
 	Unavailable    bool       `json:"unavailable"`
+	Status         string     `json:"status"`
+	LastSuccessAt  time.Time  `json:"lastSuccessAt,omitzero"`
+	Reconnects     uint64     `json:"reconnects,omitempty"`
 	Rows           []BoardRow `json:"rows"`
 }
 
@@ -62,132 +66,112 @@ type BoardVenue struct {
 //
 // Every optional cell carries omitempty, and the two times carry omitzero,
 // because an absent cell has to reach the browser absent rather than as a zero
-// the venue never quoted: seven of the ten funding venues leave open interest
+// the venue never quoted: several of the nine funding venues leave open interest
 // out of their bulk call, and hyperliquid and lighter publish a bare rate with
 // no settlement clock. omitempty alone would not do it for the times —
 // it does not consult time.Time.IsZero, so a zero would ship as
 // "0001-01-01T00:00:00Z" and render as a countdown that expired two thousand
 // years ago.
 type BoardRow struct {
-	InstrumentID    string    `json:"instrumentId,omitempty"`
-	Symbol          string    `json:"symbol"`
-	BaseAsset       string    `json:"baseAsset,omitempty"`
-	QuoteAsset      string    `json:"quoteAsset,omitempty"`
-	Rate            string    `json:"rate"`
-	IntervalHours   int64     `json:"intervalHours,omitempty"`
-	NextFundingTime time.Time `json:"nextFundingTime,omitzero"`
-	MarkPrice       string    `json:"markPrice,omitempty"`
-	IndexPrice      string    `json:"indexPrice,omitempty"`
-	OpenInterest    string    `json:"openInterest,omitempty"`
-	// OpenInterestNotional is quote-stablecoin notional (USDT/USDC), the only
-	// open-interest unit that may be compared or sorted across venues.
-	OpenInterestNotional string `json:"openInterestNotional,omitempty"`
+	InstrumentID         string    `json:"instrumentId,omitempty"`
+	Symbol               string    `json:"symbol"`
+	BaseAsset            string    `json:"baseAsset,omitempty"`
+	QuoteAsset           string    `json:"quoteAsset,omitempty"`
+	MarketFamily         string    `json:"marketFamily"`
+	AssetClass           string    `json:"assetClass"`
+	ClassificationSource string    `json:"classificationSource,omitempty"`
+	RawAssetType         string    `json:"rawAssetType,omitempty"`
+	RawCategories        []string  `json:"rawCategories,omitempty"`
+	Rate                 string    `json:"rate,omitempty"`
+	IntervalHours        int64     `json:"intervalHours,omitempty"`
+	NextFundingTime      time.Time `json:"nextFundingTime,omitzero"`
+	MarkPrice            string    `json:"markPrice,omitempty"`
+	IndexPrice           string    `json:"indexPrice,omitempty"`
+	OpenInterest         string    `json:"openInterest,omitempty"`
+	// OpenInterestNotional is quote/USD notional. The actual denomination is
+	// explicit in OpenInterestNotionalAsset and is the comparable OI surface.
+	OpenInterestNotional      string    `json:"openInterestNotional,omitempty"`
+	OpenInterestNotionalAsset string    `json:"openInterestNotionalAsset,omitempty"`
+	FundingObservedAt         time.Time `json:"fundingObservedAt,omitzero"`
+	PriceObservedAt           time.Time `json:"priceObservedAt,omitzero"`
+	OpenInterestObservedAt    time.Time `json:"openInterestObservedAt,omitzero"`
 }
 
-type BoardSource interface {
-	FetchFundingBoard(context.Context) (BoardSnapshot, error)
+// BoardStream is the Gateway's resident funding projection. Run receives a
+// complete first snapshot and complete replacement snapshots after each
+// upsert/resync; it never performs a request on behalf of Get.
+type BoardStream interface {
+	RunFundingBoard(context.Context, func(BoardSnapshot) error) error
 }
 
-// BoardBudgetKey is the name the board's reads are counted under.
-//
-// It is not a venue. A board read costs the Gateway one call, and the Gateway
-// serves it from columns it refreshes on its own half-minute clock no matter
-// how often trading asks — so charging the read to binance or okx would deduct
-// tokens that were never spent there and would let a board poller starve the
-// order ticket's quotes. The board gets its own line in the same ledger
-// instead, which is what makes the rateLimit block on its responses mean
-// something.
-const BoardBudgetKey = "funding-board"
+var ErrFundingBoardNotReady = errors.New("funding-board projection not ready")
 
-// BoardService fronts the Gateway's funding board.
-//
-// It caches, like Service and unlike CandleService, and for the same reason
-// Service does: every visitor to the board page asks the identical question,
-// there are no parameters to spread the load across, and the answer is a
-// document the Gateway itself only rebuilds twice a minute. Without a cache the
-// page's own poll interval would set the Gateway's read rate directly.
-//
-// The TTL is longer than the top-of-book projection's because the two decay at
-// different speeds: a quote is worthless a second later, while funding settles
-// hourly and the board exists to compare venues rather than to price a fill.
+// BoardService is Trading's local projection. Get is a pure memory read.
 type BoardService struct {
-	source   BoardSource
-	budget   *Coordinator
-	ttl      time.Duration
-	now      func() time.Time
-	mu       sync.Mutex
-	cached   BoardSnapshot
-	loadedAt time.Time
-	wait     chan struct{}
+	now    func() time.Time
+	mu     sync.RWMutex
+	cached BoardSnapshot
+	ready  bool
 }
 
-func NewBoardService(source BoardSource, budget *Coordinator, ttl time.Duration, now func() time.Time) (*BoardService, error) {
-	if source == nil || budget == nil || ttl <= 0 || now == nil {
-		return nil, fmt.Errorf("funding-board source, budget, positive ttl, and clock are required")
+func NewBoardService(now func() time.Time) (*BoardService, error) {
+	if now == nil {
+		return nil, fmt.Errorf("funding-board clock is required")
 	}
-	return &BoardService{source: source, budget: budget, ttl: ttl, now: now}, nil
+	return &BoardService{now: now}, nil
 }
 
-// Get returns the board, fetching it when the cached one has aged out.
-//
-// The single-flight channel is the same device Service uses, kept here rather
-// than shared because there is only ever one entry to guard: the board takes no
-// query, so a map keyed by nothing would be a map with one key.
 func (service *BoardService) Get(ctx context.Context) (BoardSnapshot, error) {
-	if ctx == nil {
+	if service == nil || ctx == nil || ctx.Err() != nil {
 		return BoardSnapshot{}, fmt.Errorf("funding-board context is required")
 	}
-	for {
-		service.mu.Lock()
-		if service.wait == nil && !service.loadedAt.IsZero() && service.now().UTC().Sub(service.loadedAt) <= service.ttl {
-			snapshot := service.cached
-			service.mu.Unlock()
-			return snapshot, nil
-		}
-		if service.wait != nil {
-			wait := service.wait
-			service.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return BoardSnapshot{}, ctx.Err()
-			case <-wait:
-				continue
-			}
-		}
-		wait := make(chan struct{})
-		service.wait = wait
-		service.mu.Unlock()
-
-		err := service.budget.Acquire(ctx, BoardBudgetKey)
-		var snapshot BoardSnapshot
-		if err == nil {
-			snapshot, err = service.source.FetchFundingBoard(ctx)
-		}
-		if err == nil {
-			err = validateBoard(snapshot, service.now().UTC())
-		}
-		service.mu.Lock()
-		if err == nil {
-			snapshot = normalizeBoard(snapshot)
-			service.cached = snapshot
-			service.loadedAt = service.now().UTC()
-		}
-		service.wait = nil
-		close(wait)
-		service.mu.Unlock()
-		if err != nil {
-			return BoardSnapshot{}, err
-		}
-		return snapshot, nil
+	service.mu.RLock()
+	defer service.mu.RUnlock()
+	if !service.ready {
+		return BoardSnapshot{}, ErrFundingBoardNotReady
 	}
+	return cloneBoard(service.cached), nil
 }
 
-// BudgetStatus takes no venue, unlike the other two projections' method of the
-// same name, because the board has one budget rather than one per venue. A
-// signature that accepted a venue would have to ignore it, and a caller reading
-// that signature would reasonably expect otherwise.
-func (service *BoardService) BudgetStatus() BudgetStatus {
-	return service.budget.Status(BoardBudgetKey)
+func (service *BoardService) Replace(snapshot BoardSnapshot) error {
+	if service == nil {
+		return ErrFundingBoardNotReady
+	}
+	if err := validateBoard(snapshot, service.now().UTC()); err != nil {
+		return err
+	}
+	snapshot = normalizeBoard(snapshot)
+	service.mu.Lock()
+	service.cached = cloneBoard(snapshot)
+	service.ready = hasFreshBoardVenue(snapshot)
+	service.mu.Unlock()
+	if !hasFreshBoardVenue(snapshot) {
+		return ErrFundingBoardNotReady
+	}
+	return nil
+}
+
+func hasFreshBoardVenue(snapshot BoardSnapshot) bool {
+	for _, venue := range snapshot.Venues {
+		if !venue.Unavailable && len(venue.Rows) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneBoard(snapshot BoardSnapshot) BoardSnapshot {
+	result := snapshot
+	result.Venues = append([]BoardVenue(nil), snapshot.Venues...)
+	for index := range result.Venues {
+		// Keep an empty collection non-nil. An unavailable venue legitimately has
+		// no rows, but the JSON contract is an array and browsers iterate it.
+		result.Venues[index].Rows = append([]BoardRow{}, snapshot.Venues[index].Rows...)
+		for row := range result.Venues[index].Rows {
+			result.Venues[index].Rows[row].RawCategories = append([]string(nil), snapshot.Venues[index].Rows[row].RawCategories...)
+		}
+	}
+	return result
 }
 
 // validateBoard judges what the Gateway said against what the browser can draw.
@@ -233,11 +217,19 @@ func validateBoard(snapshot BoardSnapshot, now time.Time) error {
 			if strings.TrimSpace(row.Symbol) == "" {
 				return fmt.Errorf("Gateway funding-board row has no symbol")
 			}
-			if _, err := decimal.NewFromString(row.Rate); err != nil {
-				return fmt.Errorf("Gateway funding-board rate for %q is invalid", row.Symbol)
+			if strings.TrimSpace(row.Rate) != "" {
+				if _, err := decimal.NewFromString(row.Rate); err != nil {
+					return fmt.Errorf("Gateway funding-board rate for %q is invalid", row.Symbol)
+				}
 			}
 			if row.IntervalHours < 0 {
 				return fmt.Errorf("Gateway funding-board interval for %q is invalid", row.Symbol)
+			}
+			if row.MarketFamily != "" && !knownMarketFamily(row.MarketFamily) {
+				return fmt.Errorf("Gateway funding-board market family for %q is invalid", row.Symbol)
+			}
+			if row.AssetClass != "" && !knownAssetClass(row.AssetClass) {
+				return fmt.Errorf("Gateway funding-board asset class for %q is invalid", row.Symbol)
 			}
 			for label, value := range map[string]string{
 				"open interest":          row.OpenInterest,
@@ -254,6 +246,24 @@ func validateBoard(snapshot BoardSnapshot, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+func knownMarketFamily(value string) bool {
+	switch value {
+	case "spot", "venue_perpetual", "builder_perpetual":
+		return true
+	default:
+		return false
+	}
+}
+
+func knownAssetClass(value string) bool {
+	switch value {
+	case "unknown", "crypto", "equity", "commodity", "index", "fx", "rates", "pre_ipo", "rwa_other":
+		return true
+	default:
+		return false
+	}
 }
 
 // normalizeBoard puts every time on the board in UTC.

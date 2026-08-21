@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	hyperliquidperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
 	hyperliquidspot "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/spot"
 	"github.com/shopspring/decimal"
 )
@@ -22,7 +23,7 @@ func (fn hyperliquidCatalogRoundTripper) RoundTrip(request *http.Request) (*http
 
 func TestHyperliquidInstrumentLoaderUsesPublicMetadataOnlyAndPreservesNativeIDs(t *testing.T) {
 	ctx := context.Background()
-	requestTypes := make([]string, 0, 3)
+	requestTypes := make([]string, 0, 7)
 	transport := hyperliquidCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
 		if request.Method != http.MethodPost || request.URL.Path != "/info" {
 			t.Fatalf("request = %s %s, want POST /info", request.Method, request.URL.Path)
@@ -45,10 +46,16 @@ func TestHyperliquidInstrumentLoaderUsesPublicMetadataOnlyAndPreservesNativeIDs(
 		switch requestType {
 		case "spotMeta":
 			return hyperliquidCatalogJSON(`{"tokens":[{"name":"USDC","szDecimals":6,"weiDecimals":6,"index":0,"isCanonical":true},{"name":"PURR","szDecimals":3,"weiDecimals":3,"index":1,"isCanonical":true}],"universe":[{"name":"@1","index":1,"tokens":[1,0],"isCanonical":true}]}`), nil
+		case "allPerpMetas":
+			return hyperliquidCatalogJSON(`[{"universe":[{"name":"BTC","szDecimals":3,"maxLeverage":50}],"collateralToken":0}]`), nil
+		case "perpDexs":
+			return hyperliquidCatalogJSON(`[null]`), nil
 		case "metaAndAssetCtxs":
 			return hyperliquidCatalogJSON(`[{"universe":[{"name":"BTC"}]},[{"funding":"0.0001","markPx":"100","oraclePx":"100","midPx":"100","premium":"0"}]]`), nil
-		case "meta":
-			return hyperliquidCatalogJSON(`{"universe":[{"name":"BTC","szDecimals":3,"maxLeverage":50}]}`), nil
+		case "perpCategories":
+			return hyperliquidCatalogJSON(`[["BTC","crypto"]]`), nil
+		case "perpConciseAnnotations":
+			return hyperliquidCatalogJSON(`[]`), nil
 		default:
 			t.Fatalf("unexpected Hyperliquid catalog request type %q", requestType)
 			return nil, nil
@@ -90,10 +97,41 @@ func TestHyperliquidInstrumentLoaderUsesPublicMetadataOnlyAndPreservesNativeIDs(
 	if !perp.Rules.QuantityIncrement.Equal(decimal.RequireFromString("0.001")) || perp.Encoding.QuantityScale.Value != 3 {
 		t.Fatalf("perp precision = rules:%+v encoding:%+v", perp.Rules, perp.Encoding)
 	}
+	if perp.Metadata.AssetClass != exchange.AssetClassCrypto || perp.Metadata.ClassificationSource != "hyperliquid.perpCategories" {
+		t.Fatalf("perp classification = %+v", perp.Metadata)
+	}
 
 	gotTypes := strings.Join(requestTypes, ",")
-	if gotTypes != "spotMeta,metaAndAssetCtxs,meta" {
+	if gotTypes != "spotMeta,allPerpMetas,perpDexs,spotMeta,perpCategories,perpConciseAnnotations" {
 		t.Fatalf("catalog request sequence = %s", gotTypes)
+	}
+}
+
+func TestHyperliquidBuilderPerpKeepsNamespaceAndOfficialAssetID(t *testing.T) {
+	var prep hyperliquidperp.PrepMeta
+	if err := json.Unmarshal([]byte(`{"universe":[{"name":"xyz:TSLA","szDecimals":2,"maxLeverage":10}],"collateralToken":0}`), &prep); err != nil {
+		t.Fatal(err)
+	}
+	var full hyperliquidperp.MetaAndAssetCtxsFull
+	full.Meta.Universe = append(full.Meta.Universe, struct {
+		Name string `json:"name"`
+	}{Name: "xyz:TSLA"})
+	full.AssetCtxs = append(full.AssetCtxs, hyperliquidperp.AssetContext{
+		Funding: "0.0001", MarkPx: "200", OraclePx: "200",
+	})
+
+	metas, err := hlPerpMetasForDex("test", &full, &prep, 2, "xyz", "USDC", hyperliquidClassifications{
+		categories: map[string]string{"xyz:TSLA": "stocks"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instrument := metas["xyz:TSLA"].instrument
+	if instrument.Identity.Symbol != "xyz:TSLA-USDC" || instrument.Identity.BaseAsset != "TSLA" || instrument.Identity.NativeID != "120000" {
+		t.Fatalf("builder identity = %+v", instrument.Identity)
+	}
+	if instrument.Metadata.MarketFamily != exchange.MarketFamilyBuilderPerpetual || instrument.Metadata.AssetClass != exchange.AssetClassEquity {
+		t.Fatalf("builder metadata = %+v", instrument.Metadata)
 	}
 }
 

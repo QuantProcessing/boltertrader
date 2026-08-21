@@ -27,6 +27,7 @@ const fundingHistoryOperation = "FundingHistory.Load"
 // what the reader came for.
 const (
 	binanceFundingHistoryMax = 1000
+	asterFundingHistoryMax   = 1000
 	okxFundingHistoryMax     = 100
 	bybitFundingHistoryMax   = 200
 	gateFundingHistoryMax    = 1000

@@ -1,33 +1,17 @@
 import { Layers } from "lucide-react";
 
 import { describeError } from "@/api/errors";
-import type { Account, ArbitrageLegView, ArbitragePair, ArbitragePairState, CommandState, Position } from "@/api/types";
+import type { Account, ArbitrageLegView, ArbitragePair, ArbitragePairState, CommandState } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { InstrumentName } from "@/components/ui/instrument-name";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Num, Side } from "@/components/ui/num";
-import { StateBadge, Tag, type StateTone } from "@/components/ui/state-badge";
+import { Num } from "@/components/ui/num";
+import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
-import { arbitrageBlockerLabel } from "@/features/funding/blockers";
 import { useArbitragePositions, useCancelArbitrageLeg, useCloseArbitrage } from "@/features/funding/queries";
 import { formatTimestamp } from "@/lib/format";
 import { instrumentSymbol } from "@/lib/instrument";
 import { useT } from "@/lib/i18n";
-
-/* ---------------------------------------------------------------------------
- * Open hedges, both legs each.
- *
- * A pair is not two orders that happen to share a screen — it is one position
- * held in two places, and the only reading of it that means anything shows both
- * halves at once. So this is a list of composites rather than a table of legs:
- * a table would sort the two halves apart the moment anyone clicked a column.
- *
- * The state that matters most is `partially_open`. It means one leg landed and
- * the other did not, which leaves the account directionally exposed in a way
- * nobody chose — the server deliberately does not unwind it (an automatic
- * reversal would be the product trading on its own), so undoing it is a
- * decision presented here rather than a thing that quietly already happened.
- * ------------------------------------------------------------------------- */
+import { cn } from "@/lib/utils";
 
 export function ArbitragePairs({ accounts }: { accounts: Account[] }) {
   const t = useT();
@@ -35,334 +19,136 @@ export function ArbitragePairs({ accounts }: { accounts: Account[] }) {
   const close = useCloseArbitrage();
   const cancel = useCancelArbitrageLeg();
   const toast = useToast();
-
   const pairs = positions.data ?? [];
-  const venues = new Map(accounts.map((account) => [account.accountId, account]));
+  const accountByID = new Map(accounts.map((account) => [account.accountId, account]));
   const attention = pairs.filter(needsAttention).length;
 
   const onClose = (pair: ArbitragePair) => {
     close.mutate(pair.lineageId, {
-      onSuccess: (execution) => {
-        toast.push({
-          tone: execution.failures.length > 0 ? "warn" : "ok",
-          title: execution.failures.length > 0 ? t("arb.closePartly") : t("arb.closing"),
-          detail:
-            execution.failures.length > 0 ? t("arb.closePartly.detail") : t("arb.closing.detail"),
-        });
-      },
-      onError: (error) => {
-        toast.push({ tone: "danger", title: t("arb.closeRejected"), detail: describeError(error, t) });
-      },
+      onSuccess: (execution) => toast.push({ tone: execution.failures.length > 0 ? "warn" : "ok", title: execution.failures.length > 0 ? t("arb.closePartly") : t("arb.closing"), detail: execution.failures.length > 0 ? t("arb.closePartly.detail") : t("arb.closing.detail") }),
+      onError: (error) => toast.push({ tone: "danger", title: t("arb.closeRejected"), detail: describeError(error, t) }),
+    });
+  };
+  const onCancel = (leg: ArbitrageLegView) => {
+    cancel.mutate({ lineageId: leg.lineageId, commandId: leg.commandId }, {
+      onSuccess: () => toast.push({ tone: "ok", title: t("arb.cancelSent"), detail: t("arb.cancelSent.detail", { leg: leg.leg }), duration: 4000 }),
+      onError: (error) => toast.push({ tone: "danger", title: t("blotter.cancelRejected"), detail: describeError(error, t) }),
     });
   };
 
-  const onCancel = (leg: ArbitrageLegView) => {
-    cancel.mutate(
-      { lineageId: leg.lineageId, commandId: leg.commandId },
-      {
-        onSuccess: () => {
-          toast.push({
-            tone: "ok",
-            title: t("arb.cancelSent"),
-            // `leg.leg` is the server's own `long` / `short`.
-            detail: t("arb.cancelSent.detail", { leg: leg.leg }),
-            duration: 4000,
-          });
-        },
-        onError: (error) => {
-          toast.push({ tone: "danger", title: t("blotter.cancelRejected"), detail: describeError(error, t) });
-        },
-      },
-    );
-  };
-
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-row shrink-0 items-center justify-between gap-3 border-b border-line px-3">
-        <h2 className="text-base font-medium text-text">{t("arb.openPairs")}</h2>
-        <div className="flex items-center gap-3 text-meta text-dim">
-          {attention > 0 ? (
-            <span className="text-danger">{t("arb.attention", { count: attention })}</span>
-          ) : null}
-          <span>{pairs.length}</span>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col bg-panel">
+      <div className="flex h-row shrink-0 items-center justify-between border-b border-line px-3">
+        <h2 className="text-title font-semibold text-text">{t("arb.openPairs")} <span className="ml-1 text-meta font-normal text-dim">({pairs.length})</span></h2>
+        {attention > 0 ? <span className="text-meta text-danger">{t("arb.attention", { count: attention })}</span> : null}
       </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {positions.isPending ? (
-          <p className="px-3 py-4 text-base text-dim">{t("arb.reading")}</p>
-        ) : positions.isError ? (
-          <p className="px-3 py-4 text-base text-danger">{describeError(positions.error, t)}</p>
-        ) : pairs.length === 0 ? (
-          <EmptyState icon={Layers} title={t("arb.empty.pairs")} detail={t("arb.empty.pairs.detail")} />
-        ) : (
-          <ul>
-            {[...pairs].sort(byUrgency).map((pair) => (
-              <PairRow
-                key={pair.lineageId}
-                pair={pair}
-                venues={venues}
-                closing={close.isPending && close.variables === pair.lineageId}
-                cancelling={cancel.isPending ? cancel.variables?.commandId : undefined}
-                onClose={() => onClose(pair)}
-                onCancel={onCancel}
-              />
-            ))}
-          </ul>
+      {positions.isPending ? <p className="px-3 py-4 text-base text-dim">{t("arb.reading")}</p>
+        : positions.isError ? <p className="px-3 py-4 text-base text-danger">{describeError(positions.error, t)}</p>
+        : pairs.length === 0 ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <PairTableHeader />
+            <EmptyState icon={Layers} title={t("arb.empty.pairs")} className="flex-1" />
+          </div>
+        )
+        : (
+          <div className="min-h-0 flex-1 overflow-auto">
+            <table className="w-full min-w-[980px] border-collapse text-left">
+              <PairTableHead />
+              <tbody>
+                {[...pairs].sort(byUrgency).map((pair) => {
+                  const long = latestLeg(pair, "long");
+                  const short = latestLeg(pair, "short");
+                  const partial = pair.state === "partially_open";
+                  const restable = pair.legs.find((leg) => isRestable(leg.state));
+                  return (
+                    <tr key={pair.lineageId} className={cn("h-row border-b border-line text-base hover:bg-raised", partial && "bg-danger/5")}>
+                      <td className="px-3 font-medium text-text">{instrumentSymbol(pair.legs[0]?.instrumentId) || "—"}</td>
+                      <td className="px-2 text-muted">{t("arb.long")} / {t("arb.short")}</td>
+                      <td className="px-2"><LegVenue leg={long} accountByID={accountByID} tone="up" /></td>
+                      <td className="px-2"><LegVenue leg={short} accountByID={accountByID} tone="down" /></td>
+                      <td className="px-2 text-right"><Num value={long?.quantity ?? short?.quantity} /></td>
+                      <td className="px-2 text-right"><FundingRoll amounts={pair.funding} /></td>
+                      <td className="px-2"><StateBadge tone={pairTone(pair.state)} label={pair.state.replaceAll("_", " ")} /></td>
+                      <td className="px-2 text-meta text-dim">{formatTimestamp(pair.updatedAt)}</td>
+                      <td className="px-3 text-right">
+                        {restable ? (
+                          <Button size="sm" variant="ghost" onClick={() => onCancel(restable)} disabled={cancel.isPending && cancel.variables?.commandId === restable.commandId}>{t("arb.cancelLeg")}</Button>
+                        ) : pair.state === "open" || partial ? (
+                          <Button size="sm" variant={partial ? "danger" : "ghost"} onClick={() => onClose(pair)} disabled={close.isPending && close.variables === pair.lineageId}>{partial ? t("arb.closeOpenLeg") : t("arb.closePair")}</Button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
-      </div>
     </div>
   );
 }
 
-function PairRow({
-  pair,
-  venues,
-  closing,
-  cancelling,
-  onClose,
-  onCancel,
-}: {
-  pair: ArbitragePair;
-  venues: Map<string, Account>;
-  closing: boolean;
-  /** The command id of the leg whose cancel is in flight, if any. */
-  cancelling: string | undefined;
-  onClose: () => void;
-  onCancel: (leg: ArbitrageLegView) => void;
-}) {
+function PairTableHeader() {
   const t = useT();
-  const long = pair.legs.filter((leg) => leg.leg === "long");
-  const short = pair.legs.filter((leg) => leg.leg === "short");
-  const partial = pair.state === "partially_open";
-  const symbol = instrumentSymbol(pair.legs[0]?.instrumentId);
-
   return (
-    <li
-      className={
-        // The only rule inside this list, and it is between pairs rather than
-        // between rows: a composite needs a bound, or the second pair's long leg
-        // reads as the first pair's third.
-        "border-t border-line px-3 py-2.5 first:border-t-0" + (partial ? " border-l-2 border-l-danger" : "")
-      }
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <span className="text-base font-medium text-text">{symbol || "—"}</span>
-        {/* The lineage state is the server's own word, printed as it arrived. */}
-        <StateBadge tone={pairTone(pair.state)} label={pair.state.replace("_", " ")} />
-        <FundingRoll amounts={pair.funding} />
-        <span className="ml-auto flex items-center gap-2">
-          <span className="text-meta text-dim">{formatTimestamp(pair.updatedAt)}</span>
-          {pair.state === "open" || partial ? (
-            <Button size="sm" variant={partial ? "danger" : "outline"} onClick={onClose} disabled={closing}>
-              {closing ? t("arb.closingButton") : partial ? t("arb.closeOpenLeg") : t("arb.closePair")}
-            </Button>
-          ) : null}
-        </span>
-      </div>
-
-      {partial ? <p className="mt-1.5 text-meta text-danger">{t("arb.directional")}</p> : null}
-
-      {pair.blockers.length > 0 ? (
-        <p className="mt-1.5 text-meta text-warn">
-          {pair.blockers.map((blocker) => arbitrageBlockerLabel(blocker, t)).join(" · ")}
-        </p>
-      ) : null}
-
-      <div className="mt-2 grid gap-2 md:grid-cols-2">
-        <LegColumn legs={long} pair={pair} venues={venues} cancelling={cancelling} onCancel={onCancel} />
-        <LegColumn legs={short} pair={pair} venues={venues} cancelling={cancelling} onCancel={onCancel} />
-      </div>
-    </li>
-  );
-}
-
-/**
- * One side of the hedge.
- *
- * Plural because closing a pair adds reduce-only commands under the same
- * lineage and the same leg label: showing only the first would hide the order
- * that is currently doing the work.
- */
-function LegColumn({
-  legs,
-  pair,
-  venues,
-  cancelling,
-  onCancel,
-}: {
-  legs: ArbitrageLegView[];
-  pair: ArbitragePair;
-  venues: Map<string, Account>;
-  cancelling: string | undefined;
-  onCancel: (leg: ArbitrageLegView) => void;
-}) {
-  // Above the early return: a hook cannot sit behind a conditional.
-  const t = useT();
-
-  if (legs.length === 0) {
-    // The one border §5 permits inside a panel, because it is not a card: a
-    // dashed outline is the shape of an absent leg, and the shape is the
-    // message. `line-strong` rather than `line` — a hairline that reads as a
-    // seam when solid disappears entirely once it is broken into dashes.
-    return (
-      <div className="rounded-card border border-dashed border-line-strong px-2.5 py-2 text-meta text-dim">
-        {t("arb.noLeg")}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      {legs.map((leg) => (
-        <LegCard
-          key={leg.commandId}
-          leg={leg}
-          account={venues.get(leg.accountId)}
-          position={positionFor(pair.positions, leg)}
-          cancelling={cancelling === leg.commandId}
-          onCancel={() => onCancel(leg)}
-        />
-      ))}
+    <div className="grid h-7 min-w-[980px] grid-cols-[1.1fr_1fr_1fr_1fr_.7fr_.8fr_.8fr_1fr_.7fr] items-center border-b border-line px-3 text-micro uppercase tracking-wide text-dim">
+      <span>{t("arb.instrument")}</span>
+      <span>{t("arb.direction")}</span>
+      <span>{t("arb.long")}</span>
+      <span>{t("arb.short")}</span>
+      <span className="text-right">{t("ticket.quantity")}</span>
+      <span className="text-right">{t("arb.funding")}</span>
+      <span>{t("arb.status")}</span>
+      <span>{t("arb.updated")}</span>
+      <span className="text-right">{t("arb.action")}</span>
     </div>
   );
 }
 
-function LegCard({
-  leg,
-  account,
-  position,
-  cancelling,
-  onCancel,
-}: {
-  leg: ArbitrageLegView;
-  account: Account | undefined;
-  position: Position | undefined;
-  cancelling: boolean;
-  onCancel: () => void;
-}) {
+function PairTableHead() {
   const t = useT();
-
   return (
-    <div className="rounded-card bg-fill px-2.5 py-2">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <Side side={leg.leg} className="text-base" />
-        <span className="text-base text-text">{account?.venue ?? t("arb.unknownVenue")}</span>
-        {/* The native environment and the command state are both the server's
-            own words, printed as they arrived. */}
-        {account ? <Tag>{account.nativeEnvironment}</Tag> : null}
-        {leg.reduceOnly ? <Tag>{t("arb.reduceOnly")}</Tag> : null}
-        <span className="ml-auto">
-          <StateBadge tone={legTone(leg.state)} label={leg.state} />
-        </span>
-      </div>
-
-      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-meta text-dim">
-        <InstrumentName instrumentId={leg.instrumentId} />
-        <span>
-          {/* `market` is the order type as the server names it, the same word
-              the blotter's type column prints. */}
-          <Num value={leg.quantity} /> @ {leg.orderType === "limit" ? <Num value={leg.limitPrice} /> : "market"}
-        </span>
-        {position ? (
-          <>
-            <span>
-              {t("arb.mark")} <Num value={position.markPrice} />
-            </span>
-            <span>
-              {t("arb.upnl")} <Num value={position.unrealizedPnl} directional signed />{" "}
-              {position.settlementCurrency}
-            </span>
-          </>
-        ) : null}
-      </div>
-
-      {isRestable(leg.state) ? (
-        <div className="mt-1.5">
-          <Button size="sm" variant="ghost" onClick={onCancel} disabled={cancelling}>
-            {cancelling ? t("arb.cancelling") : t("arb.cancelLeg")}
-          </Button>
-        </div>
-      ) : null}
-    </div>
+    <thead className="sticky top-0 z-10 bg-panel">
+      <tr className="h-7 border-b border-line text-micro uppercase tracking-wide text-dim">
+        <th className="px-3 font-medium">{t("arb.instrument")}</th>
+        <th className="px-2 font-medium">{t("arb.direction")}</th>
+        <th className="px-2 font-medium">{t("arb.long")}</th>
+        <th className="px-2 font-medium">{t("arb.short")}</th>
+        <th className="px-2 text-right font-medium">{t("ticket.quantity")}</th>
+        <th className="px-2 text-right font-medium">{t("arb.funding")}</th>
+        <th className="px-2 font-medium">{t("arb.status")}</th>
+        <th className="px-2 font-medium">{t("arb.updated")}</th>
+        <th className="px-3 text-right font-medium">{t("arb.action")}</th>
+      </tr>
+    </thead>
   );
 }
 
-/** Accrued funding, one figure per settlement currency. */
+function LegVenue({ leg, accountByID, tone }: { leg: ArbitrageLegView | undefined; accountByID: Map<string, Account>; tone: "up" | "down" }) {
+  if (!leg) return <span className="text-danger">—</span>;
+  return <span className={tone === "up" ? "text-up" : "text-down"}>{accountByID.get(leg.accountId)?.venue ?? "—"}</span>;
+}
+
 function FundingRoll({ amounts }: { amounts: { currency: string; amount: string }[] }) {
-  // Above the early return: a hook cannot sit behind a conditional.
-  const t = useT();
-
-  if (amounts.length === 0) {
-    return <span className="text-meta text-dim">{t("arb.funding")} —</span>;
-  }
-  return (
-    <span className="flex flex-wrap items-baseline gap-2 text-meta text-dim">
-      {t("arb.funding")}
-      {amounts.map((amount) => (
-        <span key={amount.currency} className="text-text">
-          <Num value={amount.amount} directional signed /> {amount.currency}
-        </span>
-      ))}
-    </span>
-  );
+  if (amounts.length === 0) return <span className="text-dim">—</span>;
+  return <span>{amounts.map((amount, index) => <span key={amount.currency}>{index > 0 ? " · " : ""}<Num value={amount.amount} directional signed /> <span className="text-dim">{amount.currency}</span></span>)}</span>;
 }
 
-function positionFor(positions: Position[], leg: ArbitrageLegView): Position | undefined {
-  return positions.find(
-    (position) => position.accountId === leg.accountId && position.instrumentId === leg.instrumentId,
-  );
+function latestLeg(pair: ArbitragePair, side: "long" | "short"): ArbitrageLegView | undefined {
+  return [...pair.legs].reverse().find((leg) => leg.leg === side && !leg.closing) ?? [...pair.legs].reverse().find((leg) => leg.leg === side);
 }
 
-/** A pair that is one-sided or broken outranks one that is merely working. */
-function needsAttention(pair: ArbitragePair): boolean {
-  return pair.state === "partially_open" || pair.state === "failed" || pair.blockers.length > 0;
-}
-
+function needsAttention(pair: ArbitragePair): boolean { return pair.state === "partially_open" || pair.state === "failed" || pair.blockers.length > 0; }
 function byUrgency(left: ArbitragePair, right: ArbitragePair): number {
-  const leftUrgent = needsAttention(left);
-  const rightUrgent = needsAttention(right);
-  if (leftUrgent !== rightUrgent) return leftUrgent ? -1 : 1;
+  if (needsAttention(left) !== needsAttention(right)) return needsAttention(left) ? -1 : 1;
   return right.updatedAt.localeCompare(left.updatedAt);
 }
-
-/**
- * `partially_open` shares `danger` with `failed` even though one carries
- * exposure and the other carries none. The tone says "this will not resolve on
- * its own"; which of the two it is, the label says.
- */
 function pairTone(state: ArbitragePairState): StateTone {
   switch (state) {
-    case "open":
-      return "ok";
-    case "opening":
-    case "closing":
-      return "pending";
-    case "partially_open":
-    case "failed":
-      return "danger";
-    case "closed":
-      return "neutral";
+    case "open": return "ok";
+    case "opening": case "closing": return "pending";
+    case "partially_open": case "failed": return "danger";
+    case "closed": return "neutral";
   }
 }
-
-function legTone(state: CommandState): StateTone {
-  switch (state) {
-    case "filled":
-      return "ok";
-    case "accepted":
-    case "submitted":
-      return "pending";
-    case "uncertain":
-      return "warn";
-    case "failed":
-      return "danger";
-    case "canceled":
-      return "neutral";
-  }
-}
-
-/** Only a leg the venue is still holding can be pulled back. */
-function isRestable(state: CommandState): boolean {
-  return state === "accepted" || state === "submitted";
-}
+function isRestable(state: CommandState): boolean { return state === "accepted" || state === "submitted"; }

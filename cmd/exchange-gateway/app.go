@@ -157,6 +157,10 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		if boardErr != nil {
 			fundingBoard = nil
 		}
+		if fundingBoard != nil {
+			fundingBoard.SetObserver(metrics)
+			go func() { _ = fundingBoard.Run(ctx) }()
+		}
 		defer func() {
 			if fundingBoard != nil {
 				_ = fundingBoard.Close()
@@ -177,7 +181,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets)
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard)
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
@@ -310,6 +314,7 @@ func defaultInternalHandlerFactory(
 	writeReady func() bool,
 	accountDeps accountLifecycleDeps,
 	publicMarkets httpapi.InternalPublicMarketStreams,
+	fundingBoardChanges httpapi.InternalFundingBoardChanges,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
 		var handler http.Handler
@@ -322,9 +327,10 @@ func defaultInternalHandlerFactory(
 				return nil, fmt.Errorf("internal authority is unavailable")
 			}
 			options := httpapi.InternalOptions{
-				Authority:     authority,
-				WriteReady:    writeReady,
-				PublicMarkets: publicMarkets,
+				Authority:           authority,
+				WriteReady:          writeReady,
+				PublicMarkets:       publicMarkets,
+				FundingBoardChanges: fundingBoardChanges,
 				Authenticate: func(request *http.Request) error {
 					if _, ok := auth.Principal(request.Context()); !ok {
 						return errors.New("internal authentication required")

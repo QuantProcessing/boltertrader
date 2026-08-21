@@ -89,9 +89,12 @@ func TestManualPreviewAndOrderReconstructAcrossInstances(t *testing.T) {
 	if err := json.Unmarshal(storedCommand.Payload, &intent); err != nil {
 		t.Fatal(err)
 	}
-	for key, want := range map[string]float64{"desiredStateRevision": 1, "runtimeGeneration": 1, "credentialVersion": 1} {
-		if intent[key] != want {
-			t.Fatalf("durable Manual intent %s=%v, want %v; payload=%s", key, intent[key], want, storedCommand.Payload)
+	if got := intent["runtimeId"]; got != "runtime-1" {
+		t.Fatalf("durable Manual intent runtimeId=%v, want runtime-1; payload=%s", got, storedCommand.Payload)
+	}
+	for _, obsolete := range []string{"desiredStateRevision", "runtimeGeneration", "credentialVersion"} {
+		if _, exists := intent[obsolete]; exists {
+			t.Fatalf("durable Manual intent still contains obsolete %s; payload=%s", obsolete, storedCommand.Payload)
 		}
 	}
 	items, err := reservationService.List(context.Background(), "principal-a")
@@ -155,8 +158,7 @@ func (accounts *staticManualAccounts) Get(context.Context, string, string) (Manu
 func readyManualAccount() ManualAccount {
 	return ManualAccount{
 		ID: "account-a", Venue: "binance", VenueEnvironment: "live",
-		ProductIDs: []string{"manual"}, DesiredStateRevision: 1, RuntimeGeneration: 1,
-		CredentialVersion: 1, State: manualAccountActive,
+		ProductIDs: []string{"manual"}, RuntimeID: "runtime-1", State: manualAccountActive,
 		Routes: []ManualAccountRoute{{RouteID: "perp", Product: "perp", RequestedState: manualAccountActive}},
 	}
 }
@@ -453,7 +455,7 @@ func TestManualCommandRejectsExpiredOrChangedAccountBeforeReservation(t *testing
 		mutate func(*time.Time, *ManualAccount)
 	}{
 		{name: "expired preview", mutate: func(now *time.Time, _ *ManualAccount) { *now = now.Add(manualPreviewTTL) }},
-		{name: "runtime generation changed", mutate: func(_ *time.Time, account *ManualAccount) { account.RuntimeGeneration++ }},
+		{name: "runtime identity changed", mutate: func(_ *time.Time, account *ManualAccount) { account.RuntimeID = "runtime-2" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 8, 6, 2, 0, 0, 0, time.UTC)

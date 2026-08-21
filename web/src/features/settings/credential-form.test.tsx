@@ -2,7 +2,12 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Venue } from "@/api/types";
-import { CredentialFields, buildCredentialBundle, missingCredentialFields } from "./credential-form";
+import {
+  CredentialFields,
+  buildCredentialBundle,
+  invalidCredentialFields,
+  missingCredentialFields,
+} from "./credential-form";
 
 /* ---------------------------------------------------------------------------
  * The gateway answers 400 for a malformed credential bundle without saying
@@ -84,6 +89,31 @@ describe("buildCredentialBundle", () => {
 
     expect(bundle.secrets).toEqual({ apiWalletPrivateKey: "0xsecret" });
   });
+
+  it("serializes Lighter indices as JSON numbers for the strict gateway decoder", () => {
+    const lighter: Venue = {
+      ...venue,
+      venue: "lighter",
+      credentialSchema: {
+        schemaVersion: 1,
+        authKind: "lighter_signer",
+        fields: [
+          { key: "accountIndex", label: "Account index", metadata: true, required: true, valueType: "integer" },
+          { key: "keyIndex", label: "Key index", metadata: true, required: true, valueType: "integer" },
+          { key: "privateKey", label: "Private key", required: true, valueType: "string" },
+        ],
+      },
+    };
+
+    const bundle = buildCredentialBundle(lighter, {
+      accountIndex: " 7 ",
+      keyIndex: "2",
+      privateKey: "secret",
+    });
+
+    expect(bundle.metadata).toEqual({ accountIndex: 7, keyIndex: 2 });
+    expect(JSON.stringify(bundle)).toContain('"accountIndex":7');
+  });
 });
 
 describe("missingCredentialFields", () => {
@@ -95,6 +125,27 @@ describe("missingCredentialFields", () => {
     expect(missingCredentialFields(venue, { accountAddress: " ", apiWalletPrivateKey: "0xsecret" })).toEqual([
       "Account address",
     ]);
+  });
+});
+
+describe("invalidCredentialFields", () => {
+  it("rejects negative, fractional and unsafe integer metadata before submission", () => {
+    const integerVenue: Venue = {
+      ...venue,
+      credentialSchema: {
+        ...venue.credentialSchema,
+        fields: [
+          { key: "accountIndex", label: "Account index", metadata: true, required: true, valueType: "integer" },
+          { key: "keyIndex", label: "Key index", metadata: true, required: true, valueType: "integer" },
+        ],
+      },
+    };
+
+    expect(invalidCredentialFields(integerVenue, { accountIndex: "-1", keyIndex: "1.5" })).toEqual([
+      "Account index",
+      "Key index",
+    ]);
+    expect(invalidCredentialFields(integerVenue, { accountIndex: "7", keyIndex: "2" })).toEqual([]);
   });
 });
 
@@ -114,6 +165,22 @@ describe("CredentialFields", () => {
     for (const label of [/Account address/, /API wallet private key/, /Vault address/]) {
       expect(screen.getByLabelText(label)).toHaveAttribute("autocomplete", "off");
     }
+  });
+
+  it("hints numeric input for integer metadata without exposing it as a secret", () => {
+    const integerVenue: Venue = {
+      ...venue,
+      credentialSchema: {
+        ...venue.credentialSchema,
+        fields: [
+          { key: "accountIndex", label: "Account index", metadata: true, required: true, valueType: "integer" },
+        ],
+      },
+    };
+    render(<CredentialFields venue={integerVenue} values={{}} onChange={vi.fn()} />);
+
+    expect(screen.getByLabelText(/Account index/)).toHaveAttribute("inputmode", "numeric");
+    expect(screen.getByLabelText(/Account index/)).toHaveAttribute("pattern", "[0-9]*");
   });
 
   it("renders only what it was handed, so a cleared form shows nothing", () => {

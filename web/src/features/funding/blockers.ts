@@ -5,6 +5,7 @@ const LABELS: Record<string, Key> = {
   board_stale: "arb.blocker.boardStale",
   funding_interval_unknown: "arb.blocker.fundingIntervalUnknown",
   instrument_identity_unresolved: "arb.blocker.instrumentIdentityUnresolved",
+  reverse_spot_borrow_unsupported: "arb.blocker.reverseSpotBorrowUnsupported",
 };
 
 /** Opportunity blocker codes are API vocabulary; the board needs operator copy. */

@@ -24,6 +24,8 @@ function instrument(venue: string, symbol: string, product = "perp", ready = tru
     symbol,
     baseAsset,
     quoteAsset,
+    marketFamily: product === "spot" ? "spot" : "venue_perpetual",
+    assetClass: "unknown",
     rules,
     ready,
   };

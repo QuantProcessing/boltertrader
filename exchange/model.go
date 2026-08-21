@@ -1,6 +1,7 @@
 package exchange
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -78,10 +79,100 @@ type Environment string
 
 const EnvironmentLive Environment = "live"
 
+// AssetClass is the venue-published economic class of an instrument's
+// underlying. Unknown is a first-class value: venues that do not publish a
+// classification must not be silently treated as crypto.
+type AssetClass string
+
+const (
+	AssetClassUnknown   AssetClass = "unknown"
+	AssetClassCrypto    AssetClass = "crypto"
+	AssetClassEquity    AssetClass = "equity"
+	AssetClassCommodity AssetClass = "commodity"
+	AssetClassIndex     AssetClass = "index"
+	AssetClassFX        AssetClass = "fx"
+	AssetClassRates     AssetClass = "rates"
+	AssetClassPreIPO    AssetClass = "pre_ipo"
+	AssetClassRWAOther  AssetClass = "rwa_other"
+)
+
+// MarketFamily describes how a market is hosted. It is deliberately separate
+// from AssetClass: a builder-deployed perpetual can reference either crypto or
+// a traditional asset, and a venue-native perpetual can do the same.
+type MarketFamily string
+
+const (
+	MarketFamilySpot             MarketFamily = "spot"
+	MarketFamilyVenuePerpetual   MarketFamily = "venue_perpetual"
+	MarketFamilyBuilderPerpetual MarketFamily = "builder_perpetual"
+)
+
+// InstrumentMetadata carries only venue-originated classification facts.
+// RawAssetType and RawCategories preserve the source vocabulary so a future
+// taxonomy migration can be replayed without re-querying historical catalogs.
+type InstrumentMetadata struct {
+	MarketFamily         MarketFamily         `json:"market_family"`
+	AssetClass           AssetClass           `json:"asset_class"`
+	ClassificationSource string               `json:"classification_source,omitempty"`
+	RawAssetType         string               `json:"raw_asset_type,omitempty"`
+	RawCategories        InstrumentCategories `json:"raw_categories,omitempty"`
+}
+
+// InstrumentCategories stores a venue's category list in canonical JSON while
+// keeping Instrument comparable. Comparability is part of the existing model's
+// utility in tests and exact-value caches; a raw []string here would silently
+// remove it from the whole Instrument type. MarshalJSON preserves the public
+// array shape, and Values is the only accessor adapters and projections need.
+type InstrumentCategories string
+
+func NewInstrumentCategories(values []string) InstrumentCategories {
+	if len(values) == 0 {
+		return ""
+	}
+	payload, _ := json.Marshal(values)
+	return InstrumentCategories(payload)
+}
+
+func (categories InstrumentCategories) Values() []string {
+	values, _ := categories.values()
+	return values
+}
+
+func (categories InstrumentCategories) values() ([]string, error) {
+	if categories == "" {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(categories), &values); err != nil || values == nil {
+		return nil, invalidRequest("instrument categories are malformed")
+	}
+	return values, nil
+}
+
+func (categories InstrumentCategories) MarshalJSON() ([]byte, error) {
+	if categories == "" {
+		return []byte("[]"), nil
+	}
+	if _, err := categories.values(); err != nil {
+		return nil, err
+	}
+	return []byte(categories), nil
+}
+
+func (categories *InstrumentCategories) UnmarshalJSON(payload []byte) error {
+	var values []string
+	if err := json.Unmarshal(payload, &values); err != nil {
+		return err
+	}
+	*categories = NewInstrumentCategories(values)
+	return nil
+}
+
 type Instrument struct {
 	Identity InstrumentIdentity `json:"identity"`
 	Rules    InstrumentRules    `json:"rules"`
 	Encoding InstrumentEncoding `json:"encoding"`
+	Metadata InstrumentMetadata `json:"metadata"`
 	Revision string             `json:"revision,omitempty"`
 }
 
@@ -156,7 +247,79 @@ func (instrument Instrument) Validate() error {
 	if instrument.Encoding.QuoteScale.Valid && instrument.Encoding.QuoteScale.Value <= 0 {
 		return invalidRequest("instrument quote scale must be positive")
 	}
+	metadata := instrument.Metadata
+	if metadata.MarketFamily != "" && !knownMarketFamily(metadata.MarketFamily) {
+		return invalidRequest("instrument market family is unknown")
+	}
+	if metadata.MarketFamily != "" {
+		if identity.Product == ProductSpot && metadata.MarketFamily != MarketFamilySpot {
+			return invalidRequest("spot instrument market family is inconsistent")
+		}
+		if identity.Product == ProductPerp && metadata.MarketFamily == MarketFamilySpot {
+			return invalidRequest("perp instrument market family is inconsistent")
+		}
+	}
+	if metadata.AssetClass != "" && !knownAssetClass(metadata.AssetClass) {
+		return invalidRequest("instrument asset class is unknown")
+	}
+	if strings.TrimSpace(metadata.ClassificationSource) != metadata.ClassificationSource ||
+		strings.TrimSpace(metadata.RawAssetType) != metadata.RawAssetType {
+		return invalidRequest("instrument metadata must be trimmed")
+	}
+	categories, err := metadata.RawCategories.values()
+	if err != nil {
+		return err
+	}
+	seenCategories := make(map[string]struct{}, len(categories))
+	for _, category := range categories {
+		if category == "" || strings.TrimSpace(category) != category {
+			return invalidRequest("instrument category must be non-empty and trimmed")
+		}
+		if _, exists := seenCategories[category]; exists {
+			return invalidRequest("instrument categories must be unique")
+		}
+		seenCategories[category] = struct{}{}
+	}
 	return nil
+}
+
+// EffectiveMetadata makes legacy and venue-agnostic instruments explicit at
+// the public boundary without mutating the canonical instrument. Product is a
+// structural fact, so it can safely supply the market family; asset class has
+// no equivalent fallback and therefore remains unknown.
+func (instrument Instrument) EffectiveMetadata() InstrumentMetadata {
+	metadata := instrument.Metadata
+	if metadata.MarketFamily == "" {
+		switch instrument.Identity.Product {
+		case ProductSpot:
+			metadata.MarketFamily = MarketFamilySpot
+		case ProductPerp:
+			metadata.MarketFamily = MarketFamilyVenuePerpetual
+		}
+	}
+	if metadata.AssetClass == "" {
+		metadata.AssetClass = AssetClassUnknown
+	}
+	return metadata
+}
+
+func knownMarketFamily(family MarketFamily) bool {
+	switch family {
+	case MarketFamilySpot, MarketFamilyVenuePerpetual, MarketFamilyBuilderPerpetual:
+		return true
+	default:
+		return false
+	}
+}
+
+func knownAssetClass(class AssetClass) bool {
+	switch class {
+	case AssetClassUnknown, AssetClassCrypto, AssetClassEquity, AssetClassCommodity,
+		AssetClassIndex, AssetClassFX, AssetClassRates, AssetClassPreIPO, AssetClassRWAOther:
+		return true
+	default:
+		return false
+	}
 }
 
 func knownVenue(venue Venue) bool {

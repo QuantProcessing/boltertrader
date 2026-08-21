@@ -2,17 +2,12 @@ package marketdata
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"sync"
+	"strings"
 	"testing"
 	"time"
 )
-
-type boardSourceFunc func(context.Context) (BoardSnapshot, error)
-
-func (fn boardSourceFunc) FetchFundingBoard(ctx context.Context) (BoardSnapshot, error) {
-	return fn(ctx)
-}
 
 func healthyBoard(observedAt time.Time) BoardSnapshot {
 	return BoardSnapshot{
@@ -36,29 +31,40 @@ func healthyBoard(observedAt time.Time) BoardSnapshot {
 	}
 }
 
-// The board is the one read on this surface with no parameters, so every
-// visitor asks the identical question at once. That makes the cache and its
-// single-flight the whole point of the type: without them the page's poll
-// interval would set the Gateway's read rate directly, multiplied by the number
-// of people looking at it.
-func TestBoardServiceServesConcurrentReadersFromOneFetch(t *testing.T) {
+func TestBoardServiceSerializesUnavailableVenueRowsAsArray(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	release := make(chan struct{})
-	var fetches int
-	var mu sync.Mutex
-	source := boardSourceFunc(func(context.Context) (BoardSnapshot, error) {
-		mu.Lock()
-		fetches++
-		mu.Unlock()
-		<-release
-		return healthyBoard(now.Add(-time.Second)), nil
-	})
-	budget, err := NewCoordinator(10, time.Minute, func() time.Time { return now })
+	service, err := NewBoardService(func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewBoardService(source, budget, 15*time.Second, func() time.Time { return now })
+	board := healthyBoard(now)
+	board.Venues[1].Rows = nil
+	if err := service.Replace(board); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Get(context.Background())
 	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(wire) == "" || !strings.Contains(string(wire), `"rows":[]`) {
+		t.Fatalf("unavailable venue rows are not an array: %s", wire)
+	}
+}
+
+func TestBoardServiceServesConcurrentReadersFromLocalProjection(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	service, err := NewBoardService(func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Get(context.Background()); !errors.Is(err, ErrFundingBoardNotReady) {
+		t.Fatalf("cold projection = %v, want ErrFundingBoardNotReady", err)
+	}
+	if err := service.Replace(healthyBoard(now.Add(-time.Second))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,90 +79,83 @@ func TestBoardServiceServesConcurrentReadersFromOneFetch(t *testing.T) {
 			results <- err
 		}()
 	}
-	// Let every reader reach the service before the fetch returns, so the ones
-	// that did not win the slot are provably waiting rather than merely late.
-	time.Sleep(20 * time.Millisecond)
-	close(release)
 	for range readers {
 		if err := <-results; err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if fetches != 1 {
-		t.Fatalf("fetches = %d, want 1", fetches)
-	}
-	if status := service.BudgetStatus(); status.Used != 1 {
-		t.Fatalf("budget used = %d, want 1", status.Used)
-	}
 }
 
-func TestBoardServiceRefetchesOnlyAfterTheTTL(t *testing.T) {
+func TestBoardServiceReflectsTheNextStreamReplacement(t *testing.T) {
 	clock := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	fetches := 0
-	source := boardSourceFunc(func(context.Context) (BoardSnapshot, error) {
-		fetches++
-		return healthyBoard(clock), nil
-	})
-	budget, err := NewCoordinator(10, time.Minute, func() time.Time { return clock })
+	service, err := NewBoardService(func() time.Time { return clock })
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewBoardService(source, budget, 15*time.Second, func() time.Time { return clock })
+	first := healthyBoard(clock)
+	first.Venues[0].Rows[0].Rate = "0.0001"
+	if err := service.Replace(first); err != nil {
+		t.Fatal(err)
+	}
+	next := healthyBoard(clock.Add(time.Second))
+	next.Venues[0].Rows[0].Rate = "0.0002"
+	clock = clock.Add(time.Second)
+	if err := service.Replace(next); err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Get(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Get(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	clock = clock.Add(15 * time.Second)
-	if _, err := service.Get(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if fetches != 1 {
-		t.Fatalf("fetches at the TTL boundary = %d, want 1", fetches)
-	}
-	clock = clock.Add(time.Millisecond)
-	if _, err := service.Get(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if fetches != 2 {
-		t.Fatalf("fetches past the TTL = %d, want 2", fetches)
+	if got.Venues[0].Rows[0].Rate != "0.0002" {
+		t.Fatalf("rate = %s, want stream replacement", got.Venues[0].Rows[0].Rate)
 	}
 }
 
-// A failed fetch must not be remembered as an answer, and must not leave the
-// single-flight slot held: the next reader has to be able to try again rather
-// than inherit the failure or block on a fetch that will never come.
-func TestBoardServiceDoesNotCacheOrStrandOnFailure(t *testing.T) {
+func TestBoardServiceRejectsInvalidReplacementWithoutLosingLastSnapshot(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	fail := true
-	source := boardSourceFunc(func(context.Context) (BoardSnapshot, error) {
-		if fail {
-			return BoardSnapshot{}, errors.New("gateway is down")
-		}
-		return healthyBoard(now), nil
-	})
-	budget, err := NewCoordinator(10, time.Minute, func() time.Time { return now })
+	service, err := NewBoardService(func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewBoardService(source, budget, 15*time.Second, func() time.Time { return now })
-	if err != nil {
+	if err := service.Replace(healthyBoard(now)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Get(context.Background()); err == nil {
-		t.Fatal("failed fetch was reported as success")
+	invalid := healthyBoard(now)
+	invalid.Venues[0].Rows[0].Rate = "invalid"
+	if err := service.Replace(invalid); err == nil {
+		t.Fatal("invalid stream snapshot was accepted")
 	}
-	fail = false
 	snapshot, err := service.Get(context.Background())
 	if err != nil {
-		t.Fatalf("second read inherited the failure: %v", err)
+		t.Fatalf("last valid snapshot was lost: %v", err)
 	}
-	if len(snapshot.Venues) != 2 {
-		t.Fatalf("venues = %d, want 2", len(snapshot.Venues))
+	if snapshot.Venues[0].Rows[0].Rate != "0.0001" {
+		t.Fatalf("last valid rate = %s", snapshot.Venues[0].Rows[0].Rate)
+	}
+}
+
+func TestBoardServiceAcceptsPriceFactWithoutFundingRate(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	service, err := NewBoardService(func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	board := healthyBoard(now)
+	board.Venues[0].Rows[0].Rate = ""
+	board.Venues[0].Rows[0].IntervalHours = 0
+	board.Venues[0].Rows[0].MarkPrice = "100.25"
+	board.Venues[0].Rows[0].PriceObservedAt = now
+	if err := service.Replace(board); err != nil {
+		t.Fatalf("price-only fact was refused: %v", err)
+	}
+	snapshot, err := service.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Venues[0].Rows[0].Rate != "" || snapshot.Venues[0].Rows[0].MarkPrice != "100.25" {
+		t.Fatalf("price-only fact changed in projection: %+v", snapshot.Venues[0].Rows[0])
 	}
 }
 
@@ -204,19 +203,15 @@ func TestValidateBoardKeepsStaleColumnsAndRefusesIncoherentOnes(t *testing.T) {
 func TestBoardServiceNormalisesEveryTimeToUTC(t *testing.T) {
 	zone := time.FixedZone("UTC+8", 8*60*60)
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	source := boardSourceFunc(func(context.Context) (BoardSnapshot, error) {
-		board := healthyBoard(now.Add(-time.Second))
-		board.ObservedAt = board.ObservedAt.In(zone)
-		board.Venues[0].ObservedAt = board.Venues[0].ObservedAt.In(zone)
-		board.Venues[0].Rows[0].NextFundingTime = board.Venues[0].Rows[0].NextFundingTime.In(zone)
-		return board, nil
-	})
-	budget, err := NewCoordinator(10, time.Minute, func() time.Time { return now })
+	service, err := NewBoardService(func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewBoardService(source, budget, 15*time.Second, func() time.Time { return now })
-	if err != nil {
+	board := healthyBoard(now.Add(-time.Second))
+	board.ObservedAt = board.ObservedAt.In(zone)
+	board.Venues[0].ObservedAt = board.Venues[0].ObservedAt.In(zone)
+	board.Venues[0].Rows[0].NextFundingTime = board.Venues[0].Rows[0].NextFundingTime.In(zone)
+	if err := service.Replace(board); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := service.Get(context.Background())

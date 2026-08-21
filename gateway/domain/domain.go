@@ -85,6 +85,13 @@ func NewInstrumentID(venue, environment, product, settlement, symbol string) (In
 	if settlement != "" {
 		parts = append(parts, settlement)
 	}
+	// Venue-neutral symbols are display identities, but some venues legitimately
+	// namespace them with the same ':' delimiter used by InstrumentID (for
+	// example Hyperliquid HIP-3's "xyz:TSLA-USDC"). Encode the symbol segment at
+	// this single boundary so every downstream route can continue to parse the
+	// stable id without confusing venue syntax for another identity component.
+	// Percent must be escaped first to keep the mapping collision-free.
+	symbol = strings.NewReplacer("%", "%25", ":", "%3A").Replace(symbol)
 	parts = append(parts, symbol)
 	id := InstrumentID(strings.Join(parts, ":"))
 	if err := id.Validate(); err != nil {

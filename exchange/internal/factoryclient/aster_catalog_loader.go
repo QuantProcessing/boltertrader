@@ -102,7 +102,7 @@ func asterSpotInstruments(resp *asterspot.ExchangeInfoResponse) ([]exchange.Inst
 		out = append(out, newInstrument(
 			exchange.VenueAster,
 			exchange.ProductSpot,
-			asterCanonical(row.Symbol),
+			row.BaseAsset+"-"+row.QuoteAsset,
 			row.BaseAsset,
 			row.QuoteAsset,
 			"",
@@ -134,7 +134,7 @@ func asterPerpInstruments(resp *asterperp.ExchangeInfoResponse) ([]exchange.Inst
 		out = append(out, newInstrument(
 			exchange.VenueAster,
 			exchange.ProductPerp,
-			asterCanonical(row.Symbol),
+			row.BaseAsset+"-"+row.QuoteAsset,
 			row.BaseAsset,
 			row.QuoteAsset,
 			row.MarginAsset,

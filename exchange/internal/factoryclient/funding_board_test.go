@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,7 @@ import (
 // so a fixture and its expectation can be read side by side.
 //
 // Every optional cell is expressed as its absent value ("" or 0) rather than as
-// a flag, because absence is the thing under test: nine of the ten venues leave
+// a flag, because absence is the thing under test: most of the nine venues leave
 // at least one of these empty, and a board that renders an absent cell as zero
 // invents a number the venue never published.
 type wantEntry struct {
@@ -38,7 +39,7 @@ type wantEntry struct {
 // TestFundingBoardLoaderPerVenueShape pins each venue's field mapping and,
 // more importantly, each venue's degradation.
 //
-// The board is one table built from ten differently-shaped replies, and the
+// The board is one table built from nine differently-shaped venue replies, and the
 // mapping is where a venue's quirk turns into a wrong number rather than an
 // error: Gate publishes its interval in seconds, Nado its rate scaled by 10^18
 // over a 24-hour period, Hyperliquid an hourly rate with no interval field at
@@ -55,13 +56,35 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 	cases := []struct {
 		name string
 		// publishesOpenInterest states the venue's bulk-call contract. Only
-		// three of the ten answer with open interest, and the board's sort
+		// four of the nine answer with open interest, and the board's sort
 		// falls back to rate spread precisely because of that; asserting it per
 		// venue is what keeps the fallback honest.
 		publishesOpenInterest bool
 		build                 func(*testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope)
 		want                  []wantEntry
 	}{
+		{
+			name: "aster uses its v3 all-market premium index and filters settlement",
+			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+				server := fundingBoardFixtureServer(t, map[string]string{
+					"/fapi/v3/premiumIndex": `[
+						{"symbol":"BTCUSDT","markPrice":"64010.25","indexPrice":"64008.75","lastFundingRate":"0.00012","nextFundingTime":1720000000000},
+						{"symbol":"ETHUSDC","markPrice":"3400.00","indexPrice":"3399.00","lastFundingRate":"-0.00005","nextFundingTime":1720000000000}
+					]`,
+					"/fapi/v3/fundingInfo": `[
+						{"symbol":"BTCUSDT","fundingIntervalHours":4},
+						{"symbol":"ETHUSDC","fundingIntervalHours":8}
+					]`,
+				})
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewAsterFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueAster, "USDT")
+			},
+			want: []wantEntry{{
+				symbol: "BTC-USDT", nativeSymbol: "BTCUSDT", base: "BTC", quote: "USDT",
+				rate: "0.00012", intervalHours: 4, nextFunding: 1720000000,
+				markPrice: "64010.25", indexPrice: "64008.75",
+			}},
+		},
 		{
 			name: "binance splits a concatenated symbol and takes its interval from fundingInfo",
 			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
@@ -192,16 +215,34 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 			name:                  "hyperliquid states the hourly interval the venue never sends",
 			publishesOpenInterest: true,
 			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
-				server := fundingBoardFixtureServer(t, map[string]string{
-					"/info": `[
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					var payload map[string]any
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					var response string
+					switch payload["type"] {
+					case "allPerpMetas":
+						response = `[{"universe":[{"name":"BTC","szDecimals":3},{"name":"#1","szDecimals":3},{"name":"K:PEPE","szDecimals":3}],"collateralToken":0}]`
+					case "perpDexs":
+						response = `[null]`
+					case "spotMeta":
+						response = `{"tokens":[{"name":"USDC","index":0,"szDecimals":6,"weiDecimals":6}],"universe":[]}`
+					case "metaAndAssetCtxs":
+						response = `[
 						{"universe":[{"name":"BTC"},{"name":"#1"},{"name":"K:PEPE"}]},
 						[
 							{"funding":"0.0000125","markPx":"64000.0","oraclePx":"63999.0","openInterest":"1234.5"},
 							{"funding":"0.00001","markPx":"1.0","oraclePx":"1.0","openInterest":"10"},
 							{"funding":"0.00002","markPx":"2.0","oraclePx":"2.0","openInterest":"20"}
 						]
-					]`,
-				})
+					]`
+					default:
+						t.Fatalf("unexpected Hyperliquid request type %v", payload["type"])
+					}
+					_, _ = io.WriteString(writer, response)
+				}))
+				t.Cleanup(server.Close)
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
 				return NewHyperliquidFundingBoardLoader(settings), fundingBoardScope(exchange.VenueHyperliquid, "USDC")
 			},
@@ -219,12 +260,16 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 			}},
 		},
 		{
-			name: "lighter drops the rates it is relaying from other venues",
+			name:                  "lighter drops relayed rates and enriches its own market facts",
+			publishesOpenInterest: true,
 			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/api/v1/funding-rates": `{"code":200,"message":"","funding_rates":[
 						{"market_id":1,"exchange":"lighter","symbol":"BTC","rate":0.0001},
 						{"market_id":2,"exchange":"binance","symbol":"ETH","rate":0.0002}
+					]}`,
+					"/api/v1/orderBookDetails": `{"code":200,"message":"","order_book_details":[
+						{"market_id":1,"market_type":"perp","symbol":"BTC","mark_price":"64000","index_price":"63990","open_interest":12.5}
 					]}`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
@@ -236,7 +281,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 			// against everyone else.
 			want: []wantEntry{{
 				symbol: "BTC-USDC", nativeSymbol: "BTC", nativeID: "1", base: "BTC", quote: "USDC",
-				rate: "0.0001",
+				rate: "0.0001", intervalHours: 8, markPrice: "64000", indexPrice: "63990",
+				openInterest: "12.5", openInterestNotional: "800000",
 			}},
 		},
 		{
@@ -292,7 +338,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 
 			// Stated as its own assertion because the board's default sort
 			// depends on it: open interest is not a column every venue can
-			// fill, and a sort that assumed otherwise would drop seven venues.
+			// fill, and a sort that assumed otherwise would drop valid venues.
 			for _, entry := range snapshot.Entries {
 				if entry.OpenInterest.Valid != testCase.publishesOpenInterest {
 					t.Fatalf("%s: OpenInterest present = %t, want %t", entry.Symbol, entry.OpenInterest.Valid, testCase.publishesOpenInterest)

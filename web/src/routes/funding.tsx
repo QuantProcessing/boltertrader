@@ -8,7 +8,7 @@ import { formatTimestamp } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
- * Funding: ten venues quoting the same perpetuals, side by side.
+ * Funding: nine venues (eleven settlement routes) quoting perpetuals side by side.
  *
  * This is the only market screen in the product that needs no account, no
  * credential and no instrument selection — the Gateway reads it from public
@@ -22,8 +22,7 @@ import { useT } from "@/lib/i18n";
 export function FundingPage() {
   const t = useT();
   const board = useFundingBoard();
-  const snapshot = board.data?.value;
-  const budget = board.data?.rateLimit;
+  const snapshot = board.data;
 
   const venues = snapshot?.venues ?? [];
   const degraded = venues.filter((venue) => venue.unavailable || venue.stale).length;
@@ -63,9 +62,6 @@ export function FundingPage() {
           label={t("funding.observed")}
           value={snapshot ? formatTimestamp(snapshot.observedAt) : "—"}
         />
-        {budget ? (
-          <Metric label={t("funding.budgetLeft")} value={`${budget.remaining}/${budget.limit}`} />
-        ) : null}
       </header>
 
       {/* Below the bar rather than `ml-auto` inside it, same as the arbitrage

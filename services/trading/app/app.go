@@ -79,8 +79,9 @@ type Dependencies struct {
 	Database              *sql.DB
 	CatalogSource         catalog.Source
 	MarketDataSource      marketdata.Source
+	FreshMarketData       httpapi.MarketDataAuthority
 	CandleSource          marketdata.CandleSource
-	FundingBoardSource    marketdata.BoardSource
+	FundingBoardStream    marketdata.BoardStream
 	FundingHistorySource  marketdata.FundingHistorySource
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
@@ -103,10 +104,12 @@ type Dependencies struct {
 // Register mounts it on whatever mux the host provides, and Run drives the
 // background reconciler on whatever lifecycle the host has.
 type Service struct {
-	routes     httpapi.Options
-	readiness  *platformsystem.Readiness
-	reconciler *orders.Reconciler
-	catalog    *catalog.Projection
+	routes      httpapi.Options
+	readiness   *platformsystem.Readiness
+	reconciler  *orders.Reconciler
+	catalog     *catalog.Projection
+	board       *marketdata.BoardService
+	boardStream marketdata.BoardStream
 }
 
 // catalogTTL is how long the catalog projection's facts stay valid; after it,
@@ -163,10 +166,6 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if candleSource == nil {
 		candleSource = unavailableCandleSource{}
 	}
-	boardSource := dependencies.FundingBoardSource
-	if boardSource == nil {
-		boardSource = unavailableFundingBoardSource{}
-	}
 	historySource := dependencies.FundingHistorySource
 	if historySource == nil {
 		historySource = unavailableFundingHistorySource{}
@@ -192,19 +191,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The board shares the same coordinator on the same reasoning, though it
-	// spends under its own key rather than a venue's: a board read is one call
-	// to the Gateway, not one per venue, and charging it to ten venues would
-	// exhaust allowances that were never touched.
-	//
-	// Its TTL is three times the quote projection's because the two answer
-	// questions that age differently. A top-of-book fact prices a fill and is
-	// worthless a few seconds later; a funding rate settles on the hour, and the
-	// board exists to rank venues against each other rather than to price
-	// anything. Fifteen seconds also sits under the Gateway's own thirty-second
-	// refresh, so the projection never serves an edition older than the one
-	// upstream is willing to rebuild.
-	boardService, err := marketdata.NewBoardService(boardSource, budget, 15*time.Second, now)
+	boardService, err := marketdata.NewBoardService(now)
 	if err != nil {
 		return nil, err
 	}
@@ -294,8 +281,9 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection,
 				Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService,
 				ManualAccounts: manualAccounts,
-				Arbitrage:      arbitrageService, FundingBoard: boardService,
-				Principal: dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
+				Arbitrage:      arbitrageService, FundingBoard: boardService, MarketData: marketService,
+				FreshMarketData: dependencies.FreshMarketData,
+				Principal:       dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
 				Activity: activityLog,
 			},
 			Projections: &httpapi.BrowserProjectionRoutesOptions{
@@ -303,9 +291,11 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				Principal: dependencies.Principal,
 			},
 		},
-		readiness:  readiness,
-		reconciler: reconciler,
-		catalog:    catalogProjection,
+		readiness:   readiness,
+		reconciler:  reconciler,
+		catalog:     catalogProjection,
+		board:       boardService,
+		boardStream: dependencies.FundingBoardStream,
 	}, nil
 }
 
@@ -333,12 +323,22 @@ func (service *Service) Run(ctx context.Context) {
 		defer close(refreshed)
 		service.refreshCatalog(ctx)
 	}()
+	boardDone := make(chan struct{})
+	go func() {
+		defer close(boardDone)
+		if service.boardStream == nil {
+			<-ctx.Done()
+			return
+		}
+		_ = service.boardStream.RunFundingBoard(ctx, service.board.Replace)
+	}()
 	if service.reconciler != nil {
 		service.reconciler.Run(ctx)
 	} else {
 		<-ctx.Done()
 	}
 	<-refreshed
+	<-boardDone
 }
 
 // refreshCatalog renews the catalog projection for as long as ctx lives.
@@ -449,12 +449,6 @@ type unavailableCandleSource struct{}
 
 func (unavailableCandleSource) FetchCandles(context.Context, marketdata.CandleQuery) (marketdata.CandlePage, error) {
 	return marketdata.CandlePage{}, errors.New("gateway projection unavailable")
-}
-
-type unavailableFundingBoardSource struct{}
-
-func (unavailableFundingBoardSource) FetchFundingBoard(context.Context) (marketdata.BoardSnapshot, error) {
-	return marketdata.BoardSnapshot{}, errors.New("gateway projection unavailable")
 }
 
 type unavailableFundingHistorySource struct{}

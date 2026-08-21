@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	hyperliquidperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
@@ -32,43 +33,49 @@ func NewHyperliquidFundingBoardLoader(settings Settings) exchange.FundingBoardLo
 // number.
 func (loader hyperliquidFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
 	base := newHyperliquidPublicSDK(loader.settings)
-
-	full, err := hyperliquidperp.NewClient(base).GetMetaAndAssetCtxs(ctx)
+	directory, _, err := hyperliquidPerpDirectory(ctx, base, false, true)
 	if err != nil {
 		return exchange.FundingBoardSnapshot{}, hlNormalizeQueryErr(exchange.ProductPerp, fundingBoardOperation, err, nil)
 	}
-	if full == nil || len(full.Meta.Universe) != len(full.AssetCtxs) {
-		return exchange.FundingBoardSnapshot{}, hlMalformed(exchange.ProductPerp, fundingBoardOperation, "hyperliquid returned mismatched universe and asset context lengths")
-	}
-
-	entries := make([]exchange.FundingBoardEntry, 0, len(full.Meta.Universe))
-	for index, universe := range full.Meta.Universe {
-		if hlRejectCoin(universe.Name) {
+	entries := make([]exchange.FundingBoardEntry, 0)
+	for _, dex := range directory {
+		if scope.Settlement != "" && dex.collateral != scope.Settlement {
 			continue
 		}
-		asset := full.AssetCtxs[index]
-		rate, err := decimalOrSkip(asset.Funding)
-		if err != nil {
-			continue
+		if dex.full == nil || len(dex.full.Meta.Universe) != len(dex.full.AssetCtxs) {
+			return exchange.FundingBoardSnapshot{}, hlMalformed(exchange.ProductPerp, fundingBoardOperation, "hyperliquid returned mismatched universe and asset context lengths")
 		}
-		entries = append(entries, exchange.FundingBoardEntry{
-			Symbol:       universe.Name + "-USDC",
-			NativeSymbol: universe.Name,
-			// The universe index is Hyperliquid's asset id, and the catalog
-			// loader files instruments under it. Keeping the same identity here
-			// is what lets a board row join to a tradable instrument.
-			NativeID:      strconv.Itoa(index),
-			BaseAsset:     universe.Name,
-			QuoteAsset:    "USDC",
-			Rate:          rate,
-			IntervalHours: exchange.OptionalInt{Value: 1, Valid: true},
-			MarkPrice:     fundingOptionalDecimal(asset.MarkPx),
-			IndexPrice:    fundingOptionalDecimal(asset.OraclePx),
-			OpenInterest:  fundingOptionalNonNegative(asset.OpenInterest),
-			OpenInterestNotional: fundingOpenInterestNotional(
-				asset.OpenInterest, asset.MarkPx, decimal.NewFromInt(1),
-			),
-		})
+		for index, universe := range dex.full.Meta.Universe {
+			if !hyperliquidValidPerpCoin(universe.Name, dex.name) {
+				continue
+			}
+			asset := dex.full.AssetCtxs[index]
+			rate, err := decimalOrSkip(asset.Funding)
+			if err != nil {
+				continue
+			}
+			symbol := hyperliquidUnderlying(universe.Name) + "-" + dex.collateral
+			if dex.index > 0 {
+				symbol = universe.Name + "-" + dex.collateral
+			}
+			entries = append(entries, exchange.FundingBoardEntry{
+				Symbol:       symbol,
+				NativeSymbol: universe.Name,
+				// The HIP-3 dex index is part of the asset id. Keeping the same
+				// identity as the catalog is what makes the row executable.
+				NativeID:      strconv.Itoa(hyperliquidAssetID(dex.index, index)),
+				BaseAsset:     hyperliquidUnderlying(universe.Name),
+				QuoteAsset:    dex.collateral,
+				Rate:          rate,
+				IntervalHours: exchange.OptionalInt{Value: 1, Valid: true},
+				MarkPrice:     fundingOptionalDecimal(asset.MarkPx),
+				IndexPrice:    fundingOptionalDecimal(asset.OraclePx),
+				OpenInterest:  fundingOptionalNonNegative(asset.OpenInterest),
+				OpenInterestNotional: fundingOpenInterestNotional(
+					asset.OpenInterest, asset.MarkPx, decimal.NewFromInt(1),
+				),
+			})
+		}
 	}
 	return fundingBoardSnapshot(scope, entries), nil
 }
@@ -105,10 +112,14 @@ func (loader hyperliquidFundingHistoryLoader) LoadFundingHistory(ctx context.Con
 	}
 	client := hyperliquidperp.NewClient(newHyperliquidPublicSDK(loader.settings))
 	native := fundingHistoryNative(request)
+	dex := ""
+	if prefix, _, ok := strings.Cut(native, ":"); ok {
+		dex = prefix
+	}
 
 	points := []exchange.FundingHistoryPoint{}
 	for page, cursor := 0, since; page < hyperliquidFundingHistoryMaxPages; page++ {
-		rows, err := client.GetFundingRateHistory(ctx, native, cursor, until)
+		rows, err := client.GetFundingRateHistoryForDex(ctx, dex, native, cursor, until)
 		if err != nil {
 			return exchange.FundingHistorySnapshot{}, hlNormalizeQueryErr(exchange.ProductPerp, fundingHistoryOperation, err, nil)
 		}

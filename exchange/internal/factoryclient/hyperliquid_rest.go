@@ -765,8 +765,24 @@ func hlSpotMetas(operation string, meta *hyperliquidspot.SpotMeta) (map[string]h
 }
 
 func hlPerpMetas(operation string, full *hyperliquidperp.MetaAndAssetCtxsFull, prep *hyperliquidperp.PrepMeta) (map[string]hyperliquidMarketMeta, error) {
+	return hlPerpMetasForDex(operation, full, prep, 0, "", "USDC", hyperliquidClassifications{})
+}
+
+func hlPerpMetasForDex(
+	operation string,
+	full *hyperliquidperp.MetaAndAssetCtxsFull,
+	prep *hyperliquidperp.PrepMeta,
+	dexIndex int,
+	dexName string,
+	collateral string,
+	classifications hyperliquidClassifications,
+) (map[string]hyperliquidMarketMeta, error) {
 	if full == nil || prep == nil {
 		return nil, hlMalformed(exchange.ProductPerp, operation, "missing perp metadata")
+	}
+	if dexIndex < 0 || strings.TrimSpace(collateral) == "" ||
+		(dexIndex == 0 && dexName != "") || (dexIndex > 0 && strings.TrimSpace(dexName) == "") {
+		return nil, hlMalformed(exchange.ProductPerp, operation, "invalid perp dex metadata")
 	}
 	if len(full.Meta.Universe) != len(prep.Universe) || len(full.Meta.Universe) != len(full.AssetCtxs) {
 		return nil, hlMalformed(exchange.ProductPerp, operation, "perp metadata length mismatch")
@@ -777,7 +793,7 @@ func hlPerpMetas(operation string, full *hyperliquidperp.MetaAndAssetCtxsFull, p
 		if uni.Name != prep.Universe[i].Name {
 			return nil, hlMalformed(exchange.ProductPerp, operation, "perp metadata order mismatch")
 		}
-		if hlRejectCoin(uni.Name) || prep.Universe[i].SzDecimals < 0 || prep.Universe[i].SzDecimals > 6 {
+		if !hyperliquidValidPerpCoin(uni.Name, dexName) || prep.Universe[i].SzDecimals < 0 || prep.Universe[i].SzDecimals > 6 {
 			return nil, hlMalformed(exchange.ProductPerp, operation, "unsupported perp coin")
 		}
 		mark, err := hlOptionalPositiveDecimal(full.AssetCtxs[i].MarkPx)
@@ -788,7 +804,14 @@ func hlPerpMetas(operation string, full *hyperliquidperp.MetaAndAssetCtxsFull, p
 		qtyInc := decimal.New(1, int32(-sz))
 		priceDecimals := max(0, 6-sz)
 		priceInc := decimal.New(1, int32(-priceDecimals))
-		symbol := uni.Name + "-USDC"
+		baseAsset := hyperliquidUnderlying(uni.Name)
+		symbol := baseAsset + "-" + collateral
+		if dexIndex > 0 {
+			// Keep the dex namespace in the canonical identifier so two HIP-3
+			// deployers listing the same ticker cannot collide. BaseAsset stays
+			// namespace-free for cross-venue comparison and display.
+			symbol = uni.Name + "-" + collateral
+		}
 		if _, exists := seenSymbols[symbol]; exists {
 			return nil, hlMalformed(exchange.ProductPerp, operation, "duplicate perp symbol")
 		}
@@ -800,22 +823,26 @@ func hlPerpMetas(operation string, full *hyperliquidperp.MetaAndAssetCtxsFull, p
 			exchange.VenueHyperliquid,
 			exchange.ProductPerp,
 			symbol,
+			baseAsset,
+			collateral,
+			collateral,
 			uni.Name,
-			"USDC",
-			"USDC",
-			uni.Name,
-			strconv.Itoa(i),
+			strconv.Itoa(hyperliquidAssetID(dexIndex, i)),
 			priceInc,
 			qtyInc,
 			qtyInc,
 			exchange.OptionalDecimal{Value: hyperliquidMinNotional, Valid: true},
 			oneContract(),
 		)
+		if dexIndex > 0 {
+			instrument.Metadata.MarketFamily = exchange.MarketFamilyBuilderPerpetual
+		}
+		applyHyperliquidClassification(&instrument, uni.Name, classifications)
 		hlApplyScaleMetadata(&instrument, priceDecimals, sz, 6)
 		out[uni.Name] = hyperliquidMarketMeta{
 			instrument:    instrument,
 			nativeCoin:    uni.Name,
-			assetID:       i,
+			assetID:       hyperliquidAssetID(dexIndex, i),
 			sizeDecimals:  sz,
 			priceDecimals: priceDecimals,
 			markPrice:     mark,
@@ -1027,7 +1054,10 @@ func hlCandlePage(candles []exchange.Candle, req exchange.CandlesRequest) exchan
 	page := exchange.PageInfo{Limit: req.Limit}
 	if len(candles) > 0 {
 		if req.Limit > 0 && len(candles) > req.Limit {
-			candles = candles[:req.Limit]
+			// Hyperliquid can return a large tail when the requested start is
+			// omitted. A portable candle read asks for the newest N bars, so keep
+			// the tail rather than the oldest N rows in that venue response.
+			candles = candles[len(candles)-req.Limit:]
 		}
 		page.WindowStart = candles[0].OpenTime
 		page.WindowEnd = candles[len(candles)-1].CloseTime
@@ -1378,6 +1408,10 @@ func hlCandleWindow(req exchange.CandlesRequest) (int64, int64, error) {
 	if strings.TrimSpace(req.Interval) == "" {
 		return 0, 0, fmt.Errorf("interval is required")
 	}
+	interval, err := hyperliquidCandleDuration(req.Interval)
+	if err != nil {
+		return 0, 0, err
+	}
 	if req.Limit < 0 {
 		return 0, 0, fmt.Errorf("limit must be non-negative")
 	}
@@ -1389,7 +1423,11 @@ func hlCandleWindow(req exchange.CandlesRequest) (int64, int64, error) {
 		return start, time.Now().UnixMilli(), nil
 	}
 	if req.Start.IsZero() {
-		return 0, time.Now().UnixMilli(), nil
+		end := time.Now().UTC()
+		if req.Limit > 0 {
+			return end.Add(-time.Duration(req.Limit) * interval).UnixMilli(), end.UnixMilli(), nil
+		}
+		return 0, end.UnixMilli(), nil
 	}
 	end := req.End
 	if end.IsZero() {

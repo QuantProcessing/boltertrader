@@ -264,11 +264,12 @@ The shell is `h-dvh`, a flex column, and **the page never scrolls**. Each panel
 owns its own overflow. This is what makes the terminal a fixed instrument rather
 than a document.
 
-The trade route alone is full-bleed because the chart and order book benefit
-directly from every horizontal pixel. Funding, arbitrage, portfolio, activity
-and settings use a centered `--spacing-content` maximum. On a 1920px viewport
-that leaves 160px on each side, shortens scan lines, and keeps related facts in
-one visual field; below 1600px those routes still use all available width.
+Trade alone is full-bleed because its chart and order book benefit directly
+from every horizontal pixel. Funding, the four strategy workspaces under
+`/arbitrage/*/*`, portfolio, activity and settings use the centered
+`--spacing-content` maximum. On a 1920px viewport that leaves 160px on each
+side, shortens scan lines, and pulls the opportunity decision and execution
+ticket into one visual field; below 1600px those routes use the available width.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -288,8 +289,66 @@ one visual field; below 1600px those routes still use all available width.
 ```
 
 Every number here is a token from §7 rather than a utility step — `h-bar`,
-`w-side`, `w-ticket`, `h-deck`. The arbitrage route is the same shape with the
-spread list in the book's place, and takes the same three tokens.
+`w-side`, `w-ticket`, `h-deck`. Arbitrage adds one 56px strategy identity bar
+above the working grid. It is not a breadcrumb: it names the current task and
+family, then reports opportunity, executable, account and observation facts at
+the far edge. The ranked opportunity list is 420px at the left, historical
+evidence takes the flexible centre, the two-leg ticket is 360px at the right,
+and open pairs remain on the `h-deck` shelf. The whole grid is capped at
+`--spacing-content`, so the chart cannot push the two decision surfaces to
+opposite edges of an ultrawide display. A half-open pair is always visible
+because it is directional exposure, not ordinary history.
+
+### Arbitrage strategy anatomy
+
+“Arbitrage” is one product section and four operator tasks, grouped directly in
+its top-navigation menu. There is no intermediate strategy-overview screen:
+
+- Crypto Continuous: spot–perpetual basis, cross-venue funding.
+- TradFi Perpetual: perpetual funding, cross-venue perpetual spread.
+
+These are user-facing tasks, not backend strategy ids. The shared funding
+engine appears in both families with a different official-classification
+filter. Unknown classifications remain diagnostic for cross-venue funding and
+TradFi strategies. Spot–perpetual basis is the narrow exception: an exact pair
+of canonical spot and perpetual instruments is enough to identify the market
+shape without relabelling the underlying, so the opportunity retains
+`assetClass=unknown` rather than guessing from its ticker.
+
+History is the primary evidence surface. Funding strategies emphasize the two
+venue rates and their normalized daily difference. Price-reversion strategies
+emphasize the synchronized close-price spread and show funding as carry context.
+The interface must call the latter a historical close-price spread: only a live
+preview reads both books and can claim an executable ask/bid edge.
+
+Derived history is always the primary, neutral series: `--bt-muted` at 2px.
+Venue-native legs stay semantic and subordinate: `--bt-up` and `--bt-down` at
+1px. Funding context and statistical guides use `--bt-dim` or hairline tokens.
+The accent token is reserved for focus and selection, not chart decoration.
+
+Opportunity lists share the same sortable-header vocabulary as every
+`DataTable`: an inactive bidirectional glyph and a visible ascending or
+descending arrow for the active column. Semantic tables expose the state with
+`aria-sort`; strategy ranking lists preserve list semantics and include the
+current state in each sort button's accessible name. Ranking is controlled
+directly from the quantitative columns. Missing values remain last in either
+direction; filter controls must not duplicate a sort or hide the active rule.
+
+Each opportunity uses a two-line row because routes and blocker labels do not
+have stable lengths. The primary line is a fixed quantitative grid: instrument,
+strategy edge, carry/APR and U-notional OI. Its three numeric headers own the
+sorting controls. The secondary line is flexible context: venue plus leg role at
+the left, execution state at the right. Context may truncate with its full value
+in the control's accessible name or title; a live number may never be displaced
+or wrapped by a long venue or blocker label.
+
+The hedge ticket treats quantity entry and percentage shortcuts as one compound
+control. The numeric input and the percentage track share the same 30px desktop
+height. The input remains the primary editable value; 25/50/75/100 are four
+equal segments in one inset track, not four unrelated outline buttons. A chosen
+percentage has a filled neutral state and `aria-pressed`; manual edits clear that
+state unless the value still exactly matches a shortcut. Coarse pointers raise
+both halves to the 44px touch-target floor together.
 
 Price on the left with the record of what happened beneath it, the live book
 beside the price, the ticket at the edge where the hand rests. Operators arrive

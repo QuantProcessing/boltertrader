@@ -440,7 +440,7 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 	// Credentials belong to the account, not to each configured route. Probing
 	// every spot/settlement route made account creation both slow and brittle:
 	// one credential was asked the same question several times before the
-	// runtime could be promoted. Verify it once with a private balance read,
+	// runtime could be promoted. Verify it once with a balance read,
 	// preferring spot when present because it is the least product-specific
 	// account endpoint. Route/private-stream readiness is observed separately
 	// after promotion.
@@ -845,6 +845,25 @@ func (manager *Manager) replayRetirementWithoutLocalActive(ctx context.Context, 
 			continue
 		}
 		if !state.Tombstoned {
+			if state.Active == nil && state.Pending != nil && state.Pending.Fence == request.ExpectedActiveFence {
+				// A pending-only snapshot has never owned the account's write
+				// admission, so it cannot have venue inventory created through
+				// this runtime. Tombstone it without asking a non-existent active
+				// connector for positions. The durable store independently checks
+				// that the account still has no active snapshot under its row lock.
+				result, err := manager.runtimeStore.RetireAccount(ctx, request)
+				if err != nil {
+					return store.RetirementResult{}, err
+				}
+				if !result.Tombstoned || result.OperationID != request.OperationID || result.AccountID != request.AccountID ||
+					result.TombstoneRevision != request.TombstoneRevision || result.CompletedAt.IsZero() {
+					return store.RetirementResult{}, ErrCandidateMismatch
+				}
+				if err := manager.discardUnpromotedRuntime(ctx, request.AccountID); err != nil {
+					return store.RetirementResult{}, err
+				}
+				return result, nil
+			}
 			if state.Active != nil && state.Active.Fence == request.ExpectedActiveFence && manager.lifecycle != nil {
 				if _, err := manager.lifecycle.Blockers(ctx, request.AccountID); err != nil {
 					return store.RetirementResult{}, fmt.Errorf("runtime blocker check failed")
@@ -866,6 +885,44 @@ func (manager *Manager) replayRetirementWithoutLocalActive(ctx context.Context, 
 		return result, nil
 	}
 	return store.RetirementResult{}, ErrRuntimeBlocked
+}
+
+func (manager *Manager) discardUnpromotedRuntime(ctx context.Context, accountID domain.AccountID) error {
+	manager.groupMu.Lock()
+	runtime := manager.groups[accountID]
+	if runtime == nil {
+		manager.groupMu.Unlock()
+		return nil
+	}
+	if runtime.active.Load() != nil || runtime.activeGroup != nil || runtime.retirement != nil {
+		manager.groupMu.Unlock()
+		return ErrRuntimeBlocked
+	}
+	candidate := runtime.candidate
+	manager.groupMu.Unlock()
+
+	if candidate != nil {
+		if err := candidate.Admission.CloseAndWait(ctx); err != nil {
+			return err
+		}
+		if err := candidate.destroyConfirmed(ctx); err != nil {
+			return err
+		}
+	}
+
+	manager.groupMu.Lock()
+	current := manager.groups[accountID]
+	if current != runtime || current.active.Load() != nil || current.activeGroup != nil || current.retirement != nil || current.candidate != candidate {
+		manager.groupMu.Unlock()
+		return ErrCandidateMismatch
+	}
+	delete(manager.groups, accountID)
+	manager.groupMu.Unlock()
+	manager.mu.Lock()
+	delete(manager.runtimes, accountID)
+	manager.mu.Unlock()
+	manager.notifyRuntimeRetired(accountID)
+	return nil
 }
 
 func (manager *Manager) finishRuntimeRetirement(ctx context.Context, accountID domain.AccountID, runtime *accountRuntime, retirement *runtimeRetirement) error {
@@ -957,6 +1014,13 @@ func (manager *Manager) RestoreActiveRuntime(ctx context.Context, expected store
 		}
 		if errors.Is(err, ErrManagerClosed) {
 			return ErrManagerClosed
+		}
+		// CandidateFailure contains only a route id and a stable, deliberately
+		// safe reason code. Preserve it so a restart does not turn an actionable
+		// credential failure into the opaque `runtime_not_promoted` state.
+		var candidateFailure CandidateFailure
+		if errors.As(err, &candidateFailure) {
+			return candidateFailure
 		}
 		return fmt.Errorf("runtime active restore failed")
 	}
@@ -1113,7 +1177,7 @@ func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			manager.recordRuntimeRestoreFailure(state.Active.DesiredSnapshot)
+			manager.recordRuntimeRestoreFailure(state.Active.DesiredSnapshot, err)
 			continue
 		}
 	}
@@ -1127,7 +1191,7 @@ func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				manager.recordRuntimeRestoreFailure(retiring.DesiredSnapshot)
+				manager.recordRuntimeRestoreFailure(retiring.DesiredSnapshot, err)
 				continue
 			}
 			if err := manager.installRestoredRetiring(ctx, group); err != nil {
@@ -1135,7 +1199,7 @@ func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
 					return ctx.Err()
 				}
 				group.destroy()
-				manager.recordRuntimeRestoreFailure(retiring.DesiredSnapshot)
+				manager.recordRuntimeRestoreFailure(retiring.DesiredSnapshot, err)
 			}
 		}
 	}
@@ -1147,7 +1211,7 @@ func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			manager.recordRuntimeRestoreFailure(state.Pending.DesiredSnapshot)
+			manager.recordRuntimeRestoreFailure(state.Pending.DesiredSnapshot, err)
 		}
 	}
 	return nil
@@ -1172,12 +1236,13 @@ func (manager *Manager) installRestoredRetiring(ctx context.Context, group *Runt
 	return nil
 }
 
-func (manager *Manager) recordRuntimeRestoreFailure(snapshot store.DesiredSnapshot) {
+func (manager *Manager) recordRuntimeRestoreFailure(snapshot store.DesiredSnapshot, cause error) {
+	reason := CandidateFailureReason(cause)
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if runtime, ok := manager.runtimes[snapshot.AccountID]; ok {
 		runtime.Ready = false
-		runtime.Reason = ErrCandidateFailed.Error()
+		runtime.Reason = reason
 		runtime.ObservedAt = time.Now().UTC()
 		manager.runtimes[snapshot.AccountID] = runtime
 		return
@@ -1191,7 +1256,7 @@ func (manager *Manager) recordRuntimeRestoreFailure(snapshot store.DesiredSnapsh
 		SecretRef: ref, RuntimeID: snapshot.Fence.RuntimeID, RequestedState: RuntimeStateActive,
 	}
 	runtime := appliedRuntime(desired, RuntimeStateActive, false, 1)
-	runtime.Reason = ErrCandidateFailed.Error()
+	runtime.Reason = reason
 	manager.runtimes[snapshot.AccountID] = runtime
 }
 
@@ -1384,7 +1449,7 @@ func (manager *Manager) RuntimePositionBlockers(ctx context.Context, accountID d
 	runtime := manager.groups[accountID]
 	if runtime == nil || runtime.retirement != nil || runtime.activeGroup == nil {
 		manager.groupMu.Unlock()
-		return 0, fmt.Errorf("runtime position blocker lookup failed")
+		return 0, ErrUnknownAccount
 	}
 	group := runtime.activeGroup
 	active := runtime.active.Load()

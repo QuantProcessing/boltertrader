@@ -32,23 +32,19 @@ func TestBoardSourceIsolatesVenueFailures(t *testing.T) {
 		t.Fatalf("newSource: %v", err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
+	source.bootstrapAll(context.Background(), source.columns)
 
 	snapshot, err := source.Snapshot(context.Background())
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
 
-	// Ten funding-capable perp profiles: eleven perp rows in the profile
-	// registry minus aster, which the capability matrix records as publishing no
-	// funding at all. Asserting the count here is what keeps a venue from
+	// Eleven funding-capable perp profiles. Asserting the count here keeps a venue from
 	// silently falling off the board when a profile row changes.
-	if len(snapshot.Venues) != 10 {
-		t.Fatalf("got %d venue columns, want 10: %+v", len(snapshot.Venues), snapshot.Venues)
+	if len(snapshot.Venues) != 11 {
+		t.Fatalf("got %d venue columns, want 11: %+v", len(snapshot.Venues), snapshot.Venues)
 	}
 	for _, venue := range snapshot.Venues {
-		if venue.Venue == "aster" {
-			t.Fatal("aster has no funding surface and must not appear as a column")
-		}
 		if venue.Product != string(routeprofile.ProductPerp) {
 			t.Fatalf("%s: product = %q, want perp", venue.Venue, venue.Product)
 		}
@@ -82,11 +78,9 @@ func TestBoardSourceIsolatesVenueFailures(t *testing.T) {
 	}
 }
 
-// TestBoardSourceRefreshCadence covers the three time-dependent transitions in
-// one place, because each is only meaningful relative to the others: a read
-// inside the interval must not re-poll a dozen venues, a read past it must,
-// and a column nobody could refresh must stop being rendered as a rate.
-func TestBoardSourceRefreshCadence(t *testing.T) {
+// TestBoardSourceSnapshotsNeverPollVenues pins the ownership boundary: reads
+// only copy memory, while the supervisor/bootstrap path owns venue I/O.
+func TestBoardSourceSnapshotsNeverPollVenues(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	factory := &fakeFactory{}
 	source, err := newSource(factory, routeprofile.DefaultRegistry(), sourceOptions{
@@ -97,40 +91,22 @@ func TestBoardSourceRefreshCadence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = source.Close() })
 
-	if _, err := source.Snapshot(context.Background()); err != nil {
-		t.Fatalf("first Snapshot: %v", err)
-	}
+	source.bootstrapAll(context.Background(), source.columns)
 	first := factory.refreshes()
 	if first == 0 {
-		t.Fatal("first Snapshot issued no venue refreshes")
+		t.Fatal("startup bootstrap issued no venue refreshes")
 	}
 
-	clock.advance(29 * time.Second)
-	if _, err := source.Snapshot(context.Background()); err != nil {
-		t.Fatalf("cached Snapshot: %v", err)
-	}
-	if factory.refreshes() != first {
-		t.Fatalf("a read inside the refresh interval re-polled the venues: %d -> %d", first, factory.refreshes())
-	}
-
-	clock.advance(2 * time.Second)
-	snapshot, err := source.Snapshot(context.Background())
-	if err != nil {
-		t.Fatalf("refreshed Snapshot: %v", err)
-	}
-	if factory.refreshes() != first*2 {
-		t.Fatalf("a read past the refresh interval polled %d venues, want %d", factory.refreshes()-first, first)
-	}
-	for _, venue := range snapshot.Venues {
-		if venue.Stale || venue.Unavailable {
-			t.Fatalf("%s: stale=%t unavailable=%t straight after a refresh", venue.Venue, venue.Stale, venue.Unavailable)
+	for range 8 {
+		clock.advance(10 * time.Second)
+		if _, err := source.Snapshot(context.Background()); err != nil {
+			t.Fatalf("memory Snapshot: %v", err)
 		}
 	}
+	if factory.refreshes() != first {
+		t.Fatalf("snapshot reads re-polled venues: %d -> %d", first, factory.refreshes())
+	}
 
-	// Every venue now fails, so the last good rates age out. They are withheld
-	// rather than served with a stale flag once they pass maxAge: a two-minute
-	// old rate beside a fresh one is a spread that has already closed.
-	factory.failAll(true)
 	clock.advance(3 * time.Minute)
 	stale, err := source.Snapshot(context.Background())
 	if err != nil {
@@ -146,10 +122,9 @@ func TestBoardSourceRefreshCadence(t *testing.T) {
 	}
 }
 
-// TestBoardSourceSingleFlight asserts that a burst of readers costs the venues
-// one round of calls, not one per reader. Ten venues behind an unthrottled
-// board is the shape that gets an IP rate-limited.
-func TestBoardSourceSingleFlight(t *testing.T) {
+// TestBoardSourceBootstrapIsIndependentOfReaders proves the resident producer
+// starts without an HTTP reader and a reader burst remains a pure memory copy.
+func TestBoardSourceBootstrapIsIndependentOfReaders(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	release := make(chan struct{})
 	factory := &fakeFactory{gate: release}
@@ -160,6 +135,18 @@ func TestBoardSourceSingleFlight(t *testing.T) {
 		t.Fatalf("newSource: %v", err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
+
+	booted := make(chan struct{})
+	go func() {
+		source.bootstrapAll(context.Background(), source.columns)
+		close(booted)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if got := factory.refreshes(); got != int64(len(source.columns)) {
+		t.Fatalf("startup issued %d venue calls, want %d", got, len(source.columns))
+	}
+	close(release)
+	<-booted
 
 	const readers = 8
 	var group sync.WaitGroup
@@ -173,9 +160,6 @@ func TestBoardSourceSingleFlight(t *testing.T) {
 		}(index)
 	}
 
-	// Let the readers pile up on the single-flight slot before the venues answer.
-	time.Sleep(50 * time.Millisecond)
-	close(release)
 	group.Wait()
 
 	for index := range readers {
@@ -187,7 +171,80 @@ func TestBoardSourceSingleFlight(t *testing.T) {
 		}
 	}
 	if got := factory.refreshes(); got != int64(len(snapshots[0].Venues)) {
-		t.Fatalf("%d readers caused %d venue calls, want %d", readers, got, len(snapshots[0].Venues))
+		t.Fatalf("%d readers changed venue calls to %d, want startup count %d", readers, got, len(snapshots[0].Venues))
+	}
+}
+
+func TestFundingFactMergePreservesPartialFieldsAndRejectsOlderUpdates(t *testing.T) {
+	identity := exchange.InstrumentIdentity{
+		Venue: exchange.VenueOKX, Product: exchange.ProductPerp,
+		Symbol: "BTC-USDT", NativeSymbol: "BTC-USDT-SWAP",
+		BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT",
+	}
+	newer := time.Date(2026, time.August, 20, 2, 0, 0, 0, time.UTC)
+	target := exchange.FundingMarketFact{
+		Instrument:        identity,
+		FundingRate:       exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true},
+		MarkPrice:         exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true},
+		FundingObservedAt: newer, PriceObservedAt: newer,
+	}
+	mergeFundingFact(&target, exchange.FundingMarketFact{
+		Instrument:             identity,
+		OpenInterest:           exchange.OptionalDecimal{Value: decimal.NewFromInt(25), Valid: true},
+		OpenInterestObservedAt: newer.Add(time.Second),
+	}, exchange.FundingMarketFieldOpenInterest, newer.Add(time.Second))
+	if !target.FundingRate.Valid || !target.MarkPrice.Valid || !target.OpenInterest.Valid {
+		t.Fatalf("partial OI update cleared another field: %+v", target)
+	}
+	mergeFundingFact(&target, exchange.FundingMarketFact{
+		Instrument:      identity,
+		MarkPrice:       exchange.OptionalDecimal{Value: decimal.NewFromInt(90), Valid: true},
+		PriceObservedAt: newer.Add(-time.Second),
+	}, exchange.FundingMarketFieldMarkPrice, newer.Add(-time.Second))
+	if !target.MarkPrice.Value.Equal(decimal.NewFromInt(100)) || !target.PriceObservedAt.Equal(newer) {
+		t.Fatalf("older mark replaced current mark: %+v", target)
+	}
+}
+
+func TestBoardSourceExpiresFieldsIndependentlyAndReadinessNeedsOneFreshRoute(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 2, 0, 0, 0, time.UTC)
+	clock := &testClock{now: now}
+	identity := exchange.InstrumentIdentity{
+		Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
+		Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT",
+		BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT",
+	}
+	source := &Source{
+		columns: []*column{{
+			profile: routeprofile.Profile{ID: "binance.perp.usdt.v1", Venue: "binance", Product: routeprofile.ProductPerp, SettlementAsset: "USDT"},
+			status:  exchange.FundingMarketFeedLive, lastSuccess: now,
+			facts: map[string]exchange.FundingMarketFact{"btc": {
+				Instrument:                identity,
+				FundingRate:               exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true},
+				MarkPrice:                 exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true},
+				OpenInterest:              exchange.OptionalDecimal{Value: decimal.NewFromInt(5), Valid: true},
+				OpenInterestNotional:      exchange.OptionalDecimal{Value: decimal.NewFromInt(500), Valid: true},
+				OpenInterestNotionalAsset: "USDT",
+				FundingObservedAt:         now, PriceObservedAt: now.Add(-121 * time.Second),
+				OpenInterestObservedAt: now.Add(-121 * time.Second),
+			}},
+		}},
+		maxAge: 2 * time.Minute, now: clock.Now, subs: map[uint64]chan Change{}, updates: make(chan ChangeKind, 2),
+	}
+	if !source.Ready() {
+		t.Fatal("fresh funding fact did not make the public projection ready")
+	}
+	snapshot, err := source.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := snapshot.Venues[0].Entries[0]
+	if row.MarkPrice.Valid || row.OpenInterest.Valid || row.OpenInterestNotional.Valid || !row.Rate.Equal(decimal.RequireFromString("0.0001")) {
+		t.Fatalf("field expiry did not preserve only fresh funding: %+v", row)
+	}
+	clock.advance(121 * time.Second)
+	if source.Ready() {
+		t.Fatal("an expired route still reported ready")
 	}
 }
 
@@ -211,6 +268,7 @@ func TestBoardSourceKeepsOneColumnPerMarket(t *testing.T) {
 		t.Fatalf("newSource: %v", err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
+	source.bootstrapAll(context.Background(), source.columns)
 
 	snapshot, err := source.Snapshot(context.Background())
 	if err != nil {
@@ -225,8 +283,119 @@ func TestBoardSourceKeepsOneColumnPerMarket(t *testing.T) {
 		}
 		seen[market] = venue.RouteProfileID
 	}
-	if len(seen) != 10 {
-		t.Fatalf("got %d distinct markets, want 10: %+v", len(seen), snapshot.Venues)
+	if len(seen) != 11 {
+		t.Fatalf("got %d distinct markets, want 11: %+v", len(seen), snapshot.Venues)
+	}
+}
+
+func TestBoardSourceGroupsSettlementShardsUnderOneVenueSupervisor(t *testing.T) {
+	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
+	source, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), sourceOptions{
+		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("newSource: %v", err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+
+	groups := groupColumnsByVenue(source.columns)
+	if len(groups) != 9 {
+		t.Fatalf("got %d venue supervisors, want 9", len(groups))
+	}
+	counts := make(map[string]int, len(groups))
+	for _, group := range groups {
+		if len(group) == 0 {
+			t.Fatal("empty venue supervisor group")
+		}
+		venue := group[0].profile.Venue
+		for _, current := range group {
+			if current.profile.Venue != venue {
+				t.Fatalf("supervisor %q contains route from %q", venue, current.profile.Venue)
+			}
+		}
+		counts[venue] = len(group)
+	}
+	for _, venue := range []string{"bybit", "bitget"} {
+		if counts[venue] != 2 {
+			t.Fatalf("%s supervisor owns %d settlement shards, want 2", venue, counts[venue])
+		}
+	}
+	for _, venue := range []string{"aster", "binance", "gate", "hyperliquid", "lighter", "nado", "okx"} {
+		if counts[venue] != 1 {
+			t.Fatalf("%s supervisor owns %d shards, want 1", venue, counts[venue])
+		}
+	}
+}
+
+func TestBoardSourceKeepsFreshPriceWhenFundingExpires(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 2, 0, 0, 0, time.UTC)
+	clock := &testClock{now: now}
+	source := &Source{
+		columns: []*column{{
+			profile: routeprofile.Profile{ID: "hyperliquid.perp.usdc.v1", Venue: "hyperliquid", Product: routeprofile.ProductPerp, SettlementAsset: "USDC"},
+			status:  exchange.FundingMarketFeedLive, lastSuccess: now,
+			facts: map[string]exchange.FundingMarketFact{"btc": {
+				Instrument: exchange.InstrumentIdentity{
+					Venue: exchange.VenueHyperliquid, Product: exchange.ProductPerp,
+					Symbol: "BTC-USDC", NativeSymbol: "BTC", BaseAsset: "BTC", QuoteAsset: "USDC", SettleAsset: "USDC",
+				},
+				FundingRate:       exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true},
+				MarkPrice:         exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true},
+				FundingObservedAt: now.Add(-121 * time.Second), PriceObservedAt: now,
+			}},
+		}},
+		maxAge: 2 * time.Minute, now: clock.Now, subs: map[uint64]chan Change{}, updates: make(chan ChangeKind, 2),
+	}
+	if !source.Ready() {
+		t.Fatal("fresh price did not make the public fact projection ready")
+	}
+	snapshot, err := source.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Venues[0].Entries) != 1 {
+		t.Fatalf("fresh price row was dropped: %+v", snapshot.Venues[0])
+	}
+	row := snapshot.Venues[0].Entries[0]
+	if row.RateValid || !row.MarkPrice.Valid || !row.MarkPrice.Value.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("expired funding was presented beside fresh price: %+v", row)
+	}
+}
+
+func TestBoardSourceFreshnessTransitionPublishesWithoutVenueIO(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 2, 0, 0, 0, time.UTC)
+	clock := &testClock{now: now}
+	source := &Source{
+		columns: []*column{{
+			profile: routeprofile.Profile{ID: "binance.perp.usdt.v1", Venue: "binance", Product: routeprofile.ProductPerp, SettlementAsset: "USDT"},
+			status:  exchange.FundingMarketFeedLive, lastSuccess: now,
+			facts: map[string]exchange.FundingMarketFact{"btc": {
+				Instrument: exchange.InstrumentIdentity{
+					Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
+					Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT",
+				},
+				FundingRate:       exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true},
+				MarkPrice:         exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true},
+				FundingObservedAt: now, PriceObservedAt: now,
+			}},
+		}},
+		maxAge: 2 * time.Minute, now: clock.Now, subs: map[uint64]chan Change{}, updates: make(chan ChangeKind, 2),
+	}
+	live := source.freshnessSignature()
+	clock.advance(16 * time.Second)
+	priceDelayed := source.freshnessSignature()
+	if live == priceDelayed {
+		t.Fatal("crossing the 15-second price boundary did not change projection freshness")
+	}
+	clock.advance(45 * time.Second)
+	fundingDelayed := source.freshnessSignature()
+	if priceDelayed == fundingDelayed {
+		t.Fatal("crossing the 60-second funding boundary did not change projection freshness")
+	}
+	clock.advance(60 * time.Second)
+	expired := source.freshnessSignature()
+	if fundingDelayed == expired {
+		t.Fatal("crossing the two-minute hard expiry did not change projection freshness")
 	}
 }
 
@@ -314,11 +483,6 @@ type fakeFactory struct {
 
 func (factory *fakeFactory) Build(profile routeprofile.Profile) (Connector, error) {
 	if factory.rejectAll {
-		return nil, ErrBoardUnavailable
-	}
-	// Mirrors the real factory's rejection of the one perp venue that publishes
-	// no funding, so the column count under test is the production one.
-	if profile.Venue == "aster" {
 		return nil, ErrBoardUnavailable
 	}
 	return &fakeConnector{factory: factory, profile: profile}, nil

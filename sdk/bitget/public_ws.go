@@ -105,25 +105,76 @@ func (c *PublicWSClient) Connect(ctx context.Context) error {
 }
 
 func (c *PublicWSClient) Subscribe(ctx context.Context, arg WSArg, handler func(json.RawMessage)) error {
+	return c.SubscribeMany(ctx, []WSArg{arg}, handler)
+}
+
+// SubscribeMany installs one handler for a bounded set of public channels and
+// sends them in batched frames. Bitget limits clients to ten outbound messages
+// per second; sending one frame per market makes all-market supervisors
+// disconnect before their initial subscription completes.
+func (c *PublicWSClient) SubscribeMany(ctx context.Context, args []WSArg, handler func(json.RawMessage)) error {
+	if len(args) == 0 {
+		return fmt.Errorf("bitget ws: at least one subscription is required")
+	}
 	if err := c.Connect(ctx); err != nil {
 		return err
 	}
 
-	key := wsKey(arg)
 	c.mu.Lock()
-	c.subs[key] = arg
-	c.handlers[key] = handler
+	registered := make([]string, 0, len(args))
+	batchKeys := make(map[string]struct{}, len(args))
+	for _, arg := range args {
+		key := wsKey(arg)
+		if _, exists := c.subs[key]; exists {
+			c.mu.Unlock()
+			return fmt.Errorf("bitget ws: duplicate subscription %s", key)
+		}
+		if _, exists := batchKeys[key]; exists {
+			c.mu.Unlock()
+			return fmt.Errorf("bitget ws: duplicate subscription %s", key)
+		}
+		batchKeys[key] = struct{}{}
+		registered = append(registered, key)
+	}
+	for index, arg := range args {
+		key := registered[index]
+		c.subs[key] = arg
+		c.handlers[key] = handler
+	}
 	c.mu.Unlock()
 
-	if err := c.writeJSON(wsRequest{
-		Op:   "subscribe",
-		Args: []WSArg{arg},
-	}); err != nil {
+	if err := c.writeSubscriptions(ctx, args); err != nil {
 		c.mu.Lock()
-		delete(c.subs, key)
-		delete(c.handlers, key)
+		for _, key := range registered {
+			delete(c.subs, key)
+			delete(c.handlers, key)
+		}
 		c.mu.Unlock()
 		return err
+	}
+	return nil
+}
+
+const publicWSSubscribeBatchLimit = 50
+
+func (c *PublicWSClient) writeSubscriptions(ctx context.Context, args []WSArg) error {
+	for start := 0; start < len(args); start += publicWSSubscribeBatchLimit {
+		end := start + publicWSSubscribeBatchLimit
+		if end > len(args) {
+			end = len(args)
+		}
+		if start > 0 {
+			timer := time.NewTimer(110 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		if err := c.writeJSON(wsRequest{Op: "subscribe", Args: args[start:end]}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -257,18 +308,8 @@ func (c *PublicWSClient) reconnect() {
 	}
 	c.mu.RUnlock()
 
-	for _, arg := range subs {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
-		if err := c.writeJSON(wsRequest{
-			Op:   "subscribe",
-			Args: []WSArg{arg},
-		}); err != nil {
-			go c.reconnect()
-			return
-		}
+	if err := c.writeSubscriptions(c.ctx, subs); err != nil {
+		go c.reconnect()
+		return
 	}
 }

@@ -8,9 +8,9 @@ import {
   type RowData,
   type SortingState,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
+import { SortableTableHeader } from "@/components/ui/sortable-table-header";
 import { cn } from "@/lib/utils";
 
 declare module "@tanstack/react-table" {
@@ -133,27 +133,13 @@ export function DataTable<TData>({
                     )}
                   >
                     {header.isPlaceholder ? null : sortable ? (
-                      <button
-                        type="button"
-                        onClick={header.column.getToggleSortingHandler()}
-                        className={cn(
-                          // `uppercase` is repeated from `.th` on purpose: the UA
-                          // stylesheet resets text-transform on form controls, so
-                          // without it a sortable column renders sentence case and
-                          // an unsortable one beside it renders caps.
-                          "inline-flex items-center gap-1 rounded-control uppercase hover:text-text",
-                          alignRight && "flex-row-reverse",
-                        )}
+                      <SortableTableHeader
+                        direction={direction}
+                        onToggle={(event) => header.column.getToggleSortingHandler()?.(event)}
+                        align={alignRight ? "right" : "left"}
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
-                        {direction === "asc" ? (
-                          <ArrowUp className="size-3" aria-hidden="true" />
-                        ) : direction === "desc" ? (
-                          <ArrowDown className="size-3" aria-hidden="true" />
-                        ) : (
-                          <ArrowUpDown className="size-3 text-faint" aria-hidden="true" />
-                        )}
-                      </button>
+                      </SortableTableHeader>
                     ) : (
                       flexRender(header.column.columnDef.header, header.getContext())
                     )}

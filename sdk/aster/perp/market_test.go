@@ -132,6 +132,25 @@ func TestGetAllFundingRates(t *testing.T) {
 	}
 }
 
+func TestGetFundingInfoParsesPerSymbolIntervals(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "/fapi/v3/fundingInfo", request.URL.Path)
+		_, _ = writer.Write([]byte(`[
+			{"symbol":"BTCUSDT","interestRate":"0.0001","time":1700000000000,"fundingIntervalHours":8,"fundingFeeCap":0.03,"fundingFeeFloor":-0.03},
+			{"symbol":"ASTERUSDT","interestRate":"0.0001","time":1700000000000,"fundingIntervalHours":4,"fundingFeeCap":0.02,"fundingFeeFloor":-0.02}
+		]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := newClientForServer(t, server, nil)
+	rows, err := client.GetFundingInfo(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	require.Equal(t, int64(8), rows[0].FundingIntervalHours)
+	require.Equal(t, int64(4), rows[1].FundingIntervalHours)
+}
+
 func TestGetOpenInterestParses(t *testing.T) {
 	t.Parallel()
 	payload := `{"symbol":"BTCUSDT","openInterest":"12345.678","time":1700000000000}`

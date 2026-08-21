@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -46,6 +47,7 @@ type arbitrageLegRequest struct {
 }
 
 type arbitragePreviewRequest struct {
+	Strategy    string              `json:"strategy,omitempty"`
 	Long        arbitrageLegRequest `json:"long"`
 	Short       arbitrageLegRequest `json:"short"`
 	Quantity    string              `json:"quantity"`
@@ -79,6 +81,7 @@ type arbitrageLegAuthority struct {
 
 type arbitragePreviewAuthority struct {
 	PrincipalID     string                  `json:"principalId"`
+	Strategy        string                  `json:"strategy"`
 	Request         arbitragePreviewRequest `json:"request"`
 	Long            arbitrageLegAuthority   `json:"long"`
 	Short           arbitrageLegAuthority   `json:"short"`
@@ -96,6 +99,7 @@ type arbitragePreviewLeg struct {
 	InstrumentID    string    `json:"instrumentId"`
 	Venue           string    `json:"venue"`
 	Environment     string    `json:"environment"`
+	Product         string    `json:"product"`
 	Symbol          string    `json:"symbol,omitempty"`
 	Side            string    `json:"side"`
 	LimitPrice      string    `json:"limitPrice,omitempty"`
@@ -103,12 +107,16 @@ type arbitragePreviewLeg struct {
 	IntervalHours   int64     `json:"intervalHours,omitempty"`
 	NextFundingTime time.Time `json:"nextFundingTime,omitzero"`
 	MarkPrice       string    `json:"markPrice,omitempty"`
+	BestBid         string    `json:"bestBid,omitempty"`
+	BestAsk         string    `json:"bestAsk,omitempty"`
+	ExecutionPrice  string    `json:"executionPrice,omitempty"`
 	DailyRate       string    `json:"dailyRate,omitempty"`
 	Stale           bool      `json:"stale,omitempty"`
 }
 
 type arbitragePreview struct {
 	PreviewID    string                  `json:"previewId"`
+	Strategy     string                  `json:"strategy"`
 	Request      arbitragePreviewRequest `json:"request"`
 	Long         arbitragePreviewLeg     `json:"long"`
 	Short        arbitragePreviewLeg     `json:"short"`
@@ -116,38 +124,58 @@ type arbitragePreview struct {
 	Notional     string                  `json:"notional,omitempty"`
 	SpreadDaily  string                  `json:"spreadDaily,omitempty"`
 	SpreadApr    string                  `json:"spreadApr,omitempty"`
+	BasisRate    string                  `json:"basisRate,omitempty"`
+	PriceSpread  string                  `json:"priceSpread,omitempty"`
 	DailyFunding string                  `json:"dailyFunding,omitempty"`
 	Blockers     []string                `json:"blockers"`
 	Warnings     []string                `json:"warnings"`
 }
 
 type arbitrageOpportunityLeg struct {
-	Venue                string    `json:"venue"`
-	Environment          string    `json:"environment"`
-	RouteProfileID       string    `json:"routeProfileId"`
-	Settlement           string    `json:"settlement,omitempty"`
-	AccountID            string    `json:"accountId,omitempty"`
-	InstrumentID         string    `json:"instrumentId,omitempty"`
-	Rate                 string    `json:"rate"`
-	IntervalHours        int64     `json:"intervalHours,omitempty"`
-	NextFundingTime      time.Time `json:"nextFundingTime,omitzero"`
-	MarkPrice            string    `json:"markPrice,omitempty"`
-	OpenInterest         string    `json:"openInterest,omitempty"`
-	OpenInterestNotional string    `json:"openInterestNotional,omitempty"`
-	DailyRate            string    `json:"dailyRate,omitempty"`
-	Stale                bool      `json:"stale,omitempty"`
+	Venue                     string    `json:"venue"`
+	Environment               string    `json:"environment"`
+	Product                   string    `json:"product"`
+	RouteProfileID            string    `json:"routeProfileId"`
+	Settlement                string    `json:"settlement,omitempty"`
+	MarketFamily              string    `json:"marketFamily"`
+	AssetClass                string    `json:"assetClass"`
+	ClassificationSource      string    `json:"classificationSource,omitempty"`
+	AccountID                 string    `json:"accountId,omitempty"`
+	InstrumentID              string    `json:"instrumentId"`
+	Rate                      string    `json:"rate,omitempty"`
+	IntervalHours             int64     `json:"intervalHours,omitempty"`
+	NextFundingTime           time.Time `json:"nextFundingTime,omitzero"`
+	MarkPrice                 string    `json:"markPrice,omitempty"`
+	IndexPrice                string    `json:"indexPrice,omitempty"`
+	ReferencePrice            string    `json:"referencePrice,omitempty"`
+	OpenInterest              string    `json:"openInterest,omitempty"`
+	OpenInterestNotional      string    `json:"openInterestNotional,omitempty"`
+	OpenInterestNotionalAsset string    `json:"openInterestNotionalAsset,omitempty"`
+	FundingObservedAt         time.Time `json:"fundingObservedAt,omitzero"`
+	PriceObservedAt           time.Time `json:"priceObservedAt,omitzero"`
+	OpenInterestObservedAt    time.Time `json:"openInterestObservedAt,omitzero"`
+	VenueStatus               string    `json:"venueStatus,omitempty"`
+	DailyRate                 string    `json:"dailyRate,omitempty"`
+	Stale                     bool      `json:"stale,omitempty"`
 }
 
 type arbitrageOpportunity struct {
-	Symbol      string                  `json:"symbol"`
-	BaseAsset   string                  `json:"baseAsset"`
-	QuoteAsset  string                  `json:"quoteAsset"`
-	Long        arbitrageOpportunityLeg `json:"long"`
-	Short       arbitrageOpportunityLeg `json:"short"`
-	SpreadDaily string                  `json:"spreadDaily,omitempty"`
-	SpreadApr   string                  `json:"spreadApr,omitempty"`
-	Executable  bool                    `json:"executable"`
-	Blockers    []string                `json:"blockers"`
+	ID             string                  `json:"id"`
+	Symbol         string                  `json:"symbol"`
+	BaseAsset      string                  `json:"baseAsset"`
+	QuoteAsset     string                  `json:"quoteAsset"`
+	AssetClass     string                  `json:"assetClass"`
+	StrategyFamily string                  `json:"strategyFamily"`
+	Strategy       string                  `json:"strategy"`
+	Long           arbitrageOpportunityLeg `json:"long"`
+	Short          arbitrageOpportunityLeg `json:"short"`
+	SpreadDaily    string                  `json:"spreadDaily,omitempty"`
+	SpreadApr      string                  `json:"spreadApr,omitempty"`
+	BasisRate      string                  `json:"basisRate,omitempty"`
+	PriceSpread    string                  `json:"priceSpread,omitempty"`
+	Score          string                  `json:"score,omitempty"`
+	Executable     bool                    `json:"executable"`
+	Blockers       []string                `json:"blockers"`
 }
 
 type arbitrageAmount struct {
@@ -190,6 +218,7 @@ type arbitrageLegOrder struct {
 	LimitPrice  string
 	TimeInForce string
 	ReduceOnly  bool
+	Closing     bool
 }
 
 // arbitragePreviewCodec is structurally manual's codec, named separately so the
@@ -209,9 +238,12 @@ const arbitragePreviewTTL = 30 * time.Second
 // spans MaxBoardVenues venues, so nothing useful lies past this.
 const arbitrageMaxAccounts = 32
 
-// arbitrageProduct is the perp product the hedge is built from. A funding hedge
-// is two perpetuals by construction: spot has no funding leg to arbitrage.
-const arbitrageProduct = "perp"
+const (
+	arbitrageProduct               = "perp"
+	arbitrageStrategyFunding       = "cross_perp_funding"
+	arbitrageStrategySpotPerpBasis = "spot_perp_basis"
+	arbitrageStrategyPerpSpread    = "cross_perp_spread"
+)
 
 func registerArbitrageProductRoutes(mux *http.ServeMux, trading *tradingHandler) {
 	handler := &arbitrageProductHandler{trading: trading}
@@ -232,8 +264,9 @@ func registerArbitrageProductRoutes(mux *http.ServeMux, trading *tradingHandler)
 // caller's simply fails the principal-scoped read and leaves the venue
 // unreachable, so the parameter cannot be used to discover anything.
 func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *http.Request) {
-	principal, ok := handler.trading.identity(w, r)
-	if !ok {
+	principal, _ := handler.trading.options.Principal(r)
+	if len(r.URL.Query()["accountId"]) > 0 && strings.TrimSpace(principal) == "" {
+		tradingError(w, http.StatusUnauthorized, "AUTH_REQUIRED")
 		return
 	}
 	if handler.trading.options.FundingBoard == nil {
@@ -241,6 +274,11 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 		return
 	}
 	board, err := handler.trading.options.FundingBoard.Get(r.Context())
+	if err != nil {
+		tradingError(w, http.StatusServiceUnavailable, "PUBLIC_DATA_NOT_READY")
+		return
+	}
+	snapshot, err := handler.trading.options.Catalog.Snapshot(r.Context())
 	if err != nil {
 		tradingError(w, http.StatusServiceUnavailable, "PUBLIC_DATA_NOT_READY")
 		return
@@ -257,17 +295,35 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 			continue
 		}
 		for _, row := range venue.Rows {
-			if row.BaseAsset == "" || row.QuoteAsset == "" || row.Rate == "" {
+			instrument, listed := canonicalBoardPerp(snapshot, venue, row)
+			if !listed {
+				// The funding board is intentionally diagnostic and may retain a
+				// venue fact while its catalog column is unavailable. An arbitrage
+				// opportunity is a stronger promise: both legs must already resolve
+				// to canonical, trade-addressable instruments so history, preview and
+				// execution all use the same identity.
 				continue
 			}
-			key := boardKey{base: row.BaseAsset, quote: row.QuoteAsset}
+			// Group public facts before applying a strategy's field requirements.
+			// Funding carry needs a rate and interval, whereas a TradFi
+			// cross-perpetual spread only needs current prices. Requiring a rate
+			// here made a valid price opportunity disappear merely because the
+			// venue published funding through a different channel.
+			key := boardKey{base: instrument.BaseAsset, quote: instrument.QuoteAsset}
 			leg := arbitrageOpportunityLeg{
-				Venue: venue.Venue, Environment: venue.Environment,
-				RouteProfileID: venue.RouteProfileID, Settlement: venue.Settlement,
-				InstrumentID: row.InstrumentID, Rate: row.Rate,
+				Venue: venue.Venue, Environment: venue.Environment, Product: venue.Product,
+				RouteProfileID: venue.RouteProfileID, Settlement: instrument.Settlement,
+				MarketFamily: instrument.MarketFamily, AssetClass: instrument.AssetClass,
+				ClassificationSource: instrument.ClassificationSource,
+				InstrumentID:         instrument.InstrumentID, Rate: row.Rate,
 				IntervalHours: row.IntervalHours, NextFundingTime: row.NextFundingTime,
-				MarkPrice: row.MarkPrice, OpenInterest: row.OpenInterest,
-				OpenInterestNotional: row.OpenInterestNotional, Stale: venue.Stale,
+				MarkPrice: row.MarkPrice, IndexPrice: row.IndexPrice, ReferencePrice: row.MarkPrice,
+				OpenInterest:              row.OpenInterest,
+				OpenInterestNotional:      row.OpenInterestNotional,
+				OpenInterestNotionalAsset: row.OpenInterestNotionalAsset,
+				FundingObservedAt:         row.FundingObservedAt, PriceObservedAt: row.PriceObservedAt,
+				OpenInterestObservedAt: row.OpenInterestObservedAt, VenueStatus: venue.Status,
+				Stale: observationStale(board.ObservedAt, row.FundingObservedAt, time.Minute),
 			}
 			if daily, ok := dailyFundingRate(row.Rate, row.IntervalHours); ok {
 				leg.DailyRate = daily.String()
@@ -287,12 +343,14 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 		}
 		items = append(items, opportunity)
 	}
-	// Comparable spreads first and largest first within them; an underlying no
-	// venue published an interval for still appears, at the bottom, rather than
-	// being dropped for being unrankable.
+	items = append(items, buildTradFiPerpetualSpreads(grouped, board.ObservedAt)...)
+	items = append(items, buildCryptoSpotPerpBasis(snapshot, board, reachable)...)
+	// Comparable spreads first and largest first within them. Incomplete market
+	// facts remain visible on the funding board but never enter this strategy
+	// list, so every item here has an honest score and canonical identities.
 	slices.SortStableFunc(items, func(left, right arbitrageOpportunity) int {
-		leftValue, leftOK := decimal.NewFromString(left.SpreadDaily)
-		rightValue, rightOK := decimal.NewFromString(right.SpreadDaily)
+		leftValue, leftOK := decimal.NewFromString(left.Score)
+		rightValue, rightOK := decimal.NewFromString(right.Score)
 		switch {
 		case leftOK != nil && rightOK != nil:
 			return strings.Compare(left.Symbol, right.Symbol)
@@ -313,6 +371,30 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 }
 
 func buildOpportunity(key boardKey, legs []arbitrageOpportunityLeg) (arbitrageOpportunity, bool) {
+	fundingLegs := make([]arbitrageOpportunityLeg, 0, len(legs))
+	for _, leg := range legs {
+		if strings.TrimSpace(leg.InstrumentID) == "" || strings.TrimSpace(leg.Rate) == "" {
+			continue
+		}
+		if _, err := decimal.NewFromString(leg.Rate); err != nil {
+			continue
+		}
+		if _, err := decimal.NewFromString(leg.DailyRate); err != nil {
+			// Comparing raw rates from different settlement clocks creates a
+			// plausible but dimensionally invalid spread. Until the venue's quote
+			// period is known this is a board fact, not an opportunity.
+			continue
+		}
+		fundingLegs = append(fundingLegs, leg)
+	}
+	legs = fundingLegs
+	assetClass, compatible := opportunityAssetClass(legs)
+	if !compatible {
+		// The same ticker can name unrelated economic assets. Once two venues
+		// explicitly disagree, pairing them would manufacture an arbitrage out
+		// of a naming collision; unknown legs never overrule a known class.
+		return arbitrageOpportunity{}, false
+	}
 	// One quote per exchange, so the two extremes below cannot land on the same
 	// one. A hedge with both legs on one exchange is not a hedge — it is
 	// delta-neutral against nothing and pays no spread.
@@ -336,11 +418,8 @@ func buildOpportunity(key boardKey, legs []arbitrageOpportunityLeg) (arbitrageOp
 		return arbitrageOpportunity{}, false
 	}
 
-	// Indices, because the two extremes can otherwise coincide: `compareRates`
-	// declines to order legs that published no interval, so an underlying only
-	// one exchange dated leaves both on `venues[0]` and reports a zero spread
-	// between a venue and itself. When nothing separates them any two exchanges
-	// will do — the pair is unranked, and says so through the blocker below.
+	// Indices keep the direction explicit even when two venues publish the same
+	// daily rate. Every leg admitted above has a comparable daily value.
 	lowest, highest := 0, 0
 	for index := 1; index < len(venues); index++ {
 		if compareRates(venues[index], venues[lowest]) < 0 {
@@ -356,29 +435,317 @@ func buildOpportunity(key boardKey, legs []arbitrageOpportunityLeg) (arbitrageOp
 	long, short := venues[lowest], venues[highest]
 
 	opportunity := arbitrageOpportunity{
+		ID:     arbitrageOpportunityID(arbitrageStrategyFunding, long, short),
 		Symbol: key.base + "-" + key.quote, BaseAsset: key.base, QuoteAsset: key.quote,
+		AssetClass: assetClass, StrategyFamily: strategyFamily(assetClass), Strategy: arbitrageStrategyFunding,
 		Long: long, Short: short, Blockers: []string{},
 	}
-	longDaily, longOK := decimal.NewFromString(long.DailyRate)
-	shortDaily, shortOK := decimal.NewFromString(short.DailyRate)
-	if longOK == nil && shortOK == nil {
-		spread := shortDaily.Sub(longDaily)
-		opportunity.SpreadDaily = spread.String()
-		opportunity.SpreadApr = spread.Mul(decimal.NewFromInt(365)).String()
-	} else {
-		opportunity.Blockers = append(opportunity.Blockers, "funding_interval_unknown")
-	}
+	longDaily, _ := decimal.NewFromString(long.DailyRate)
+	shortDaily, _ := decimal.NewFromString(short.DailyRate)
+	spread := shortDaily.Sub(longDaily)
+	opportunity.SpreadDaily = spread.String()
+	opportunity.SpreadApr = spread.Mul(decimal.NewFromInt(365)).String()
+	opportunity.Score = spread.Abs().String()
 	if long.AccountID == "" || short.AccountID == "" {
 		opportunity.Blockers = append(opportunity.Blockers, "account_unreachable")
-	}
-	if long.InstrumentID == "" || short.InstrumentID == "" {
-		opportunity.Blockers = append(opportunity.Blockers, "instrument_identity_unresolved")
 	}
 	if long.Stale || short.Stale {
 		opportunity.Blockers = append(opportunity.Blockers, "board_stale")
 	}
 	opportunity.Executable = len(opportunity.Blockers) == 0
 	return opportunity, true
+}
+
+// buildTradFiPerpetualSpreads is deliberately separate from the funding
+// reducer above. It ranks price dislocation, not carry: the cheapest mark is
+// bought and the dearest is sold, while funding remains visible only as leg
+// context. The executable preview replaces both marks with live BBO prices.
+func buildTradFiPerpetualSpreads(grouped map[boardKey][]arbitrageOpportunityLeg, observedAt time.Time) []arbitrageOpportunity {
+	items := make([]arbitrageOpportunity, 0, len(grouped))
+	for key, all := range grouped {
+		legs := make([]arbitrageOpportunityLeg, 0, len(all))
+		seen := map[string]struct{}{}
+		for _, leg := range all {
+			if strings.TrimSpace(leg.InstrumentID) == "" || !tradFiAssetClass(leg.AssetClass) {
+				continue
+			}
+			leg.Stale = observationStale(observedAt, leg.PriceObservedAt, 15*time.Second)
+			mark, err := decimal.NewFromString(leg.MarkPrice)
+			if err != nil || !mark.IsPositive() {
+				continue
+			}
+			identity := leg.Venue + "\x00" + leg.Environment
+			if _, duplicate := seen[identity]; duplicate {
+				continue
+			}
+			seen[identity] = struct{}{}
+			legs = append(legs, leg)
+		}
+		assetClass, compatible := opportunityAssetClass(legs)
+		if !compatible || !tradFiAssetClass(assetClass) || len(legs) < 2 {
+			continue
+		}
+		lowest, highest := 0, 0
+		for index := 1; index < len(legs); index++ {
+			value, _ := decimal.NewFromString(legs[index].MarkPrice)
+			low, _ := decimal.NewFromString(legs[lowest].MarkPrice)
+			high, _ := decimal.NewFromString(legs[highest].MarkPrice)
+			if value.LessThan(low) {
+				lowest = index
+			}
+			if value.GreaterThan(high) {
+				highest = index
+			}
+		}
+		if lowest == highest {
+			continue
+		}
+		long, short := legs[lowest], legs[highest]
+		low, _ := decimal.NewFromString(long.MarkPrice)
+		high, _ := decimal.NewFromString(short.MarkPrice)
+		mid := high.Add(low).Div(decimal.NewFromInt(2))
+		spread := high.Sub(low).Div(mid)
+		candidate := arbitrageOpportunity{
+			ID:     arbitrageOpportunityID(arbitrageStrategyPerpSpread, long, short),
+			Symbol: key.base + "-" + key.quote, BaseAsset: key.base, QuoteAsset: key.quote,
+			AssetClass: assetClass, StrategyFamily: "tradfi_perpetual", Strategy: arbitrageStrategyPerpSpread,
+			Long: long, Short: short, PriceSpread: spread.String(), Score: spread.Abs().String(), Blockers: []string{},
+		}
+		candidate.Long.ReferencePrice = candidate.Long.MarkPrice
+		candidate.Short.ReferencePrice = candidate.Short.MarkPrice
+		candidate.Blockers = appendOpportunityBlockers(candidate.Blockers, long, short)
+		candidate.Executable = len(candidate.Blockers) == 0
+		items = append(items, candidate)
+	}
+	return items
+}
+
+// buildCryptoSpotPerpBasis discovers cash-and-carry pairs without issuing an
+// order-book request per catalog row. Perpetual mark/index prices are bulk
+// venue facts and are used only for ranking. The spot leg is an exact catalog
+// instrument; preview time reads both books and seals the actual buy/sell edge.
+func buildCryptoSpotPerpBasis(snapshot catalog.Snapshot, board marketdata.BoardSnapshot, reachable map[string]string) []arbitrageOpportunity {
+	spots := map[boardKey][]arbitrageOpportunityLeg{}
+	for _, instrument := range snapshot.Instruments {
+		if !instrument.Ready || instrument.Product != "spot" || instrument.BaseAsset == "" || instrument.QuoteAsset == "" {
+			continue
+		}
+		profile := routeProfileForInstrument(snapshot, instrument)
+		if profile == "" {
+			continue
+		}
+		leg := arbitrageOpportunityLeg{
+			Venue: instrument.Venue, Environment: instrument.Environment, Product: instrument.Product,
+			RouteProfileID: profile, Settlement: instrument.Settlement,
+			MarketFamily: instrument.MarketFamily, AssetClass: instrument.AssetClass,
+			ClassificationSource: instrument.ClassificationSource, InstrumentID: instrument.InstrumentID,
+		}
+		if accountID, ok := reachable[profile]; ok {
+			leg.AccountID = accountID
+		}
+		key := boardKey{base: instrument.BaseAsset, quote: instrument.QuoteAsset}
+		spots[key] = append(spots[key], leg)
+	}
+
+	best := map[boardKey]arbitrageOpportunity{}
+	for _, venue := range board.Venues {
+		if venue.Unavailable || venue.Product != arbitrageProduct {
+			continue
+		}
+		for _, row := range venue.Rows {
+			instrument, listed := canonicalBoardPerp(snapshot, venue, row)
+			if !listed {
+				continue
+			}
+			key := boardKey{base: instrument.BaseAsset, quote: instrument.QuoteAsset}
+			if key.base == "" || key.quote == "" || len(spots[key]) == 0 {
+				continue
+			}
+			mark, markErr := decimal.NewFromString(row.MarkPrice)
+			index, indexErr := decimal.NewFromString(row.IndexPrice)
+			if markErr != nil || indexErr != nil || !mark.IsPositive() || !index.IsPositive() {
+				continue
+			}
+			perp := arbitrageOpportunityLeg{
+				Venue: venue.Venue, Environment: venue.Environment, Product: venue.Product,
+				RouteProfileID: venue.RouteProfileID, Settlement: instrument.Settlement,
+				MarketFamily: instrument.MarketFamily, AssetClass: instrument.AssetClass,
+				ClassificationSource: instrument.ClassificationSource, InstrumentID: instrument.InstrumentID,
+				Rate: row.Rate, IntervalHours: row.IntervalHours, NextFundingTime: row.NextFundingTime,
+				MarkPrice: row.MarkPrice, IndexPrice: row.IndexPrice, ReferencePrice: row.MarkPrice,
+				OpenInterest: row.OpenInterest, OpenInterestNotional: row.OpenInterestNotional,
+				OpenInterestNotionalAsset: row.OpenInterestNotionalAsset,
+				FundingObservedAt:         row.FundingObservedAt, PriceObservedAt: row.PriceObservedAt,
+				OpenInterestObservedAt: row.OpenInterestObservedAt, VenueStatus: venue.Status,
+			}
+			perp.Stale = observationStale(board.ObservedAt, row.PriceObservedAt, 15*time.Second)
+			if daily, ok := dailyFundingRate(row.Rate, row.IntervalHours); ok {
+				perp.DailyRate = daily.String()
+			}
+			if accountID, ok := reachable[venue.RouteProfileID]; ok {
+				perp.AccountID = accountID
+			}
+			basis := mark.Sub(index).Div(index)
+			for _, spot := range spots[key] {
+				assetClass, compatible := spotPerpAssetClass(spot.AssetClass, perp.AssetClass)
+				if !compatible {
+					continue
+				}
+				spot.ReferencePrice = row.IndexPrice
+				candidate := arbitrageOpportunity{
+					ID:     arbitrageOpportunityID(arbitrageStrategySpotPerpBasis, spot, perp),
+					Symbol: key.base + "-" + key.quote, BaseAsset: key.base, QuoteAsset: key.quote,
+					AssetClass: assetClass, StrategyFamily: "crypto_continuous", Strategy: arbitrageStrategySpotPerpBasis,
+					Long: spot, Short: perp, BasisRate: basis.String(), Score: basis.Abs().String(), Blockers: []string{},
+				}
+				candidate.Blockers = appendOpportunityBlockers(candidate.Blockers, spot, perp)
+				if !basis.IsPositive() {
+					candidate.Blockers = append(candidate.Blockers, "reverse_spot_borrow_unsupported")
+				}
+				candidate.Executable = len(candidate.Blockers) == 0
+				current, exists := best[key]
+				if !exists || betterBasisCandidate(candidate, current) {
+					best[key] = candidate
+				}
+			}
+		}
+	}
+	items := make([]arbitrageOpportunity, 0, len(best))
+	for _, candidate := range best {
+		items = append(items, candidate)
+	}
+	return items
+}
+
+func betterBasisCandidate(candidate, current arbitrageOpportunity) bool {
+	if candidate.Executable != current.Executable {
+		return candidate.Executable
+	}
+	left, leftErr := decimal.NewFromString(candidate.BasisRate)
+	right, rightErr := decimal.NewFromString(current.BasisRate)
+	if leftErr == nil && rightErr == nil && !left.Equal(right) {
+		return left.GreaterThan(right)
+	}
+	// Prefer same-venue cash and perp when the edge is identical: it removes a
+	// transfer dependency without inventing a price advantage.
+	if (candidate.Long.Venue == candidate.Short.Venue) != (current.Long.Venue == current.Short.Venue) {
+		return candidate.Long.Venue == candidate.Short.Venue
+	}
+	return candidate.ID < current.ID
+}
+
+func appendOpportunityBlockers(blockers []string, long, short arbitrageOpportunityLeg) []string {
+	if long.AccountID == "" || short.AccountID == "" {
+		blockers = append(blockers, "account_unreachable")
+	}
+	if long.InstrumentID == "" || short.InstrumentID == "" {
+		blockers = append(blockers, "instrument_identity_unresolved")
+	}
+	if long.Stale || short.Stale {
+		blockers = append(blockers, "board_stale")
+	}
+	return blockers
+}
+
+func observationStale(now, observedAt time.Time, freshness time.Duration) bool {
+	return observedAt.IsZero() || now.Sub(observedAt) > freshness
+}
+
+func routeProfileForInstrument(snapshot catalog.Snapshot, instrument catalog.Instrument) string {
+	for _, venue := range snapshot.Venues {
+		if venue.Venue != instrument.Venue || venue.Environment != instrument.Environment {
+			continue
+		}
+		for _, profile := range venue.RouteProfiles {
+			if profile.Product == instrument.Product && profile.SettlementAsset == instrument.Settlement {
+				return profile.RouteProfileID
+			}
+		}
+	}
+	return ""
+}
+
+// canonicalBoardPerp upgrades one diagnostic board row into a strategy leg.
+// The row owns volatile values; the public catalog owns identity and
+// classification. Requiring both sources to agree here prevents an orphaned
+// ticker from reaching history or execution merely because a venue still emits
+// a quote for it.
+func canonicalBoardPerp(snapshot catalog.Snapshot, venue marketdata.BoardVenue, row marketdata.BoardRow) (catalog.Instrument, bool) {
+	instrument, ok := snapshot.Instrument(row.InstrumentID)
+	if !ok || !instrument.Ready || instrument.Product != arbitrageProduct ||
+		instrument.Venue != venue.Venue || instrument.Environment != venue.Environment ||
+		instrument.BaseAsset == "" || instrument.QuoteAsset == "" {
+		return catalog.Instrument{}, false
+	}
+	if row.BaseAsset != "" && row.BaseAsset != instrument.BaseAsset {
+		return catalog.Instrument{}, false
+	}
+	if row.QuoteAsset != "" && row.QuoteAsset != instrument.QuoteAsset {
+		return catalog.Instrument{}, false
+	}
+	if venue.Settlement != "" && instrument.Settlement != "" && venue.Settlement != instrument.Settlement {
+		return catalog.Instrument{}, false
+	}
+	if profile := routeProfileForInstrument(snapshot, instrument); profile != "" && profile != venue.RouteProfileID {
+		return catalog.Instrument{}, false
+	}
+	return instrument, true
+}
+
+// spotPerpAssetClass accepts an exact canonical spot/perpetual topology when
+// neither venue publishes an economic classification. This does not label the
+// asset as crypto: unknown stays unknown in the response. It only recognizes
+// the structural cash-and-carry strategy. Any explicit non-crypto class still
+// rejects the pair, as does a conflict between official classifications.
+func spotPerpAssetClass(spot, perp string) (string, bool) {
+	assetClass, compatible := opportunityAssetClass([]arbitrageOpportunityLeg{{AssetClass: spot}, {AssetClass: perp}})
+	if !compatible || (assetClass != "unknown" && assetClass != "crypto") {
+		return "unknown", false
+	}
+	return assetClass, true
+}
+
+func tradFiAssetClass(assetClass string) bool {
+	switch assetClass {
+	case "equity", "commodity", "index", "fx", "rates", "pre_ipo", "rwa_other":
+		return true
+	default:
+		return false
+	}
+}
+
+func arbitrageOpportunityID(strategy string, long, short arbitrageOpportunityLeg) string {
+	return strings.Join([]string{strategy, long.RouteProfileID, long.InstrumentID, short.RouteProfileID, short.InstrumentID}, ":")
+}
+
+// opportunityAssetClass returns the one venue-published class shared by the
+// legs. Unknown is absence of evidence, so it may coexist with one known class;
+// two different known classes are evidence of a ticker collision and make the
+// candidate unsafe to construct.
+func opportunityAssetClass(legs []arbitrageOpportunityLeg) (string, bool) {
+	class := "unknown"
+	for _, leg := range legs {
+		candidate := strings.TrimSpace(leg.AssetClass)
+		if candidate == "" || candidate == "unknown" {
+			continue
+		}
+		if class != "unknown" && class != candidate {
+			return "unknown", false
+		}
+		class = candidate
+	}
+	return class, true
+}
+
+func strategyFamily(assetClass string) string {
+	switch assetClass {
+	case "crypto":
+		return "crypto_continuous"
+	case "equity", "commodity", "index", "fx", "rates", "pre_ipo", "rwa_other":
+		return "tradfi_perpetual"
+	default:
+		return "unclassified"
+	}
 }
 
 // compareRates orders two venues by the daily rate when both publish an
@@ -417,7 +784,7 @@ func (handler *arbitrageProductHandler) reachableProfiles(r *http.Request, princ
 			continue
 		}
 		for _, route := range account.Routes {
-			if route.RequestedState != manualAccountActive || route.Product != arbitrageProduct ||
+			if route.RequestedState != manualAccountActive ||
 				strings.TrimSpace(route.RouteProfileID) == "" {
 				continue
 			}
@@ -444,6 +811,7 @@ func (handler *arbitrageProductHandler) createPreview(w http.ResponseWriter, r *
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
+	request.Strategy = arbitrageStrategy(request.Strategy)
 	authority, snapshot, resolved := handler.resolveAuthority(w, r, principal, request)
 	if !resolved {
 		return
@@ -478,6 +846,9 @@ func (handler *arbitrageProductHandler) createPreview(w http.ResponseWriter, r *
 }
 
 func validateArbitragePreview(request arbitragePreviewRequest) error {
+	if !knownArbitrageStrategy(arbitrageStrategy(request.Strategy)) {
+		return orders.ErrNotFound
+	}
 	quantity, err := decimal.NewFromString(request.Quantity)
 	if err != nil || !quantity.IsPositive() {
 		return orders.ErrNotFound
@@ -487,7 +858,7 @@ func validateArbitragePreview(request arbitragePreviewRequest) error {
 	}
 	// Two legs on one account is not a hedge — it is the same position opened
 	// twice, and the reservation netting scope would collide on it anyway.
-	if request.Long.AccountID == request.Short.AccountID || request.Long.InstrumentID == request.Short.InstrumentID {
+	if request.Long.InstrumentID == request.Short.InstrumentID {
 		return orders.ErrNotFound
 	}
 	switch strings.ToLower(request.OrderType) {
@@ -522,7 +893,9 @@ func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, 
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
 	}
+	strategy := arbitrageStrategy(request.Strategy)
 	var authority arbitragePreviewAuthority
+	authority.Strategy = strategy
 	for _, side := range []struct {
 		leg     arbitrage.Leg
 		request arbitrageLegRequest
@@ -537,7 +910,7 @@ func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, 
 			return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
 		}
 		route, routed := manualCatalogAuthority(snapshot, account, side.request.InstrumentID)
-		if !routed || route.Product != arbitrageProduct {
+		if !routed || (route.Product != "spot" && route.Product != arbitrageProduct) {
 			tradingError(w, http.StatusNotFound, "NOT_FOUND")
 			return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
 		}
@@ -551,19 +924,59 @@ func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, 
 	}
 	// Same venue means no cross-venue spread to collect: the two legs would net
 	// to flat on one book and pay two sets of fees for the privilege.
-	if authority.Long.Venue == authority.Short.Venue && authority.Long.VenueEnvironment == authority.Short.VenueEnvironment {
+	if strategy != arbitrageStrategySpotPerpBasis && authority.Long.Venue == authority.Short.Venue && authority.Long.VenueEnvironment == authority.Short.VenueEnvironment {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
 	}
 	// And different underlyings mean the pair is not delta-neutral at all — it
 	// is two directional bets wearing a hedge's clothes.
-	longBase, longQuote, longFound := arbitrageUnderlying(snapshot, authority.Long.InstrumentID)
-	shortBase, shortQuote, shortFound := arbitrageUnderlying(snapshot, authority.Short.InstrumentID)
+	longInstrument, longFound := snapshot.Instrument(authority.Long.InstrumentID)
+	shortInstrument, shortFound := snapshot.Instrument(authority.Short.InstrumentID)
+	longBase, longQuote := longInstrument.BaseAsset, longInstrument.QuoteAsset
+	shortBase, shortQuote := shortInstrument.BaseAsset, shortInstrument.QuoteAsset
 	if !longFound || !shortFound || longBase != shortBase || longQuote != shortQuote {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
 	}
+	if !validArbitrageShape(strategy, longInstrument, shortInstrument) {
+		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+		return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
+	}
 	return authority, snapshot, true
+}
+
+func arbitrageStrategy(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return arbitrageStrategyFunding
+	}
+	return strings.TrimSpace(value)
+}
+
+func knownArbitrageStrategy(value string) bool {
+	switch value {
+	case arbitrageStrategyFunding, arbitrageStrategySpotPerpBasis, arbitrageStrategyPerpSpread:
+		return true
+	default:
+		return false
+	}
+}
+
+func validArbitrageShape(strategy string, long, short catalog.Instrument) bool {
+	assetClass, compatible := opportunityAssetClass([]arbitrageOpportunityLeg{{AssetClass: long.AssetClass}, {AssetClass: short.AssetClass}})
+	if !compatible {
+		return false
+	}
+	switch strategy {
+	case arbitrageStrategyFunding:
+		return long.Product == "perp" && short.Product == "perp"
+	case arbitrageStrategySpotPerpBasis:
+		_, basisCompatible := spotPerpAssetClass(long.AssetClass, short.AssetClass)
+		return long.Product == "spot" && short.Product == "perp" && basisCompatible
+	case arbitrageStrategyPerpSpread:
+		return long.Product == "perp" && short.Product == "perp" && tradFiAssetClass(assetClass)
+	default:
+		return false
+	}
 }
 
 func arbitrageUnderlying(snapshot catalog.Snapshot, instrumentID string) (string, string, bool) {
@@ -582,17 +995,23 @@ func arbitrageUnderlying(snapshot catalog.Snapshot, instrumentID string) (string
 // preview: a hedge priced at an unknown spread is not a decision anybody can
 // make.
 func (handler *arbitrageProductHandler) priceHedge(r *http.Request, previewID string, request arbitragePreviewRequest, authority arbitragePreviewAuthority, snapshot catalog.Snapshot) (arbitragePreview, error) {
+	if authority.Strategy != arbitrageStrategyFunding {
+		return handler.priceQuotedHedge(r, previewID, request, authority, snapshot)
+	}
 	board, err := handler.trading.options.FundingBoard.Get(r.Context())
 	if err != nil {
 		return arbitragePreview{}, err
 	}
-	quotes := indexBoard(board)
+	now := time.Now().UTC()
+	if codec, ok := handler.trading.options.Arbitrage.(arbitragePreviewCodec); ok {
+		now = codec.PreviewNow().UTC()
+	}
+	quotes := indexBoard(board, now)
 	preview := arbitragePreview{
-		PreviewID: previewID, Request: request, Quantity: request.Quantity,
+		PreviewID: previewID, Strategy: authority.Strategy, Request: request, Quantity: request.Quantity,
 		Blockers: []string{}, Warnings: []string{},
 	}
 	base, quote, _ := arbitrageUnderlying(snapshot, authority.Long.InstrumentID)
-	marks := []decimal.Decimal{}
 	dailies := map[arbitrage.Leg]decimal.Decimal{}
 	for _, side := range []struct {
 		leg       arbitrage.Leg
@@ -605,7 +1024,8 @@ func (handler *arbitrageProductHandler) priceHedge(r *http.Request, previewID st
 		*side.target = arbitragePreviewLeg{
 			AccountID: side.authority.AccountID, InstrumentID: side.authority.InstrumentID,
 			Venue: side.authority.Venue, Environment: side.authority.VenueEnvironment,
-			Side: arbitrage.OpenSide(side.leg), LimitPrice: side.authority.LimitPrice,
+			Product: side.authority.Product,
+			Side:    arbitrage.OpenSide(side.leg), LimitPrice: side.authority.LimitPrice,
 		}
 		found, ok := quotes[quoteKey{
 			venue: side.authority.Venue, environment: side.authority.VenueEnvironment,
@@ -624,9 +1044,6 @@ func (handler *arbitrageProductHandler) priceHedge(r *http.Request, previewID st
 		if found.stale {
 			preview.Warnings = append(preview.Warnings, "board_stale")
 		}
-		if mark, markErr := decimal.NewFromString(found.row.MarkPrice); markErr == nil && mark.IsPositive() {
-			marks = append(marks, mark)
-		}
 		daily, ok := dailyFundingRate(found.row.Rate, found.row.IntervalHours)
 		if !ok {
 			preview.Warnings = append(preview.Warnings, "funding_interval_unknown")
@@ -636,6 +1053,10 @@ func (handler *arbitrageProductHandler) priceHedge(r *http.Request, previewID st
 		dailies[side.leg] = daily
 	}
 	quantity, quantityErr := decimal.NewFromString(request.Quantity)
+	prices, quoteErr := handler.freshHedgePrices(r.Context(), snapshot, authority, &preview)
+	if quoteErr != nil {
+		return arbitragePreview{}, quoteErr
+	}
 	longDaily, longOK := dailies[arbitrage.LegLong]
 	shortDaily, shortOK := dailies[arbitrage.LegShort]
 	if longOK && shortOK {
@@ -645,8 +1066,8 @@ func (handler *arbitrageProductHandler) priceHedge(r *http.Request, previewID st
 		if spread.IsNegative() {
 			preview.Warnings = append(preview.Warnings, "negative_spread")
 		}
-		if len(marks) > 0 && quantityErr == nil {
-			average := decimal.Sum(marks[0], marks[1:]...).Div(decimal.NewFromInt(int64(len(marks))))
+		if quantityErr == nil {
+			average := prices[arbitrage.LegLong].Add(prices[arbitrage.LegShort]).Div(decimal.NewFromInt(2))
 			notional := quantity.Mul(average)
 			preview.Notional = notional.Round(8).String()
 			preview.DailyFunding = notional.Mul(spread).Round(8).String()
@@ -659,6 +1080,91 @@ func (handler *arbitrageProductHandler) priceHedge(r *http.Request, previewID st
 	return preview, nil
 }
 
+// priceQuotedHedge turns a bulk-discovered price strategy into a tradeable
+// preview. Long is priced at the best ask and short at the best bid; using two
+// marks here would report an edge the operator cannot actually cross.
+func (handler *arbitrageProductHandler) priceQuotedHedge(r *http.Request, previewID string, request arbitragePreviewRequest, authority arbitragePreviewAuthority, snapshot catalog.Snapshot) (arbitragePreview, error) {
+	preview := arbitragePreview{
+		PreviewID: previewID, Strategy: authority.Strategy, Request: request, Quantity: request.Quantity,
+		Blockers: []string{}, Warnings: []string{},
+	}
+	prices, err := handler.freshHedgePrices(r.Context(), snapshot, authority, &preview)
+	if err != nil {
+		return arbitragePreview{}, err
+	}
+	longPrice, shortPrice := prices[arbitrage.LegLong], prices[arbitrage.LegShort]
+	edge := shortPrice.Sub(longPrice)
+	switch authority.Strategy {
+	case arbitrageStrategySpotPerpBasis:
+		preview.BasisRate = edge.Div(longPrice).String()
+		if !edge.IsPositive() {
+			preview.Warnings = append(preview.Warnings, "negative_basis")
+		}
+	case arbitrageStrategyPerpSpread:
+		mid := shortPrice.Add(longPrice).Div(decimal.NewFromInt(2))
+		preview.PriceSpread = edge.Div(mid).String()
+		if !edge.IsPositive() {
+			preview.Warnings = append(preview.Warnings, "negative_spread")
+		}
+	}
+	quantity, err := decimal.NewFromString(request.Quantity)
+	if err == nil {
+		average := longPrice.Add(shortPrice).Div(decimal.NewFromInt(2))
+		preview.Notional = quantity.Mul(average).Round(8).String()
+	}
+	preview.Warnings = append(preview.Warnings, "fees_excluded")
+	return preview, nil
+}
+
+func (handler *arbitrageProductHandler) freshHedgePrices(ctx context.Context, snapshot catalog.Snapshot, authority arbitragePreviewAuthority, preview *arbitragePreview) (map[arbitrage.Leg]decimal.Decimal, error) {
+	if handler.trading.options.FreshMarketData == nil {
+		return nil, marketdata.ErrRateLimited
+	}
+	now := time.Now().UTC()
+	if codec, ok := handler.trading.options.Arbitrage.(arbitragePreviewCodec); ok {
+		now = codec.PreviewNow().UTC()
+	}
+	prices := map[arbitrage.Leg]decimal.Decimal{}
+	for _, side := range []struct {
+		leg       arbitrage.Leg
+		authority arbitrageLegAuthority
+		target    *arbitragePreviewLeg
+	}{
+		{arbitrage.LegLong, authority.Long, &preview.Long},
+		{arbitrage.LegShort, authority.Short, &preview.Short},
+	} {
+		instrument, found := snapshot.Instrument(side.authority.InstrumentID)
+		if !found {
+			return nil, orders.ErrNotFound
+		}
+		fact, err := handler.trading.options.FreshMarketData.Get(ctx, marketdata.Query{
+			Venue: instrument.Venue, Environment: instrument.Environment,
+			Product: instrument.Product, InstrumentID: instrument.InstrumentID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if fact.ObservedAt.IsZero() || now.Sub(fact.ObservedAt.UTC()) > 2*time.Second || fact.ObservedAt.UTC().After(now.Add(time.Second)) {
+			return nil, orders.ErrNotFound
+		}
+		priceText := fact.BestAsk
+		if side.leg == arbitrage.LegShort {
+			priceText = fact.BestBid
+		}
+		price, err := decimal.NewFromString(priceText)
+		if err != nil || !price.IsPositive() {
+			return nil, orders.ErrNotFound
+		}
+		prices[side.leg] = price
+		target := side.target
+		target.AccountID, target.InstrumentID = side.authority.AccountID, side.authority.InstrumentID
+		target.Venue, target.Environment, target.Product = side.authority.Venue, side.authority.VenueEnvironment, side.authority.Product
+		target.Symbol, target.Side, target.LimitPrice = instrument.Symbol, arbitrage.OpenSide(side.leg), side.authority.LimitPrice
+		target.BestBid, target.BestAsk, target.ExecutionPrice, target.MarkPrice = fact.BestBid, fact.BestAsk, priceText, fact.MarkPrice
+	}
+	return prices, nil
+}
+
 type quoteKey struct{ venue, environment, base, quote string }
 
 type boardQuote struct {
@@ -666,7 +1172,7 @@ type boardQuote struct {
 	stale bool
 }
 
-func indexBoard(board marketdata.BoardSnapshot) map[quoteKey]boardQuote {
+func indexBoard(board marketdata.BoardSnapshot, now time.Time) map[quoteKey]boardQuote {
 	quotes := map[quoteKey]boardQuote{}
 	for _, venue := range board.Venues {
 		if venue.Unavailable || venue.Product != arbitrageProduct {
@@ -677,7 +1183,7 @@ func indexBoard(board marketdata.BoardSnapshot) map[quoteKey]boardQuote {
 				continue
 			}
 			key := quoteKey{venue: venue.Venue, environment: venue.Environment, base: row.BaseAsset, quote: row.QuoteAsset}
-			quotes[key] = boardQuote{row: row, stale: venue.Stale}
+			quotes[key] = boardQuote{row: row, stale: observationStale(now, row.FundingObservedAt, time.Minute)}
 		}
 	}
 	return quotes
@@ -758,6 +1264,7 @@ func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.
 	now := codec.PreviewNow()
 	if json.Unmarshal(payload, &sealed) != nil || sealed.PrincipalID != principal ||
 		validateArbitragePreview(sealed.Request) != nil || !arbitrageLegSealed(sealed.Long) || !arbitrageLegSealed(sealed.Short) ||
+		sealed.Strategy != arbitrageStrategy(sealed.Request.Strategy) ||
 		sealed.CatalogRevision == "" || sealed.IssuedAt.IsZero() || sealed.ExpiresAt.IsZero() ||
 		sealed.ExpiresAt.Sub(sealed.IssuedAt) != arbitragePreviewTTL || now.Before(sealed.IssuedAt) || !now.Before(sealed.ExpiresAt) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
@@ -772,7 +1279,7 @@ func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.
 		return
 	}
 	if snapshot.Revision != sealed.CatalogRevision ||
-		current.Long != sealed.Long || current.Short != sealed.Short {
+		current.Strategy != sealed.Strategy || current.Long != sealed.Long || current.Short != sealed.Short {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
@@ -792,7 +1299,7 @@ func (handler *arbitrageProductHandler) openPair(w http.ResponseWriter, r *http.
 
 func arbitrageLegSealed(leg arbitrageLegAuthority) bool {
 	return leg.AccountID != "" && leg.InstrumentID != "" && leg.Venue != "" && leg.VenueEnvironment != "" &&
-		leg.Product == arbitrageProduct && leg.RouteID != "" && leg.Fence.AccountID == leg.AccountID &&
+		(leg.Product == "spot" || leg.Product == arbitrageProduct) && leg.RouteID != "" && leg.Fence.AccountID == leg.AccountID &&
 		strings.TrimSpace(leg.Fence.RuntimeID) != ""
 }
 
@@ -854,20 +1361,20 @@ func (handler *arbitrageProductHandler) submitLegs(w http.ResponseWriter, r *htt
 // a two-leg hedge would quietly become one leg placed twice.
 func (handler *arbitrageProductHandler) placeLeg(r *http.Request, principal, lineageID, idempotencyKey string, order arbitrageLegOrder) (orders.Command, bool, error) {
 	side := arbitrage.OpenSide(order.Leg)
-	if order.ReduceOnly {
+	if order.Closing {
 		side = arbitrage.ReduceSide(order.Leg)
 	}
-	payload, err := arbitrage.EncodeIntent(
+	payload, err := arbitrage.EncodeIntentWithClose(
 		order.Leg, order.Authority.InstrumentID, side, order.Quantity, order.OrderType,
 		order.LimitPrice, order.TimeInForce, order.Authority.RouteID,
-		order.Counter.AccountID, order.Counter.InstrumentID, order.ReduceOnly,
+		order.Counter.AccountID, order.Counter.InstrumentID, order.ReduceOnly, order.Closing,
 		order.Authority.Fence.RuntimeID,
 	)
 	if err != nil {
 		return orders.Command{}, false, err
 	}
 	kind := reservations.KindOpen
-	if order.ReduceOnly {
+	if order.Closing {
 		kind = reservations.KindClose
 	}
 	suffix := ":" + string(order.Leg)
@@ -936,7 +1443,7 @@ func (handler *arbitrageProductHandler) closePair(w http.ResponseWriter, r *http
 			continue
 		}
 		view, viewErr := arbitrage.DescribeLeg(command)
-		if viewErr != nil || view.ReduceOnly {
+		if viewErr != nil || view.Closing {
 			continue
 		}
 		openings[command.AccountID+"\x00"+view.InstrumentID] = view
@@ -966,7 +1473,8 @@ func (handler *arbitrageProductHandler) closePair(w http.ResponseWriter, r *http
 		}
 		legs = append(legs, arbitrageLegOrder{
 			Leg: opening.Leg, Authority: authority, Counter: arbitrageCounterOf(openings, opening),
-			Quantity: quantity.Abs().String(), OrderType: "market", ReduceOnly: true,
+			Quantity: quantity.Abs().String(), OrderType: "market", Closing: true,
+			ReduceOnly: authority.Product == arbitrageProduct,
 		})
 	}
 	if len(legs) == 0 {
@@ -1002,7 +1510,7 @@ func (handler *arbitrageProductHandler) closeAuthority(r *http.Request, principa
 		return arbitrageLegAuthority{}, false
 	}
 	route, routed := manualCatalogAuthority(snapshot, account, position.InstrumentID)
-	if !routed || route.Product != arbitrageProduct {
+	if !routed || (route.Product != "spot" && route.Product != arbitrageProduct) {
 		return arbitrageLegAuthority{}, false
 	}
 	return arbitrageLegAuthority{
@@ -1026,7 +1534,7 @@ func (handler *arbitrageProductHandler) replayClose(commands []orders.Command, r
 			continue
 		}
 		view, err := arbitrage.DescribeLeg(command)
-		if command.LineageID != request.LineageID || err != nil || view.OrderType != "market" || !view.ReduceOnly {
+		if command.LineageID != request.LineageID || err != nil || view.OrderType != "market" || !view.Closing {
 			return nil, true, true
 		}
 		matched = append(matched, command)

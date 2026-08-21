@@ -11,7 +11,9 @@ package fundingboard
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -37,11 +39,9 @@ var (
 )
 
 const (
-	// One refresh per half-minute, retained for two, matching publicconn's
-	// ratio rather than its absolute values: funding settles hourly at the
-	// fastest, but mark and index prices move continuously and the board is
-	// read to compare venues against each other, so a column two refreshes
-	// behind its neighbours is a spread that is not really there.
+	// The polling interval is only a compatibility fallback for factories that
+	// do not implement FeedFactory. Production feeds use their venue WebSocket
+	// cadence instead.
 	defaultRefreshInterval = 30 * time.Second
 	defaultMaxAge          = 2 * time.Minute
 
@@ -73,6 +73,14 @@ type Connector interface {
 // has no funding surface at all.
 type Factory interface {
 	Build(routeprofile.Profile) (Connector, error)
+}
+
+// FeedFactory is the realtime capability implemented by the production
+// exchange factory. Factory remains the small compatibility boundary used by
+// tests and alternate builds; when FeedFactory is absent Source adapts the
+// connector into a polling feed owned by the same venue supervisor.
+type FeedFactory interface {
+	BuildFeed(routeprofile.Profile) (exchange.FundingMarketFeed, error)
 }
 
 // HistoryConnector is one venue's settled-funding series for one instrument at
@@ -130,6 +138,10 @@ type VenueSnapshot struct {
 	ObservedAt     time.Time
 	Stale          bool
 	Unavailable    bool
+	Status         exchange.FundingMarketFeedState
+	LastSuccessAt  time.Time
+	LastError      string
+	Reconnects     uint64
 	Entries        []exchange.FundingBoardEntry
 }
 
@@ -161,6 +173,23 @@ func (factory *ExchangeFactory) Build(profile routeprofile.Profile) (Connector, 
 	return connector, nil
 }
 
+func (factory *ExchangeFactory) BuildFeed(profile routeprofile.Profile) (exchange.FundingMarketFeed, error) {
+	if factory == nil || factory.httpClient == nil {
+		return nil, ErrBoardUnavailable
+	}
+	feed, err := exchangefactory.NewPublicFundingMarketFeed(
+		exchange.Venue(profile.Venue),
+		exchange.Product(profile.Product),
+		profile.SettlementAsset,
+		exchangefactory.EnvironmentLive,
+		factory.httpClient,
+	)
+	if err != nil {
+		return nil, ErrBoardUnavailable
+	}
+	return feed, nil
+}
+
 // BuildHistory opens the same profile's history surface, or reports that the
 // profile has none.
 //
@@ -186,31 +215,61 @@ func (factory *ExchangeFactory) BuildHistory(profile routeprofile.Profile) (Hist
 }
 
 type Source struct {
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	columns      []*column
 	interval     time.Duration
 	maxAge       time.Duration
 	venueTimeout time.Duration
 	now          func() time.Time
 
-	lastAttempt time.Time
-	refreshing  bool
-	refreshDone chan struct{}
-	closed      bool
+	runCancel context.CancelFunc
+	runDone   chan struct{}
+	running   bool
+	closed    bool
+	updates   chan ChangeKind
+	sequence  uint64
+	nextSub   uint64
+	subs      map[uint64]chan Change
+	observer  Observer
+}
+
+// Observer receives bounded per-route lifecycle metrics. Implementations must
+// not retain credentials or native payloads; none are passed here.
+type Observer interface {
+	ObserveFundingMarket(venue, route, state string, lastSuccess time.Time, reconnects uint64)
+}
+
+// ChangeKind describes which part of the resident projection changed. Upserts
+// carry market facts; venue_status reports lifecycle changes such as a feed
+// degrading or reconnecting. The wire layer turns the first Change of either
+// kind into a complete snapshot.
+type ChangeKind string
+
+const (
+	ChangeUpsert      ChangeKind = "upsert"
+	ChangeVenueStatus ChangeKind = "venue_status"
+)
+
+type Change struct {
+	Sequence uint64
+	Kind     ChangeKind
 }
 
 type column struct {
-	profile   routeprofile.Profile
-	connector Connector
+	profile routeprofile.Profile
+	feed    exchange.FundingMarketFeed
 
 	// nil on a venue that publishes rates but no settled series. Set once at
 	// construction and never reassigned, so History may read it without the
 	// mutex; entries below is the part that changes.
 	history HistoryConnector
 
-	// Guarded by Source.mu.
-	entries    []exchange.FundingBoardEntry
-	observedAt time.Time
+	// Guarded by Source.mu. Facts are keyed by the stable native identity.
+	facts       map[string]exchange.FundingMarketFact
+	status      exchange.FundingMarketFeedState
+	lastSuccess time.Time
+	lastError   string
+	reconnects  uint64
 }
 
 type sourceOptions struct {
@@ -223,9 +282,8 @@ type sourceOptions struct {
 // NewSource enumerates the perpetual route profiles and opens one
 // credential-free connector per profile that has a funding surface.
 //
-// A profile the factory rejects is not a column. That is how aster stays off
-// the board: the capability matrix records that it publishes no funding, so
-// "aster has no rates" and "aster is down" never become the same rendering.
+// A profile the factory rejects is not a column. Every configured perpetual
+// venue with a public funding surface, including Aster, is therefore present.
 func NewSource(factory Factory, trusted *routeprofile.Registry) (*Source, error) {
 	return newSource(factory, trusted, sourceOptions{
 		interval:     defaultRefreshInterval,
@@ -233,6 +291,34 @@ func NewSource(factory Factory, trusted *routeprofile.Registry) (*Source, error)
 		venueTimeout: defaultVenueTimeout,
 		now:          time.Now,
 	})
+}
+
+func (source *Source) SetObserver(observer Observer) {
+	if source == nil {
+		return
+	}
+	type currentObservation struct {
+		venue, route   string
+		state          exchange.FundingMarketFeedState
+		lastSuccess    time.Time
+		reconnectCount uint64
+	}
+	source.mu.Lock()
+	source.observer = observer
+	observations := make([]currentObservation, 0, len(source.columns))
+	for _, current := range source.columns {
+		observations = append(observations, currentObservation{
+			venue: current.profile.Venue, route: current.profile.ID, state: current.status,
+			lastSuccess: current.lastSuccess, reconnectCount: current.reconnects,
+		})
+	}
+	source.mu.Unlock()
+	if observer == nil {
+		return
+	}
+	for _, current := range observations {
+		observer.ObserveFundingMarket(current.venue, current.route, string(current.state), current.lastSuccess, current.reconnectCount)
+	}
 }
 
 func newSource(factory Factory, trusted *routeprofile.Registry, options sourceOptions) (*Source, error) {
@@ -262,14 +348,26 @@ func newSource(factory Factory, trusted *routeprofile.Registry, options sourceOp
 		if profile.Product != routeprofile.ProductPerp {
 			continue
 		}
-		connector, err := factory.Build(profile)
-		if err != nil || connector == nil {
-			continue
+		var feed exchange.FundingMarketFeed
+		if feeds, ok := factory.(FeedFactory); ok {
+			built, err := feeds.BuildFeed(profile)
+			if err != nil || built == nil {
+				continue
+			}
+			feed = built
+		} else {
+			connector, err := factory.Build(profile)
+			if err != nil || connector == nil {
+				continue
+			}
+			feed = newConnectorFeed(profile, connector, options.interval, options.now)
 		}
 		columns = append(columns, &column{
-			profile:   profile,
-			connector: connector,
-			history:   buildHistory(factory, profile),
+			profile: profile,
+			feed:    feed,
+			history: buildHistory(factory, profile),
+			facts:   make(map[string]exchange.FundingMarketFact),
+			status:  exchange.FundingMarketFeedUnavailable,
 		})
 	}
 	if len(columns) == 0 {
@@ -284,7 +382,130 @@ func newSource(factory Factory, trusted *routeprofile.Registry, options sourceOp
 		maxAge:       options.maxAge,
 		venueTimeout: options.venueTimeout,
 		now:          options.now,
+		updates:      make(chan ChangeKind, 2),
+		subs:         make(map[uint64]chan Change),
 	}, nil
+}
+
+type connectorFeed struct {
+	connector Connector
+	scope     exchange.CatalogScope
+	interval  time.Duration
+	now       func() time.Time
+	mu        sync.RWMutex
+	status    exchange.FundingMarketFeedStatus
+}
+
+func newConnectorFeed(profile routeprofile.Profile, connector Connector, interval time.Duration, now func() time.Time) *connectorFeed {
+	return &connectorFeed{
+		connector: connector,
+		scope: exchange.CatalogScope{
+			Venue: exchange.Venue(profile.Venue), Environment: exchange.EnvironmentLive,
+			Product: exchange.ProductPerp, Settlement: profile.SettlementAsset,
+		},
+		interval: interval, now: now,
+		status: exchange.FundingMarketFeedStatus{State: exchange.FundingMarketFeedUnavailable},
+	}
+}
+
+func (feed *connectorFeed) Bootstrap(ctx context.Context) (exchange.FundingMarketPatch, error) {
+	snapshot, err := feed.connector.Refresh(ctx)
+	if err != nil {
+		feed.setError(err)
+		return exchange.FundingMarketPatch{}, err
+	}
+	if snapshot.Scope == (exchange.CatalogScope{}) {
+		snapshot.Scope = feed.scope
+	}
+	if snapshot.ObservedAt.IsZero() {
+		snapshot.ObservedAt = feed.now().UTC()
+	}
+	patch := boardPatch(snapshot)
+	feed.mu.Lock()
+	feed.status.State = exchange.FundingMarketFeedLive
+	feed.status.LastSuccessAt = patch.ObservedAt
+	feed.status.LastError = ""
+	feed.mu.Unlock()
+	return patch, nil
+}
+
+func (feed *connectorFeed) Stream(ctx context.Context, emit func(exchange.FundingMarketPatch)) error {
+	ticker := time.NewTicker(feed.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			patch, err := feed.Bootstrap(ctx)
+			if err != nil {
+				return err
+			}
+			emit(patch)
+		}
+	}
+}
+
+func (feed *connectorFeed) Status() exchange.FundingMarketFeedStatus {
+	feed.mu.RLock()
+	defer feed.mu.RUnlock()
+	return feed.status
+}
+
+func (feed *connectorFeed) Close() error { return feed.connector.Close() }
+
+func (feed *connectorFeed) setError(err error) {
+	feed.mu.Lock()
+	if feed.status.LastSuccessAt.IsZero() {
+		feed.status.State = exchange.FundingMarketFeedUnavailable
+	} else {
+		feed.status.State = exchange.FundingMarketFeedDegraded
+	}
+	if err != nil {
+		feed.status.LastError = err.Error()
+	}
+	feed.mu.Unlock()
+}
+
+func boardPatch(snapshot exchange.FundingBoardSnapshot) exchange.FundingMarketPatch {
+	facts := make([]exchange.FundingMarketFact, 0, len(snapshot.Entries))
+	for _, entry := range snapshot.Entries {
+		settlement := snapshot.Scope.Settlement
+		if settlement == "" {
+			settlement = entry.QuoteAsset
+		}
+		fact := exchange.FundingMarketFact{
+			Instrument: exchange.InstrumentIdentity{
+				Venue: snapshot.Scope.Venue, Product: exchange.ProductPerp,
+				Symbol: entry.Symbol, NativeSymbol: entry.NativeSymbol, NativeID: entry.NativeID,
+				BaseAsset: entry.BaseAsset, QuoteAsset: entry.QuoteAsset, SettleAsset: settlement,
+			},
+			FundingRate:          exchange.OptionalDecimal{Value: entry.Rate, Valid: true},
+			FundingIntervalHours: entry.IntervalHours, NextFundingTime: entry.NextFundingTime,
+			MarkPrice: entry.MarkPrice, IndexPrice: entry.IndexPrice,
+			OpenInterest: entry.OpenInterest, OpenInterestNotional: entry.OpenInterestNotional,
+			OpenInterestNotionalAsset: entry.OpenInterestNotionalAsset,
+			FundingObservedAt:         entry.FundingObservedAt, PriceObservedAt: entry.PriceObservedAt,
+			OpenInterestObservedAt: entry.OpenInterestObservedAt,
+		}
+		if fact.FundingObservedAt.IsZero() {
+			fact.FundingObservedAt = snapshot.ObservedAt
+		}
+		if fact.PriceObservedAt.IsZero() && (fact.MarkPrice.Valid || fact.IndexPrice.Valid) {
+			fact.PriceObservedAt = snapshot.ObservedAt
+		}
+		if fact.OpenInterestObservedAt.IsZero() && (fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid) {
+			fact.OpenInterestObservedAt = snapshot.ObservedAt
+		}
+		if fact.OpenInterestNotional.Valid && fact.OpenInterestNotionalAsset == "" {
+			fact.OpenInterestNotionalAsset = settlement
+		}
+		facts = append(facts, fact)
+	}
+	return exchange.FundingMarketPatch{
+		Kind: exchange.FundingMarketPatchSnapshot, Scope: snapshot.Scope,
+		ObservedAt: snapshot.ObservedAt, Fields: exchange.FundingMarketFieldAll, Facts: facts,
+	}
 }
 
 // buildHistory opens a column's history surface when the factory has one to
@@ -306,106 +527,520 @@ func buildHistory(factory Factory, profile routeprofile.Profile) HistoryConnecto
 	return history
 }
 
-// Snapshot returns the board, refreshing first when the cached one has aged past
-// the refresh interval.
-//
-// Refresh is lazy rather than a background ticker: the board has no lease to
-// scope a loop to, so a ticker would poll a dozen venues forever whether or not
-// anybody is looking at the page. One caller does the work, concurrent callers
-// wait for it, and the attempt clock advances even when every venue fails so a
-// broken venue cannot turn each request into a retry.
-//
-// An error means the source itself is unusable. A table where every venue
-// failed is not an error: it is a snapshot whose columns all say so, which
-// tells the operator strictly more than a 503 would.
+// Snapshot is a memory-only read. Venue I/O belongs exclusively to Run, so the
+// number of HTTP callers cannot change the number or cadence of exchange
+// requests.
 func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 	if source == nil || ctx == nil || ctx.Err() != nil {
 		return Snapshot{}, ErrBoardUnavailable
 	}
+	source.mu.RLock()
+	defer source.mu.RUnlock()
+	if source.closed {
+		return Snapshot{}, ErrBoardUnavailable
+	}
+	return source.projectLocked(), nil
+}
 
+// Ready reports whether at least one route profile currently contributes a
+// fresh strategy fact. Funding, price and OI age independently; the strategy
+// layer applies its own field-specific requirements later.
+func (source *Source) Ready() bool {
+	if source == nil {
+		return false
+	}
+	source.mu.RLock()
+	defer source.mu.RUnlock()
+	if source.closed {
+		return false
+	}
+	now := source.clock()
+	for _, current := range source.columns {
+		if current.lastSuccess.IsZero() || now.Sub(current.lastSuccess) > source.maxAge {
+			continue
+		}
+		for _, fact := range current.facts {
+			if fundingFactFresh(fact, now, source.maxAge) || priceFactFresh(fact, now, source.maxAge) || openInterestFactFresh(fact, now, source.maxAge) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Run owns every public feed until ctx ends. A failed venue is retried by its
+// one supervisor and never prevents another venue from becoming live.
+func (source *Source) Run(ctx context.Context) error {
+	if source == nil || ctx == nil || ctx.Err() != nil {
+		return ErrBoardUnavailable
+	}
+	source.mu.Lock()
+	if source.closed || source.running {
+		source.mu.Unlock()
+		return ErrBoardUnavailable
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	source.runCancel = cancel
+	source.runDone = make(chan struct{})
+	source.running = true
+	targets := append([]*column(nil), source.columns...)
+	done := source.runDone
+	source.mu.Unlock()
+	defer func() {
+		source.mu.Lock()
+		if source.runDone == done {
+			close(done)
+			source.runDone = nil
+			source.running = false
+			source.runCancel = nil
+		}
+		source.mu.Unlock()
+	}()
+
+	source.bootstrapAll(runCtx, targets)
+	var group sync.WaitGroup
+	group.Add(1)
+	go func() {
+		defer group.Done()
+		source.publishLoop(runCtx)
+	}()
+	for _, venueColumns := range groupColumnsByVenue(targets) {
+		group.Add(1)
+		go func(venueColumns []*column) {
+			defer group.Done()
+			source.superviseVenue(runCtx, venueColumns)
+		}(venueColumns)
+	}
+	group.Wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// Subscribe reports resident projection changes. The first sequence always
+// means "send a complete snapshot"; subsequent sequences mean "upsert from
+// the current in-memory projection". A closed channel requires a resnapshot.
+func (source *Source) Subscribe(ctx context.Context) (<-chan Change, func(), error) {
+	if source == nil || ctx == nil || ctx.Err() != nil {
+		return nil, nil, ErrBoardUnavailable
+	}
 	source.mu.Lock()
 	if source.closed {
 		source.mu.Unlock()
-		return Snapshot{}, ErrBoardUnavailable
+		return nil, nil, ErrBoardUnavailable
 	}
-	if !source.needsRefreshLocked() {
-		projection := source.projectLocked()
-		source.mu.Unlock()
-		return projection, nil
+	source.nextSub++
+	id := source.nextSub
+	channel := make(chan Change, 2)
+	source.subs[id] = channel
+	channel <- Change{Sequence: source.sequence, Kind: ChangeUpsert}
+	source.mu.Unlock()
+
+	subscriptionCtx, stop := context.WithCancel(ctx)
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			stop()
+			source.mu.Lock()
+			if current, ok := source.subs[id]; ok {
+				delete(source.subs, id)
+				close(current)
+			}
+			source.mu.Unlock()
+		})
 	}
-	if source.refreshing {
-		done := source.refreshDone
-		source.mu.Unlock()
+	go func() {
+		<-subscriptionCtx.Done()
+		cancel()
+	}()
+	return channel, cancel, nil
+}
+
+func (source *Source) signalUpdate(kind ChangeKind) {
+	select {
+	case source.updates <- kind:
+	default:
+	}
+}
+
+func (source *Source) publishLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	pending := map[ChangeKind]bool{}
+	freshness := source.freshnessSignature()
+	for {
 		select {
 		case <-ctx.Done():
-			return Snapshot{}, ctx.Err()
-		case <-done:
-		}
-		source.mu.Lock()
-		if source.closed {
+			return
+		case kind := <-source.updates:
+			pending[kind] = true
+		case <-ticker.C:
+			currentFreshness := source.freshnessSignature()
+			if currentFreshness != freshness {
+				pending[ChangeVenueStatus] = true
+				freshness = currentFreshness
+			}
+			if len(pending) == 0 {
+				continue
+			}
+			source.mu.Lock()
+			for _, kind := range []ChangeKind{ChangeVenueStatus, ChangeUpsert} {
+				if !pending[kind] {
+					continue
+				}
+				source.sequence++
+				change := Change{Sequence: source.sequence, Kind: kind}
+				for id, subscriber := range source.subs {
+					select {
+					case subscriber <- change:
+					default:
+						close(subscriber)
+						delete(source.subs, id)
+					}
+				}
+			}
 			source.mu.Unlock()
-			return Snapshot{}, ErrBoardUnavailable
+			clear(pending)
 		}
-		projection := source.projectLocked()
-		source.mu.Unlock()
-		return projection, nil
 	}
-	source.refreshing = true
-	source.refreshDone = make(chan struct{})
-	done := source.refreshDone
-	targets := append([]*column(nil), source.columns...)
-	source.mu.Unlock()
-
-	results := source.refreshAll(ctx, targets)
-
-	source.mu.Lock()
-	source.lastAttempt = source.clock()
-	for index, result := range results {
-		if result.err != nil {
-			continue
-		}
-		targets[index].entries = result.entries
-		targets[index].observedAt = source.lastAttempt
-	}
-	source.refreshing = false
-	close(done)
-	projection := source.projectLocked()
-	source.mu.Unlock()
-	return projection, nil
 }
 
-type venueResult struct {
-	entries []exchange.FundingBoardEntry
-	err     error
+// freshnessSignature changes only when a projected field crosses one of the
+// public freshness boundaries. It lets a silent-but-open socket age from live
+// to degraded/unavailable in Trading without a periodic exchange request or a
+// fixed-rate stream of unchanged board snapshots.
+func (source *Source) freshnessSignature() uint64 {
+	const offset64 = uint64(14695981039346656037)
+	const prime64 = uint64(1099511628211)
+	mix := func(signature, value uint64) uint64 { return (signature ^ value) * prime64 }
+
+	source.mu.RLock()
+	defer source.mu.RUnlock()
+	now := source.clock()
+	signature := offset64
+	for _, current := range source.columns {
+		var available, fundingFresh, fundingDelayed, priceFresh, priceDelayed, openInterestFresh uint64
+		if !current.lastSuccess.IsZero() && now.Sub(current.lastSuccess) <= source.maxAge {
+			available = 1
+		}
+		for _, fact := range current.facts {
+			if fundingFactFresh(fact, now, source.maxAge) {
+				if now.Sub(fact.FundingObservedAt) > time.Minute {
+					fundingDelayed++
+				} else {
+					fundingFresh++
+				}
+			}
+			if priceFactFresh(fact, now, source.maxAge) {
+				if now.Sub(fact.PriceObservedAt) > 15*time.Second {
+					priceDelayed++
+				} else {
+					priceFresh++
+				}
+			}
+			if openInterestFactFresh(fact, now, source.maxAge) {
+				openInterestFresh++
+			}
+		}
+		for _, value := range []uint64{available, fundingFresh, fundingDelayed, priceFresh, priceDelayed, openInterestFresh} {
+			signature = mix(signature, value)
+		}
+	}
+	return signature
 }
 
-// refreshAll reads every venue concurrently, each under its own deadline.
-//
-// The work is detached from the calling request's context on purpose. This
-// caller holds the single-flight slot, so abandoning the refresh when the
-// browser hangs up would leave every waiter blocked until their own contexts
-// expire, and would leave the board unrefreshed for all of them.
-func (source *Source) refreshAll(ctx context.Context, targets []*column) []venueResult {
-	results := make([]venueResult, len(targets))
-	detached := context.WithoutCancel(ctx)
-
+// bootstrapAll is kept separate so offline tests can prove startup behavior
+// deterministically without starting long-lived socket loops.
+func (source *Source) bootstrapAll(ctx context.Context, targets []*column) {
 	var group sync.WaitGroup
-	for index, current := range targets {
+	for _, current := range targets {
 		group.Add(1)
-		go func(index int, current *column) {
+		go func(current *column) {
 			defer group.Done()
-			venueCtx, cancel := context.WithTimeout(detached, source.venueTimeout)
-			defer cancel()
-			snapshot, err := current.connector.Refresh(venueCtx)
+			venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
+			patch, err := current.feed.Bootstrap(venueCtx)
+			cancel()
 			if err != nil {
-				results[index] = venueResult{err: err}
+				source.recordFailure(current, err, false)
 				return
 			}
-			results[index] = venueResult{entries: snapshot.Entries}
-		}(index, current)
+			source.apply(current, patch)
+		}(current)
 	}
 	group.Wait()
-	return results
+}
+
+// groupColumnsByVenue creates the lifecycle ownership boundary. A venue may
+// still need multiple sockets because settlement markets or exchange limits
+// require sharding, but those sockets are started and re-snapshotted by one
+// supervisor rather than by independent route refresh tasks.
+func groupColumnsByVenue(columns []*column) [][]*column {
+	byVenue := make(map[string][]*column)
+	for _, current := range columns {
+		if current == nil {
+			continue
+		}
+		byVenue[current.profile.Venue] = append(byVenue[current.profile.Venue], current)
+	}
+	venues := make([]string, 0, len(byVenue))
+	for venue := range byVenue {
+		venues = append(venues, venue)
+	}
+	sort.Strings(venues)
+	groups := make([][]*column, 0, len(venues))
+	for _, venue := range venues {
+		group := byVenue[venue]
+		sort.Slice(group, func(left, right int) bool {
+			return group[left].profile.ID < group[right].profile.ID
+		})
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+func (source *Source) superviseVenue(ctx context.Context, columns []*column) {
+	if len(columns) == 0 {
+		return
+	}
+	backoff := time.Second
+	resnapshot := source.venueNeedsResnapshot(columns)
+	for ctx.Err() == nil {
+		if resnapshot {
+			if !source.bootstrapVenue(ctx, columns) {
+				if !waitFundingReconnect(ctx, backoff) {
+					return
+				}
+				backoff = nextFundingBackoff(backoff)
+				continue
+			}
+			resnapshot = false
+		}
+		err := source.streamVenue(ctx, columns)
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			err = errors.New("funding market stream ended")
+		}
+		for _, current := range columns {
+			source.recordFailure(current, err, true)
+		}
+		resnapshot = true
+		if !waitFundingReconnect(ctx, backoff) {
+			return
+		}
+		backoff = nextFundingBackoff(backoff)
+	}
+}
+
+func (source *Source) venueNeedsResnapshot(columns []*column) bool {
+	source.mu.RLock()
+	defer source.mu.RUnlock()
+	for _, current := range columns {
+		if current.lastSuccess.IsZero() {
+			return true
+		}
+	}
+	return false
+}
+
+// bootstrapVenue rebuilds every shard before any delta stream resumes. This
+// is intentionally all-or-nothing at the venue lifecycle boundary: a partial
+// baseline followed by incremental updates is indistinguishable from clearing
+// fields the venue simply did not repeat.
+func (source *Source) bootstrapVenue(ctx context.Context, columns []*column) bool {
+	results := make(chan bool, len(columns))
+	for _, current := range columns {
+		go func(current *column) {
+			venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
+			patch, err := current.feed.Bootstrap(venueCtx)
+			cancel()
+			if err != nil {
+				source.recordFailure(current, err, true)
+				results <- false
+				return
+			}
+			source.apply(current, patch)
+			results <- true
+		}(current)
+	}
+	complete := true
+	for range columns {
+		complete = <-results && complete
+	}
+	return complete
+}
+
+type venueStreamResult struct {
+	column *column
+	err    error
+}
+
+// streamVenue starts the exchange-required socket shards as one supervised
+// attempt. If any shard ends, the attempt is cancelled and the supervisor
+// re-establishes a complete REST baseline before opening fresh streams.
+func (source *Source) streamVenue(ctx context.Context, columns []*column) error {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	results := make(chan venueStreamResult, len(columns))
+	for _, current := range columns {
+		go func(current *column) {
+			err := current.feed.Stream(attemptCtx, func(patch exchange.FundingMarketPatch) {
+				source.apply(current, patch)
+			})
+			results <- venueStreamResult{column: current, err: err}
+		}(current)
+	}
+	first := <-results
+	cancel()
+	for remaining := 1; remaining < len(columns); remaining++ {
+		<-results
+	}
+	if first.err == nil {
+		return errors.New("funding market stream ended for " + first.column.profile.ID)
+	}
+	return first.err
+}
+
+func waitFundingReconnect(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func nextFundingBackoff(current time.Duration) time.Duration {
+	if current >= 30*time.Second {
+		return 30 * time.Second
+	}
+	current *= 2
+	if current > 30*time.Second {
+		return 30 * time.Second
+	}
+	return current
+}
+
+func (source *Source) recordFailure(current *column, err error, reconnect bool) {
+	source.mu.Lock()
+	if source.closed {
+		source.mu.Unlock()
+		return
+	}
+	if current.lastSuccess.IsZero() {
+		current.status = exchange.FundingMarketFeedUnavailable
+	} else {
+		current.status = exchange.FundingMarketFeedDegraded
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		current.lastError = err.Error()
+	}
+	if reconnect {
+		current.reconnects++
+	}
+	observer := source.observer
+	state, lastSuccess, reconnects := current.status, current.lastSuccess, current.reconnects
+	source.mu.Unlock()
+	if observer != nil {
+		observer.ObserveFundingMarket(current.profile.Venue, current.profile.ID, string(state), lastSuccess, reconnects)
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		slog.Warn("funding market feed degraded",
+			"venue", current.profile.Venue, "route_profile", current.profile.ID,
+			"reconnect", reconnect, "error", err)
+	}
+	source.signalUpdate(ChangeVenueStatus)
+}
+
+func (source *Source) apply(current *column, patch exchange.FundingMarketPatch) {
+	if err := patch.Validate(); err != nil {
+		source.recordFailure(current, err, false)
+		return
+	}
+	if patch.Scope.Venue != exchange.Venue(current.profile.Venue) ||
+		patch.Scope.Product != exchange.Product(current.profile.Product) ||
+		patch.Scope.Settlement != current.profile.SettlementAsset {
+		source.recordFailure(current, errors.New("funding market patch scope mismatch"), false)
+		return
+	}
+	source.mu.Lock()
+	if source.closed {
+		source.mu.Unlock()
+		return
+	}
+	if patch.Kind == exchange.FundingMarketPatchSnapshot {
+		current.facts = make(map[string]exchange.FundingMarketFact, len(patch.Facts))
+	}
+	for _, incoming := range patch.Facts {
+		key := incoming.Key()
+		fact := current.facts[key]
+		mergeFundingFact(&fact, incoming, patch.Fields, patch.ObservedAt)
+		current.facts[key] = fact
+	}
+	current.status = exchange.FundingMarketFeedLive
+	if current.lastSuccess.IsZero() || patch.ObservedAt.UTC().After(current.lastSuccess) {
+		current.lastSuccess = patch.ObservedAt.UTC()
+	}
+	current.lastError = ""
+	observer := source.observer
+	state, lastSuccess, reconnects := current.status, current.lastSuccess, current.reconnects
+	source.mu.Unlock()
+	if observer != nil {
+		observer.ObserveFundingMarket(current.profile.Venue, current.profile.ID, string(state), lastSuccess, reconnects)
+	}
+	source.signalUpdate(ChangeUpsert)
+}
+
+func mergeFundingFact(target *exchange.FundingMarketFact, incoming exchange.FundingMarketFact, fields exchange.FundingMarketField, observedAt time.Time) {
+	if fields.Has(exchange.FundingMarketFieldIdentity) || target.Instrument.NativeSymbol == "" {
+		target.Instrument = incoming.Instrument
+	}
+	fundingObservedAt := observationOr(incoming.FundingObservedAt, observedAt)
+	fundingCurrent := target.FundingObservedAt.IsZero() || !fundingObservedAt.Before(target.FundingObservedAt)
+	if fields.Has(exchange.FundingMarketFieldFunding) && fundingCurrent {
+		target.FundingRate = incoming.FundingRate
+		target.FundingObservedAt = fundingObservedAt
+	}
+	if fields.Has(exchange.FundingMarketFieldFundingInterval) && fundingCurrent {
+		target.FundingIntervalHours = incoming.FundingIntervalHours
+		if target.FundingObservedAt.IsZero() {
+			target.FundingObservedAt = fundingObservedAt
+		}
+	}
+	if fields.Has(exchange.FundingMarketFieldNextFundingTime) && fundingCurrent {
+		target.NextFundingTime = incoming.NextFundingTime
+	}
+	priceObservedAt := observationOr(incoming.PriceObservedAt, observedAt)
+	priceCurrent := target.PriceObservedAt.IsZero() || !priceObservedAt.Before(target.PriceObservedAt)
+	if fields.Has(exchange.FundingMarketFieldMarkPrice) && priceCurrent {
+		target.MarkPrice = incoming.MarkPrice
+		target.PriceObservedAt = priceObservedAt
+	}
+	if fields.Has(exchange.FundingMarketFieldIndexPrice) && priceCurrent {
+		target.IndexPrice = incoming.IndexPrice
+		target.PriceObservedAt = priceObservedAt
+	}
+	openInterestObservedAt := observationOr(incoming.OpenInterestObservedAt, observedAt)
+	openInterestCurrent := target.OpenInterestObservedAt.IsZero() || !openInterestObservedAt.Before(target.OpenInterestObservedAt)
+	if fields.Has(exchange.FundingMarketFieldOpenInterest) && openInterestCurrent {
+		target.OpenInterest = incoming.OpenInterest
+		target.OpenInterestObservedAt = openInterestObservedAt
+	}
+	if fields.Has(exchange.FundingMarketFieldOpenInterestNotional) && openInterestCurrent {
+		target.OpenInterestNotional = incoming.OpenInterestNotional
+		target.OpenInterestNotionalAsset = incoming.OpenInterestNotionalAsset
+		target.OpenInterestObservedAt = openInterestObservedAt
+	}
+}
+
+func observationOr(candidate, fallback time.Time) time.Time {
+	if !candidate.IsZero() {
+		return candidate.UTC()
+	}
+	return fallback.UTC()
 }
 
 // History returns one instrument's settled funding series from one charted
@@ -432,20 +1067,7 @@ func (source *Source) History(ctx context.Context, query HistoryQuery) (exchange
 		return exchange.FundingHistorySnapshot{}, ErrHistoryWindow
 	}
 
-	target, entry, warm, err := source.resolveHistory(query)
-	if errors.Is(err, ErrHistoryUnknownInstrument) && !warm {
-		// The mapping lives in a column that has never been read — the very
-		// first chart after startup, or one opened while a venue is down. One
-		// refresh is worth attempting before telling the caller the instrument
-		// is unlisted, because those two states are indistinguishable from here
-		// and only one of them is true. A column that *is* warm and still lacks
-		// the symbol genuinely does not list it, and refreshing ten venues over
-		// a mistyped symbol would be the wrong trade.
-		if _, refreshErr := source.Snapshot(ctx); refreshErr != nil {
-			return exchange.FundingHistorySnapshot{}, refreshErr
-		}
-		target, entry, _, err = source.resolveHistory(query)
-	}
+	target, entry, _, err := source.resolveHistory(query)
 	if err != nil {
 		return exchange.FundingHistorySnapshot{}, err
 	}
@@ -484,10 +1106,11 @@ func (source *Source) resolveHistory(query HistoryQuery) (*column, exchange.Fund
 		if current.history == nil {
 			return nil, missing, true, ErrHistoryUnsupported
 		}
-		if len(current.entries) == 0 {
+		if len(current.facts) == 0 {
 			return nil, missing, false, ErrHistoryUnknownInstrument
 		}
-		for _, candidate := range current.entries {
+		for _, fact := range current.facts {
+			candidate := fundingBoardEntry(fact)
 			if query.NativeID != "" && candidate.NativeID != "" {
 				if candidate.NativeID == query.NativeID {
 					return current, candidate, true, nil
@@ -506,13 +1129,6 @@ func (source *Source) resolveHistory(query HistoryQuery) (*column, exchange.Fund
 	return nil, missing, true, ErrHistoryUnknownInstrument
 }
 
-func (source *Source) needsRefreshLocked() bool {
-	if source.lastAttempt.IsZero() {
-		return true
-	}
-	return source.clock().Sub(source.lastAttempt) >= source.interval
-}
-
 func (source *Source) projectLocked() Snapshot {
 	observedAt := source.clock()
 	venues := make([]VenueSnapshot, 0, len(source.columns))
@@ -523,19 +1139,89 @@ func (source *Source) projectLocked() Snapshot {
 			Product:        string(current.profile.Product),
 			Settlement:     current.profile.SettlementAsset,
 			RouteProfileID: current.profile.ID,
+			Status:         current.status,
+			LastSuccessAt:  current.lastSuccess,
+			LastError:      current.lastError,
+			Reconnects:     current.reconnects,
 		}
-		age := observedAt.Sub(current.observedAt)
-		switch {
-		case current.observedAt.IsZero() || age > source.maxAge:
+		if current.lastSuccess.IsZero() || observedAt.Sub(current.lastSuccess) > source.maxAge {
 			venue.Unavailable = true
-		default:
-			venue.ObservedAt = current.observedAt
-			venue.Stale = age > source.interval
-			venue.Entries = append([]exchange.FundingBoardEntry(nil), current.entries...)
+			venue.Status = exchange.FundingMarketFeedUnavailable
+			venues = append(venues, venue)
+			continue
+		}
+		venue.ObservedAt = current.lastSuccess
+		for _, fact := range current.facts {
+			fundingFresh := fundingFactFresh(fact, observedAt, source.maxAge)
+			priceFresh := priceFactFresh(fact, observedAt, source.maxAge)
+			openInterestFresh := openInterestFactFresh(fact, observedAt, source.maxAge)
+			if !fundingFresh && !priceFresh && !openInterestFresh {
+				continue
+			}
+			projected := fact
+			if !fundingFresh {
+				projected.FundingRate = exchange.OptionalDecimal{}
+				projected.FundingIntervalHours = exchange.OptionalInt{}
+				projected.NextFundingTime = time.Time{}
+				projected.FundingObservedAt = time.Time{}
+			}
+			if !priceFresh {
+				projected.MarkPrice = exchange.OptionalDecimal{}
+				projected.IndexPrice = exchange.OptionalDecimal{}
+				projected.PriceObservedAt = time.Time{}
+			}
+			if !openInterestFresh {
+				projected.OpenInterest = exchange.OptionalDecimal{}
+				projected.OpenInterestNotional = exchange.OptionalDecimal{}
+				projected.OpenInterestNotionalAsset = ""
+				projected.OpenInterestObservedAt = time.Time{}
+			}
+			if (fundingFresh && observedAt.Sub(projected.FundingObservedAt) > time.Minute) ||
+				(priceFresh && observedAt.Sub(projected.PriceObservedAt) > 15*time.Second) {
+				venue.Stale = true
+			}
+			venue.Entries = append(venue.Entries, fundingBoardEntry(projected))
+		}
+		if venue.Stale && venue.Status == exchange.FundingMarketFeedLive {
+			venue.Status = exchange.FundingMarketFeedDegraded
+		}
+		sort.Slice(venue.Entries, func(left, right int) bool {
+			return venue.Entries[left].Symbol < venue.Entries[right].Symbol
+		})
+		if len(venue.Entries) == 0 {
+			venue.ObservedAt = time.Time{}
+			venue.Unavailable = true
+			venue.Status = exchange.FundingMarketFeedUnavailable
 		}
 		venues = append(venues, venue)
 	}
 	return Snapshot{ObservedAt: observedAt, Venues: venues}
+}
+
+func fundingFactFresh(fact exchange.FundingMarketFact, now time.Time, maxAge time.Duration) bool {
+	return fact.FundingRate.Valid && !fact.FundingObservedAt.IsZero() && now.Sub(fact.FundingObservedAt) <= maxAge
+}
+
+func priceFactFresh(fact exchange.FundingMarketFact, now time.Time, maxAge time.Duration) bool {
+	return (fact.MarkPrice.Valid || fact.IndexPrice.Valid) && !fact.PriceObservedAt.IsZero() && now.Sub(fact.PriceObservedAt) <= maxAge
+}
+
+func openInterestFactFresh(fact exchange.FundingMarketFact, now time.Time, maxAge time.Duration) bool {
+	return (fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid) && !fact.OpenInterestObservedAt.IsZero() && now.Sub(fact.OpenInterestObservedAt) <= maxAge
+}
+
+func fundingBoardEntry(fact exchange.FundingMarketFact) exchange.FundingBoardEntry {
+	return exchange.FundingBoardEntry{
+		Symbol: fact.Instrument.Symbol, NativeSymbol: fact.Instrument.NativeSymbol,
+		NativeID: fact.Instrument.NativeID, BaseAsset: fact.Instrument.BaseAsset,
+		QuoteAsset: fact.Instrument.QuoteAsset, Rate: fact.FundingRate.Value, RateValid: fact.FundingRate.Valid,
+		IntervalHours: fact.FundingIntervalHours, NextFundingTime: fact.NextFundingTime,
+		MarkPrice: fact.MarkPrice, IndexPrice: fact.IndexPrice,
+		OpenInterest: fact.OpenInterest, OpenInterestNotional: fact.OpenInterestNotional,
+		OpenInterestNotionalAsset: fact.OpenInterestNotionalAsset,
+		FundingObservedAt:         fact.FundingObservedAt, PriceObservedAt: fact.PriceObservedAt,
+		OpenInterestObservedAt: fact.OpenInterestObservedAt,
+	}
 }
 
 func (source *Source) clock() time.Time {
@@ -554,12 +1240,24 @@ func (source *Source) Close() error {
 		return nil
 	}
 	source.closed = true
+	cancel := source.runCancel
+	done := source.runDone
 	columns := source.columns
+	for id, subscriber := range source.subs {
+		close(subscriber)
+		delete(source.subs, id)
+	}
 	source.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 
 	var closeErr error
 	for _, current := range columns {
-		if err := current.connector.Close(); err != nil {
+		if err := current.feed.Close(); err != nil {
 			closeErr = errors.Join(closeErr, ErrBoardUnavailable)
 		}
 		if current.history == nil {

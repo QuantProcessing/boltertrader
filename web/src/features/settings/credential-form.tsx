@@ -50,6 +50,8 @@ export function CredentialFields({
               // is an API key for a venue, not a login the browser should offer
               // to remember and refill somewhere else.
               type={field.metadata ? "text" : "password"}
+              inputMode={field.valueType === "integer" ? "numeric" : undefined}
+              pattern={field.valueType === "integer" ? "[0-9]*" : undefined}
               autoComplete="off"
               spellCheck={false}
               disabled={disabled}
@@ -70,18 +72,40 @@ export function missingCredentialFields(venue: Venue, values: CredentialValues):
     .map((field) => field.label);
 }
 
+function validInteger(value: string): boolean {
+  if (!/^\d+$/.test(value)) return false;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0;
+}
+
+/** Filled fields whose declared wire type cannot be represented safely. */
+export function invalidCredentialFields(venue: Venue, values: CredentialValues): string[] {
+  return venue.credentialSchema.fields
+    .filter((field) => {
+      const value = (values[field.key] ?? "").trim();
+      return value !== "" && field.valueType === "integer" && !validInteger(value);
+    })
+    .map((field) => field.label);
+}
+
 /**
  * Splits the typed values into the two buckets the gateway's decoder expects.
  * `field.metadata` is the only thing that decides which side a key lands on.
  */
 export function buildCredentialBundle(venue: Venue, values: CredentialValues): CredentialBundle {
-  const metadata: CredentialValues = {};
+  const metadata: Record<string, string | number> = {};
   const secrets: CredentialValues = {};
   for (const field of venue.credentialSchema.fields) {
     const value = (values[field.key] ?? "").trim();
     if (value === "") continue;
-    if (field.metadata) metadata[field.key] = value;
-    else secrets[field.key] = value;
+    if (field.metadata) {
+      if (field.valueType === "integer") {
+        if (!validInteger(value)) throw new Error(`invalid integer credential field: ${field.key}`);
+        metadata[field.key] = Number(value);
+      } else {
+        metadata[field.key] = value;
+      }
+    } else secrets[field.key] = value;
   }
   return {
     schemaVersion: venue.credentialSchema.schemaVersion,

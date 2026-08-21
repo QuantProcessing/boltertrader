@@ -44,6 +44,7 @@ type fakeLighterPrivateWS struct {
 	authProvider           func(string) (*string, error)
 	reconnectStarted       func(error)
 	reconnectRecovered     func()
+	quietSubscriptions     bool
 }
 
 func (ws *fakeLighterPrivateWS) Connect() error              { return nil }
@@ -71,6 +72,9 @@ func (ws *fakeLighterPrivateWS) SubscribeCandle(int, string, func([]byte)) error
 }
 func (ws *fakeLighterPrivateWS) UnsubscribeCandle(int, string) error { return nil }
 func (ws *fakeLighterPrivateWS) SubscribeAccountOrders(_ int, _ int64, _ string, cb func([]byte)) error {
+	if ws.quietSubscriptions {
+		return nil
+	}
 	cb([]byte(`{"orders":{"7":[{"order_index":11,"client_order_index":123,"market_index":7,"initial_base_amount":"1.2","remaining_base_amount":"0.7","filled_base_amount":"0.5","price":"100","is_ask":false,"type":"limit","time_in_force":"post-only","status":"open","created_at":1700000000000,"updated_at":1700000000100}]}}`))
 	return nil
 }
@@ -100,6 +104,9 @@ func (ws *fakeLighterPrivateWS) SubscribeAccountAllTrades(_ int64, _ string, cb 
 	if subscribeErr != nil {
 		return subscribeErr
 	}
+	if ws.quietSubscriptions {
+		return nil
+	}
 	cb(payload)
 	return nil
 }
@@ -110,6 +117,9 @@ func (ws *fakeLighterPrivateWS) UnsubscribeAccountAllTrades(int64) error {
 	return nil
 }
 func (ws *fakeLighterPrivateWS) SubscribeAccountAllAssets(_ int64, _ string, cb func([]byte)) error {
+	if ws.quietSubscriptions {
+		return nil
+	}
 	cb([]byte(`{"timestamp":1700000000300,"assets":{"USDC":{"symbol":"USDC","balance":"10","locked_balance":"2"}}}`))
 	return nil
 }
@@ -127,6 +137,9 @@ func (ws *fakeLighterPrivateWS) SubscribeAccountAllPositions(_ int64, _ string, 
 		payload = []byte(`{"positions":{"7":{"market_id":7,"symbol":"ETH","sign":1,"position":"1","avg_entry_price":"100","position_value":"105","unrealized_pnl":"5","liquidation_price":"50","allocated_margin":"20"}}}`)
 	}
 	ws.mu.Unlock()
+	if ws.quietSubscriptions {
+		return nil
+	}
 	cb(payload)
 	return nil
 }
@@ -218,6 +231,37 @@ func TestLighterPrivateWSBackendStreamsAndCommands(t *testing.T) {
 	}
 	if cancel.TransactionHash != "0xcancel" || fake.cancel.OrderId != 11 {
 		t.Fatalf("cancel=%+v native=%+v", cancel, fake.cancel)
+	}
+}
+
+func TestLighterPrivateWSBackendStartsQuietAccountStreamsWithoutFirstEvent(t *testing.T) {
+	backend, fake := newTestLighterPrivateBackend(exchange.ProductPerp)
+	fake.quietSubscriptions = true
+	instrument := lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7")
+
+	orders, err := backend.StartOrders(context.Background(), instrument, streamCallbacks[exchange.OrderEvent]{})
+	if err != nil {
+		t.Fatalf("StartOrders: %v", err)
+	}
+	fills, err := backend.StartFills(context.Background(), instrument, streamCallbacks[exchange.FillEvent]{})
+	if err != nil {
+		t.Fatalf("StartFills: %v", err)
+	}
+	balances, err := backend.StartBalances(context.Background(), streamCallbacks[exchange.BalanceEvent]{})
+	if err != nil {
+		t.Fatalf("StartBalances: %v", err)
+	}
+	positions, err := backend.StartPositions(context.Background(), instrument, streamCallbacks[exchange.PositionEvent]{})
+	if err != nil {
+		t.Fatalf("StartPositions: %v", err)
+	}
+
+	for name, stop := range map[string]func() error{
+		"orders": orders, "fills": fills, "balances": balances, "positions": positions,
+	} {
+		if err := stop(); err != nil {
+			t.Fatalf("stop %s: %v", name, err)
+		}
 	}
 }
 

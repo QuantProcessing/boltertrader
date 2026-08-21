@@ -77,6 +77,30 @@ func TestStableInstrumentIDIsGatewayOwnedAndDoesNotUseNativeSymbols(t *testing.T
 	}
 }
 
+func TestStableInstrumentIDEscapesVenueSymbolNamespaces(t *testing.T) {
+	id, err := NewInstrumentID("hyperliquid", "live", "perp", "USDC", "xyz:TSLA-USDC")
+	if err != nil {
+		t.Fatalf("NewInstrumentID: %v", err)
+	}
+	if got, want := id.String(), "hyperliquid:live:perp:USDC:xyz%3ATSLA-USDC"; got != want {
+		t.Fatalf("instrument id = %q, want %q", got, want)
+	}
+	if got, want := id.Product(), "perp"; got != want {
+		t.Fatalf("product = %q, want %q", got, want)
+	}
+	if got, want := id.Settlement(), "USDC"; got != want {
+		t.Fatalf("settlement = %q, want %q", got, want)
+	}
+
+	percent, err := NewInstrumentID("hyperliquid", "live", "perp", "USDC", "xyz%3ATSLA-USDC")
+	if err != nil {
+		t.Fatalf("NewInstrumentID percent: %v", err)
+	}
+	if percent == id {
+		t.Fatal("percent-bearing symbol collided with a namespaced symbol")
+	}
+}
+
 func TestClientOrderIDRequiresPositiveUint48Decimal(t *testing.T) {
 	valid := []string{"1", "42", "281474976710655"}
 	for _, value := range valid {

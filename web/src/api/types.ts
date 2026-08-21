@@ -298,6 +298,19 @@ export interface Venue {
 }
 
 /** `catalog.Instrument` */
+export type MarketFamily = "spot" | "venue_perpetual" | "builder_perpetual";
+
+export type AssetClass =
+  | "unknown"
+  | "crypto"
+  | "equity"
+  | "commodity"
+  | "index"
+  | "fx"
+  | "rates"
+  | "pre_ipo"
+  | "rwa_other";
+
 export interface Instrument {
   instrumentId: string;
   venue: string;
@@ -307,6 +320,11 @@ export interface Instrument {
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
+  marketFamily: MarketFamily;
+  assetClass: AssetClass;
+  classificationSource?: string;
+  rawAssetType?: string;
+  rawCategories?: string[];
   rules: TradeRules;
   ready: boolean;
 }
@@ -420,7 +438,7 @@ export const MAX_CANDLES = 500;
  * `marketdata.BoardRow` — one instrument's funding on one venue.
  *
  * Almost every field is optional, and that is the point rather than laxity: the
- * Go side carries `omitempty` on each of these because seven of the ten funding
+ * Go side carries `omitempty` on each of these because several of the nine funding
  * venues leave open interest out of their bulk call, and two publish a bare rate
  * with no settlement clock. An absent cell arrives absent, and the matrix has to
  * render it as "—" rather than as a zero the venue never quoted.
@@ -434,15 +452,25 @@ export interface FundingBoardRow {
   symbol: string;
   baseAsset?: string;
   quoteAsset?: string;
-  rate: string;
+  marketFamily: MarketFamily;
+  assetClass: AssetClass;
+  classificationSource?: string;
+  rawAssetType?: string;
+  rawCategories?: string[];
+  rate?: string;
   intervalHours?: number;
   nextFundingTime?: string;
   markPrice?: string;
   indexPrice?: string;
-  /** Quote-stablecoin notional (USDT/USDC), safe to compare across venues. */
+  /** Quote/USD notional; see openInterestNotionalAsset for its denomination. */
   openInterestNotional?: string;
+  /** The stablecoin denomination of openInterestNotional, normally USDT/USDC. */
+  openInterestNotionalAsset?: string;
   /** Venue-native base units or contracts; never use for cross-venue sorting. */
   openInterest?: string;
+  fundingObservedAt?: string;
+  priceObservedAt?: string;
+  openInterestObservedAt?: string;
 }
 
 /**
@@ -464,6 +492,9 @@ export interface FundingBoardVenue {
   observedAt?: string;
   stale: boolean;
   unavailable: boolean;
+  status: "live" | "degraded" | "unavailable";
+  lastSuccessAt?: string;
+  reconnects?: number;
   rows: FundingBoardRow[];
 }
 
@@ -648,6 +679,11 @@ export interface ArbitrageLegRequest {
   limitPrice?: string;
 }
 
+export type ArbitrageStrategy =
+  | "cross_perp_funding"
+  | "spot_perp_basis"
+  | "cross_perp_spread";
+
 /**
  * `httpapi.arbitragePreviewRequest`.
  *
@@ -655,6 +691,7 @@ export interface ArbitrageLegRequest {
  * delta-neutral and the server refuses it.
  */
 export interface ArbitragePreviewRequest {
+  strategy: ArbitrageStrategy;
   long: ArbitrageLegRequest;
   short: ArbitrageLegRequest;
   quantity: string;
@@ -696,6 +733,7 @@ export interface ArbitragePreviewLeg {
   instrumentId: string;
   venue: string;
   environment: string;
+  product: "spot" | "perp";
   symbol?: string;
   side: OrderSide;
   limitPrice?: string;
@@ -703,6 +741,9 @@ export interface ArbitragePreviewLeg {
   intervalHours?: number;
   nextFundingTime?: string;
   markPrice?: string;
+  bestBid?: string;
+  bestAsk?: string;
+  executionPrice?: string;
   dailyRate?: string;
   stale?: boolean;
 }
@@ -716,6 +757,7 @@ export interface ArbitragePreviewLeg {
  */
 export interface ArbitragePreview {
   previewId: string;
+  strategy: ArbitrageStrategy;
   request: ArbitragePreviewRequest;
   long: ArbitragePreviewLeg;
   short: ArbitragePreviewLeg;
@@ -723,6 +765,8 @@ export interface ArbitragePreview {
   notional?: string;
   spreadDaily?: string;
   spreadApr?: string;
+  basisRate?: string;
+  priceSpread?: string;
   dailyFunding?: string;
   blockers: string[];
   warnings: string[];
@@ -735,17 +779,29 @@ export const ARBITRAGE_PREVIEW_TTL_MS = 30_000;
 export interface ArbitrageOpportunityLeg {
   venue: string;
   environment: string;
+  product: "spot" | "perp";
   routeProfileId: string;
   settlement?: string;
+  marketFamily: MarketFamily;
+  assetClass: AssetClass;
+  classificationSource?: string;
   /** Present only when the caller named an account that can reach this venue. */
   accountId?: string;
-  instrumentId?: string;
-  rate: string;
+  /** Canonical public-catalog identity; unresolved rows are not opportunities. */
+  instrumentId: string;
+  rate?: string;
   intervalHours?: number;
   nextFundingTime?: string;
   markPrice?: string;
+  indexPrice?: string;
+  referencePrice?: string;
   openInterest?: string;
   openInterestNotional?: string;
+  openInterestNotionalAsset?: string;
+  fundingObservedAt?: string;
+  priceObservedAt?: string;
+  openInterestObservedAt?: string;
+  venueStatus?: "live" | "degraded" | "unavailable";
   dailyRate?: string;
   stale?: boolean;
 }
@@ -759,13 +815,20 @@ export interface ArbitrageOpportunityLeg {
  * `blockers` says which half is missing.
  */
 export interface ArbitrageOpportunity {
+  id: string;
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
+  assetClass: AssetClass;
+  strategyFamily: "crypto_continuous" | "tradfi_perpetual" | "unclassified";
+  strategy: ArbitrageStrategy;
   long: ArbitrageOpportunityLeg;
   short: ArbitrageOpportunityLeg;
   spreadDaily?: string;
   spreadApr?: string;
+  basisRate?: string;
+  priceSpread?: string;
+  score?: string;
   executable: boolean;
   blockers: string[];
 }
@@ -800,6 +863,7 @@ export interface ArbitrageLegView {
   quantity: string;
   orderType: OrderType;
   limitPrice?: string;
+  closing?: boolean;
   reduceOnly: boolean;
   state: CommandState;
   createdAt: string;
@@ -930,7 +994,10 @@ export interface CredentialBundle {
    * metadata fields, but their valid representation is still `metadata: {}`
    * rather than an absent value.
    */
-  metadata: Record<string, string>;
+  // Identifier metadata is usually textual, but some venue protocols use
+  // JSON numbers. Lighter's accountIndex/keyIndex must remain numbers for the
+  // gateway's strict credential decoder.
+  metadata: Record<string, string | number>;
   secrets: Record<string, string>;
 }
 

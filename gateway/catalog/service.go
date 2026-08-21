@@ -65,15 +65,20 @@ func (scope Scope) validate() error {
 // symbols, native IDs, transport encodings, and credential-bearing metadata
 // never cross this boundary.
 type Instrument struct {
-	ID          domain.InstrumentID  `json:"instrument_id"`
-	Venue       exchange.Venue       `json:"venue"`
-	Environment exchange.Environment `json:"environment"`
-	Product     exchange.Product     `json:"product"`
-	Settlement  string               `json:"settlement,omitempty"`
-	Symbol      string               `json:"symbol"`
-	BaseAsset   string               `json:"base_asset"`
-	QuoteAsset  string               `json:"quote_asset"`
-	Rules       Rules                `json:"rules"`
+	ID                   domain.InstrumentID   `json:"instrument_id"`
+	Venue                exchange.Venue        `json:"venue"`
+	Environment          exchange.Environment  `json:"environment"`
+	Product              exchange.Product      `json:"product"`
+	Settlement           string                `json:"settlement,omitempty"`
+	Symbol               string                `json:"symbol"`
+	BaseAsset            string                `json:"base_asset"`
+	QuoteAsset           string                `json:"quote_asset"`
+	MarketFamily         exchange.MarketFamily `json:"market_family"`
+	AssetClass           exchange.AssetClass   `json:"asset_class"`
+	ClassificationSource string                `json:"classification_source,omitempty"`
+	RawAssetType         string                `json:"raw_asset_type,omitempty"`
+	RawCategories        []string              `json:"raw_categories,omitempty"`
+	Rules                Rules                 `json:"rules"`
 }
 
 type Rules struct {
@@ -307,11 +312,15 @@ func projectSnapshot(scope Scope, instruments []exchange.Instrument) ([]Instrume
 			return nil, nil, "", fmt.Errorf("%w: duplicate instrument identity", ErrInvalidSnapshot)
 		}
 		seen[id] = struct{}{}
+		metadata := instrument.EffectiveMetadata()
 		rows = append(rows, projected{
 			id: id,
 			public: Instrument{
 				ID: id, Venue: scope.Venue, Environment: scope.Environment, Product: scope.Product,
 				Settlement: scope.Settlement, Symbol: identity.Symbol, BaseAsset: identity.BaseAsset, QuoteAsset: identity.QuoteAsset,
+				MarketFamily: metadata.MarketFamily, AssetClass: metadata.AssetClass,
+				ClassificationSource: metadata.ClassificationSource, RawAssetType: metadata.RawAssetType,
+				RawCategories: metadata.RawCategories.Values(),
 				Rules: Rules{
 					PriceIncrement: instrument.Rules.PriceIncrement, QuantityIncrement: instrument.Rules.QuantityIncrement,
 					MinQuantity: instrument.Rules.MinQuantity, MinNotional: instrument.Rules.MinNotional,
@@ -342,6 +351,10 @@ func projectSnapshot(scope Scope, instruments []exchange.Instrument) ([]Instrume
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
 	clone := snapshot
-	clone.Instruments = append([]Instrument(nil), snapshot.Instruments...)
+	clone.Instruments = make([]Instrument, len(snapshot.Instruments))
+	for index, instrument := range snapshot.Instruments {
+		instrument.RawCategories = append([]string(nil), instrument.RawCategories...)
+		clone.Instruments[index] = instrument
+	}
 	return clone
 }

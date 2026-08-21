@@ -1,6 +1,7 @@
 package factoryclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,37 @@ func hyperliquidOpenAPICatalogSettings(t *testing.T, settings Settings, product 
 	settlement := ""
 	if product == exchange.ProductPerp {
 		settlement = "USDC"
+		// Perp discovery now begins with the official all-dex directory. Keep
+		// individual operation fixtures focused on the operation they exercise
+		// by supplying the shared directory requests here, then delegating the
+		// existing metaAndAssetCtxs and private reads to each fixture.
+		client := *settings.HTTPClient
+		transport := client.Transport
+		client.Transport = openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			payload, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			request.Body = io.NopCloser(bytes.NewReader(payload))
+			var body map[string]any
+			if err := json.Unmarshal(payload, &body); err == nil {
+				switch stringValue(body["type"]) {
+				case "allPerpMetas":
+					return openAPIJSONResponse(`[{"universe":[{"name":"BTC","szDecimals":3,"maxLeverage":50}],"collateralToken":0}]`), nil
+				case "perpDexs":
+					return openAPIJSONResponse(`[null]`), nil
+				case "spotMeta":
+					return openAPIJSONResponse(`{"tokens":[{"name":"USDC","szDecimals":6,"weiDecimals":6,"index":0,"isCanonical":true}],"universe":[]}`), nil
+				case "perpCategories":
+					return openAPIJSONResponse(`[["BTC","crypto"]]`), nil
+				case "perpConciseAnnotations":
+					return openAPIJSONResponse(`[]`), nil
+				}
+			}
+			request.Body = io.NopCloser(bytes.NewReader(payload))
+			return transport.RoundTrip(request)
+		})
+		settings.HTTPClient = &client
 	}
 	descriptor := exchange.SourceDescriptor{
 		Name:              "hyperliquid-" + string(product) + "-openapi-test",
@@ -671,7 +703,7 @@ func (router *lighterOpenAPIRouter) RoundTrip(request *http.Request) (*http.Resp
 	case "/api/v1/orderBookOrders":
 		return openAPIJSONResponse(`{"code":200,"message":"","bids":[{"order_index":1,"remaining_base_amount":"1","price":"99"}],"asks":[{"order_index":2,"remaining_base_amount":"2","price":"101"}]}`), nil
 	case "/api/v1/candles":
-		return openAPIJSONResponse(`{"code":200,"message":"","r":"1m","c":[{"t":1720000000,"o":100,"h":101,"l":99,"c":100.5,"v":3}]}`), nil
+		return openAPIJSONResponse(`{"code":200,"message":"","r":"1m","c":[{"t":1720000000000,"o":100,"h":101,"l":99,"c":100.5,"v":3}]}`), nil
 	case "/api/v1/recentTrades":
 		return openAPIJSONResponse(`{"code":200,"message":"","trades":[{"trade_id":1,"market_id":` + intString(router.marketID) + `,"size":"1","price":"100","is_maker_ask":true,"timestamp":1720000000000}]}`), nil
 	case "/api/v1/nextNonce":

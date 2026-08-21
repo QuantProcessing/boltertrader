@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -476,14 +477,66 @@ func (c *bitgetBase) Candles(ctx context.Context, req exchange.CandlesRequest) (
 	if err := validateWindow(c.meta, "Candles", req.Interval, req.Start, req.End, req.Limit, req.Cursor); err != nil {
 		return exchange.CandlePage{}, err
 	}
-	category := c.bitgetCategory()
-	rows, err := c.sdk.GetCandles(ctx, category, native, req.Interval, "", millis(req.Start), millis(req.End), req.Limit)
+	interval, err := bitgetInterval(c.meta, "Candles", req.Interval)
 	if err != nil {
-		return exchange.CandlePage{}, normErr(c.meta, "Candles", err)
+		return exchange.CandlePage{}, err
 	}
-	candles, err := convertCandles(c.meta, "Candles", rows)
-	if err != nil {
-		return exchange.CandlePage{}, malformed(c.meta, "Candles", err.Error())
+	category := c.bitgetCategory()
+	remaining := req.Limit
+	pageEnd := req.End
+	candlesByOpenTime := make(map[int64]exchange.Candle)
+	for {
+		pageLimit := remaining
+		if pageLimit == 0 || pageLimit > bitgetCandlePageLimit {
+			pageLimit = bitgetCandlePageLimit
+		}
+		rows, err := c.sdk.GetCandles(ctx, category, native, interval, "market", millis(req.Start), millis(pageEnd), pageLimit)
+		if err != nil {
+			return exchange.CandlePage{}, normErr(c.meta, "Candles", err)
+		}
+		pageCandles, err := convertCandles(c.meta, "Candles", rows)
+		if err != nil {
+			return exchange.CandlePage{}, malformed(c.meta, "Candles", err.Error())
+		}
+		if len(pageCandles) == 0 {
+			break
+		}
+
+		earliest := pageCandles[0].OpenTime
+		added := 0
+		for _, candle := range pageCandles {
+			if candle.OpenTime.Before(earliest) {
+				earliest = candle.OpenTime
+			}
+			key := candle.OpenTime.UnixMilli()
+			if _, exists := candlesByOpenTime[key]; !exists {
+				added++
+			}
+			candlesByOpenTime[key] = candle
+		}
+		if req.Limit == 0 || len(rows) < pageLimit {
+			break
+		}
+		remaining -= added
+		if remaining <= 0 {
+			break
+		}
+		nextEnd := earliest.Add(-time.Millisecond)
+		if (!req.Start.IsZero() && !nextEnd.After(req.Start)) || (!pageEnd.IsZero() && !nextEnd.Before(pageEnd)) {
+			break
+		}
+		pageEnd = nextEnd
+	}
+
+	candles := make([]exchange.Candle, 0, len(candlesByOpenTime))
+	for _, candle := range candlesByOpenTime {
+		candles = append(candles, candle)
+	}
+	sort.Slice(candles, func(i, j int) bool {
+		return candles[i].OpenTime.Before(candles[j].OpenTime)
+	})
+	if req.Limit > 0 && len(candles) > req.Limit {
+		candles = candles[len(candles)-req.Limit:]
 	}
 	return exchange.CandlePage{Candles: candles, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
@@ -2436,6 +2489,25 @@ func bybitInterval(meta clientMeta, op, interval string) (string, error) {
 	}
 }
 
+const bitgetCandlePageLimit = 100
+
+func bitgetInterval(meta clientMeta, op, interval string) (string, error) {
+	switch interval {
+	case "1m", "5m", "15m", "30m":
+		return interval, nil
+	case "1h":
+		return "1H", nil
+	case "4h":
+		return "4H", nil
+	case "12h":
+		return "12H", nil
+	case "1d":
+		return "1D", nil
+	default:
+		return "", invalid(meta, op, "unsupported interval")
+	}
+}
+
 type bybitWSBackend struct{ client *bybitBase }
 type bitgetWSBackend struct{ client *bitgetBase }
 type bybitPrivateWSBackend struct {
@@ -3344,8 +3416,12 @@ func (b *bitgetWSBackend) StartCandles(ctx context.Context, instrument exchange.
 	if err != nil {
 		return nil, err
 	}
+	wireInterval, err := bitgetInterval(b.client.meta, "WatchCandles", interval)
+	if err != nil {
+		return nil, err
+	}
 	ws := bitget.NewPublicWSClientWithProfile(b.client.profile)
-	arg := bitget.WSArg{InstType: b.client.bitgetPublicWSInstType(), Topic: "kline", Symbol: native, Interval: interval}
+	arg := bitget.WSArg{InstType: b.client.bitgetPublicWSInstType(), Topic: "kline", Symbol: native, Interval: wireInterval}
 	if err := ws.Subscribe(ctx, arg, func(payload json.RawMessage) {
 		var msg struct {
 			Data []bitget.Candle `json:"data"`

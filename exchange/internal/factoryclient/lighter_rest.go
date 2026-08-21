@@ -52,6 +52,10 @@ func (loader lighterInstrumentLoader) LoadInstruments(ctx context.Context, scope
 	if err != nil {
 		return exchange.InstrumentSnapshot{}, lighterNormalizeErr(loader.product, "InstrumentCatalog.Load", err)
 	}
+	// Classification is an enrichment, not a trading-readiness dependency. A
+	// temporary tokenlist failure leaves explicit unknown classes while the
+	// order-book metadata remains usable.
+	listed, _ := sdk.GetListedTokens(ctx)
 	marketType := lighterSpot
 	if loader.product == exchange.ProductPerp {
 		marketType = lighterPerp
@@ -62,7 +66,11 @@ func (loader lighterInstrumentLoader) LoadInstruments(ctx context.Context, scope
 	}
 	instruments := make([]exchange.Instrument, 0, len(metas))
 	for _, meta := range metas {
-		instruments = append(instruments, meta.instrument)
+		instrument := meta.instrument
+		if listed != nil {
+			lighterApplyListedTokenMetadata(&instrument, listed.Tokens)
+		}
+		instruments = append(instruments, instrument)
 	}
 	sort.Slice(instruments, func(i, j int) bool {
 		return instruments[i].Identity.Symbol < instruments[j].Identity.Symbol
@@ -73,6 +81,82 @@ func (loader lighterInstrumentLoader) LoadInstruments(ctx context.Context, scope
 		Instruments:   instruments,
 		LoadedAt:      time.Now().UTC(),
 	}, nil
+}
+
+func lighterApplyListedTokenMetadata(instrument *exchange.Instrument, tokens []lighter.ListedToken) {
+	if instrument == nil {
+		return
+	}
+	wantMarket := "SPOT"
+	if instrument.Identity.Product == exchange.ProductPerp {
+		wantMarket = "PERPS"
+	}
+	var matched *lighter.ListedToken
+	for index := range tokens {
+		candidate := &tokens[index]
+		if !strings.EqualFold(strings.TrimSpace(candidate.Symbol), instrument.Identity.BaseAsset) ||
+			!strings.EqualFold(strings.TrimSpace(candidate.Market), wantMarket) {
+			continue
+		}
+		// Ambiguous official rows are not guessed between.
+		if matched != nil {
+			return
+		}
+		matched = candidate
+	}
+	if matched == nil {
+		return
+	}
+	categories := normalizedRawCategories(matched.Categories)
+	instrument.Metadata.ClassificationSource = "lighter.tokenlist"
+	instrument.Metadata.RawAssetType = strings.TrimSpace(matched.AssetType)
+	instrument.Metadata.RawCategories = exchange.NewInstrumentCategories(categories)
+	instrument.Metadata.AssetClass = lighterAssetClass(matched.AssetType, categories)
+}
+
+func lighterAssetClass(assetType string, categories []string) exchange.AssetClass {
+	switch strings.ToUpper(strings.TrimSpace(assetType)) {
+	case "CRYPTO":
+		return exchange.AssetClassCrypto
+	case "RWA":
+	default:
+		return exchange.AssetClassUnknown
+	}
+	for _, raw := range categories {
+		category := strings.ToUpper(strings.NewReplacer("-", "_", " ", "_").Replace(raw))
+		switch category {
+		case "STOCK", "STOCKS", "EQUITY", "EQUITIES", "ETF", "ETFS":
+			return exchange.AssetClassEquity
+		case "COMMODITY", "COMMODITIES":
+			return exchange.AssetClassCommodity
+		case "INDEX", "INDICES":
+			return exchange.AssetClassIndex
+		case "FX", "FOREX":
+			return exchange.AssetClassFX
+		case "BOND", "BONDS", "RATE", "RATES":
+			return exchange.AssetClassRates
+		case "PREIPO", "PRE_IPO":
+			return exchange.AssetClassPreIPO
+		}
+	}
+	return exchange.AssetClassRWAOther
+}
+
+func normalizedRawCategories(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (client *lighterSpotClient) Instruments(ctx context.Context) ([]exchange.Instrument, error) {
@@ -792,7 +876,11 @@ func lighterCandles(ctx context.Context, sdk *lighter.Client, product exchange.P
 	if !start.Before(end) {
 		return exchange.CandlePage{}, lighterInvalid(product, "Candles", "start must be before end")
 	}
-	res, err := sdk.GetCandlesticks(ctx, meta.marketID, req.Interval, start.Unix(), end.Unix(), int64(req.Limit))
+	// Lighter's candle endpoint uses Unix milliseconds for both the request
+	// window and the timestamps in its response. Funding history is a separate
+	// endpoint with different wire semantics, so keep this conversion local to
+	// candles rather than applying a venue-wide timestamp heuristic.
+	res, err := sdk.GetCandlesticks(ctx, meta.marketID, req.Interval, start.UnixMilli(), end.UnixMilli(), int64(req.Limit))
 	if err != nil {
 		return exchange.CandlePage{}, lighterNormalizeErr(product, "Candles", err)
 	}
@@ -817,7 +905,7 @@ func lighterCandles(ctx context.Context, sdk *lighter.Client, product exchange.P
 		low := decimal.NewFromFloat(row.Low)
 		closeValue := decimal.NewFromFloat(row.Close)
 		volume := decimal.NewFromFloat(row.Volume)
-		ts := time.Unix(row.Timestamp, 0).UTC()
+		ts := time.UnixMilli(row.Timestamp).UTC()
 		if !last.IsZero() && !ts.After(last) {
 			return exchange.CandlePage{}, lighterMalformed(product, "Candles", "candles must be strictly ascending")
 		}

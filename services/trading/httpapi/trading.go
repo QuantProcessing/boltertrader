@@ -42,6 +42,13 @@ type FundingBoardAuthority interface {
 	Get(context.Context) (marketdata.BoardSnapshot, error)
 }
 
+// MarketDataAuthority prices an exact catalog instrument at preview time.
+// Opportunity engines may rank from bulk board references, but a write is
+// never sealed against a mark or index that cannot actually be traded.
+type MarketDataAuthority interface {
+	Get(context.Context, marketdata.Query) (marketdata.Fact, error)
+}
+
 type TradingOptions struct {
 	Reservations      *reservations.Service
 	Commands          *orders.Service
@@ -52,6 +59,8 @@ type TradingOptions struct {
 	ManualAccounts    ManualAccountAuthority
 	Arbitrage         ArbitrageExecutor
 	FundingBoard      FundingBoardAuthority
+	MarketData        MarketDataAuthority
+	FreshMarketData   MarketDataAuthority
 	Principal         func(*http.Request) (principalID string, err error)
 	AuthorizeMutation func(*http.Request) error
 	Activity          ActivityPublisher

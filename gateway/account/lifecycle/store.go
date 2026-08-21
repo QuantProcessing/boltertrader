@@ -45,13 +45,25 @@ func (store *MemoryStore) BeginCredentialOperation(_ context.Context, expectedRe
 	if _, exists := store.operations[operation.ID]; exists {
 		return ErrAlreadyExists
 	}
+	var superseded []secretstore.OperationID
 	for _, existing := range store.operations {
 		if existing.AccountID == operation.AccountID && credentialOperationRecoverable(existing.State) {
+			if retirementSupersedesCreation(current, account, operation, existing) {
+				superseded = append(superseded, existing.ID)
+				continue
+			}
 			return ErrRevisionConflict
 		}
 		if operationLookupMatches(existing, OperationLookup{PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
 			return ErrAlreadyExists
 		}
+	}
+	for _, id := range superseded {
+		existing := store.operations[id]
+		existing.State = OperationAbandoned
+		existing.StableErrorCode = "ACCOUNT_REMOVED_DURING_CREATION"
+		existing.UpdatedAt = operation.UpdatedAt
+		store.operations[id] = existing
 	}
 	store.accounts[account.ID] = clone(account)
 	store.operations[operation.ID] = operation
@@ -291,6 +303,11 @@ func credentialOperationRecoverable(state OperationState) bool {
 	default:
 		return false
 	}
+}
+
+func retirementSupersedesCreation(current, next Account, requested, existing CredentialOperation) bool {
+	return current.State == StateCreating && next.State == StateRemoving &&
+		requested.Kind == OperationRetire && existing.Kind == OperationCreate
 }
 
 func clone(account Account) Account {

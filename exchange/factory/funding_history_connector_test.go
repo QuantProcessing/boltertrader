@@ -13,7 +13,7 @@ import (
 // TestFundingHistoryRejectsUnsupportedVenue pins where "this venue keeps no
 // history" is discovered.
 //
-// Nine of the ten board columns can be charted and the tenth cannot, and the
+// Ten of the eleven board route columns can be charted and Nado cannot, and the
 // difference has to surface at construction rather than at read time. A
 // connector that built for Nado and then answered with an empty series would
 // put a blank chart next to a populated one, which reads as "nothing was paid
@@ -22,7 +22,7 @@ import (
 // "unsupported" once, in words, beside the leg that can be drawn.
 //
 // The message is asserted, not just the error, because there are two different
-// refusals here and only one of them is about history. Nado, spot and Aster are
+// refusals here and only one of them is about history. Nado and spot are
 // profiles the factory recognises — each resolves a scope and a source — and
 // they fail at the last gate, on the missing loader. An unknown venue or a
 // missing client never gets a profile at all. Asserting the error alone would
@@ -38,6 +38,7 @@ func TestFundingHistoryRejectsUnsupportedVenue(t *testing.T) {
 		settlement string
 	}{
 		{exchange.VenueBinance, "USDT"},
+		{exchange.VenueAster, "USDT"},
 		{exchange.VenueOKX, "USDT"},
 		{exchange.VenueLighter, "USDC"},
 		{exchange.VenueHyperliquid, "USDC"},
@@ -101,17 +102,6 @@ func TestFundingHistoryRejectsUnsupportedVenue(t *testing.T) {
 			name:        "spot has no funding surface",
 			venue:       exchange.VenueBinance,
 			product:     exchange.ProductSpot,
-			environment: EnvironmentLive,
-			httpClient:  httpClient,
-			message:     "public funding history connector loader is unavailable",
-		},
-		{
-			// Aster is a supported perp venue the capability matrix marks as
-			// publishing no funding, so it too gets a profile and no loader.
-			name:        "aster perp publishes no funding",
-			venue:       exchange.VenueAster,
-			product:     exchange.ProductPerp,
-			settlement:  "USDT",
 			environment: EnvironmentLive,
 			httpClient:  httpClient,
 			message:     "public funding history connector loader is unavailable",

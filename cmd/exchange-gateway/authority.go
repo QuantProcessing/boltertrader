@@ -91,16 +91,21 @@ type authorityVenue struct {
 }
 
 type authorityInstrument struct {
-	InstrumentID string              `json:"instrumentId"`
-	Venue        string              `json:"venue"`
-	Environment  string              `json:"environment"`
-	Product      string              `json:"product"`
-	Settlement   string              `json:"settlement,omitempty"`
-	Symbol       string              `json:"symbol"`
-	BaseAsset    string              `json:"baseAsset"`
-	QuoteAsset   string              `json:"quoteAsset"`
-	Rules        authorityTradeRules `json:"rules"`
-	Ready        bool                `json:"ready"`
+	InstrumentID         string              `json:"instrumentId"`
+	Venue                string              `json:"venue"`
+	Environment          string              `json:"environment"`
+	Product              string              `json:"product"`
+	Settlement           string              `json:"settlement,omitempty"`
+	Symbol               string              `json:"symbol"`
+	BaseAsset            string              `json:"baseAsset"`
+	QuoteAsset           string              `json:"quoteAsset"`
+	MarketFamily         string              `json:"marketFamily"`
+	AssetClass           string              `json:"assetClass"`
+	ClassificationSource string              `json:"classificationSource,omitempty"`
+	RawAssetType         string              `json:"rawAssetType,omitempty"`
+	RawCategories        []string            `json:"rawCategories,omitempty"`
+	Rules                authorityTradeRules `json:"rules"`
+	Ready                bool                `json:"ready"`
 }
 
 type authorityCatalogInstruments struct {
@@ -264,6 +269,9 @@ type authorityFundingVenue struct {
 	ObservedAt     time.Time             `json:"observedAt,omitzero"`
 	Stale          bool                  `json:"stale"`
 	Unavailable    bool                  `json:"unavailable"`
+	Status         string                `json:"status"`
+	LastSuccessAt  time.Time             `json:"lastSuccessAt,omitzero"`
+	Reconnects     uint64                `json:"reconnects,omitempty"`
 	Rows           []authorityFundingRow `json:"rows"`
 }
 
@@ -282,17 +290,26 @@ type authorityFundingVenue struct {
 // settlement clock, and binance, okx, and nado leave it out whenever the venue
 // itself omits it, so the zero is reachable on a third of the table.
 type authorityFundingRow struct {
-	InstrumentID         string    `json:"instrumentId,omitempty"`
-	Symbol               string    `json:"symbol"`
-	BaseAsset            string    `json:"baseAsset,omitempty"`
-	QuoteAsset           string    `json:"quoteAsset,omitempty"`
-	Rate                 string    `json:"rate"`
-	IntervalHours        int64     `json:"intervalHours,omitempty"`
-	NextFundingTime      time.Time `json:"nextFundingTime,omitzero"`
-	MarkPrice            string    `json:"markPrice,omitempty"`
-	IndexPrice           string    `json:"indexPrice,omitempty"`
-	OpenInterest         string    `json:"openInterest,omitempty"`
-	OpenInterestNotional string    `json:"openInterestNotional,omitempty"`
+	InstrumentID              string    `json:"instrumentId,omitempty"`
+	Symbol                    string    `json:"symbol"`
+	BaseAsset                 string    `json:"baseAsset,omitempty"`
+	QuoteAsset                string    `json:"quoteAsset,omitempty"`
+	MarketFamily              string    `json:"marketFamily"`
+	AssetClass                string    `json:"assetClass"`
+	ClassificationSource      string    `json:"classificationSource,omitempty"`
+	RawAssetType              string    `json:"rawAssetType,omitempty"`
+	RawCategories             []string  `json:"rawCategories,omitempty"`
+	Rate                      string    `json:"rate,omitempty"`
+	IntervalHours             int64     `json:"intervalHours,omitempty"`
+	NextFundingTime           time.Time `json:"nextFundingTime,omitzero"`
+	MarkPrice                 string    `json:"markPrice,omitempty"`
+	IndexPrice                string    `json:"indexPrice,omitempty"`
+	OpenInterest              string    `json:"openInterest,omitempty"`
+	OpenInterestNotional      string    `json:"openInterestNotional,omitempty"`
+	OpenInterestNotionalAsset string    `json:"openInterestNotionalAsset,omitempty"`
+	FundingObservedAt         time.Time `json:"fundingObservedAt,omitzero"`
+	PriceObservedAt           time.Time `json:"priceObservedAt,omitzero"`
+	OpenInterestObservedAt    time.Time `json:"openInterestObservedAt,omitzero"`
 }
 
 // authorityFundingHistoryQuery is a struct for the same reason
@@ -488,6 +505,9 @@ func (lifecycle *productionRuntimeLifecycle) Blockers(ctx context.Context, accou
 		return account.RuntimeBlockers{}, errors.New("runtime blocker lookup failed")
 	}
 	openPositions, err := positions.RuntimePositionBlockers(ctx, accountID)
+	if errors.Is(err, account.ErrUnknownAccount) {
+		return account.RuntimeBlockers{}, account.ErrUnknownAccount
+	}
 	if err != nil || openPositions < 0 {
 		return account.RuntimeBlockers{}, errors.New("runtime blocker lookup failed")
 	}
@@ -1012,10 +1032,15 @@ func (authority *gatewayAuthority) runtimeView(state store.RuntimeState) httpapi
 		authority.enrichRuntimeView(&view, *state.Active)
 	}
 	if state.Pending != nil {
-		pending := httpapi.PendingSnapshotView{
-			RuntimeSnapshotView: authority.snapshotView(state.Pending.DesiredSnapshot, state.Pending.Observations),
-			State:               string(state.Pending.OperationState),
+		pendingSnapshot := authority.snapshotView(state.Pending.DesiredSnapshot, state.Pending.Observations)
+		pendingReason := ""
+		for _, route := range pendingSnapshot.Routes {
+			if route.Reason != "" {
+				pendingReason = route.Reason
+				break
+			}
 		}
+		pending := httpapi.PendingSnapshotView{RuntimeSnapshotView: pendingSnapshot, State: string(state.Pending.OperationState), Reason: pendingReason}
 		view.Pending = &pending
 	}
 	for _, retiring := range state.Retiring {
@@ -1049,9 +1074,12 @@ func (authority *gatewayAuthority) enrichRuntimeView(view *httpapi.RuntimeView, 
 	readReason := ""
 	if !readReady {
 		readReason = "runtime_not_promoted"
+		if runtime, runtimeErr := authority.manager.Runtime(active.AccountID); runtimeErr == nil && !runtime.Ready && runtime.Reason != "" {
+			readReason = runtime.Reason
+		}
 	}
 	writeReady := readReady
-	writeReason := ""
+	writeReason := readReason
 	rows := capability.StaticMatrix().Rows
 	for _, route := range active.Routes {
 		if route.RequestedState != store.RouteActive {
@@ -1318,6 +1346,8 @@ func (reads managerAuthorityReads) Instruments(ctx context.Context) (authorityCa
 			instruments = append(instruments, authorityInstrument{
 				InstrumentID: string(instrument.ID), Venue: string(instrument.Venue), Environment: string(instrument.Environment), Product: string(instrument.Product),
 				Settlement: instrument.Settlement, Symbol: instrument.Symbol, BaseAsset: instrument.BaseAsset, QuoteAsset: instrument.QuoteAsset,
+				MarketFamily: string(instrument.MarketFamily), AssetClass: string(instrument.AssetClass), ClassificationSource: instrument.ClassificationSource,
+				RawAssetType: instrument.RawAssetType, RawCategories: append([]string(nil), instrument.RawCategories...),
 				Rules: authorityTradeRules{PriceIncrement: instrument.Rules.PriceIncrement.String(), QuantityIncrement: instrument.Rules.QuantityIncrement.String(), MinQuantity: instrument.Rules.MinQuantity.String(), MinNotional: minNotional},
 				Ready: true,
 			})
@@ -1355,6 +1385,8 @@ func (reads managerAuthorityReads) Instruments(ctx context.Context) (authorityCa
 			instruments = append(instruments, authorityInstrument{
 				InstrumentID: string(instrument.ID), Venue: string(instrument.Venue), Environment: string(instrument.Environment), Product: string(instrument.Product),
 				Settlement: instrument.Settlement, Symbol: instrument.Symbol, BaseAsset: instrument.BaseAsset, QuoteAsset: instrument.QuoteAsset,
+				MarketFamily: string(instrument.MarketFamily), AssetClass: string(instrument.AssetClass), ClassificationSource: instrument.ClassificationSource,
+				RawAssetType: instrument.RawAssetType, RawCategories: append([]string(nil), instrument.RawCategories...),
 				Rules: authorityTradeRules{PriceIncrement: instrument.Rules.PriceIncrement.String(), QuantityIncrement: instrument.Rules.QuantityIncrement.String(), MinQuantity: instrument.Rules.MinQuantity.String(), MinNotional: minNotional},
 				Ready: resource.ReadReady,
 			})
@@ -1418,19 +1450,38 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 			Venue: venue.Venue, Environment: venue.Environment, Product: venue.Product,
 			Settlement: venue.Settlement, RouteProfileID: venue.RouteProfileID,
 			ObservedAt: venue.ObservedAt, Stale: venue.Stale, Unavailable: venue.Unavailable,
+			Status: string(venue.Status), LastSuccessAt: venue.LastSuccessAt, Reconnects: venue.Reconnects,
 			Rows: make([]authorityFundingRow, 0, len(venue.Entries)),
 		}
 		for _, entry := range venue.Entries {
 			row := authorityFundingRow{
-				Symbol:    entry.Symbol,
-				BaseAsset: entry.BaseAsset, QuoteAsset: entry.QuoteAsset,
-				Rate: entry.Rate.String(), NextFundingTime: entry.NextFundingTime,
+				Symbol:                    entry.Symbol,
+				BaseAsset:                 entry.BaseAsset,
+				QuoteAsset:                entry.QuoteAsset,
+				MarketFamily:              string(exchange.MarketFamilyVenuePerpetual),
+				AssetClass:                string(exchange.AssetClassUnknown),
+				NextFundingTime:           entry.NextFundingTime,
+				OpenInterestNotionalAsset: entry.OpenInterestNotionalAsset,
+				FundingObservedAt:         entry.FundingObservedAt, PriceObservedAt: entry.PriceObservedAt,
+				OpenInterestObservedAt: entry.OpenInterestObservedAt,
+			}
+			if entry.RateValid {
+				row.Rate = entry.Rate.String()
 			}
 			if instrument, ok := instruments.MatchFundingEntry(venue.RouteProfileID, entry); ok {
 				row.InstrumentID = string(instrument.Catalog.ID)
 				row.Symbol = instrument.Catalog.Symbol
 				row.BaseAsset = instrument.Catalog.BaseAsset
 				row.QuoteAsset = instrument.Catalog.QuoteAsset
+				if instrument.Catalog.MarketFamily != "" {
+					row.MarketFamily = string(instrument.Catalog.MarketFamily)
+				}
+				if instrument.Catalog.AssetClass != "" {
+					row.AssetClass = string(instrument.Catalog.AssetClass)
+				}
+				row.ClassificationSource = instrument.Catalog.ClassificationSource
+				row.RawAssetType = instrument.Catalog.RawAssetType
+				row.RawCategories = append([]string(nil), instrument.Catalog.RawCategories...)
 			}
 			if entry.IntervalHours.Valid {
 				row.IntervalHours = entry.IntervalHours.Value

@@ -2,6 +2,7 @@ package factoryclient
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,7 +22,7 @@ func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testin
 			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","spot_order_book_details":[{"symbol":"ETH/USDC","market_id":2048,"market_type":"spot","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
 		case "/api/v1/candles":
 			candleQuery = request.URL.Query()
-			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","r":"1m","c":[{"t":1720000000,"o":100,"h":101,"l":99,"c":100.5,"v":3}]}`), nil
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","r":"1m","c":[{"t":1720000000000,"o":100,"h":101,"l":99,"c":100.5,"v":3}]}`), nil
 		default:
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
@@ -50,7 +51,7 @@ func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testin
 	}
 	startUnix, startErr := strconv.ParseInt(start, 10, 64)
 	endUnix, endErr := strconv.ParseInt(end, 10, 64)
-	if startErr != nil || endErr != nil || endUnix-startUnix != int64((2*time.Minute)/time.Second) {
+	if startErr != nil || endErr != nil || endUnix-startUnix != int64((2*time.Minute)/time.Millisecond) {
 		t.Fatalf("native candle window = start:%q end:%q, want two 1m intervals", start, end)
 	}
 	if got := candleQuery.Get("count_back"); got != "2" {
@@ -62,6 +63,12 @@ func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testin
 	}
 	if got := page.Page.WindowEnd.Sub(page.Page.WindowStart); got != 2*time.Minute {
 		t.Fatalf("page window duration = %s, want 2m", got)
+	}
+	if len(page.Candles) != 1 || !page.Candles[0].OpenTime.Equal(time.UnixMilli(1720000000000).UTC()) {
+		t.Fatalf("portable candle time = %+v, want Lighter milliseconds", page.Candles)
+	}
+	if _, err := json.Marshal(page); err != nil {
+		t.Fatalf("portable candle page must be JSON encodable: %v", err)
 	}
 }
 

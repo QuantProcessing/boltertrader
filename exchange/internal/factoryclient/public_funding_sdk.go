@@ -1,6 +1,8 @@
 package factoryclient
 
 import (
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
+	asterperp "github.com/QuantProcessing/boltertrader/sdk/aster/perp"
 	binanceperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 	bitget "github.com/QuantProcessing/boltertrader/sdk/bitget"
 	bybit "github.com/QuantProcessing/boltertrader/sdk/bybit"
@@ -34,6 +36,25 @@ func newBinancePerpPublicSDK(settings Settings) *binanceperp.Client {
 		sdk.HTTPClient = settings.HTTPClient
 	}
 	return sdk
+}
+
+func newAsterPerpPublicSDK(settings Settings) (*asterperp.Client, error) {
+	profile, err := astercommon.NewProfile(astercommon.ProductPerp)
+	if err != nil {
+		return nil, err
+	}
+	profile, err = profile.WithEndpointOverrides(settings.Endpoint, settings.WebSocketEndpoint, settings.WebSocketEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	sdk, err := asterperp.NewClient(profile, nil)
+	if err != nil {
+		return nil, err
+	}
+	if settings.HTTPClient != nil {
+		sdk.WithHTTPClient(settings.HTTPClient)
+	}
+	return sdk, nil
 }
 
 func newOKXPublicSDK(settings Settings) *okx.Client {

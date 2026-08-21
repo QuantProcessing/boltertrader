@@ -13,7 +13,7 @@ import (
 // account methods even though some venue adapters share an implementation with
 // their authenticated clients.
 type PublicMarketConnector struct {
-	loader  exchange.InstrumentLoader
+	catalog exchange.InstrumentCatalog
 	market  exchange.MarketREST
 	perp    exchange.PerpREST
 	mark    exchange.PerpMarkPriceREST
@@ -45,7 +45,7 @@ func NewPublicMarketConnector(
 	if !ok || configuredVenue != venue || configuredProduct != product || configuredSettlement != settlement {
 		return nil, invalidConfig("public market connector profile is inconsistent")
 	}
-	scope, _, ok := catalogSourceForConfig(configName, settings)
+	scope, descriptor, ok := catalogSourceForConfig(configName, settings)
 	if !ok {
 		return nil, invalidConfig("public market connector source is unavailable")
 	}
@@ -53,21 +53,33 @@ func NewPublicMarketConnector(
 	if loader == nil {
 		return nil, invalidConfig("public market connector loader is unavailable")
 	}
+	// Public connectors still need the same canonical directory as authenticated
+	// clients. In particular Hyperliquid REST reads resolve the explicit
+	// Instrument through that directory before using its native HIP-3 coin name.
+	// Keep one private catalog per connector: Refresh populates it once and the
+	// Gateway then republishes the returned snapshot into its own public
+	// projection. This avoids both a second venue lookup and a process-global
+	// catalog shared across unrelated route profiles.
+	instrumentCatalog := exchange.NewDefaultMemoryCatalog()
+	if err := instrumentCatalog.RegisterSource(scope, descriptor, loader); err != nil {
+		return nil, invalidConfig("public market connector catalog is unavailable")
+	}
+	settings.catalog = instrumentCatalog
 	market, perp, mark, socket, closeClient := publicMarketClientForConfig(configName, settings)
 	if market == nil || closeClient == nil {
 		return nil, invalidConfig("public market connector client is unavailable")
 	}
 	return &PublicMarketConnector{
-		loader: loader, market: market, perp: perp, mark: mark, socket: socket, close: closeClient,
+		catalog: instrumentCatalog, market: market, perp: perp, mark: mark, socket: socket, close: closeClient,
 		scope: scope, funding: fundingBoardLoaderForConfig(configName, settings) != nil,
 	}, nil
 }
 
 func (connector *PublicMarketConnector) Refresh(ctx context.Context) ([]exchange.Instrument, error) {
-	if connector == nil || connector.loader == nil {
+	if connector == nil || connector.catalog == nil {
 		return nil, invalidConfig("public market connector is unavailable")
 	}
-	snapshot, err := connector.loader.LoadInstruments(ctx, connector.scope)
+	snapshot, err := connector.catalog.Refresh(ctx, connector.scope)
 	if err != nil {
 		return nil, err
 	}

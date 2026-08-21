@@ -83,8 +83,7 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/public/ws", Upstream: Gateway, Target: "/internal/v1/public/ws", Public: true, WebSocket: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-board", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-history", Upstream: Trading, Public: true},
-	// Eight of the trading service's nine public-data routes are Public here.
-	// This is the ninth, and it is not: realtime replays a principal-scoped
+	// Realtime is the one public-data route that is not Public here: it replays a principal-scoped
 	// buffer and answers 401 on an empty identity itself, so marking it would
 	// widen the unauthenticated surface to a route that would only refuse.
 	{Method: http.MethodGet, Path: "/api/v1/realtime/stream", Upstream: Trading, Stream: true},
@@ -108,7 +107,7 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/orders", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/orders/{orderId}", Upstream: Trading},
 
-	{Method: http.MethodGet, Path: "/api/v1/products/arbitrage/opportunities", Upstream: Trading},
+	{Method: http.MethodGet, Path: "/api/v1/products/arbitrage/opportunities", Upstream: Trading, Public: true},
 	{Method: http.MethodPost, Path: "/api/v1/products/arbitrage/execution-previews", Upstream: Trading},
 	{Method: http.MethodPost, Path: "/api/v1/products/arbitrage/commands", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/arbitrage/positions", Upstream: Trading},

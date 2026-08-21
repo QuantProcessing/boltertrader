@@ -176,6 +176,7 @@ func TestInternalAuthorityRouteInventoryIsFrozen(t *testing.T) {
 		{http.MethodGet, "/internal/v1/public/ws"},
 		{http.MethodGet, "/internal/v1/private-events"},
 		{http.MethodGet, "/internal/v1/funding-board"},
+		{http.MethodGet, "/internal/v1/funding-board/ws"},
 		{http.MethodGet, "/internal/v1/funding-history"},
 	}
 	got := InternalRoutes()

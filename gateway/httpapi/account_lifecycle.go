@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/account/lifecycle"
 )
 
@@ -204,9 +205,18 @@ func (handler *InternalHandler) removeAccountRecord(w http.ResponseWriter, r *ht
 		handler.writeAccountRecord(w, http.StatusAccepted, current)
 		return
 	}
-	blockers, ok := handler.accountBlockers(w, r, accountID)
-	if !ok {
-		return
+	blockers, blockersErr := handler.blockers(r.Context(), accountID)
+	if blockersErr != nil {
+		// A creating account can legitimately have no active runtime: its
+		// one-time credential probe may have failed before promotion. That
+		// exact absence is safe to remove and is rechecked transactionally by
+		// the runtime retirement path. Every other lookup failure, and every
+		// failure for an active account, remains fail-closed.
+		if current.State != lifecycle.StateCreating || !errors.Is(blockersErr, account.ErrUnknownAccount) {
+			handler.writeError(w, r, http.StatusServiceUnavailable, "ACCOUNT_BLOCKERS_UNAVAILABLE", true)
+			return
+		}
+		blockers = lifecycle.Blockers{}
 	}
 	// Removal deletes the credential. Unlike drain, there is no state in which
 	// it is the right answer to inventory that still exists.

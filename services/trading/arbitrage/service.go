@@ -103,6 +103,7 @@ type LegView struct {
 	Quantity     string       `json:"quantity"`
 	OrderType    string       `json:"orderType"`
 	LimitPrice   string       `json:"limitPrice,omitempty"`
+	Closing      bool         `json:"closing,omitempty"`
 	ReduceOnly   bool         `json:"reduceOnly"`
 	State        orders.State `json:"state"`
 	CreatedAt    time.Time    `json:"createdAt"`
@@ -134,6 +135,7 @@ type placeIntent struct {
 	OrderType           string `json:"orderType"`
 	LimitPrice          string `json:"limitPrice,omitempty"`
 	TimeInForce         string `json:"timeInForce,omitempty"`
+	Closing             bool   `json:"closing,omitempty"`
 	ReduceOnly          bool   `json:"reduceOnly,omitempty"`
 	RouteID             string `json:"routeId,omitempty"`
 	RuntimeID           string `json:"runtimeId,omitempty"`
@@ -491,7 +493,7 @@ func DescribeLeg(command orders.Command) (LegView, error) {
 		Leg: Leg(intent.Leg), CommandID: command.CommandID, LineageID: command.LineageID,
 		AccountID: command.AccountID, InstrumentID: intent.InstrumentID, Side: intent.Side,
 		Quantity: intent.Quantity, OrderType: intent.OrderType, LimitPrice: intent.LimitPrice,
-		ReduceOnly: intent.ReduceOnly, State: command.State,
+		Closing: intent.Closing || intent.ReduceOnly, ReduceOnly: intent.ReduceOnly, State: command.State,
 		CreatedAt: command.CreatedAt, UpdatedAt: command.UpdatedAt,
 	}, nil
 }
@@ -503,6 +505,13 @@ func DescribeLeg(command orders.Command) (LegView, error) {
 // apart — DisallowUnknownFields turns any drift into a leg that fails at
 // execution time, after the sibling has already gone to the venue.
 func EncodeIntent(leg Leg, instrumentID, side, quantity, orderType, limitPrice, timeInForce, routeID, counterAccountID, counterInstrumentID string, reduceOnly bool, fence ...any) (json.RawMessage, error) {
+	return EncodeIntentWithClose(leg, instrumentID, side, quantity, orderType, limitPrice, timeInForce, routeID, counterAccountID, counterInstrumentID, reduceOnly, reduceOnly, fence...)
+}
+
+// EncodeIntentWithClose separates closing a position from the venue's
+// reduce-only flag. Perpetual closes use both; a spot cash leg is closed by an
+// ordinary sell and must therefore carry closing=true, reduceOnly=false.
+func EncodeIntentWithClose(leg Leg, instrumentID, side, quantity, orderType, limitPrice, timeInForce, routeID, counterAccountID, counterInstrumentID string, reduceOnly, closing bool, fence ...any) (json.RawMessage, error) {
 	runtimeID := ""
 	if len(fence) == 1 {
 		runtimeID, _ = fence[0].(string)
@@ -518,7 +527,7 @@ func EncodeIntent(leg Leg, instrumentID, side, quantity, orderType, limitPrice, 
 	intent := placeIntent{
 		Leg: string(leg), CounterAccountID: counterAccountID, CounterInstrumentID: counterInstrumentID,
 		InstrumentID: instrumentID, Side: side, Quantity: quantity, OrderType: strings.ToLower(orderType),
-		LimitPrice: limitPrice, TimeInForce: timeInForce, ReduceOnly: reduceOnly, RouteID: routeID,
+		LimitPrice: limitPrice, TimeInForce: timeInForce, Closing: closing, ReduceOnly: reduceOnly, RouteID: routeID,
 		RuntimeID: runtimeID,
 	}
 	payload, err := json.Marshal(intent)
@@ -564,8 +573,12 @@ func decodePlaceIntent(payload json.RawMessage) (placeIntent, error) {
 	if intent.Side != string(portfolio.SideBuy) && intent.Side != string(portfolio.SideSell) {
 		return intent, fmt.Errorf("side must be buy or sell")
 	}
-	if intent.Side != openingSide(Leg(intent.Leg), intent.ReduceOnly) {
-		return intent, fmt.Errorf("leg %q must be %s when reduceOnly is %t", intent.Leg, openingSide(Leg(intent.Leg), intent.ReduceOnly), intent.ReduceOnly)
+	intent.Closing = intent.Closing || intent.ReduceOnly
+	if intent.ReduceOnly && !intent.Closing {
+		return intent, fmt.Errorf("reduce-only intent must close a leg")
+	}
+	if intent.Side != openingSide(Leg(intent.Leg), intent.Closing) {
+		return intent, fmt.Errorf("leg %q must be %s when closing is %t", intent.Leg, openingSide(Leg(intent.Leg), intent.Closing), intent.Closing)
 	}
 	intent.RuntimeID = strings.TrimSpace(intent.RuntimeID)
 	intent.OrderType = strings.ToLower(intent.OrderType)
@@ -586,9 +599,9 @@ func decodePlaceIntent(payload json.RawMessage) (placeIntent, error) {
 }
 
 // openingSide is the only place the leg-to-side mapping is written down.
-func openingSide(leg Leg, reduceOnly bool) string {
+func openingSide(leg Leg, closing bool) string {
 	buys := leg == LegLong
-	if reduceOnly {
+	if closing {
 		buys = !buys
 	}
 	if buys {
@@ -750,10 +763,10 @@ func ClassifyPair(legs []LegView) PairState {
 	}
 }
 
-func newestByLeg(legs []LegView, reduceOnly bool) map[Leg]LegView {
+func newestByLeg(legs []LegView, closing bool) map[Leg]LegView {
 	newest := make(map[Leg]LegView, 2)
 	for _, leg := range legs {
-		if leg.ReduceOnly != reduceOnly {
+		if leg.Closing != closing {
 			continue
 		}
 		if previous, exists := newest[leg.Leg]; exists && previous.CreatedAt.After(leg.CreatedAt) {

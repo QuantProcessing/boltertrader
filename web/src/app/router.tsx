@@ -25,8 +25,15 @@ import { Outlet, createRootRouteWithContext, createRoute, createRouter, redirect
 import type { SessionStore } from "@/app/session";
 import { AppShell } from "@/app/shell/app-shell";
 import { ActivityPage } from "@/routes/activity";
+import {
+  CryptoBasisArbitragePage,
+  CryptoFundingArbitragePage,
+  TradfiFundingArbitragePage,
+  TradfiSpreadArbitragePage,
+  validateArbitrageSearch,
+  type ArbitrageSearch,
+} from "@/routes/arbitrage.strategy";
 import { FundingPage } from "@/routes/funding";
-import { ArbitragePage } from "@/routes/funding.arbitrage";
 import { LoginPage } from "@/routes/login";
 import { PortfolioPage } from "@/routes/portfolio";
 import { SettingsPage } from "@/routes/settings";
@@ -141,7 +148,7 @@ const indexRoute = createRoute({
  * `/portfolio` and `/activity` are private by nature. `/settings` opens only
  * far enough to explain why account configuration requires sign-in; the page
  * mounts no private query until a session is authenticated.
- * `/funding/arbitrage` looks like it belongs with these two but does not: its
+ * `/arbitrage` looks like it belongs with these two but does not: its
  * `opportunities()` handler asks for an identity before it does anything else,
  * so opening it here would produce exactly that screen of 401s.
  */
@@ -163,26 +170,68 @@ const fundingRoute = createRoute({
  * Which pair, and which way round.
  *
  * All three are optional and all three are hints: the page ranks the spreads
- * itself and falls back to the best executable one, so a bare `/funding/arbitrage`
+ * itself and falls back to the best executable one, so a bare strategy route
  * is a valid arrival. `long`/`short` exist because the server's orientation is
  * the profitable one and an operator is allowed to disagree — putting the choice
  * in the URL is what keeps a fifteen-second poll from undoing it.
  */
-interface ArbitrageSearch {
-  symbol?: string;
-  long?: string;
-  short?: string;
-}
+const arbitrageOverviewRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/arbitrage",
+  beforeLoad: () => {
+    throw redirect({ to: "/arbitrage/crypto/basis", replace: true });
+  },
+});
 
-const arbitrageRoute = createRoute({
+const cryptoBasisArbitrageRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/arbitrage/crypto/basis",
+  validateSearch: validateArbitrageSearch,
+  component: CryptoBasisArbitragePage,
+});
+
+const cryptoFundingArbitrageRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/arbitrage/crypto/funding",
+  validateSearch: validateArbitrageSearch,
+  component: CryptoFundingArbitragePage,
+});
+
+const tradfiFundingArbitrageRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/arbitrage/tradfi/funding",
+  validateSearch: validateArbitrageSearch,
+  component: TradfiFundingArbitragePage,
+});
+
+const tradfiSpreadArbitrageRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/arbitrage/tradfi/perp-spread",
+  validateSearch: validateArbitrageSearch,
+  component: TradfiSpreadArbitragePage,
+});
+
+/** Keep old bookmarks useful while making the strategy task explicit in the URL. */
+const legacyArbitrageRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/funding/arbitrage",
-  validateSearch: (search: Record<string, unknown>): ArbitrageSearch => ({
-    symbol: typeof search.symbol === "string" && search.symbol !== "" ? search.symbol : undefined,
-    long: typeof search.long === "string" && search.long !== "" ? search.long : undefined,
-    short: typeof search.short === "string" && search.short !== "" ? search.short : undefined,
+  validateSearch: (search: Record<string, unknown>): ArbitrageSearch & { strategy?: string } => ({
+    ...validateArbitrageSearch(search),
+    strategy: typeof search.strategy === "string" ? search.strategy : undefined,
   }),
-  component: ArbitragePage,
+  beforeLoad: ({ search }) => {
+    const target = search.strategy === "spot_perp_basis"
+      ? "/arbitrage/crypto/basis"
+      : search.strategy === "cross_perp_spread"
+        ? "/arbitrage/tradfi/perp-spread"
+        : "/arbitrage/crypto/funding";
+    const query = new URLSearchParams();
+    if (search.opportunity) query.set("opportunity", search.opportunity);
+    if (search.symbol) query.set("symbol", search.symbol);
+    if (search.long) query.set("long", search.long);
+    if (search.short) query.set("short", search.short);
+    throw redirect({ href: `${target}${query.size > 0 ? `?${query.toString()}` : ""}`, replace: true });
+  },
 });
 
 const portfolioRoute = createRoute({ getParentRoute: () => appRoute, path: "/portfolio", component: PortfolioPage });
@@ -200,7 +249,12 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     tradeRoute,
     fundingRoute,
-    arbitrageRoute,
+    arbitrageOverviewRoute,
+    cryptoBasisArbitrageRoute,
+    cryptoFundingArbitrageRoute,
+    tradfiFundingArbitrageRoute,
+    tradfiSpreadArbitrageRoute,
+    legacyArbitrageRoute,
     portfolioRoute,
     activityRoute,
     settingsRoute,

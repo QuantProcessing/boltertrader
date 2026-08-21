@@ -50,13 +50,14 @@ func (client *runtimePerpClientStub) Positions(context.Context, exchange.Positio
 }
 
 type candidateClientHandleStub struct {
-	product exchange.Product
-	spot    exchange.SpotClient
-	perp    exchange.PerpClient
+	product  exchange.Product
+	spot     exchange.SpotClient
+	perp     exchange.PerpClient
+	probeErr error
 }
 
-func (*candidateClientHandleStub) Probe(context.Context) error { return nil }
-func (*candidateClientHandleStub) Close() error                { return nil }
+func (handle *candidateClientHandleStub) Probe(context.Context) error { return handle.probeErr }
+func (*candidateClientHandleStub) Close() error                       { return nil }
 func (handle *candidateClientHandleStub) SpotClient() (exchange.SpotClient, bool) {
 	return handle.spot, handle.spot != nil
 }
@@ -78,6 +79,7 @@ type candidateClientBuilderStub struct {
 	failSnapshot uuid.UUID
 	buildHook    func(store.DesiredSnapshot)
 	buildCounts  map[uuid.UUID]int
+	probeErr     error
 }
 
 func (builder candidateClientBuilderStub) BuildRoute(_ context.Context, snapshot store.DesiredSnapshot, route store.RouteDefinition, _ *credential.Decoded) (CandidateRoute, error) {
@@ -92,9 +94,9 @@ func (builder candidateClientBuilderStub) BuildRoute(_ context.Context, snapshot
 	}
 	switch route.Product {
 	case string(exchange.ProductSpot):
-		return &candidateClientHandleStub{product: exchange.ProductSpot, spot: &runtimeSpotClientStub{}}, nil
+		return &candidateClientHandleStub{product: exchange.ProductSpot, spot: &runtimeSpotClientStub{}, probeErr: builder.probeErr}, nil
 	case string(exchange.ProductPerp):
-		return &candidateClientHandleStub{product: exchange.ProductPerp, perp: &runtimePerpClientStub{}}, nil
+		return &candidateClientHandleStub{product: exchange.ProductPerp, perp: &runtimePerpClientStub{}, probeErr: builder.probeErr}, nil
 	default:
 		return nil, errors.New("unsupported product")
 	}
@@ -528,6 +530,18 @@ func TestRuntimePositionBlockersUsesAuthoritativeActivePerpRoutesAndRedactsFailu
 	client.positionsErr = errors.New("position-secret-canary")
 	if _, err := manager.RuntimePositionBlockers(context.Background(), pending.AccountID); err == nil || strings.Contains(err.Error(), "position-secret-canary") {
 		t.Fatalf("position blocker error=%v", err)
+	}
+}
+
+func TestRuntimePositionBlockersIdentifyAnAccountThatWasNeverPromoted(t *testing.T) {
+	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
+	pending := runtimeGroupPending(t)
+	if err := manager.EnsureAccountOwnership(pending.AccountID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.RuntimePositionBlockers(context.Background(), pending.AccountID); !errors.Is(err, ErrUnknownAccount) {
+		t.Fatalf("position blocker error=%v, want ErrUnknownAccount", err)
 	}
 }
 
@@ -1147,6 +1161,39 @@ func TestRetirementWithoutLocalActiveRuntimeChecksDurableActiveBlockers(t *testi
 				t.Fatalf("blocker calls=%d durable retire calls=%d", lifecycle.blockerCalls(), runtimeStore.retireCalls)
 			}
 		})
+	}
+}
+
+func TestRetirementAllowsExactPendingOnlySnapshotWithoutVenueBlockerLookup(t *testing.T) {
+	pending := runtimeGroupPending(t)
+	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
+	if err := manager.EnsureAccountOwnership(pending.AccountID); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &runtimeLifecycleStub{blockers: RuntimeBlockers{OpenOrders: 1, Positions: 1}}
+	manager.lifecycle = lifecycle
+	runtimeStore := manager.runtimeStore.(*runtimeStateStoreStub)
+	runtimeStore.states = []store.RuntimeState{{AccountID: pending.AccountID, Pending: &pending}}
+	runtimeStore.updateStateOnRetire = true
+	operationID, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c46")
+	request := store.RetirementRequest{
+		OperationID: operationID, AccountID: pending.AccountID, ExpectedActiveFence: pending.Fence,
+		TombstoneRevision: pending.Fence.DesiredStateRevision + 1,
+		Scope:             secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
+	}
+
+	result, err := manager.RetireRuntime(context.Background(), request)
+	if err != nil || !result.Tombstoned {
+		t.Fatalf("pending retirement=%+v err=%v", result, err)
+	}
+	if lifecycle.blockerCalls() != 0 || runtimeStore.retireCalls != 1 {
+		t.Fatalf("blocker calls=%d retire calls=%d", lifecycle.blockerCalls(), runtimeStore.retireCalls)
+	}
+	manager.groupMu.Lock()
+	retained := manager.groups[pending.AccountID]
+	manager.groupMu.Unlock()
+	if retained != nil {
+		t.Fatal("pending-only retirement retained local account ownership")
 	}
 }
 
@@ -1788,10 +1835,12 @@ func TestRotationFinalizationCloseFailureRetainsGroupForReplayRetry(t *testing.T
 	}
 }
 
-func TestRestoreRehydratesRetiringGenerationForExactRecoveryWithAdmissionClosed(t *testing.T) {
+func TestRestoreRehydratesRetiringRuntimeForExactRecoveryWithAdmissionClosed(t *testing.T) {
 	retiring := runtimeGroupPending(t).DesiredSnapshot
+	retiring.Fence.RuntimeID = retiring.SnapshotID.String()
 	active := runtimeGroupPending(t).DesiredSnapshot
 	active.SnapshotID = uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c56")
+	active.Fence.RuntimeID = active.SnapshotID.String()
 	active.OperationID, _ = secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c55")
 	active.SecretRef, _ = secretstore.ParseOpaqueRef("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI")
 	active.Fence.DesiredStateRevision++
@@ -1827,10 +1876,9 @@ func TestRestoreRehydratesRetiringGenerationForExactRecoveryWithAdmissionClosed(
 		t.Fatalf("restored account IDs=%v, want %s", got, active.AccountID)
 	}
 	controlPlane, err := manager.Runtime(active.AccountID)
-	if err != nil || controlPlane.Desired.Fence() != (WriteFence{
-		AccountID: active.AccountID, DesiredStateRevision: active.Fence.DesiredStateRevision,
-		RuntimeGeneration: active.Fence.RuntimeGeneration, CredentialVersion: active.Fence.CredentialVersion,
-	}) || controlPlane.State != RuntimeStateActive || !controlPlane.Ready {
+	if err != nil || controlPlane.Desired.AccountID != active.AccountID ||
+		controlPlane.Desired.RuntimeID != active.Fence.RuntimeID ||
+		controlPlane.State != RuntimeStateActive || !controlPlane.Ready {
 		t.Fatalf("restored control-plane runtime=%+v err=%v", controlPlane, err)
 	}
 	if len(builtSnapshots) != len(active.Routes)+len(retiring.Routes) {
@@ -1851,7 +1899,7 @@ func TestRestoreRehydratesRetiringGenerationForExactRecoveryWithAdmissionClosed(
 	}
 	if lease, acquireErr := recovery.Admission.Acquire(domain.WriteFence{AccountFence: retiring.Fence, RouteID: "spot"}); acquireErr == nil {
 		lease.Release()
-		t.Fatal("restored retiring generation admitted writes")
+		t.Fatal("restored retiring runtime admitted writes")
 	}
 	request := store.RotationFinalizationRequest{
 		OperationID: active.OperationID, AccountID: active.AccountID,
@@ -1904,7 +1952,7 @@ func TestRestorePendingFailurePreservesActiveAndContinuesOtherAccounts(t *testin
 		t.Fatalf("second active after other account failure=%+v", active)
 	}
 	firstRuntime, err := manager.Runtime(firstActive.AccountID)
-	if err != nil || firstRuntime.Ready || firstRuntime.Reason != ErrCandidateFailed.Error() {
+	if err != nil || firstRuntime.Ready || firstRuntime.Reason != CandidateFailureReason(ErrCandidateFailed) {
 		t.Fatalf("failed pending readiness=%+v err=%v", firstRuntime, err)
 	}
 	secondRuntime, err := manager.Runtime(secondActive.AccountID)
@@ -1913,13 +1961,13 @@ func TestRestorePendingFailurePreservesActiveAndContinuesOtherAccounts(t *testin
 	}
 }
 
-func TestRestoreActiveRuntimeRebuildsExactDurableGenerationWithoutPromotion(t *testing.T) {
+func TestRestoreActiveRuntimeRebuildsExactDurableRuntimeWithoutPromotion(t *testing.T) {
 	active := runtimeGroupPending(t)
+	active.Fence.RuntimeID = active.SnapshotID.String()
 	pending := runtimeGroupPending(t)
 	pending.SnapshotID = uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c36")
+	pending.Fence.RuntimeID = pending.SnapshotID.String()
 	pending.OperationID, _ = secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c34")
-	pending.Fence.DesiredStateRevision++
-	pending.Fence.RuntimeGeneration++
 	buildCounts := make(map[uuid.UUID]int)
 	builder := &candidateClientBuilderStub{failSnapshot: active.SnapshotID, buildCounts: buildCounts}
 	manager := newRuntimeGroupTestManager(builder)
@@ -1973,7 +2021,7 @@ func TestRestoreActiveRuntimeRebuildsExactDurableGenerationWithoutPromotion(t *t
 	if err != nil || !runtime.Ready || runtime.Reason != "" {
 		t.Fatalf("restored runtime=%+v err=%v", runtime, err)
 	}
-	version := runtime.RuntimeVersion
+	runtimeID := runtime.Desired.RuntimeID
 	builds := buildCounts[active.SnapshotID]
 	if err := manager.RestoreActiveRuntime(context.Background(), durable); err != nil {
 		t.Fatalf("incomplete supervision replay: %v", err)
@@ -1994,13 +2042,14 @@ func TestRestoreActiveRuntimeRebuildsExactDurableGenerationWithoutPromotion(t *t
 		t.Fatalf("healthy exact replay restarted supervision: registrations=%v", got)
 	}
 	runtime, err = manager.Runtime(active.AccountID)
-	if err != nil || runtime.RuntimeVersion != version || buildCounts[active.SnapshotID] != builds || runtimeStore.calls != 0 {
+	if err != nil || runtime.Desired.RuntimeID != runtimeID || buildCounts[active.SnapshotID] != builds || runtimeStore.calls != 0 {
 		t.Fatalf("idempotent replay runtime=%+v builds=%d promotions=%d err=%v", runtime, buildCounts[active.SnapshotID], runtimeStore.calls, err)
 	}
 }
 
-func TestRestoreActiveRuntimeRejectsNonDurableGenerationAndRedactsBuildFailure(t *testing.T) {
+func TestRestoreActiveRuntimeRejectsNonDurableRuntimeAndRedactsBuildFailure(t *testing.T) {
 	active := runtimeGroupPending(t)
+	active.Fence.RuntimeID = active.SnapshotID.String()
 	builder := &candidateClientBuilderStub{failSnapshot: active.SnapshotID}
 	manager := newRuntimeGroupTestManager(builder)
 	durable := store.ActiveSnapshot{DesiredSnapshot: active.DesiredSnapshot, PromotedAt: time.Now().UTC()}
@@ -2012,8 +2061,9 @@ func TestRestoreActiveRuntimeRejectsNonDurableGenerationAndRedactsBuildFailure(t
 
 	nonDurable := durable
 	nonDurable.SnapshotID = uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c99")
+	nonDurable.Fence.RuntimeID = nonDurable.SnapshotID.String()
 	if err := manager.RestoreActiveRuntime(context.Background(), nonDurable); err == nil {
-		t.Fatal("non-durable active generation was restored")
+		t.Fatal("non-durable active runtime was restored")
 	}
 }
 

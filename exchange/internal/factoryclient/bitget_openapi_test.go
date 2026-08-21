@@ -3,14 +3,87 @@ package factoryclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/shopspring/decimal"
 )
+
+func TestBitgetCandlesTranslateIntervalAndPageBackward(t *testing.T) {
+	const firstOpenMillis int64 = 1_720_000_000_000
+	ctx := context.Background()
+	type observedRequest struct {
+		interval string
+		kind     string
+		limit    string
+		endTime  string
+	}
+	requests := make([]observedRequest, 0, 2)
+	candleRows := func(first, last int) string {
+		rows := make([]string, 0, last-first+1)
+		for index := last; index >= first; index-- {
+			openMillis := firstOpenMillis + int64(index)*int64(time.Hour/time.Millisecond)
+			rows = append(rows, fmt.Sprintf(`["%d","100","101","99","100.5","3","300"]`, openMillis))
+		}
+		return "[" + strings.Join(rows, ",") + "]"
+	}
+	settings := bybitBitgetStaticCatalogSettings(t, Settings{
+		Endpoint: "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Path != "/api/v3/market/candles" {
+				return (&bitgetOpenAPIRouter{}).RoundTrip(request)
+			}
+			query := request.URL.Query()
+			requests = append(requests, observedRequest{
+				interval: query.Get("interval"),
+				kind:     query.Get("type"),
+				limit:    query.Get("limit"),
+				endTime:  query.Get("endTime"),
+			})
+			switch len(requests) {
+			case 1:
+				return bitgetData(candleRows(68, 167)), nil
+			case 2:
+				return bitgetData(candleRows(0, 67)), nil
+			default:
+				t.Fatalf("unexpected candle page request %d", len(requests))
+				return nil, nil
+			}
+		})},
+	}, exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
+	client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
+	instrument := bybitBitgetTestInstrumentPtr(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
+
+	page, err := client.Candles(ctx, exchange.CandlesRequest{Instrument: *instrument, Interval: "1h", Limit: 168})
+	if err != nil {
+		t.Fatalf("Candles: %v", err)
+	}
+	if len(page.Candles) != 168 {
+		t.Fatalf("candles len = %d, want 168", len(page.Candles))
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests len = %d, want 2", len(requests))
+	}
+	if requests[0].interval != "1H" || requests[0].kind != "market" || requests[0].limit != "100" || requests[0].endTime != "" {
+		t.Fatalf("first request = %+v, want Bitget wire interval, market candles, and page limit 100", requests[0])
+	}
+	wantSecondEnd := fmt.Sprint(firstOpenMillis + int64(68)*int64(time.Hour/time.Millisecond) - 1)
+	if requests[1].interval != "1H" || requests[1].kind != "market" || requests[1].limit != "68" || requests[1].endTime != wantSecondEnd {
+		t.Fatalf("second request = %+v, want endTime %s and limit 68", requests[1], wantSecondEnd)
+	}
+	if got := page.Candles[0].OpenTime.UnixMilli(); got != firstOpenMillis {
+		t.Fatalf("first candle open = %d, want %d", got, firstOpenMillis)
+	}
+	wantLast := firstOpenMillis + int64(167)*int64(time.Hour/time.Millisecond)
+	if got := page.Candles[len(page.Candles)-1].OpenTime.UnixMilli(); got != wantLast {
+		t.Fatalf("last candle open = %d, want %d", got, wantLast)
+	}
+}
 
 func TestOpenAPIBitgetRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()

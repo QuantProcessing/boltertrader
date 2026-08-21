@@ -70,6 +70,29 @@ func TestAsterCatalogLoaderUsesPublicExchangeInfoAndExactScopes(t *testing.T) {
 	}
 }
 
+func TestAsterSpotCatalogUsesStructuredAssetsForNonUSDTQuotes(t *testing.T) {
+	router := newAsterCatalogRouter()
+	router.spotBody = `{"symbols":[
+		{"symbol":"ETHUSDC","status":"TRADING","baseAsset":"ETH","quoteAsset":"USDC","filters":[{"filterType":"PRICE_FILTER","tickSize":"0.01"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"},{"filterType":"MIN_NOTIONAL","minNotional":"5"}]}
+	]}`
+	settings, scope := asterCatalogTestSettings(t, exchange.ProductSpot, "", router)
+
+	snapshot, err := NewAsterInstrumentLoader(exchange.ProductSpot, settings).LoadInstruments(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("LoadInstruments spot USDC: %v", err)
+	}
+	if len(snapshot.Instruments) != 1 {
+		t.Fatalf("spot instruments = %d, want 1", len(snapshot.Instruments))
+	}
+	instrument := snapshot.Instruments[0]
+	if instrument.Identity.Symbol != "ETH-USDC" ||
+		instrument.Identity.BaseAsset != "ETH" ||
+		instrument.Identity.QuoteAsset != "USDC" ||
+		instrument.Identity.NativeSymbol != "ETHUSDC" {
+		t.Fatalf("spot USDC instrument = %+v", instrument.Identity)
+	}
+}
+
 func TestAsterCatalogLoaderSkipsUnsupportedRowsButFailsClosedOnMalformedSupportedRows(t *testing.T) {
 	router := newAsterCatalogRouter()
 	router.spotBody = `{"symbols":[

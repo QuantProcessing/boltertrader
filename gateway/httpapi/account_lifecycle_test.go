@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/account/lifecycle"
 )
 
@@ -245,6 +246,34 @@ func TestAccountLifecycleUsesBlockersForDisableAndRemoval(t *testing.T) {
 	newLifecycleHandler(t, fake, lifecycle.Blockers{OwnedPositions: 1}, nil).ServeHTTP(response, lifecycleRequest(http.MethodDelete, "/internal/v1/accounts/acct_1", ""))
 	if response.Code != http.StatusConflict || strings.Join(fake.calls, ",") != "Get" {
 		t.Fatalf("remove status=%d calls=%v", response.Code, fake.calls)
+	}
+}
+
+func TestFailedCreatingAccountCanBeRemovedWithoutAnActiveRuntime(t *testing.T) {
+	fake := &fakeAccountLifecycle{account: lifecycleAccount()}
+	fake.account.State = lifecycle.StateCreating
+	response := httptest.NewRecorder()
+	newLifecycleHandler(t, fake, lifecycle.Blockers{}, account.ErrUnknownAccount).ServeHTTP(
+		response,
+		lifecycleRequest(http.MethodDelete, "/internal/v1/accounts/acct_1", ""),
+	)
+
+	if response.Code != http.StatusAccepted || strings.Join(fake.calls, ",") != "Get,Remove" {
+		t.Fatalf("remove status=%d calls=%v body=%s", response.Code, fake.calls, response.Body.String())
+	}
+}
+
+func TestActiveAccountStillFailsClosedWhenRuntimeBlockersAreUnavailable(t *testing.T) {
+	fake := &fakeAccountLifecycle{account: lifecycleAccount()}
+	response := httptest.NewRecorder()
+	newLifecycleHandler(t, fake, lifecycle.Blockers{}, account.ErrUnknownAccount).ServeHTTP(
+		response,
+		lifecycleRequest(http.MethodDelete, "/internal/v1/accounts/acct_1", ""),
+	)
+
+	if response.Code != http.StatusServiceUnavailable || strings.Join(fake.calls, ",") != "Get" ||
+		!strings.Contains(response.Body.String(), "ACCOUNT_BLOCKERS_UNAVAILABLE") {
+		t.Fatalf("remove status=%d calls=%v body=%s", response.Code, fake.calls, response.Body.String())
 	}
 }
 

@@ -102,13 +102,21 @@ page is the centralized statement of what actually differs.
 The gateway is deliberately thick and product services are deliberately thin.
 Anything more than one product would need lives in the gateway: credential
 storage, account lifecycle, catalog, capability and limit resolution, durable
-order identity, reconciliation, and private event delivery.
+order identity, reconciliation, private event delivery, and normalized public
+market facts. Funding, mark, index, and OI are collected once into Gateway
+memory and streamed internally; they are not fetched again for each product or
+browser request. Full order books remain per-instrument streams rather than
+entering that cross-market projection.
 
 A product service owns only its own products' decisions — the command ledger,
 previews, reservations, and the projections its interface needs. Two products
 can share one service and all of that machinery: manual trading and funding
 arbitrage both live in `services/trading`, and they differ in their endpoints
 and in the shape of the intent they seal, not in a second copy of the ledger.
+Trading keeps a local copy of Gateway's funding-market projection and owns the
+strategy-specific calculations. Historical series stay request-driven, while
+an executable arbitrage preview deliberately bypasses the projection and reads
+fresh BBO for both legs.
 When a product service grows a capability that a second product would also
 need, that is a signal to move it down into the gateway, not to duplicate it.
 

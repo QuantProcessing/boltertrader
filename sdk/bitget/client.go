@@ -16,7 +16,7 @@ import (
 
 const (
 	defaultBaseURL = "https://api.bitget.com"
-	publicWSURL    = "wss://ws.bitget.com/v2/ws/public"
+	publicWSURL    = "wss://ws.bitget.com/v3/ws/public"
 	privateWSURL   = "wss://ws.bitget.com/v3/ws/private"
 	classicWSURL   = "wss://ws.bitget.com/v2/ws/private"
 )

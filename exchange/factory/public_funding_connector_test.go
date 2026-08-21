@@ -8,6 +8,38 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
 
+func TestPublicFundingMarketFeedBootstrap(t *testing.T) {
+	profiles := []struct {
+		venue      exchange.Venue
+		settlement string
+	}{
+		{exchange.VenueBinance, "USDT"}, {exchange.VenueAster, "USDT"},
+		{exchange.VenueHyperliquid, "USDC"}, {exchange.VenueLighter, "USDC"},
+		{exchange.VenueBybit, "USDT"}, {exchange.VenueBybit, "USDC"},
+		{exchange.VenueBitget, "USDT"}, {exchange.VenueBitget, "USDC"},
+		{exchange.VenueGate, "USDT"}, {exchange.VenueOKX, "USDT"},
+		{exchange.VenueNado, "USDT0"},
+	}
+	for _, profile := range profiles {
+		feed, err := NewPublicFundingMarketFeed(profile.venue, exchange.ProductPerp, profile.settlement, EnvironmentLive, &http.Client{})
+		if err != nil {
+			t.Fatalf("NewPublicFundingMarketFeed(%s/%s): %v", profile.venue, profile.settlement, err)
+		}
+		// The public factory intentionally owns production endpoints;
+		// construction is the contract exercised here. Adapter fixture tests
+		// cover bootstrap mapping without issuing a live request here.
+		if feed.Status().State != exchange.FundingMarketFeedUnavailable {
+			t.Fatalf("%s/%s initial feed state = %q", profile.venue, profile.settlement, feed.Status().State)
+		}
+		if err := feed.Close(); err != nil {
+			t.Fatalf("%s/%s close: %v", profile.venue, profile.settlement, err)
+		}
+	}
+	if feed, err := NewPublicFundingMarketFeed(exchange.VenueBinance, exchange.ProductSpot, "", EnvironmentLive, &http.Client{}); err == nil || feed != nil {
+		t.Fatalf("spot funding feed=%v err=%v, want unsupported", feed, err)
+	}
+}
+
 // TestFundingBoardSourceDegradesPerVenue pins the two properties a multi-venue
 // board depends on: construction must not touch the network or a credential,
 // and one venue's failure must be that venue's failure alone.
@@ -15,8 +47,8 @@ import (
 // The second is the whole point of building the board out of independent
 // connectors. A shared client would let a single unreachable venue take the
 // table down; here the caller gets an error for that column and snapshots for
-// the rest, which is what lets the page render nine venues when the tenth is
-// down.
+// the rest, which is what lets the page render the other eight venues when one
+// is down (or the other ten route columns when one settlement shard is down).
 func TestFundingBoardSourceDegradesPerVenue(t *testing.T) {
 	transport := new(countingTransport)
 	httpClient := &http.Client{Transport: transport}
@@ -26,6 +58,7 @@ func TestFundingBoardSourceDegradesPerVenue(t *testing.T) {
 		settlement string
 	}{
 		{exchange.VenueBinance, "USDT"},
+		{exchange.VenueAster, "USDT"},
 		{exchange.VenueOKX, "USDT"},
 		{exchange.VenueLighter, "USDC"},
 		{exchange.VenueHyperliquid, "USDC"},
@@ -102,17 +135,6 @@ func TestFundingBoardSourceDegradesPerVenue(t *testing.T) {
 			name:        "spot has no funding surface",
 			venue:       exchange.VenueBinance,
 			product:     exchange.ProductSpot,
-			environment: EnvironmentLive,
-			httpClient:  httpClient,
-		},
-		{
-			// Aster is a supported perp venue the capability matrix marks as
-			// publishing no funding. Rejecting it here is what keeps "no rates"
-			// from being indistinguishable from "venue is down".
-			name:        "aster perp publishes no funding",
-			venue:       exchange.VenueAster,
-			product:     exchange.ProductPerp,
-			settlement:  "USDT",
 			environment: EnvironmentLive,
 			httpClient:  httpClient,
 		},

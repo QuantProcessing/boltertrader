@@ -22,7 +22,7 @@ func AllowedTransition(from, to State) bool {
 	case "":
 		return to == StateCreating
 	case StateCreating:
-		return to == StateActive || to == StateDisabled
+		return to == StateActive || to == StateDisabled || to == StateRemoving
 	case StateActive:
 		return to == StateRotating || to == StateDraining || to == StateDisabled
 	case StateRotating:

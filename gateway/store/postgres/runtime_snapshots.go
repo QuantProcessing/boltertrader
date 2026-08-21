@@ -405,14 +405,23 @@ func (postgresStore *Store) RetireAccount(ctx context.Context, request storepkg.
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return storepkg.RetirementResult{}, redactErr("load account retirement", err)
 	}
-	if activeID == nil {
+	// A first credential probe can fail after its snapshot has been persisted
+	// but before promotion. Such an account has only a pending head and never
+	// owned write admission. It is safe to retire, but only while holding this
+	// row lock and only when the pending runtime identity is exact. Accounts
+	// with an active head continue down the normal inventory-checked path.
+	var retiring storepkg.DesiredSnapshot
+	if activeID != nil {
+		retiring, err = loadSnapshotByID(ctx, tx, *activeID)
+	} else if pendingID != nil {
+		retiring, err = loadSnapshotByID(ctx, tx, *pendingID)
+	} else {
 		return storepkg.RetirementResult{}, storepkg.ErrPromotionFenceConflict
 	}
-	active, err := loadSnapshotByID(ctx, tx, *activeID)
 	if err != nil {
 		return storepkg.RetirementResult{}, err
 	}
-	if active.Fence != request.ExpectedActiveFence {
+	if retiring.Fence != request.ExpectedActiveFence {
 		return storepkg.RetirementResult{}, storepkg.ErrPromotionFenceConflict
 	}
 

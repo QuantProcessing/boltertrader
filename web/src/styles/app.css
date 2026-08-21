@@ -104,3 +104,9 @@
     scroll-behavior: auto !important;
   }
 }
+
+@media (pointer: coarse) {
+  [data-table-sort] {
+    min-height: var(--spacing-bar);
+  }
+}

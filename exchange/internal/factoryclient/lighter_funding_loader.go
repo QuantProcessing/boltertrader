@@ -16,6 +16,12 @@ import (
 // this is the one that departs from the house convention.
 var lighterFundingPercent = decimal.NewFromInt(100)
 
+// Lighter settles every hour but applies one eighth of the displayed funding
+// rate at each settlement. The public all-market comparison endpoint therefore
+// carries an eight-hour-equivalent quote, which is the period consumers need
+// when normalising the rate to a day.
+const lighterFundingQuoteHours int64 = 8
+
 type lighterFundingBoardLoader struct {
 	settings Settings
 }
@@ -26,12 +32,11 @@ func NewLighterFundingBoardLoader(settings Settings) exchange.FundingBoardLoader
 
 // LoadFundingBoard reads Lighter's funding surface.
 //
-// This is the thinnest board on the venue list, and that is a property of the
-// feed rather than of the loader: Lighter publishes a rate and nothing else —
-// no mark, no index, no open interest, no settlement clock and no interval. All
-// five optional cells are therefore left absent, which is the whole reason the
-// board type makes them optional. Filling any of them with a placeholder would
-// put a number on screen that Lighter never said.
+// Lighter exposes the funding comparison and market statistics through two
+// public endpoints. The first is authoritative for the rate; the second is a
+// best-effort bootstrap for mark, index and open interest so price strategies
+// do not need to wait for the first WebSocket frame. A failure of that
+// enrichment never suppresses the funding row.
 //
 // The SDK already restricts the response to Lighter's own rates; the endpoint
 // also carries other venues' rates for comparison, and those must not reach a
@@ -43,20 +48,53 @@ func (loader lighterFundingBoardLoader) LoadFundingBoard(ctx context.Context, sc
 	if err != nil {
 		return exchange.FundingBoardSnapshot{}, lighterNormalizeErr(exchange.ProductPerp, fundingBoardOperation, err)
 	}
+	type marketDetail struct {
+		markPrice    string
+		indexPrice   string
+		openInterest string
+	}
+	details := map[int]marketDetail{}
+	if response, detailErr := sdk.GetOrderBookDetails(ctx, nil, nil); detailErr == nil && response != nil {
+		for _, detail := range response.OrderBookDetails {
+			if detail == nil {
+				continue
+			}
+			details[detail.MarketId] = marketDetail{
+				markPrice: detail.MarkPrice, indexPrice: detail.IndexPrice,
+				openInterest: strconv.FormatFloat(detail.OpenInterest, 'f', -1, 64),
+			}
+		}
+	}
 
 	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
 	for _, row := range rows {
 		if row == nil || row.Symbol == "" {
 			continue
 		}
-		entries = append(entries, exchange.FundingBoardEntry{
+		entry := exchange.FundingBoardEntry{
 			Symbol:       row.Symbol + "-USDC",
 			NativeSymbol: row.Symbol,
 			NativeID:     strconv.Itoa(row.MarketId),
 			BaseAsset:    row.Symbol,
 			QuoteAsset:   "USDC",
 			Rate:         decimal.NewFromFloat(row.Rate),
-		})
+			IntervalHours: exchange.OptionalInt{
+				Value: lighterFundingQuoteHours,
+				Valid: true,
+			},
+		}
+		if detail, ok := details[row.MarketId]; ok {
+			entry.MarkPrice = fundingOptionalDecimal(detail.markPrice)
+			entry.IndexPrice = fundingOptionalDecimal(detail.indexPrice)
+			entry.OpenInterest = fundingOptionalNonNegative(detail.openInterest)
+			entry.OpenInterestNotional = fundingOpenInterestNotional(
+				detail.openInterest, detail.markPrice, decimal.NewFromInt(1),
+			)
+			if entry.OpenInterestNotional.Valid {
+				entry.OpenInterestNotionalAsset = "USDC"
+			}
+		}
+		entries = append(entries, entry)
 	}
 	return fundingBoardSnapshot(scope, entries), nil
 }

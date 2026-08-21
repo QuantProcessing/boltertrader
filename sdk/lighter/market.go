@@ -123,6 +123,20 @@ func (c *Client) GetOrderBookDetails(ctx context.Context, marketId *int, filter 
 	return &res, nil
 }
 
+// GetListedTokens returns Lighter's public classification metadata. The
+// endpoint is credential-free and is intentionally named differently from the
+// account API's read-only authentication tokens.
+func (c *Client) GetListedTokens(ctx context.Context) (*ListedTokenResponse, error) {
+	var res ListedTokenResponse
+	if err := c.getJSON(ctx, "/api/v1/tokenlist", nil, false, &res); err != nil {
+		return nil, err
+	}
+	if res.Code != 200 {
+		return nil, fmt.Errorf("%w: invalid tokenlist response code", ErrMalformedResponse)
+	}
+	return &res, nil
+}
+
 // GetOrderBooks fetches order books
 func (c *Client) GetOrderBooks(ctx context.Context, marketId *int) (*OrderBooksResponse, error) {
 	path := "/api/v1/orderBooks"

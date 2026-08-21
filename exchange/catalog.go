@@ -476,7 +476,9 @@ func cloneInstruments(instruments []Instrument) []Instrument {
 		return nil
 	}
 	out := make([]Instrument, len(instruments))
-	copy(out, instruments)
+	for index, instrument := range instruments {
+		out[index] = cloneInstrument(instrument)
+	}
 	return out
 }
 

@@ -221,6 +221,10 @@ type InternalOptions struct {
 	// PublicMarkets is the credential-free exchange stream used by the browser
 	// through the auth edge. It is optional in migration-validation processes.
 	PublicMarkets InternalPublicMarketStreams
+	// FundingBoardChanges is the resident public-facts projection. It carries
+	// only change sequences; the handler obtains each canonical wire snapshot
+	// through Authority so HTTP and WebSocket cannot drift in shape.
+	FundingBoardChanges InternalFundingBoardChanges
 	// Lifecycle is optional. A gateway without a durable account store can
 	// still serve the runtime and catalog surfaces, so the account lifecycle
 	// routes are only mounted when something can answer them.
@@ -231,14 +235,15 @@ type InternalOptions struct {
 }
 
 type InternalHandler struct {
-	authority     InternalAuthority
-	authenticate  func(*http.Request) error
-	bodyLimit     int64
-	writeReady    func() bool
-	lifecycle     AccountLifecycle
-	blockers      AccountBlockers
-	publicMarkets InternalPublicMarketStreams
-	mux           *http.ServeMux
+	authority           InternalAuthority
+	authenticate        func(*http.Request) error
+	bodyLimit           int64
+	writeReady          func() bool
+	lifecycle           AccountLifecycle
+	blockers            AccountBlockers
+	publicMarkets       InternalPublicMarketStreams
+	fundingBoardChanges InternalFundingBoardChanges
+	mux                 *http.ServeMux
 }
 
 var internalRoutes = []Route{
@@ -261,6 +266,7 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/public/ws"},
 	{http.MethodGet, "/internal/v1/private-events"},
 	{http.MethodGet, "/internal/v1/funding-board"},
+	{http.MethodGet, "/internal/v1/funding-board/ws"},
 	{http.MethodGet, "/internal/v1/funding-history"},
 }
 
@@ -284,7 +290,7 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, mux: http.NewServeMux()}
 	handler.register()
 	if handler.lifecycle != nil {
 		handler.registerAccountLifecycle()
@@ -324,6 +330,7 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/public/ws", handler.publicMarketStream)
 	handler.mux.HandleFunc("GET /internal/v1/private-events", handler.read(AuthorityPrivateEvents))
 	handler.mux.HandleFunc("GET /internal/v1/funding-board", handler.read(AuthorityFundingBoard))
+	handler.mux.HandleFunc("GET /internal/v1/funding-board/ws", handler.fundingBoardStream)
 	handler.mux.HandleFunc("GET /internal/v1/funding-history", handler.read(AuthorityFundingHistory))
 }
 
@@ -472,12 +479,8 @@ func (request RotationFinalizationRequest) validate(accountID, operationID strin
 	if request.ExpectedActiveFence.validate(accountID) != nil || request.ExpectedRetiringFence.validate(accountID) != nil {
 		return errors.New("invalid rotation finalization fence")
 	}
-	active, retiring := request.ExpectedActiveFence, request.ExpectedRetiringFence
-	if active.DesiredStateRevision <= 1 || active.RuntimeGeneration <= 1 || active.CredentialVersion <= 1 ||
-		active.DesiredStateRevision-1 != retiring.DesiredStateRevision ||
-		active.RuntimeGeneration-1 != retiring.RuntimeGeneration ||
-		active.CredentialVersion-1 != retiring.CredentialVersion {
-		return errors.New("invalid rotation finalization adjacency")
+	if request.ExpectedActiveFence.RuntimeID == request.ExpectedRetiringFence.RuntimeID {
+		return errors.New("invalid rotation finalization runtime identity")
 	}
 	return nil
 }

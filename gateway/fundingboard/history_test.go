@@ -36,9 +36,7 @@ func TestFundingHistoryResolvesNativeIdentifierFromBoard(t *testing.T) {
 		t.Fatalf("newSource: %v", err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	if _, err := source.Snapshot(context.Background()); err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
+	source.bootstrapAll(context.Background(), source.columns)
 
 	since := time.Unix(1_719_964_800, 0).UTC()
 	until := time.Unix(1_720_051_200, 0).UTC()
@@ -93,9 +91,7 @@ func TestFundingHistorySearchesEveryColumnOfAVenue(t *testing.T) {
 		t.Fatalf("newSource: %v", err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	if _, err := source.Snapshot(context.Background()); err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
+	source.bootstrapAll(context.Background(), source.columns)
 
 	since := time.Unix(1_719_964_800, 0).UTC()
 	until := time.Unix(1_720_051_200, 0).UTC()
@@ -131,16 +127,12 @@ func TestFundingHistorySearchesEveryColumnOfAVenue(t *testing.T) {
 	}
 }
 
-// TestFundingHistoryWarmsColdColumnOnce covers the chart opened before the
-// board has ever been read.
+// TestFundingHistoryDoesNotWarmAColdColumn covers a chart opened before the
+// resident collector has delivered its bootstrap.
 //
-// The mapping only exists once a column has refreshed, so a cold column and an
-// unlisted instrument arrive at the same place with the same evidence. Refusing
-// on the cold one would make the first chart after a restart fail for a reason
-// that stops being true a second later. Refreshing on the warm one would let a
-// mistyped symbol fan out to ten venues, so the retry is spent exactly once and
-// only where it can change the answer.
-func TestFundingHistoryWarmsColdColumnOnce(t *testing.T) {
+// A request is never allowed to trigger venue I/O. The caller receives a
+// temporary unknown-instrument result until the startup snapshot arrives.
+func TestFundingHistoryDoesNotWarmAColdColumn(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	histories := &fakeHistoryFactory{}
 	source, err := newSource(histories, routeprofile.DefaultRegistry(), sourceOptions{
@@ -151,19 +143,18 @@ func TestFundingHistoryWarmsColdColumnOnce(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = source.Close() })
 
-	// No Snapshot first: every column is cold.
+	// No bootstrap first: every column is cold.
 	if _, err := source.History(context.Background(), HistoryQuery{
 		RouteProfileID: "binance.perp.usdt.v1", NativeSymbol: "BTCUSDT-native", NativeID: "binance-1",
 		Since: time.Unix(1_719_964_800, 0).UTC(), Until: time.Unix(1_720_051_200, 0).UTC(),
-	}); err != nil {
-		t.Fatalf("History against a cold board: %v", err)
+	}); !errors.Is(err, ErrHistoryUnknownInstrument) {
+		t.Fatalf("History against a cold board: %v, want ErrHistoryUnknownInstrument", err)
 	}
-	if refreshes := histories.refreshes(); refreshes == 0 {
-		t.Fatal("a cold column was never refreshed")
+	if refreshes := histories.refreshes(); refreshes != 0 {
+		t.Fatalf("a history request refreshed %d venues", refreshes)
 	}
 
-	// The board is warm now, so an instrument it does not carry is answered
-	// from cache rather than by refreshing ten venues again.
+	source.bootstrapAll(context.Background(), source.columns)
 	before := histories.refreshes()
 	_, err = source.History(context.Background(), HistoryQuery{
 		RouteProfileID: "binance.perp.usdt.v1", NativeSymbol: "NOTLISTEDUSDT-native", NativeID: "not-listed",
@@ -173,7 +164,7 @@ func TestFundingHistoryWarmsColdColumnOnce(t *testing.T) {
 		t.Fatalf("unlisted instrument: %v, want ErrHistoryUnknownInstrument", err)
 	}
 	if after := histories.refreshes(); after != before {
-		t.Errorf("an unlisted symbol triggered %d venue refreshes", after-before)
+		t.Errorf("an unlisted symbol triggered %d additional venue refreshes", after-before)
 	}
 }
 
@@ -194,9 +185,7 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newSource: %v", err)
 	}
-	if _, err := source.Snapshot(context.Background()); err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
+	source.bootstrapAll(context.Background(), source.columns)
 
 	since := time.Unix(1_719_964_800, 0).UTC()
 	until := time.Unix(1_720_051_200, 0).UTC()
@@ -214,7 +203,7 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 		},
 		{
 			name:  "venue is not on the board",
-			query: HistoryQuery{RouteProfileID: "aster.perp.usdt.v1", NativeSymbol: "BTCUSDT-native", NativeID: "aster-1", Since: since, Until: until},
+			query: HistoryQuery{RouteProfileID: "deribit.perp.usdt.v1", NativeSymbol: "BTCUSDT-native", NativeID: "deribit-1", Since: since, Until: until},
 			want:  ErrHistoryUnsupported,
 		},
 		{
@@ -300,7 +289,7 @@ type fakeHistoryFactory struct {
 }
 
 func (factory *fakeHistoryFactory) BuildHistory(profile routeprofile.Profile) (HistoryConnector, error) {
-	if profile.Venue == "nado" {
+	if profile.Venue == "nado" || profile.Venue == "aster" {
 		return nil, ErrHistoryUnsupported
 	}
 	return &fakeHistoryConnector{factory: factory, profile: profile}, nil

@@ -276,6 +276,29 @@ type OrderBookDetail struct {
 	OpenInterest                 float64 `json:"open_interest"`
 }
 
+// ListedToken is one public tokenlist entry. It is distinct from Token below,
+// which is an account API authentication token.
+type ListedToken struct {
+	Symbol                string   `json:"symbol"`
+	Name                  string   `json:"name"`
+	Logo                  string   `json:"logo"`
+	LogoExtension         string   `json:"logo_extension"`
+	DescriptionKey        string   `json:"description_key"`
+	GeckoID               string   `json:"gecko_id"`
+	PaprikaID             string   `json:"paprika_id"`
+	Market                string   `json:"market"`
+	AssetType             string   `json:"asset_type"`
+	Categories            []string `json:"categories"`
+	IsAllowedMainnet      bool     `json:"is_allowed_mainnet"`
+	IsAssetAllowedMainnet bool     `json:"is_asset_allowed_mainnet"`
+}
+
+type ListedTokenResponse struct {
+	Code    int32         `json:"code"`
+	Message string        `json:"message"`
+	Tokens  []ListedToken `json:"tokens"`
+}
+
 type AccountActiveOrdersResponse struct {
 	Code       int32    `json:"code"`
 	Msg        string   `json:"message"`

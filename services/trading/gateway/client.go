@@ -30,6 +30,8 @@ import (
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/shopspring/decimal"
 )
 
@@ -253,6 +255,21 @@ type MarketDataSource struct{ client *Client }
 // MarketData views the client as a market-data source.
 func (client *Client) MarketData() MarketDataSource { return MarketDataSource{client: client} }
 
+// FreshMarketData bypasses Trading's five-second UI projection. Execution
+// previews use it so both legs are sealed against an immediate Gateway BBO.
+func (client *Client) FreshMarketData() FreshMarketDataSource {
+	return FreshMarketDataSource{client: client}
+}
+
+type FreshMarketDataSource struct{ client *Client }
+
+func (source FreshMarketDataSource) Get(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
+	if source.client == nil {
+		return marketdata.Fact{}, fmt.Errorf("Gateway fresh market-data source is unavailable")
+	}
+	return source.client.fetchMarketData(ctx, query)
+}
+
 // ManualAccounts answers the manual product's account question from the
 // Gateway's internal account plane. The public /v1/accounts/{id} view cannot
 // serve here: it reports runtime readiness, not the account's lifecycle state,
@@ -353,18 +370,97 @@ func (source CandleSource) FetchCandles(ctx context.Context, query marketdata.Ca
 	return source.client.fetchCandles(ctx, query)
 }
 
-// FundingBoardSource adapts the client to marketdata.BoardSource, alongside the
-// two adapters above and for the same reason.
+// FundingBoardSource adapts the client to Trading's one resident funding-board
+// stream. It intentionally has no HTTP fetch method: browser reads must never
+// make Trading ask Gateway for a refresh or a second copy.
 type FundingBoardSource struct{ client *Client }
 
 // FundingBoard views the client as a funding-board source.
 func (client *Client) FundingBoard() FundingBoardSource { return FundingBoardSource{client: client} }
 
-func (source FundingBoardSource) FetchFundingBoard(ctx context.Context) (marketdata.BoardSnapshot, error) {
-	if source.client == nil {
-		return marketdata.BoardSnapshot{}, fmt.Errorf("Gateway funding-board source is unavailable")
+type fundingBoardStreamEvent struct {
+	EventType string                   `json:"eventType"`
+	Sequence  uint64                   `json:"sequence"`
+	Data      marketdata.BoardSnapshot `json:"data"`
+	Reason    string                   `json:"reason,omitempty"`
+}
+
+// RunFundingBoard maintains Trading's single internal subscription. Each
+// reconnect begins with a complete snapshot, so the local projection is never
+// repaired by guessing across a gap.
+func (source FundingBoardSource) RunFundingBoard(ctx context.Context, replace func(marketdata.BoardSnapshot) error) error {
+	if source.client == nil || ctx == nil || replace == nil {
+		return fmt.Errorf("Gateway funding-board stream is unavailable")
 	}
-	return source.client.fetchFundingBoard(ctx)
+	backoff := time.Second
+	for ctx.Err() == nil {
+		err := source.streamOnce(ctx, replace)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if err == nil {
+			backoff = time.Second
+		} else if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
+	}
+	return ctx.Err()
+}
+
+func (source FundingBoardSource) streamOnce(ctx context.Context, replace func(marketdata.BoardSnapshot) error) error {
+	client := source.client
+	parsed, err := url.Parse(client.internalBaseURL)
+	if err != nil {
+		return fmt.Errorf("Gateway funding-board stream URL is invalid")
+	}
+	if parsed.Scheme == "https" {
+		parsed.Scheme = "wss"
+	} else {
+		parsed.Scheme = "ws"
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/internal/v1/funding-board/ws"
+	parsed.RawQuery = ""
+	headers := http.Header{"Authorization": {"Bearer " + string(client.internalToken)}}
+	connection, response, err := websocket.Dial(ctx, parsed.String(), &websocket.DialOptions{HTTPClient: client.httpClient, HTTPHeader: headers})
+	if err != nil {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		return fmt.Errorf("connect Gateway funding-board stream")
+	}
+	defer connection.CloseNow()
+	connection.SetReadLimit(fundingBoardResponseLimit)
+
+	var last uint64
+	first := true
+	for {
+		var event fundingBoardStreamEvent
+		if err := wsjson.Read(ctx, connection, &event); err != nil {
+			return fmt.Errorf("read Gateway funding-board stream")
+		}
+		if event.EventType == "resync_required" {
+			return fmt.Errorf("Gateway funding-board resnapshot required")
+		}
+		followup := event.EventType == "upsert" || event.EventType == "venue_status"
+		if (first && event.EventType != "snapshot") || (!first && !followup) || (!first && event.Sequence <= last) {
+			return fmt.Errorf("Gateway funding-board stream sequence is invalid")
+		}
+		if err := replace(event.Data); err != nil {
+			return fmt.Errorf("Gateway funding-board stream payload is invalid: %w", err)
+		}
+		first = false
+		last = event.Sequence
+	}
 }
 
 // FundingHistorySource adapts the client to marketdata.FundingHistorySource,
@@ -938,22 +1034,6 @@ func (client *Client) fetchCandles(ctx context.Context, query marketdata.CandleQ
 	for index := range result.Data.Candles {
 		result.Data.Candles[index].OpenTime = result.Data.Candles[index].OpenTime.UTC()
 		result.Data.Candles[index].CloseTime = result.Data.Candles[index].CloseTime.UTC()
-	}
-	return result.Data, nil
-}
-
-// fetchFundingBoard reads the cross-venue funding matrix.
-//
-// It names neither an account nor a venue, which is what distinguishes it from
-// the two reads above: the board's whole purpose is to be legible before any
-// account exists, and the Gateway assembles it from public endpoints on its own
-// refresh clock. So there is no query to send and nothing to cross-check the
-// response against beyond its own internal consistency, which the projection's
-// validateBoard judges once the bytes are decoded.
-func (client *Client) fetchFundingBoard(ctx context.Context) (marketdata.BoardSnapshot, error) {
-	var result readEnvelope[marketdata.BoardSnapshot]
-	if err := client.readLimit(ctx, "", "/internal/v1/funding-board", nil, &result, fundingBoardResponseLimit); err != nil {
-		return marketdata.BoardSnapshot{}, fmt.Errorf("read Gateway funding board: %w", err)
 	}
 	return result.Data, nil
 }

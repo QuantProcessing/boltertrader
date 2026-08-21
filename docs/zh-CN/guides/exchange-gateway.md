@@ -145,27 +145,33 @@ mark price 使用有界等待得到的首个 mark stream 事件，因为统一 e
 `resync_required`，随后以 WebSocket policy violation 关闭；客户端重连后会
 获得新 snapshot。
 
-内部监听器上有两个读取是这条「必须带账户」规则的例外。
-`GET /internal/v1/funding-board` 与 `GET /internal/v1/funding-history` 都不收
-`account_id`，因为 Gateway 是用不带凭证构建出来的交易所 client 回答它们的。
-在一个还没有声明过任何账户的部署上，它们照样解析得出——这正是资金费矩阵能在
-全新安装上就可读的原因。它们仍然是带认证的（内部监听器有自己的 bearer
-token），也仍然拒绝吐出 native symbol、native ID 或原始交易所错误。
+内部监听器上有三个操作是这条「必须带账户」规则的例外：
+`GET /internal/v1/funding-board`、`GET /internal/v1/funding-board/ws` 与
+`GET /internal/v1/funding-history`。它们不收 `account_id`，因为 Gateway 使用
+免凭证的交易所 client 回答。它们仍由内部 bearer token 保护，也不会暴露凭证、
+原生交易所错误等内部细节。
 
-看板是整张表，一次返回：按 venue、product 与结算资产各占一列，
-每列带着自己的费率、结算周期，以及该交易所到底提不提供历史。它不收任何参数，
-因为调用方问不出任何一种「让这一列对、让那一列错」的问题。读不出来的列会降级
-成一个带原因的不可用列，而不是让整个响应失败——一家交易所连不上，不该把另外
-九家一起抹黑。
+资金费看板是 Gateway 的常驻公共行情投影。Gateway 启动时对所有支持的永续 route
+做一次 bootstrap，随后通过交易所 WebSocket 持续合并资金费、mark、index 与 OI。
+Binance 和 Aster 的 OI 以一分钟滚动周期异步补齐；Nado 未流式提供的价格和 OI 由
+一次有界的全产品查询补齐。HTTP 看板接口只复制内存，所以前端数量不会放大交易所
+请求。完整订单簿不进入这份投影。
 
-历史读取收 venue、environment、symbol，以及一对明确的 `since`/`until`，返回
+内部看板 WebSocket 首帧发送完整 `snapshot`，后续发送合并过的 `upsert`，每帧带
+单调递增 sequence。慢消费者或流缺口会收到 `resync_required` 并断开；重连后总是
+重新获得完整快照。每一列报告 `live`、`degraded` 或 `unavailable`，以及最后成功
+时间和重连次数。资金费超过 60 秒、价格超过 15 秒会标为延迟；任何字段超过两分钟
+就从输出中移除，而不是伪装成实时值。OI 缺失不会让看板或套利策略不可用。
+
+历史读取仍是按需调用。它收 venue、environment、symbol，以及一对明确的
+`since`/`until`，返回
 一条资金费点位序列，结算周期由点位之间的间隔量出来。规范化 symbol 会从看板
-自己缓存的那一列里解析成该交易所的原生标识，所以原生形态在这里同样不越界。
+常驻投影的对应列里解析成该交易所的原生标识，所以原生形态在这里同样不越界。
 没有历史 surface 的交易所会用一个明说此事的错误码回答，而不是回一条空序列；
 不在该列上的 symbol 则用另一个错误码——「这家不留历史」和「这家没上这个标的」
 是两件不同的事实，分不清的调用方会重试错的那一个。区间由调用方自己选、也由
 调用方自己把握：trading 服务只放行两个固定窗口，为的正是让一次读取就是一次
-交易所调用、不需要翻页。
+交易所调用、不需要翻页。历史 K 线和资金费不会被看板采集器预热或持久化。
 
 ## 私有事件
 

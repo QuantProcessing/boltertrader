@@ -359,6 +359,8 @@ type Ticker struct {
 	FundingRate         string `json:"fundingRate"`
 	FundingRateInterval string `json:"fundingRateInterval"`
 	NextFundingTime     string `json:"nextFundingTime"`
+	HoldingAmount       string `json:"holdingAmount"`
+	OpenInterest        string `json:"openInterest"`
 }
 
 type OrderBook struct {

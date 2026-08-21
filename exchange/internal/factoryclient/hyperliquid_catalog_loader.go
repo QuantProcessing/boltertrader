@@ -63,20 +63,42 @@ func (loader hyperliquidInstrumentLoader) loadSpot(ctx context.Context) ([]excha
 
 func (loader hyperliquidInstrumentLoader) loadPerp(ctx context.Context) ([]exchange.Instrument, error) {
 	base := loader.publicBaseClient()
-	client := hyperliquidperp.NewClient(base)
-	full, err := client.GetMetaAndAssetCtxs(ctx)
+	// Catalog identity and precision come from allPerpMetas. Fetching
+	// metaAndAssetCtxs once per HIP-3 dex here duplicated the funding feed's
+	// work, put the catalog on the market-data fan-out's latency budget, and
+	// could make every perp disappear when one context request timed out.
+	directory, classifications, err := hyperliquidPerpDirectory(ctx, base, true, false)
 	if err != nil {
 		return nil, hlNormalizeQueryErr(exchange.ProductPerp, "InstrumentCatalog.Load", err, nil)
 	}
-	prep, err := client.GetPrepMeta(ctx)
-	if err != nil {
-		return nil, hlNormalizeQueryErr(exchange.ProductPerp, "InstrumentCatalog.Load", err, nil)
+	instruments := make([]exchange.Instrument, 0)
+	for _, dex := range directory {
+		metas, err := hlPerpMetasForDex("InstrumentCatalog.Load", hyperliquidCatalogAssetContexts(dex.prep), dex.prep, dex.index, dex.name, dex.collateral, classifications)
+		if err != nil {
+			return nil, err
+		}
+		instruments = append(instruments, hlInstrumentsFromMetas(metas)...)
 	}
-	metas, err := hlPerpMetas("InstrumentCatalog.Load", full, prep)
-	if err != nil {
-		return nil, err
+	return instruments, nil
+}
+
+// hyperliquidCatalogAssetContexts supplies only the universe ordering expected
+// by the shared precision mapper. Empty asset contexts are intentional: mark,
+// index, funding and OI belong to FundingMarketFeed, not to reference data.
+func hyperliquidCatalogAssetContexts(prep *hyperliquidperp.PrepMeta) *hyperliquidperp.MetaAndAssetCtxsFull {
+	if prep == nil {
+		return nil
 	}
-	return hlInstrumentsFromMetas(metas), nil
+	full := &hyperliquidperp.MetaAndAssetCtxsFull{}
+	full.Meta.CollateralToken = prep.CollateralToken
+	full.Meta.Universe = make([]struct {
+		Name string `json:"name"`
+	}, len(prep.Universe))
+	full.AssetCtxs = make(hyperliquidperp.MetaAndAssetCtxsResponse, len(prep.Universe))
+	for index := range prep.Universe {
+		full.Meta.Universe[index].Name = prep.Universe[index].Name
+	}
+	return full
 }
 
 func (loader hyperliquidInstrumentLoader) publicBaseClient() *hyperliquidbase.Client {

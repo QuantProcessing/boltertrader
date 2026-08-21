@@ -429,14 +429,15 @@ func accountTestInstrument(venue exchange.Venue, product exchange.Product, symbo
 	}
 }
 
-func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRotation(t *testing.T) {
+func TestManagerDynamicLifecycleFencesWritesByRuntimeIdentity(t *testing.T) {
 	manager := newLifecycleTestManager(t)
 	initial := desiredTestAccount(t, 1, 1, 1, "opaque_initial")
+	initial.RuntimeID = "runtime-initial"
 	created, err := manager.CreateRuntime(context.Background(), initial)
 	if err != nil {
 		t.Fatalf("CreateRuntime: %v", err)
 	}
-	if created.RuntimeVersion != 1 || created.LastAppliedDesiredStateRevision != 1 || created.LastAppliedRuntimeGeneration != 1 || created.ObservedAt.IsZero() {
+	if created.State != RuntimeStateActive || !created.Ready || created.Desired.RuntimeID != initial.RuntimeID || created.ObservedAt.IsZero() {
 		t.Fatalf("created runtime facts=%+v", created)
 	}
 	if err := manager.CheckWriteFence(initial.Fence()); err != nil {
@@ -445,13 +446,14 @@ func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRot
 
 	manager.lifecycle.(*fakeRuntimeLifecycle).validateErr = errors.New("credential-canary")
 	replacement := desiredTestAccount(t, 2, 2, 2, "opaque_replacement")
+	replacement.RuntimeID = "runtime-replacement"
 	if _, err := manager.RotateRuntime(context.Background(), replacement, 1); err == nil || strings.Contains(err.Error(), "credential-canary") {
 		t.Fatalf("RotateRuntime error=%v, want redacted validation failure", err)
 	}
 	if err := manager.CheckWriteFence(initial.Fence()); err != nil {
-		t.Fatalf("failed rotation fenced old generation: %v", err)
+		t.Fatalf("failed rotation fenced active runtime: %v", err)
 	}
-	if current, err := manager.Runtime(initial.AccountID); err != nil || current.RuntimeVersion != 1 || current.LastAppliedDesiredStateRevision != 1 || current.LastAppliedRuntimeGeneration != 1 {
+	if current, err := manager.Runtime(initial.AccountID); err != nil || current.State != RuntimeStateActive || !current.Ready || current.Desired.RuntimeID != initial.RuntimeID {
 		t.Fatalf("failed rotation advanced runtime facts=%+v err=%v", current, err)
 	}
 
@@ -460,7 +462,7 @@ func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRot
 	if err != nil {
 		t.Fatalf("RotateRuntime: %v", err)
 	}
-	if rotated.RuntimeVersion != 2 || rotated.LastAppliedDesiredStateRevision != 2 || rotated.LastAppliedRuntimeGeneration != 2 || rotated.ObservedAt.Before(created.ObservedAt) {
+	if rotated.State != RuntimeStateActive || !rotated.Ready || rotated.Desired.RuntimeID != replacement.RuntimeID || rotated.ObservedAt.Before(created.ObservedAt) {
 		t.Fatalf("rotated runtime facts=%+v", rotated)
 	}
 	if !errors.Is(manager.CheckWriteFence(initial.Fence()), ErrStaleWriteFence) {

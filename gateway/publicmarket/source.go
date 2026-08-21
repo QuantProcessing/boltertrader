@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -242,6 +243,11 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 	contributors := make([]string, 0, len(source.columns))
 	for result := range results {
 		if result.err != nil {
+			slog.Warn("public market catalog column unavailable",
+				"venue", result.column.profile.Venue,
+				"route_profile", result.column.profile.ID,
+				"error", result.err,
+			)
 			contributors = append(contributors, result.column.profile.ID+"\x00unavailable")
 			continue
 		}
@@ -365,6 +371,12 @@ func (source *Source) Candles(ctx context.Context, query Query, interval string,
 	}
 	page, err := current.connector.Candles(ctx, exchange.CandlesRequest{Instrument: instrument, Interval: interval, Limit: limit})
 	if err != nil {
+		slog.Warn("public market candles unavailable",
+			"venue", current.profile.Venue,
+			"route_profile", current.profile.ID,
+			"instrument_id", query.InstrumentID,
+			"error", err,
+		)
 		return CandleResult{}, fmt.Errorf("read public candles: %w", err)
 	}
 	return CandleResult{Query: query, Instrument: instrument, Page: page}, nil
@@ -467,13 +479,14 @@ func (current *column) snapshot(ctx context.Context, interval time.Duration, now
 	if cachedErr == nil && now().UTC().Sub(cached.LoadedAt) <= interval {
 		return cached, nil
 	}
-	if err := current.refresh(ctx); err == nil {
+	refreshErr := current.refresh(ctx)
+	if refreshErr == nil {
 		return current.catalog.Snapshot(current.accountID)
 	}
 	if cachedErr == nil {
 		return cached, nil
 	}
-	return catalog.Snapshot{}, ErrUnavailable
+	return catalog.Snapshot{}, fmt.Errorf("%w: refresh %s: %v", ErrUnavailable, current.profile.ID, refreshErr)
 }
 
 func (current *column) refresh(ctx context.Context) error {

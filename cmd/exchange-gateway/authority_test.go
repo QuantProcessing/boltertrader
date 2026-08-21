@@ -677,6 +677,8 @@ func TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells(
 				ID: "binance:live:perp:USDT:BTC-USDT", Venue: exchange.VenueBinance,
 				Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp,
 				Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+				MarketFamily: exchange.MarketFamilyVenuePerpetual, AssetClass: exchange.AssetClassCrypto,
+				ClassificationSource: "fixture.official", RawCategories: []string{"crypto"},
 			},
 			Canonical: exchange.Instrument{Identity: exchange.InstrumentIdentity{
 				Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT",
@@ -723,7 +725,7 @@ func TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells(
 			t.Fatalf("board JSON carries %q for a cell no venue quoted: %s", absent, encoded)
 		}
 	}
-	for _, present := range []string{"\"instrumentId\":\"binance:live:perp:USDT:BTC-USDT\"", "\"rate\":\"-0.00042\"", "\"markPrice\":\"64000.5\"", "\"openInterestNotional\":\"790129052.835\"", "\"intervalHours\":8"} {
+	for _, present := range []string{"\"instrumentId\":\"binance:live:perp:USDT:BTC-USDT\"", "\"marketFamily\":\"venue_perpetual\"", "\"assetClass\":\"crypto\"", "\"classificationSource\":\"fixture.official\"", "\"rawCategories\":[\"crypto\"]", "\"rate\":\"-0.00042\"", "\"markPrice\":\"64000.5\"", "\"openInterestNotional\":\"790129052.835\"", "\"intervalHours\":8"} {
 		if !strings.Contains(string(encoded), present) {
 			t.Fatalf("board JSON is missing %s: %s", present, encoded)
 		}
@@ -768,7 +770,33 @@ func newTestFundingBoardSource(t *testing.T, entry exchange.FundingBoardEntry) *
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = source.Close() })
+	runCtx, cancel := context.WithCancel(context.Background())
+	go func() { _ = source.Run(runCtx) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		snapshot, snapshotErr := source.Snapshot(context.Background())
+		ready := snapshotErr == nil
+		if ready {
+			ready = false
+			for _, venue := range snapshot.Venues {
+				if len(venue.Entries) > 0 {
+					ready = true
+					break
+				}
+			}
+		}
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("funding board did not bootstrap")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = source.Close()
+	})
 	return source
 }
 
@@ -1564,6 +1592,12 @@ func TestProductionRuntimeLifecycleUsesDatabaseBlockersAndFailsClosed(t *testing
 	if _, err := lifecycle.Blockers(context.Background(), "account-a"); err == nil || strings.Contains(err.Error(), "position-secret-canary") {
 		t.Fatalf("position blocker query error=%v", err)
 	}
+	if err := lifecycle.attach(blockerQuerierStub{}, &positionBlockerSourceStub{err: account.ErrUnknownAccount}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lifecycle.Blockers(context.Background(), "account-a"); !errors.Is(err, account.ErrUnknownAccount) {
+		t.Fatalf("absent runtime error=%v, want ErrUnknownAccount", err)
+	}
 	if err := lifecycle.attach(blockerQuerierStub{}, nil); err == nil {
 		t.Fatal("missing position blocker source was accepted")
 	}
@@ -2043,7 +2077,7 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 		t.Fatal(err)
 	}
 	view, ok := response.Body.(httpapi.RuntimeView)
-	if !ok || view.Active == nil || view.Active.RuntimeGeneration != 1 || view.Pending == nil || view.Pending.RuntimeGeneration != 2 || view.Pending.State != string(store.OperationCandidateFailed) || len(view.Pending.Routes) != 1 || view.Pending.Routes[0].Ready || view.Pending.Routes[0].Reason != "CANDIDATE_BUILD_FAILED" {
+	if !ok || view.Active == nil || view.Active.RuntimeGeneration != 1 || view.Pending == nil || view.Pending.RuntimeGeneration != 2 || view.Pending.State != string(store.OperationCandidateFailed) || view.Pending.Reason != "CANDIDATE_BUILD_FAILED" || len(view.Pending.Routes) != 1 || view.Pending.Routes[0].Ready || view.Pending.Routes[0].Reason != "CANDIDATE_BUILD_FAILED" {
 		t.Fatalf("view=%T %+v", response.Body, response.Body)
 	}
 	encoded, err := json.Marshal(view)

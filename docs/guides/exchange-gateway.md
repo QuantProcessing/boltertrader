@@ -157,27 +157,35 @@ from a fresh snapshot. A venue gap, malformed update, oversized payload, or
 upstream error emits a bounded `resync_required` event and closes with
 WebSocket policy violation; the client reconnects and receives a new snapshot.
 
-Two reads on the internal listener are the exception to the account rule.
-`GET /internal/v1/funding-board` and `GET /internal/v1/funding-history` take no
-`account_id`, because the gateway answers them from venue clients it builds
-without credentials. They resolve on a deployment where no account has been
-declared yet, which is what makes a funding matrix readable on a fresh install.
-They are still authenticated — the internal listener has its own bearer token —
-and they still refuse to emit a native symbol, a native ID, or a raw venue
-error.
+Three operations on the internal listener are the exception to the account
+rule: `GET /internal/v1/funding-board`,
+`GET /internal/v1/funding-board/ws`, and
+`GET /internal/v1/funding-history`. They take no `account_id`, because Gateway
+answers them with credential-free venue clients. They remain authenticated by
+the internal bearer token and never expose credential material or raw venue
+errors.
 
-The board is the whole table in one response: one column per venue, product, and
-settlement asset, each carrying its rates, its settlement interval, and whether
-that venue publishes history at all. It takes no parameters, because there is
-nothing a caller could ask for that would make one column right and another
-wrong. A column that cannot be read degrades to an unavailable column with a
-reason rather than failing the response — one unreachable venue must not blank
-out the other nine.
+The funding board is a resident public-market projection. At startup Gateway
+bootstraps every supported perpetual route once and then maintains funding,
+mark, index, and open-interest facts from venue WebSockets. Binance and Aster
+open interest is enriched asynchronously on a rolling one-minute cycle; Nado's
+non-streamed price and OI fields are enriched by one bounded all-product read.
+An HTTP board read only copies memory and therefore cannot increase venue
+request volume. No order book is stored in this projection.
 
-The history read takes a venue, an environment, a symbol, and an explicit
+The internal board WebSocket sends a complete `snapshot` first and coalesced
+`upsert` events afterwards. Each event has a monotonic sequence. A slow consumer
+or projection gap receives `resync_required` and is closed; reconnecting always
+starts with a new complete snapshot. Every column reports `live`, `degraded`, or
+`unavailable`, its last success time, and reconnect count. Funding older than 60
+seconds and prices older than 15 seconds are marked delayed; a field older than
+two minutes is omitted rather than rendered as current. OI may be absent without
+making the board or an arbitrage strategy unavailable.
+
+The history read remains request-driven. It takes a venue, an environment, a symbol, and an explicit
 `since`/`until` pair, and returns one series of funding points with the
 settlement interval measured between them. The canonical symbol is resolved to
-the venue's native identifier out of the board's own cached column, so the
+the venue's native identifier out of the resident board column, so the
 native form never crosses the boundary here either. A venue with no history
 surface answers with a code that says so rather than an empty series, and a
 symbol that is not on that column answers with a different one: "this venue
@@ -185,7 +193,8 @@ keeps no history" and "this venue does not list this instrument" are different
 facts, and a caller that cannot tell them apart will retry the wrong one. The
 bound is the caller's to choose and the caller's to keep sane — the trading
 service admits two fixed windows precisely so that one read is one venue call
-with no pagination.
+with no pagination. Historical candles and funding are neither preheated nor
+persisted by the board collector.
 
 ## Private events
 

@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	operationID secretstore.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
-	accountID                           = "acct_1"
+	operationID       secretstore.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+	accountID                                 = "acct_1"
+	activeRuntimeID                           = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"
+	retiringRuntimeID                         = "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"
 )
 
 var secretRef = strings.Repeat("A", 43)
@@ -46,7 +48,7 @@ func newClient(t *testing.T, authority httpapi.InternalAuthority) *authorityclie
 
 func validAccount() lifecycle.Account {
 	return lifecycle.Account{
-		ID: accountID, Venue: "binance",
+		ID: accountID, RuntimeID: activeRuntimeID, Venue: "binance",
 		VenueEnvironment:  lifecycle.EnvironmentLive,
 		NativeEnvironment: lifecycle.EnvironmentLive, DisplayName: "Primary",
 		ProductPolicy: []string{"manual"}, ProductIDs: []string{"manual"},
@@ -54,16 +56,14 @@ func validAccount() lifecycle.Account {
 			ID: "perp-usdt", Product: lifecycle.ProductPerp, SettlementAsset: "USDT",
 			RouteProfileID: "binance.perp.usdt.v1", RequestedState: lifecycle.RouteActive,
 		}},
-		SecretRef:            secretRef,
-		DesiredStateRevision: 3, RuntimeGeneration: 2, CredentialVersion: 4,
-		State: lifecycle.StateCreating, UpdatedAt: time.Unix(1, 0).UTC(),
+		SecretRef: secretRef,
+		State:     lifecycle.StateCreating, UpdatedAt: time.Unix(1, 0).UTC(),
 	}
 }
 
 func activeView(mutate func(*httpapi.RuntimeSnapshotView)) httpapi.RuntimeView {
 	snapshot := httpapi.RuntimeSnapshotView{
-		OperationID: string(operationID), DesiredStateRevision: 3, RuntimeGeneration: 2,
-		CredentialVersion: 4, RequestedState: "active",
+		OperationID: string(operationID), RuntimeID: activeRuntimeID, RequestedState: "active",
 		Routes: []httpapi.RuntimeRouteView{{
 			RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT",
 			RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active", Ready: true,
@@ -92,13 +92,10 @@ func TestApplyDesiredCarriesTheWholeDesiredSnapshotAndReducesTheRuntimeView(t *t
 	if request.DesiredApply == nil {
 		t.Fatal("desired apply payload is missing")
 	}
-	// The authority fences on all three counters and refuses a snapshot whose
-	// envelope disagrees with its payload, so a dropped or transposed field here
-	// is rejected as a stale write rather than applied to the wrong generation.
 	desired := *request.DesiredApply
 	if desired.AccountID != accountID || desired.OperationID != string(operationID) || desired.Venue != "binance" ||
 		desired.NativeEnvironment != "live" || desired.SecretRef != secretRef || desired.RequestedState != "creating" ||
-		desired.DesiredStateRevision != 3 || desired.RuntimeGeneration != 2 || desired.CredentialVersion != 4 {
+		desired.RuntimeID != activeRuntimeID {
 		t.Fatalf("desired snapshot = %+v", desired)
 	}
 	if len(desired.Routes) != 1 || desired.Routes[0] != (httpapi.DesiredRoute{
@@ -108,9 +105,8 @@ func TestApplyDesiredCarriesTheWholeDesiredSnapshotAndReducesTheRuntimeView(t *t
 		t.Fatalf("desired routes = %+v", desired.Routes)
 	}
 
-	if truth.AccountID != accountID || truth.OperationID != operationID || !truth.Active || truth.Tombstoned ||
-		truth.DesiredStateRevision != 3 || truth.RuntimeGeneration != 2 || truth.CredentialVersion != 4 ||
-		truth.RequestedState != lifecycle.StateActive {
+	if truth.AccountID != accountID || truth.OperationID != operationID || truth.RuntimeID != activeRuntimeID ||
+		!truth.Active || truth.Tombstoned || truth.RequestedState != lifecycle.StateActive {
 		t.Fatalf("truth = %+v", truth)
 	}
 	if len(truth.Routes) != 1 || truth.Routes[0] != (lifecycle.GatewayRuntimeRoute{
@@ -175,14 +171,8 @@ func TestRuntimeTruthRejectsViewsTheLifecycleCannotActOn(t *testing.T) {
 		"unparseable operation": activeView(func(snapshot *httpapi.RuntimeSnapshotView) {
 			snapshot.OperationID = "not-a-uuid"
 		}),
-		"unfenced revision": activeView(func(snapshot *httpapi.RuntimeSnapshotView) {
-			snapshot.DesiredStateRevision = 0
-		}),
-		"unfenced generation": activeView(func(snapshot *httpapi.RuntimeSnapshotView) {
-			snapshot.RuntimeGeneration = 0
-		}),
-		"unfenced credential": activeView(func(snapshot *httpapi.RuntimeSnapshotView) {
-			snapshot.CredentialVersion = 0
+		"missing runtime identity": activeView(func(snapshot *httpapi.RuntimeSnapshotView) {
+			snapshot.RuntimeID = ""
 		}),
 		"unknown requested state": activeView(func(snapshot *httpapi.RuntimeSnapshotView) {
 			snapshot.RequestedState = "resurrecting"
@@ -255,7 +245,6 @@ func TestClientRejectsRequestsTheAuthorityMustNeverSee(t *testing.T) {
 		"retirement without a fence": func(client *authorityclient.Client) error {
 			_, err := client.RetireAccount(t.Context(), lifecycle.RetireRequest{
 				OperationID: operationID, AccountID: accountID,
-				DesiredStateRevision: 2, RuntimeGeneration: 0, CredentialVersion: 1,
 			})
 			return err
 		},
@@ -263,8 +252,8 @@ func TestClientRejectsRequestsTheAuthorityMustNeverSee(t *testing.T) {
 			_, err := client.FinalizeRotation(t.Context(), lifecycle.RotationCleanupRequest{
 				OperationID:           operationID,
 				AccountID:             accountID,
-				ExpectedActiveFence:   lifecycle.AccountFence{AccountID: accountID, DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 3},
-				ExpectedRetiringFence: lifecycle.AccountFence{AccountID: accountID, DesiredStateRevision: 1, RuntimeGeneration: 2, CredentialVersion: 2},
+				ExpectedActiveFence:   lifecycle.AccountFence{AccountID: accountID, RuntimeID: activeRuntimeID},
+				ExpectedRetiringFence: lifecycle.AccountFence{AccountID: accountID, RuntimeID: activeRuntimeID},
 			})
 			return err
 		},
@@ -351,7 +340,7 @@ func TestWriteFailuresReportWhetherTheResultMayHaveCommitted(t *testing.T) {
 func TestRetireAccountConfirmsTheTombstoneOnlyWhenNothingIsStillActive(t *testing.T) {
 	retire := lifecycle.RetireRequest{
 		OperationID: operationID, AccountID: accountID,
-		DesiredStateRevision: 4, RuntimeGeneration: 2, CredentialVersion: 4,
+		RuntimeID: activeRuntimeID,
 	}
 	tests := map[string]struct {
 		view       httpapi.RuntimeView
@@ -380,7 +369,7 @@ func TestRetireAccountConfirmsTheTombstoneOnlyWhenNothingIsStillActive(t *testin
 			if request.Operation != httpapi.AuthorityRetireDesired || request.Retirement == nil ||
 				*request.Retirement != (httpapi.RetireRequest{
 					OperationID: string(operationID), AccountID: accountID,
-					DesiredStateRevision: 4, RuntimeGeneration: 2, CredentialVersion: 4,
+					RuntimeID: activeRuntimeID,
 				}) {
 				t.Fatalf("retirement request = %+v", request)
 			}
@@ -392,15 +381,15 @@ func TestFinalizeRotationOnlyReturnsAProofThatAnswersTheRequest(t *testing.T) {
 	cleanup := lifecycle.RotationCleanupRequest{
 		OperationID:           operationID,
 		AccountID:             accountID,
-		ExpectedActiveFence:   lifecycle.AccountFence{AccountID: accountID, DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 3},
-		ExpectedRetiringFence: lifecycle.AccountFence{AccountID: accountID, DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
+		ExpectedActiveFence:   lifecycle.AccountFence{AccountID: accountID, RuntimeID: activeRuntimeID},
+		ExpectedRetiringFence: lifecycle.AccountFence{AccountID: accountID, RuntimeID: retiringRuntimeID},
 	}
 	completedAt := time.Unix(1710000000, 0).UTC()
 	valid := httpapi.RotationFinalizationProof{
 		OperationID:          string(operationID),
 		AccountID:            accountID,
-		ActiveFence:          httpapi.AccountFence{AccountID: accountID, DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 3},
-		RetiringFence:        httpapi.AccountFence{AccountID: accountID, DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
+		ActiveFence:          httpapi.AccountFence{AccountID: accountID, RuntimeID: activeRuntimeID},
+		RetiringFence:        httpapi.AccountFence{AccountID: accountID, RuntimeID: retiringRuntimeID},
 		TombstoneRevision:    3,
 		RetiringState:        "retired",
 		SecretReferenceState: "tombstoned",
@@ -412,15 +401,15 @@ func TestFinalizeRotationOnlyReturnsAProofThatAnswersTheRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinalizeRotation: %v", err)
 	}
-	if proof.OperationID != operationID || proof.AccountID != accountID || proof.TombstoneRevision != 3 ||
+	if proof.OperationID != operationID || proof.AccountID != accountID ||
 		proof.ActiveFence != cleanup.ExpectedActiveFence || proof.RetiringFence != cleanup.ExpectedRetiringFence ||
 		proof.RetiringState != "retired" || proof.SecretReferenceState != "tombstoned" || !proof.CompletedAt.Equal(completedAt) {
 		t.Fatalf("proof = %+v", proof)
 	}
 	request := authority.last()
 	if request.Operation != httpapi.AuthorityFinalizeRotation || request.RotationFinalization == nil ||
-		request.RotationFinalization.ExpectedActiveFence.DesiredStateRevision != 3 ||
-		request.RotationFinalization.ExpectedRetiringFence.DesiredStateRevision != 2 {
+		request.RotationFinalization.ExpectedActiveFence.RuntimeID != activeRuntimeID ||
+		request.RotationFinalization.ExpectedRetiringFence.RuntimeID != retiringRuntimeID {
 		t.Fatalf("finalization request = %+v", request)
 	}
 
@@ -429,7 +418,7 @@ func TestFinalizeRotationOnlyReturnsAProofThatAnswersTheRequest(t *testing.T) {
 	// persisted at all.
 	mutations := map[string]func(httpapi.RotationFinalizationProof) httpapi.RotationFinalizationProof{
 		"another rotation's fence": func(proof httpapi.RotationFinalizationProof) httpapi.RotationFinalizationProof {
-			proof.ActiveFence.CredentialVersion = 4
+			proof.ActiveFence.RuntimeID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c36"
 			return proof
 		},
 		"credential not yet retired": func(proof httpapi.RotationFinalizationProof) httpapi.RotationFinalizationProof {

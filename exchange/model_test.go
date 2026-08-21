@@ -56,6 +56,49 @@ func TestPlaceOrderRequestFreezesCommonMarketAndLimitFields(t *testing.T) {
 	}
 }
 
+func TestInstrumentCategoriesRemainComparableAndMarshalAsArray(t *testing.T) {
+	categories := NewInstrumentCategories([]string{"stocks", "indices"})
+	if categories != NewInstrumentCategories([]string{"stocks", "indices"}) {
+		t.Fatal("canonical category values are not comparable")
+	}
+	if !reflect.DeepEqual(categories.Values(), []string{"stocks", "indices"}) {
+		t.Fatalf("values = %v", categories.Values())
+	}
+	payload, err := json.Marshal(struct {
+		Categories InstrumentCategories `json:"categories"`
+	}{Categories: categories})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != `{"categories":["stocks","indices"]}` {
+		t.Fatalf("JSON = %s", payload)
+	}
+	var decoded struct {
+		Categories InstrumentCategories `json:"categories"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Categories != categories {
+		t.Fatalf("decoded categories = %q, want %q", decoded.Categories, categories)
+	}
+
+	instrument := testInstrument(ProductPerp)
+	instrument.Metadata = InstrumentMetadata{
+		MarketFamily:         MarketFamilyBuilderPerpetual,
+		AssetClass:           AssetClassEquity,
+		ClassificationSource: "venue.categories",
+		RawCategories:        categories,
+	}
+	copy := instrument
+	if copy != instrument {
+		t.Fatal("instrument metadata removed model comparability")
+	}
+	if err := instrument.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
 func TestCancelOrderRequestFreezesPortableOrderIDFields(t *testing.T) {
 	typ := reflect.TypeOf(CancelOrderRequest{})
 	got := make([]string, 0, typ.NumField())

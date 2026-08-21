@@ -90,6 +90,23 @@ func (store *AccountLifecycleStore) BeginCredentialOperation(ctx context.Context
 		return redactErr("begin lifecycle credential operation", err)
 	}
 	defer tx.Rollback(ctx)
+	var currentState lifecycle.State
+	err = tx.QueryRow(ctx, `SELECT requested_state FROM gateway_desired_accounts WHERE account_id = $1 FOR UPDATE`, account.ID).Scan(&currentState)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return lifecycle.ErrNotFound
+	}
+	if err != nil {
+		return redactErr("lock lifecycle account", err)
+	}
+	if currentState == lifecycle.StateCreating && account.State == lifecycle.StateRemoving && operation.Kind == lifecycle.OperationRetire {
+		if _, err := tx.Exec(ctx, `
+			UPDATE gateway_credential_operations
+			SET state = 'abandoned', stable_error_code = 'ACCOUNT_REMOVED_DURING_CREATION', updated_at = $2
+			WHERE account_id = $1 AND kind = 'create'
+			  AND state IN ('awaiting_material', 'stored', 'applying')`, account.ID, operation.UpdatedAt); err != nil {
+			return redactErr("abandon account creation before retirement", err)
+		}
+	}
 	changed, err := updateLifecycleAccount(ctx, tx, account.ID, expectedRevision, normalizeLifecycleAccount(account))
 	if err != nil {
 		return err

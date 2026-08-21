@@ -187,6 +187,36 @@ func TestRuntimeRetirementIsAtomicReplayableAndRejectsUnresolvedHandoff(t *testi
 	}
 }
 
+func TestRuntimeRetirementTombstonesANeverPromotedPendingSnapshot(t *testing.T) {
+	ctx := context.Background()
+	postgresStore := newRuntimeSnapshotTestStore(t, ctx)
+	pending := runtimeSnapshotFixture(t, "018f47a8-2578-7d3c-9d7d-5e4f4a445c91", "018f47a8-2578-7d3c-9d7d-5e4f4a445c92", 1)
+	pending.Fence.DesiredStateRevision = 0
+	pending.Fence.RuntimeGeneration = 0
+	pending.Fence.CredentialVersion = 0
+	if _, err := postgresStore.PreparePending(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	operationID, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c93")
+	request := storepkg.RetirementRequest{
+		OperationID: operationID, AccountID: pending.AccountID, ExpectedActiveFence: pending.Fence,
+		Scope: secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"},
+	}
+
+	result, err := postgresStore.RetireAccount(ctx, request)
+	if err != nil || !result.Tombstoned {
+		t.Fatalf("pending retirement=%+v err=%v", result, err)
+	}
+	state, err := postgresStore.LoadRuntimeState(ctx, pending.AccountID)
+	if err != nil || !state.Tombstoned || state.Active != nil || state.Pending != nil {
+		t.Fatalf("retired pending state=%+v err=%v", state, err)
+	}
+	retired, err := postgresStore.IsSecretReferenceRetired(ctx, request.Scope, pending.SecretRef)
+	if err != nil || !retired {
+		t.Fatalf("pending secret tombstone=%t err=%v", retired, err)
+	}
+}
+
 func TestConcurrentIdenticalRetirementsReturnSameCommittedProof(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

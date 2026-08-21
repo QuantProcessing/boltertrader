@@ -1,6 +1,9 @@
 package hyperliquid
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type WsMessage struct {
 	Channel string          `json:"channel"`
@@ -196,6 +199,51 @@ type WsAllMids struct {
 
 type WsAllDexsAssetCtxs struct {
 	Ctxs map[string][]WsAssetCtx `json:"ctxs"`
+}
+
+// UnmarshalJSON accepts both the documented record form and the tuple-list
+// form emitted by the live endpoint. The latter is shaped as
+// [[dex, [asset contexts...]], ...], with an empty dex naming HyperCore's
+// primary perpetual market.
+func (value *WsAllDexsAssetCtxs) UnmarshalJSON(data []byte) error {
+	var envelope struct {
+		Ctxs json.RawMessage `json:"ctxs"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	if len(envelope.Ctxs) == 0 || string(envelope.Ctxs) == "null" {
+		value.Ctxs = nil
+		return nil
+	}
+
+	var byDex map[string][]WsAssetCtx
+	if err := json.Unmarshal(envelope.Ctxs, &byDex); err == nil {
+		value.Ctxs = byDex
+		return nil
+	}
+
+	var tuples [][]json.RawMessage
+	if err := json.Unmarshal(envelope.Ctxs, &tuples); err != nil {
+		return err
+	}
+	byDex = make(map[string][]WsAssetCtx, len(tuples))
+	for _, tuple := range tuples {
+		if len(tuple) != 2 {
+			return fmt.Errorf("hyperliquid allDexsAssetCtxs tuple has %d elements", len(tuple))
+		}
+		var dex string
+		if err := json.Unmarshal(tuple[0], &dex); err != nil {
+			return err
+		}
+		var contexts []WsAssetCtx
+		if err := json.Unmarshal(tuple[1], &contexts); err != nil {
+			return err
+		}
+		byDex[dex] = contexts
+	}
+	value.Ctxs = byDex
+	return nil
 }
 
 type WsActiveAssetCtx struct {

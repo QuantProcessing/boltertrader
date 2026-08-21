@@ -1,6 +1,9 @@
 package system
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestReadinessSeparatesProcessStatusFromDependencies(t *testing.T) {
 	service := NewReadiness()
@@ -39,6 +42,38 @@ func TestReadinessEvaluatorIsRecomputedForEverySnapshot(t *testing.T) {
 	ready = false
 	if component := service.Status().Components["gatewayProbe"]; component.Ready {
 		t.Fatalf("latched evaluated component=%+v", component)
+	}
+}
+
+func TestReadinessEvaluatesIndependentComponentsConcurrently(t *testing.T) {
+	service := NewReadiness()
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	for _, name := range []string{"publicData", "accounts"} {
+		name := name
+		service.SetEvaluator(name, func() Component {
+			started <- name
+			<-release
+			return Component{Ready: true}
+		})
+	}
+	done := make(chan Snapshot, 1)
+	go func() { done <- service.Readiness() }()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("readiness evaluators ran serially")
+		}
+	}
+	close(release)
+	select {
+	case snapshot := <-done:
+		if !snapshot.Components["publicData"].Ready || !snapshot.Components["accounts"].Ready {
+			t.Fatalf("snapshot=%+v", snapshot)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readiness snapshot did not finish")
 	}
 }
 

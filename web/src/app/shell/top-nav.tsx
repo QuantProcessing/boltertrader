@@ -1,10 +1,10 @@
-import { Link, useNavigate } from "@tanstack/react-router";
-import { Eye, Languages, LogIn, LogOut, Settings } from "lucide-react";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { ChevronDown, Eye, Languages, LogIn, LogOut, Settings } from "lucide-react";
 
 import { modeStore, useReadOnly } from "@/app/mode";
 import { useSession, sessionStore } from "@/app/session";
-import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
+import { ARBITRAGE_VIEWS } from "@/features/arbitrage/strategy";
 import {
   MenuContent,
   MenuItem,
@@ -42,10 +42,6 @@ interface Section {
 const SECTIONS: Section[] = [
   { to: "/trade", label: "nav.trade" },
   { to: "/funding", label: "nav.funding" },
-  // Arbitrage looks like it belongs with the two above and does not: its
-  // handler asks for an identity before it does anything else, so it stays
-  // private until that changes upstream.
-  { to: "/funding/arbitrage", label: "nav.arbitrage", private: true },
   { to: "/portfolio", label: "nav.portfolio", private: true },
   { to: "/activity", label: "nav.activity", private: true },
   { to: "/settings", label: "nav.settings", private: true },
@@ -59,16 +55,19 @@ export function TopNav() {
   const privateHint = t("nav.signInToUse");
 
   return (
-    <header className="flex h-nav shrink-0 items-center gap-5 border-b border-line bg-panel px-3">
-      <div className="flex shrink-0 items-center gap-2.5 border-r border-line pr-4">
-        <Link to="/trade" className="flex items-center gap-2 text-title font-semibold text-text">
-          <BrandMark className="size-5" />
-          <span>Bolter</span>
+    <header className="flex h-nav shrink-0 items-center gap-6 border-b border-line bg-panel px-6">
+      <div className="flex shrink-0 items-center border-r border-line pr-5">
+        <Link to="/trade" className="flex h-8 items-center" aria-label="Bolter">
+          <img
+            src="/brand/bolter-wordmark-transparent.png"
+            alt="Bolter"
+            className="h-[29px] w-auto object-contain"
+          />
         </Link>
       </div>
 
       <nav aria-label={t("nav.sections")} className="flex min-w-0 items-center gap-0.5">
-        {SECTIONS.map((section) => (
+        {SECTIONS.slice(0, 2).map((section) => (
           <Link
             key={section.to}
             to={section.to}
@@ -86,11 +85,27 @@ export function TopNav() {
               section.private && readOnly && "text-dim",
             )}
             activeProps={{ className: "bg-raised font-semibold text-text" }}
-            // Exact, and blind to the query string. Without the first, `/funding`
-            // would also light up on `/funding/arbitrage` and two sections would
-            // claim to be the current one; without the second, the arbitrage
-            // section would go dark the moment a pair was picked, because the
-            // pair lives in the search params.
+            // Exact, and blind to the query string. The arbitrage section owns
+            // a separate grouped menu, so `/funding` must not claim its routes.
+            activeOptions={{ exact: true, includeSearch: false }}
+            title={section.private && readOnly ? privateHint : undefined}
+          >
+            {t(section.label)}
+            {section.private && readOnly ? <span className="sr-only"> — {privateHint}</span> : null}
+          </Link>
+        ))}
+        <ArbitrageMenu readOnly={readOnly} privateHint={privateHint} />
+        {SECTIONS.slice(2).map((section) => (
+          <Link
+            key={section.to}
+            to={section.to}
+            className={cn(
+              "flex h-7 items-center rounded-card px-2.5 text-title",
+              "text-muted transition-colors hover:bg-raised hover:text-text",
+              "focus-visible:ring-accent focus-visible:ring-2 focus-visible:outline-none",
+              section.private && readOnly && "text-dim",
+            )}
+            activeProps={{ className: "bg-raised font-semibold text-text" }}
             activeOptions={{ exact: true, includeSearch: false }}
             title={section.private && readOnly ? privateHint : undefined}
           >
@@ -123,6 +138,49 @@ export function TopNav() {
         <UtilityMenu />
       </div>
     </header>
+  );
+}
+
+function ArbitrageMenu({ readOnly, privateHint }: { readOnly: boolean; privateHint: string }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const t = useT();
+  const active = location.pathname === "/arbitrage" || location.pathname.startsWith("/arbitrage/");
+  const groups = ["crypto_continuous", "tradfi_perpetual"] as const;
+
+  return (
+    <MenuRoot>
+      <MenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex h-7 items-center gap-1 rounded-card px-2.5 text-title text-muted transition-colors hover:bg-raised hover:text-text",
+            active && "bg-raised font-semibold text-text",
+            readOnly && !active && "text-dim",
+          )}
+          title={readOnly ? privateHint : undefined}
+        >
+          {t("nav.arbitrage")}
+          <ChevronDown aria-hidden className="size-3" />
+          {readOnly ? <span className="sr-only"> — {privateHint}</span> : null}
+        </button>
+      </MenuTrigger>
+      <MenuContent align="start" className="w-60">
+        {groups.map((family, index) => (
+          <div key={family}>
+            {index > 0 ? <MenuSeparator /> : null}
+            <MenuLabel>
+              {t(family === "crypto_continuous" ? "arb.family.cryptoContinuous" : "arb.family.tradfiPerpetual")}
+            </MenuLabel>
+            {ARBITRAGE_VIEWS.filter((view) => view.family === family).map((view) => (
+              <MenuItem key={view.id} onSelect={() => void navigate({ to: view.path })}>
+                {t(view.label)}
+              </MenuItem>
+            ))}
+          </div>
+        ))}
+      </MenuContent>
+    </MenuRoot>
   );
 }
 

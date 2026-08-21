@@ -42,19 +42,16 @@ export const fundingKeys = {
 };
 
 /**
- * The cross-venue matrix, re-read every fifteen seconds.
- *
- * Fifteen matches trading's own cache TTL, so a faster poll would spend
- * requests to be handed the identical document; a slower one would let the
- * projection age past the edition it is already willing to serve. Funding
- * settles hourly, so this is generous either way — the countdowns tick locally
- * off `nextFundingTime` rather than off the poll.
+ * The cross-venue matrix, re-read from Trading's resident projection every five
+ * seconds. This never reaches a venue: Gateway collects once, Trading consumes
+ * its internal stream, and browser requests only copy local state. Countdowns
+ * tick locally off `nextFundingTime` rather than off the poll.
  */
-export function useFundingBoard(): UseQueryResult<Metered<FundingBoardSnapshot>> {
+export function useFundingBoard(): UseQueryResult<FundingBoardSnapshot> {
   return useQuery({
     queryKey: fundingKeys.board(),
     queryFn: ({ signal }) => funding.board(signal),
-    refetchInterval: 15_000,
+    refetchInterval: 5_000,
     // Keep the matrix on screen through a refetch. Blanking a table this wide
     // reads as "the venues went away", which is the one thing the stale and
     // unavailable markers exist to say precisely instead of by implication.
@@ -100,20 +97,16 @@ export function useFundingHistory(
  * than closed over, so adding an account re-ranks rather than serving the
  * account-less list from cache.
  *
- * Fifteen seconds because the ranking is computed from the same board snapshot
- * `useFundingBoard` reads, and asking faster only re-sorts an identical
- * document.
+ * Five seconds matches the product read cadence. Both this route and the board
+ * route are local Trading reads, so polling does not multiply venue traffic.
  */
 export function useArbitrageOpportunities(
   accountIds: string[],
 ): UseQueryResult<{ items: ArbitrageOpportunity[]; observedAt: string }> {
-  const readOnly = useReadOnly();
   return useQuery({
     queryKey: fundingKeys.opportunities(accountIds),
     queryFn: ({ signal }) => arbitrage.opportunities(accountIds, signal),
-    enabled: !readOnly,
-    meta: PRIVATE_QUERY_META,
-    refetchInterval: 15_000,
+    refetchInterval: 5_000,
     placeholderData: (previous) => previous,
     staleTime: 0,
   });

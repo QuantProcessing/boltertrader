@@ -142,6 +142,40 @@ func TestClient_GetMetaAndAssetCtxsForDexBuildsDexRequest(t *testing.T) {
 	require.Equal(t, "0.0001", meta.AssetCtxs[0].Funding)
 }
 
+func TestClientGetPerpCategoriesPreservesFullCoinName(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(request.Body).Decode(&body))
+		require.Equal(t, "perpCategories", body["type"])
+		_, _ = w.Write([]byte(`[["xyz:TSLA","stocks"],["flx:BTC","crypto"]]`))
+	}))
+	defer server.Close()
+	base := hyperliquid.NewClient()
+	base.BaseURL = server.URL
+	got, err := NewClient(base).GetPerpCategories(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "stocks", got["xyz:TSLA"])
+	require.Equal(t, "crypto", got["flx:BTC"])
+}
+
+func TestClientGetPerpConciseAnnotations(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(request.Body).Decode(&body))
+		require.Equal(t, "perpConciseAnnotations", body["type"])
+		_, _ = w.Write([]byte(`[["xyz:TSLA",{"category":"stocks","keywords":["equity"]}]]`))
+	}))
+	defer server.Close()
+	base := hyperliquid.NewClient()
+	base.BaseURL = server.URL
+	got, err := NewClient(base).GetPerpConciseAnnotations(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "stocks", got["xyz:TSLA"].Category)
+	require.Equal(t, []string{"equity"}, got["xyz:TSLA"].Keywords)
+}
+
 func TestClient_GetFundingRateHistoryForDexBuildsDexRequest(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

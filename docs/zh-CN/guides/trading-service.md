@@ -64,23 +64,28 @@ Gateway 在接受这次下单时会铸造**它自己的** command 标识，以�
 
 ## 套利产品
 
-第二个产品交易的是资金费价差，而不是价格。它取一个标的在两家交易所上的两条腿，在资金费
-最便宜的那家做多、最贵的那家做空，持有一个 delta 中性的对儿去赚这个差。它就是跨所永续
-对冲，除此之外什么都不是：没有单所基差，没有现货腿，没有交割合约。
+套利产品按资产特征分成两个策略族，而不是把所有同名 ticker 当成一种资产。
+**Crypto Continuous** 包含现货-永续基差和跨交易所永续资金费率；
+**TradFi Perpetual** 包含永续资金费率和跨交易所同类永续价差。资产类别来自
+标准化公共 catalog，服务不会根据 ticker 名称猜测它是加密货币、股票还是商品。
+一个完全匹配的标准现货/永续组合可以进入基差工作台，但仍保留
+`assetClass=unknown`；这里识别的是策略结构，并没有编造资产类别。
 
 各家公布出来的费率是不能直接比的。每家按自己的节奏结算资金费——这家四小时，那家八小时
 ——所以一个原始费率在被归一之前什么都说明不了。所有费率先换算成日率（`rate × 24 ÷
 intervalHours`）再两两相比，价差是 `shortDaily − longDaily`，标题上的 APR 就是这个价差
-乘 365。一家说不出自己结算周期的交易所是排不了名的，服务会直说，而不是默认按八小时算。
+乘 365。一家说不出费率报价周期的交易所只保留在资金费看板中，不会被输出成套利机会；
+服务不会擅自默认按八小时算。
 
-`GET /api/v1/products/arbitrage/opportunities` 在请求点名的那些 account 之间给这些对儿
-排名。每个对儿带着自己的 `blockers`，只要有一条就不可执行：`funding_interval_unknown`、
-`account_unreachable`、`instrument_identity_unresolved`、`board_stale`。是否上架由公开
-instrument directory 决定，账户可达性是另一条独立的执行事实，二者不能互相推断。只有空列表
-才会让下单票活过来。
+`GET /api/v1/products/arbitrage/opportunities` 是公共读取，只使用 Trading 本地的
+catalog 和资金市场投影排名。匿名用户可以看全部公开机会；只有已登录用户才能传入
+`accountId` 计算账户可执行性。资金费策略要求费率与周期新鲜可用，基差和价差策略
+要求对应价格新鲜可用；OI 只参与展示、筛选和排序，永远不阻塞套利。是否上架由公开
+instrument directory 决定，账户可达性是另一条独立的执行事实，二者不能互相推断。
 
 下单完全复用手动那套形状。`POST /api/v1/products/arbitrage/execution-previews` 返回一份
-封签预览——同一种封签、同一个有效期——只不过它给两条腿都定价、也向两个 account 都取预留。
+封签预览——同一种封签、同一个有效期——但会绕过机会投影，通过 Gateway 即时读取两条腿的
+最新 BBO，再向两个 account 取预留。任一报价不可用或超过两秒，就拒绝封存预览。
 它还带着 `warnings`，这些不是 blocker、也拦不住确认：`fees_excluded` 表示报出来的价差是
 毛的，`negative_spread` 表示排名在读取和预览之间翻了过来，`funding_rate_unavailable` 与
 `board_stale` 表示某条腿的数字比它看上去的更旧。
@@ -141,18 +146,19 @@ Gateway 在它自己那一层、对它自己的持久订单，也跑着自己的
   `/api/v1/products/arbitrage/positions`——排过名的价差，和已开的对儿。
 - `/api/v1/realtime/stream`——界面持有的那一条 server-sent 流。
 
-有两个读不是投影，也不假装是。`/api/v1/funding-board` 与 `/api/v1/funding-history` 由
-gateway 那条免凭证的公共面提供，它不需要任何 account 就能回答。看板是整张矩阵，每个
-venue-product-settlement 一列；历史是某家交易所上某个标的在一个有界窗口内的序列，只有
-`7d` 和 `30d` 两档、别的都不接——开放区间意味着要对交易所接口翻页，而这个读正是为了避开
-翻页才这么设计的。没有历史 surface 的交易所会被报成「不可用」，而不是报成「空」。参见
+资金费看板与套利机会现在都是常驻投影。Trading 消费 Gateway 的内部资金费看板
+WebSocket：首个完整 snapshot 整体替换本地状态，后续 upsert 按 sequence 应用；重连后
+再次用完整 snapshot 替换。浏览器每五秒读取一次时只会触发本地计算，不会请求交易所。
+
+`/api/v1/funding-history` 刻意保持按需读取：它通过 Gateway 免凭证的公共面读取一家
+交易所的一个标的，窗口只允许 `7d` 或 `30d`。历史 K 线和资金费不预热、不持久化。
+没有历史 surface 的交易所会被报成「不可用」，而不是报成「空」。参见
 [市场与参考数据](market-reference-data.md)。
 
 集合响应的包封是 `{"data":{"items":[…]}}`，`data` 旁边还有一个 `meta` 对象。单资源响应把
 资源直接放在 `data` 里。在单资源上读 `data.items`、或在集合上读 `data`，读的都是错的形状。
 按这条规则，看板和历史都是单资源而不是集合：`data` 就是那份快照或那条序列本身，它的列在
-`venues` 下，它的读数在 `points` 下。这两个响应还各带第三个顶层键 `rateLimit`，也就是这次
-读花掉之后、该交易所预算还剩多少。
+`venues` 下，它的读数在 `points` 下。看板完全从内存读取，因此没有交易所 rate budget。
 
 ## 存储
 

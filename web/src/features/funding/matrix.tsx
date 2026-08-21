@@ -13,6 +13,7 @@ import { Num } from "@/components/ui/num";
 import { Segmented } from "@/components/ui/segmented";
 import { StateBadge } from "@/components/ui/state-badge";
 import { useT, type Translate } from "@/lib/i18n";
+import { formatTimestamp } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /* ---------------------------------------------------------------------------
@@ -74,10 +75,11 @@ const UNIT_DECIMALS: Record<FundingUnit, number> = {
  *
  * Returns null rather than a zero when the conversion cannot be made honestly:
  * every unit except `period` needs the venue's funding interval, and two of the
- * ten venues publish a bare rate with no interval at all. A row without one can
+ * some venues publish a bare rate with no interval at all. A row without one can
  * be shown per-period but cannot be shown per-year.
  */
 function normalizedPercent(row: FundingBoardRow, unit: FundingUnit): number | null {
+	if (row.rate === undefined) return null;
   const rate = Number.parseFloat(row.rate);
   if (!Number.isFinite(rate)) return null;
   if (unit === "period") return rate * 100;
@@ -115,6 +117,8 @@ export interface BoardColumn {
   settlement?: string;
   stale: boolean;
   unavailable: boolean;
+  status: "live" | "degraded" | "unavailable";
+  lastSuccessAt?: string;
 }
 
 export interface MatrixRow {
@@ -128,6 +132,7 @@ export interface MatrixRow {
   /** The largest quote-notional open interest any venue published. */
   openInterest?: string;
   openInterestVenue?: string;
+  openInterestAsset?: string;
   openInterestValue: number | null;
 }
 
@@ -137,6 +142,12 @@ interface Spread {
   short: BoardColumn;
   /** The lower-rate venue: the hedge buys it. */
   long: BoardColumn;
+}
+
+interface ExtremeRate {
+  value: number;
+  absolute: number;
+  column: BoardColumn;
 }
 
 /**
@@ -162,7 +173,34 @@ function pivotColumns(snapshot: FundingBoardSnapshot): BoardColumn[] {
     settlement: venue.settlement,
     stale: venue.stale,
     unavailable: venue.unavailable,
+    status: venue.status,
+    lastSuccessAt: venue.lastSuccessAt,
   }));
+}
+
+function venueState(column: BoardColumn, t: Translate) {
+  const updated = column.lastSuccessAt
+    ? t("funding.venue.updated", { time: formatTimestamp(column.lastSuccessAt) })
+    : t("funding.venue.neverUpdated");
+  if (column.unavailable || column.status === "unavailable") {
+    return {
+      tone: "danger" as const,
+      label: t("funding.venue.down"),
+      detail: `${t("funding.venue.down.detail")} ${updated}`,
+    };
+  }
+  if (column.stale || column.status === "degraded") {
+    return {
+      tone: "warn" as const,
+      label: t("funding.venue.stale"),
+      detail: `${t("funding.venue.stale.detail")} ${updated}`,
+    };
+  }
+  return {
+    tone: "ok" as const,
+    label: t("funding.venue.connected"),
+    detail: updated,
+  };
 }
 
 /**
@@ -201,7 +239,7 @@ function rowKey(row: FundingBoardRow): string {
 export function pivotRows(snapshot: FundingBoardSnapshot): MatrixRow[] {
   const byPair = new Map<string, MatrixRow>();
   for (const venue of snapshot.venues) {
-    for (const row of venue.rows) {
+    for (const row of venue.rows ?? []) {
       const key = rowKey(row);
       let entry = byPair.get(key);
       if (entry === undefined) {
@@ -228,6 +266,7 @@ export function pivotRows(snapshot: FundingBoardSnapshot): MatrixRow[] {
         entry.openInterestValue = size;
         entry.openInterest = row.openInterestNotional;
         entry.openInterestVenue = venue.venue;
+        entry.openInterestAsset = row.openInterestNotionalAsset;
       }
     }
   }
@@ -256,6 +295,19 @@ function spreadOf(row: MatrixRow, columns: BoardColumn[], unit: FundingUnit): Sp
   }
   if (high === null || low === null || high.column.key === low.column.key) return null;
   return { value: high.value - low.value, short: high.column, long: low.column };
+}
+
+function extremeRateOf(row: MatrixRow, columns: BoardColumn[], unit: FundingUnit): ExtremeRate | null {
+  let extreme: ExtremeRate | null = null;
+  for (const column of columns) {
+    const cell = row.cells[column.key];
+    if (cell === undefined) continue;
+    const value = normalizedPercent(cell, unit);
+    if (value === null) continue;
+    const absolute = Math.abs(value);
+    if (extreme === null || absolute > extreme.absolute) extreme = { value, absolute, column };
+  }
+  return extreme;
 }
 
 /* --- The clock ----------------------------------------------------------- */
@@ -323,13 +375,13 @@ export function FundingMatrix({
   loading: boolean;
 }) {
   const t = useT();
-  const [unit, setUnit] = useState<FundingUnit>("period");
+  const [unit, setUnit] = useState<FundingUnit>("24h");
   const [search, setSearch] = useState("");
   const [minOpenInterest, setMinOpenInterest] = useState("");
-  const [crossVenueOnly, setCrossVenueOnly] = useState(true);
+  const [crossVenueOnly, setCrossVenueOnly] = useState(false);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const [sorting, setSorting] = useState<SortingState>([
-    { id: "openInterest", desc: true },
+    { id: "extremeRate", desc: true },
   ]);
   const now = useCoarseNow();
 
@@ -342,7 +394,7 @@ export function FundingMatrix({
   const needle = search.trim().toLowerCase();
 
   const rows = useMemo(() => {
-    const kept: { row: MatrixRow; spread: Spread | null }[] = [];
+    const kept: MatrixEntry[] = [];
     for (const row of allRows) {
       const quoted = visible.filter((column) => row.cells[column.key] !== undefined).length;
       if (quoted === 0) continue;
@@ -351,11 +403,11 @@ export function FundingMatrix({
       // pair its own way, and someone typing `btc-usdt` means the pair.
       if (needle !== "" && !matches(row, needle)) continue;
       // A threshold can only judge a row whose open interest is known. Rows
-      // from the seven venues that publish none are kept rather than quietly
+      // from venues that publish none are kept rather than quietly
       // dropped, because dropping them would read as "these pairs are illiquid"
       // when the truth is "this venue does not say".
       if (threshold !== null && row.openInterestValue !== null && row.openInterestValue < threshold) continue;
-      kept.push({ row, spread: spreadOf(row, visible, unit) });
+      kept.push({ row, spread: spreadOf(row, visible, unit), extreme: extremeRateOf(row, visible, unit) });
     }
     return kept;
   }, [allRows, visible, crossVenueOnly, needle, threshold, unit]);
@@ -588,6 +640,7 @@ function VenueChip({
   onToggle: () => void;
 }) {
   const t = useT();
+  const status = venueState(column, t);
 
   return (
     <button
@@ -610,18 +663,14 @@ function VenueChip({
         )}
       />
       <span className="min-w-0 flex-1 truncate text-left">{column.label}</span>
-      {column.unavailable ? (
-        <StateBadge tone="danger" label={t("funding.venue.down")} detail={t("funding.venue.down.detail")} />
-      ) : column.stale ? (
-        <StateBadge tone="warn" label={t("funding.venue.stale")} detail={t("funding.venue.stale.detail")} />
-      ) : null}
+      {status.tone === "ok" ? null : <StateBadge tone={status.tone} label={status.label} detail={status.detail} />}
     </button>
   );
 }
 
 /* --- Columns ------------------------------------------------------------- */
 
-type MatrixEntry = { row: MatrixRow; spread: Spread | null };
+type MatrixEntry = { row: MatrixRow; spread: Spread | null; extreme: ExtremeRate | null };
 
 /** Not a component, so it takes `t` rather than calling `useT()` itself. */
 function buildColumns(
@@ -685,30 +734,50 @@ function buildColumns(
   const openInterest: ColumnDef<MatrixEntry, unknown> = {
     id: "openInterest",
     header: t("funding.openInterestNotional"),
-    accessorFn: (entry) => entry.row.openInterestValue ?? Number.NEGATIVE_INFINITY,
+    accessorFn: (entry) => entry.row.openInterestValue ?? undefined,
     cell: (context) => {
       const { row } = context.row.original;
       if (row.openInterest === undefined) {
         return <span className="text-dim" title={t("funding.noOpenInterest")}>—</span>;
       }
       return (
-        <span title={t("funding.openInterestFrom", { venue: row.openInterestVenue ?? "" })}>
+        <span title={t("funding.openInterestFrom", {
+          venue: row.openInterestVenue ?? "",
+          asset: row.openInterestAsset ?? "U",
+        })}>
           <Num value={row.openInterest} decimals={0} />
         </span>
       );
     },
-    // Rows whose venues publish no open interest cannot be ranked by it, so the
-    // tie-break is the thing the board exists to rank by instead. Without this
-    // they would clump in an arbitrary order at one end of the sort.
+    // Missing OI stays last in both directions. It is absence of a comparable
+    // value, not the smallest possible market, so an ascending sort must not
+    // promote it above venues that actually published a notional.
+    sortUndefined: "last",
     sortingFn: (left, right) => {
       const a = left.original.row.openInterestValue;
       const b = right.original.row.openInterestValue;
       if (a !== null && b !== null) return a - b;
-      if (a !== null) return 1;
-      if (b !== null) return -1;
-      return (left.original.spread?.value ?? -1) - (right.original.spread?.value ?? -1);
+      return (left.original.extreme?.absolute ?? -1) - (right.original.extreme?.absolute ?? -1);
     },
     meta: { numeric: true, width: "128px" },
+  };
+
+  const extremeRate: ColumnDef<MatrixEntry, unknown> = {
+    id: "extremeRate",
+    header: t("funding.extremeRate"),
+    accessorFn: (entry) => entry.extreme?.absolute ?? undefined,
+    cell: (context) => {
+      const extreme = context.row.original.extreme;
+      if (extreme === null) return <span className="text-dim">—</span>;
+      return (
+        <div className="flex flex-col items-end leading-tight">
+          <Num value={extreme.value.toFixed(decimals)} decimals={decimals} signed directional suffix="%" />
+          <span className="text-micro text-dim">{extreme.column.label}</span>
+        </div>
+      );
+    },
+    sortUndefined: "last",
+    meta: { numeric: true, width: "116px" },
   };
 
   const venues: ColumnDef<MatrixEntry, unknown>[] = visible.map((column) => ({
@@ -716,11 +785,7 @@ function buildColumns(
     header: () => (
       <span className="inline-flex items-center gap-1.5">
         {column.label}
-        {column.unavailable ? (
-          <StateBadge tone="danger" label={t("funding.venue.down")} detail={t("funding.venue.down.detail")} />
-        ) : column.stale ? (
-          <StateBadge tone="warn" label={t("funding.venue.stale")} detail={t("funding.venue.stale.detail")} />
-        ) : null}
+        {venueState(column, t).tone === "ok" ? null : <StateBadge {...venueState(column, t)} />}
       </span>
     ),
     accessorFn: (entry) => {
@@ -779,13 +844,17 @@ function buildColumns(
       // Nothing to hand over when one venue is the only one quoting this
       // underlying: the arbitrage page would open on a pair that does not exist.
       if (best === null) return null;
+      const assetClass = Object.values(row.cells)[0]?.assetClass;
+      const target = assetClass && assetClass !== "crypto" && assetClass !== "unknown"
+        ? "/arbitrage/tradfi/funding"
+        : "/arbitrage/crypto/funding";
       return (
         // A link rather than a click handler, so the row's destination is a real
         // address: it can be opened in a new tab, and it carries the operator's
         // orientation instead of leaving the next screen to guess it.
         <Button asChild size="sm" variant="outline">
           <Link
-            to="/funding/arbitrage"
+            to={target}
             search={{ symbol: row.key, long: best.long.key, short: best.short.key }}
           >
             {t("funding.hedge")}
@@ -796,5 +865,5 @@ function buildColumns(
     meta: { width: "88px" },
   };
 
-  return [instrument, openInterest, settles, ...venues, spread, hedge];
+  return [instrument, extremeRate, spread, openInterest, settles, ...venues, hedge];
 }

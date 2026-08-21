@@ -85,20 +85,32 @@ func readyArbitrageAccounts() arbitrageAccounts {
 type arbitrageBoardFixture struct{}
 
 func (arbitrageBoardFixture) Get(context.Context) (marketdata.BoardSnapshot, error) {
+	observedAt := time.Now().UTC()
 	row := func(instrumentID, rate string) marketdata.BoardRow {
 		return marketdata.BoardRow{
 			InstrumentID: instrumentID, Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 			Rate: rate, IntervalHours: 8, MarkPrice: "50",
+			FundingObservedAt: observedAt, PriceObservedAt: observedAt,
 			NextFundingTime: time.Date(2026, time.August, 5, 8, 0, 0, 0, time.UTC),
 		}
 	}
 	return marketdata.BoardSnapshot{
-		ObservedAt: time.Now(),
+		ObservedAt: observedAt,
 		Venues: []marketdata.BoardVenue{
 			{Venue: "binance", Environment: "live", Product: "perp", RouteProfileID: "binance-perp", Rows: []marketdata.BoardRow{row("BTC-USDT-BINANCE", "-0.0001")}},
 			{Venue: "okx", Environment: "live", Product: "perp", RouteProfileID: "okx-perp", Rows: []marketdata.BoardRow{row("BTC-USDT-OKX", "0.0003")}},
 		},
 	}, nil
+}
+
+type arbitrageMarketFixture struct{ facts map[string]marketdata.Fact }
+
+func (fixture arbitrageMarketFixture) Get(_ context.Context, query marketdata.Query) (marketdata.Fact, error) {
+	fact, ok := fixture.facts[query.InstrumentID]
+	if !ok {
+		return marketdata.Fact{}, errors.New("fact unavailable")
+	}
+	return fact, nil
 }
 
 // arbitrageGatewayFixture mints a distinct fill per call.
@@ -144,6 +156,10 @@ type arbitrageHarness struct {
 }
 
 func newArbitrageHarness(t *testing.T, gateway *arbitrageGatewayFixture) arbitrageHarness {
+	return newArbitrageHarnessWithPrincipal(t, gateway, func(*http.Request) (string, error) { return "principal-a", nil })
+}
+
+func newArbitrageHarnessWithPrincipal(t *testing.T, gateway *arbitrageGatewayFixture, principal func(*http.Request) (string, error)) arbitrageHarness {
 	t.Helper()
 	reservationService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
 	commandService := newCommandService(orders.NewMemoryStore(), manualReservationGate{service: reservationService}, time.Now)
@@ -155,6 +171,11 @@ func newArbitrageHarness(t *testing.T, gateway *arbitrageGatewayFixture) arbitra
 		t.Fatal(err)
 	}
 	arbitrageService := arbitrage.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, gateway, time.Now, previewKey)
+	observedAt := time.Now().UTC()
+	freshMarket := arbitrageMarketFixture{facts: map[string]marketdata.Fact{
+		"BTC-USDT-BINANCE": {InstrumentID: "BTC-USDT-BINANCE", BestBid: "49.9", BestAsk: "50", MarkPrice: "50", ObservedAt: observedAt},
+		"BTC-USDT-OKX":     {InstrumentID: "BTC-USDT-OKX", BestBid: "50", BestAsk: "50.1", MarkPrice: "50", ObservedAt: observedAt},
+	}}
 	// Both switches used to be one disjunct of a two-part admission: a test-mode
 	// command was admitted whether or not live writes were armed. With one mode
 	// left the switches are the only gate, and they start closed — so a harness
@@ -173,8 +194,9 @@ func newArbitrageHarness(t *testing.T, gateway *arbitrageGatewayFixture) arbitra
 		Catalog:           projection,
 		Arbitrage:         arbitrageService,
 		FundingBoard:      arbitrageBoardFixture{},
+		FreshMarketData:   freshMarket,
 		ManualAccounts:    readyArbitrageAccounts(),
-		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
+		Principal:         principal,
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
 	if err != nil {
@@ -226,6 +248,22 @@ func TestArbitrageOpportunitiesKeepPublicIdentityIndependentOfAccounts(t *testin
 		!slices.Contains(item.Blockers, "account_unreachable") ||
 		slices.Contains(item.Blockers, "instrument_identity_unresolved") {
 		t.Fatalf("account-free opportunity conflated reachability with listing: %+v", item)
+	}
+}
+
+func TestAnonymousArbitrageOpportunitiesArePublicButRejectAccountScope(t *testing.T) {
+	harness := newArbitrageHarnessWithPrincipal(t, &arbitrageGatewayFixture{}, func(*http.Request) (string, error) {
+		return "", errors.New("anonymous")
+	})
+	response := httptest.NewRecorder()
+	harness.mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/products/arbitrage/opportunities", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("public opportunity status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	harness.mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/products/arbitrage/opportunities?accountId=account-long", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous account-scoped status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -404,59 +442,39 @@ func TestArbitragePartialOpenIsNotAutoRolledBack(t *testing.T) {
 // makes this product a hedge rather than a bet: two legs on two exchanges.
 //
 // The route that still reaches a self-pair is the ranking, not the input.
-// `compareRates` declines to order legs that published no funding interval, so
-// taking the min and max of a group where only one venue dated its rate leaves
-// both extremes on the same leg; the fallback rotates off it, and lands on
-// another exchange only because `buildOpportunity` has already reduced the legs
-// to one per venue. A second route used to exist — a venue the profile registry
-// listed under two native environments arrived as two columns, so bybit's demo
-// sandbox "hedged" bybit's testnet across an exchange boundary that did not
-// exist — and it went with the environments. The reduction stays: another
-// function groups these legs, and this one refuses a self-pair rather than
-// trusting it cannot be handed one.
+// Both identities and comparable daily rates are admission requirements. An
+// incomplete board row remains useful diagnostics but is not a tradable pair.
 func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 	key := boardKey{base: "BTC", quote: "USDT"}
 
-	// One exchange dated its rate, the other did not. The pair is real and must
-	// survive — unranked, and saying so — because dropping it hides the venue.
-	opportunity, ok := buildOpportunity(key, []arbitrageOpportunityLeg{
-		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
-		{Venue: "lighter", Environment: "live", Rate: "0.00007"},
-	})
-	if !ok {
-		t.Fatal("an underlying two exchanges quote must still be offered, unranked")
-	}
-	if opportunity.Long.Venue == opportunity.Short.Venue {
-		t.Fatalf("hedged %s against itself", opportunity.Long.Venue)
-	}
-	if !slices.Contains(opportunity.Blockers, "funding_interval_unknown") {
-		t.Fatalf("blockers = %v, want funding_interval_unknown", opportunity.Blockers)
-	}
-	if opportunity.Executable {
-		t.Fatal("a pair nothing could rank reports itself executable")
+	if _, offered := buildOpportunity(key, []arbitrageOpportunityLeg{
+		{Venue: "binance", InstrumentID: "binance-btc", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "lighter", InstrumentID: "lighter-btc", Rate: "0.00007"},
+	}); offered {
+		t.Fatal("an incomparable funding pair was offered as an opportunity")
 	}
 
 	// One exchange named twice is one exchange, whatever else differs, and
 	// whatever the ranking would have made of the two rates.
 	if _, offered := buildOpportunity(key, []arbitrageOpportunityLeg{
-		{Venue: "bybit", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
-		{Venue: "bybit", Environment: "live", Rate: "0.00042", DailyRate: "0.00126"},
+		{Venue: "bybit", Environment: "live", InstrumentID: "bybit-a", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "bybit", Environment: "live", InstrumentID: "bybit-b", Rate: "0.00042", DailyRate: "0.00126"},
 	}); offered {
 		t.Fatal("two columns of one exchange were offered as a cross-venue hedge")
 	}
 
 	// And an underlying only one exchange quotes is not an opportunity at all.
 	if _, offered := buildOpportunity(key, []arbitrageOpportunityLeg{
-		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "binance", Environment: "live", InstrumentID: "binance-btc", Rate: "0.0001", DailyRate: "0.0003"},
 	}); offered {
 		t.Fatal("a single-venue underlying was offered as a hedge")
 	}
 
 	// The ranking itself still holds when there is something to rank: long the
 	// venue paying least, short the venue paying most, spread the difference.
-	opportunity, ok = buildOpportunity(key, []arbitrageOpportunityLeg{
-		{Venue: "bybit", Environment: "live", Rate: "0.00042", DailyRate: "0.00126"},
-		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
+	opportunity, ok := buildOpportunity(key, []arbitrageOpportunityLeg{
+		{Venue: "bybit", Environment: "live", InstrumentID: "bybit-btc", Rate: "0.00042", DailyRate: "0.00126"},
+		{Venue: "binance", Environment: "live", InstrumentID: "binance-btc", Rate: "0.0001", DailyRate: "0.0003"},
 	})
 	if !ok {
 		t.Fatal("a rankable cross-venue pair was dropped")
@@ -467,5 +485,192 @@ func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 	}
 	if opportunity.SpreadDaily != "0.00096" {
 		t.Fatalf("spreadDaily = %q, want 0.00096", opportunity.SpreadDaily)
+	}
+}
+
+func TestArbitrageOpportunityUsesOfficialClassificationWithoutTickerGuessing(t *testing.T) {
+	key := boardKey{base: "TSLA", quote: "USDC"}
+	opportunity, ok := buildOpportunity(key, []arbitrageOpportunityLeg{
+		{Venue: "hyperliquid", InstrumentID: "hl-tsla", AssetClass: "equity", Rate: "0.0001", DailyRate: "0.0024"},
+		{Venue: "lighter", InstrumentID: "lighter-tsla", AssetClass: "unknown", Rate: "0.0002", DailyRate: "0.0002"},
+	})
+	if !ok || opportunity.AssetClass != "equity" || opportunity.StrategyFamily != "tradfi_perpetual" {
+		t.Fatalf("opportunity = %+v, ok=%t", opportunity, ok)
+	}
+
+	if _, ok := buildOpportunity(key, []arbitrageOpportunityLeg{
+		{Venue: "hyperliquid", InstrumentID: "hl-tsla", AssetClass: "equity", Rate: "0.0001", DailyRate: "0.0024"},
+		{Venue: "other", InstrumentID: "other-tsla", AssetClass: "crypto", Rate: "0.0002", DailyRate: "0.0006"},
+	}); ok {
+		t.Fatal("conflicting official asset classes were paired by ticker")
+	}
+
+	unknown, ok := buildOpportunity(boardKey{base: "NEW", quote: "USDT"}, []arbitrageOpportunityLeg{
+		{Venue: "binance", InstrumentID: "binance-new", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "bybit", InstrumentID: "bybit-new", Rate: "0.0002", DailyRate: "0.0006"},
+	})
+	if !ok || unknown.AssetClass != "unknown" || unknown.StrategyFamily != "unclassified" {
+		t.Fatalf("unknown opportunity was guessed: %+v, ok=%t", unknown, ok)
+	}
+}
+
+func TestTradFiPerpetualSpreadRanksPriceDislocationIndependentlyOfFunding(t *testing.T) {
+	now := time.Now().UTC()
+	items := buildTradFiPerpetualSpreads(map[boardKey][]arbitrageOpportunityLeg{
+		{base: "TSLA", quote: "USDC"}: {
+			{Venue: "hyperliquid", Environment: "live", Product: "perp", RouteProfileID: "hl-perp", InstrumentID: "hl-tsla", AssetClass: "equity", MarkPrice: "250", AccountID: "a", PriceObservedAt: now},
+			{Venue: "lighter", Environment: "live", Product: "perp", RouteProfileID: "lighter-perp", InstrumentID: "lighter-tsla", AssetClass: "equity", MarkPrice: "255", AccountID: "b", PriceObservedAt: now},
+		},
+	}, now)
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one", items)
+	}
+	got := items[0]
+	if got.Strategy != arbitrageStrategyPerpSpread || got.Long.Venue != "hyperliquid" || got.Short.Venue != "lighter" || got.PriceSpread == "" || !got.Executable {
+		t.Fatalf("spread opportunity = %+v", got)
+	}
+	items = buildTradFiPerpetualSpreads(map[boardKey][]arbitrageOpportunityLeg{
+		{base: "TSLA", quote: "USDC"}: {
+			{Venue: "hyperliquid", AssetClass: "equity", MarkPrice: "250", PriceObservedAt: now},
+			{Venue: "lighter", InstrumentID: "lighter-tsla", AssetClass: "equity", MarkPrice: "255", PriceObservedAt: now},
+		},
+	}, now)
+	if len(items) != 0 {
+		t.Fatalf("unresolved price leg became a strategy opportunity: %+v", items)
+	}
+}
+
+func TestCryptoSpotPerpBasisUsesExactCatalogSpotAndOfficialClass(t *testing.T) {
+	now := time.Now().UTC()
+	snapshot := catalog.Snapshot{
+		Revision: "basis", ObservedAt: now,
+		Venues: []catalog.Venue{
+			{Venue: "binance", Environment: "live", Ready: true, RouteProfiles: []catalog.RouteProfile{
+				{Product: "spot", RouteProfileID: "binance.spot.v1"},
+				{Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1"},
+			}},
+		},
+		Instruments: []catalog.Instrument{
+			{InstrumentID: "binance:spot:BTC-USDT", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketFamily: "spot", AssetClass: "crypto", Ready: true},
+			{InstrumentID: "binance:perp:BTC-USDT", Venue: "binance", Environment: "live", Product: "perp", Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketFamily: "venue_perpetual", AssetClass: "crypto", Ready: true},
+		},
+	}
+	board := marketdata.BoardSnapshot{ObservedAt: now, Venues: []marketdata.BoardVenue{{
+		Venue: "binance", Environment: "live", Product: "perp", Settlement: "USDT", RouteProfileID: "binance.perp.usdt.v1",
+		Rows: []marketdata.BoardRow{{
+			InstrumentID: "binance:perp:BTC-USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+			MarketFamily: "venue_perpetual", AssetClass: "crypto", Rate: "0.0001", IntervalHours: 8,
+			MarkPrice: "102", IndexPrice: "100", PriceObservedAt: now,
+		}},
+	}}}
+	items := buildCryptoSpotPerpBasis(snapshot, board, map[string]string{
+		"binance.spot.v1": "account-a", "binance.perp.usdt.v1": "account-a",
+	})
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one", items)
+	}
+	got := items[0]
+	if got.Strategy != arbitrageStrategySpotPerpBasis || got.Long.Product != "spot" || got.Short.Product != "perp" || got.BasisRate != "0.02" || !got.Executable {
+		t.Fatalf("basis opportunity = %+v", got)
+	}
+
+	// Exact canonical spot/perpetual topology remains discoverable when the
+	// venue publishes no classification. Unknown stays unknown; the strategy
+	// engine does not relabel it as crypto.
+	snapshot.Instruments[0].AssetClass = "unknown"
+	snapshot.Instruments[1].AssetClass = "unknown"
+	board.Venues[0].Rows[0].AssetClass = "unknown"
+	unknown := buildCryptoSpotPerpBasis(snapshot, board, nil)
+	if len(unknown) != 1 || unknown[0].AssetClass != "unknown" || unknown[0].StrategyFamily != "crypto_continuous" {
+		t.Fatalf("canonical unknown spot/perp topology was lost or relabelled: %+v", unknown)
+	}
+}
+
+func TestArbitrageShapeKeepsStrategiesSeparate(t *testing.T) {
+	spot := catalog.Instrument{Product: "spot", AssetClass: "crypto"}
+	cryptoPerp := catalog.Instrument{Product: "perp", AssetClass: "crypto"}
+	equityPerp := catalog.Instrument{Product: "perp", AssetClass: "equity"}
+	if !validArbitrageShape(arbitrageStrategySpotPerpBasis, spot, cryptoPerp) {
+		t.Fatal("crypto cash-and-carry shape was rejected")
+	}
+	spot.AssetClass = "unknown"
+	cryptoPerp.AssetClass = "unknown"
+	if !validArbitrageShape(arbitrageStrategySpotPerpBasis, spot, cryptoPerp) {
+		t.Fatal("canonical unclassified spot/perp shape was rejected")
+	}
+	if validArbitrageShape(arbitrageStrategyFunding, spot, cryptoPerp) {
+		t.Fatal("spot leg entered the cross-perp funding engine")
+	}
+	if !validArbitrageShape(arbitrageStrategyPerpSpread, equityPerp, equityPerp) {
+		t.Fatal("TradFi cross-perp spread shape was rejected")
+	}
+	if validArbitrageShape(arbitrageStrategyPerpSpread, cryptoPerp, cryptoPerp) {
+		t.Fatal("crypto perps entered the TradFi price-spread engine")
+	}
+}
+
+func TestCanonicalBoardPerpRejectsOrphanedOrMismatchedFacts(t *testing.T) {
+	snapshot := catalog.Snapshot{Instruments: []catalog.Instrument{{
+		InstrumentID: "binance:perp:BTC-USDT", Venue: "binance", Environment: "live", Product: "perp",
+		Settlement: "USDT", BaseAsset: "BTC", QuoteAsset: "USDT", AssetClass: "unknown", Ready: true,
+	}}}
+	venue := marketdata.BoardVenue{Venue: "binance", Environment: "live", Product: "perp", Settlement: "USDT"}
+	if _, ok := canonicalBoardPerp(snapshot, venue, marketdata.BoardRow{BaseAsset: "BTC", QuoteAsset: "USDT"}); ok {
+		t.Fatal("a board fact without a canonical instrument id was admitted")
+	}
+	if _, ok := canonicalBoardPerp(snapshot, venue, marketdata.BoardRow{
+		InstrumentID: "binance:perp:BTC-USDT", BaseAsset: "ETH", QuoteAsset: "USDT",
+	}); ok {
+		t.Fatal("a board fact whose identity disagrees with the catalog was admitted")
+	}
+	if _, ok := canonicalBoardPerp(snapshot, venue, marketdata.BoardRow{
+		InstrumentID: "binance:perp:BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+	}); !ok {
+		t.Fatal("a matching canonical board fact was rejected")
+	}
+}
+
+func TestSpotPerpPreviewPricesExecutableAskAgainstBid(t *testing.T) {
+	snapshot := catalog.Snapshot{Instruments: []catalog.Instrument{
+		{InstrumentID: "spot", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", AssetClass: "crypto", Ready: true},
+		{InstrumentID: "perp", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", AssetClass: "crypto", Ready: true},
+	}}
+	fact := func(product, id, bid, ask string) marketdata.Fact {
+		return marketdata.Fact{Venue: "binance", Environment: "live", Product: product, InstrumentID: id, BestBid: bid, BestAsk: ask, ObservedAt: time.Now().UTC()}
+	}
+	handler := &arbitrageProductHandler{trading: &tradingHandler{options: TradingOptions{FreshMarketData: arbitrageMarketFixture{facts: map[string]marketdata.Fact{
+		"spot": fact("spot", "spot", "99", "100"), "perp": fact("perp", "perp", "102", "103"),
+	}}}}}
+	request := arbitragePreviewRequest{Strategy: arbitrageStrategySpotPerpBasis, Quantity: "2"}
+	authority := arbitragePreviewAuthority{
+		Strategy: arbitrageStrategySpotPerpBasis,
+		Long:     arbitrageLegAuthority{AccountID: "a", InstrumentID: "spot", Venue: "binance", VenueEnvironment: "live", Product: "spot"},
+		Short:    arbitrageLegAuthority{AccountID: "a", InstrumentID: "perp", Venue: "binance", VenueEnvironment: "live", Product: "perp"},
+	}
+	preview, err := handler.priceQuotedHedge(httptest.NewRequest(http.MethodPost, "/", nil), "preview", request, authority, snapshot)
+	if err != nil {
+		t.Fatalf("priceQuotedHedge: %v", err)
+	}
+	if preview.Long.ExecutionPrice != "100" || preview.Short.ExecutionPrice != "102" || preview.BasisRate != "0.02" || preview.Notional != "202" {
+		t.Fatalf("preview = %+v", preview)
+	}
+}
+
+func TestArbitragePreviewRejectsStaleExecutableBBO(t *testing.T) {
+	snapshot := catalog.Snapshot{Instruments: []catalog.Instrument{
+		{InstrumentID: "spot", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true},
+		{InstrumentID: "perp", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true},
+	}}
+	stale := time.Now().UTC().Add(-3 * time.Second)
+	handler := &arbitrageProductHandler{trading: &tradingHandler{options: TradingOptions{FreshMarketData: arbitrageMarketFixture{facts: map[string]marketdata.Fact{
+		"spot": {InstrumentID: "spot", BestBid: "99", BestAsk: "100", ObservedAt: stale},
+		"perp": {InstrumentID: "perp", BestBid: "102", BestAsk: "103", ObservedAt: stale},
+	}}}}}
+	preview := arbitragePreview{}
+	_, err := handler.freshHedgePrices(context.Background(), snapshot, arbitragePreviewAuthority{
+		Long: arbitrageLegAuthority{InstrumentID: "spot"}, Short: arbitrageLegAuthority{InstrumentID: "perp"},
+	}, &preview)
+	if !errors.Is(err, orders.ErrNotFound) {
+		t.Fatalf("stale BBO error=%v, want not found", err)
 	}
 }

@@ -20,6 +20,7 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 		LoadedAt: time.Unix(100, 0), Generation: 7,
 	}}, time.Unix(130, 0))
 	metrics.SetReconciliation(2, 45*time.Second)
+	metrics.ObserveFundingMarket("binance", "binance.perp.usdt.v1", "live", time.Unix(125, 0), 2)
 	metrics.RecordStream(StreamGap)
 	metrics.RecordStream(StreamResync)
 	metrics.RecordStream(StreamReplayEviction)
@@ -42,6 +43,9 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 		"gateway_stream_event_total",
 		"gateway_catalog_snapshot_age_seconds",
 		"gateway_catalog_snapshot_version",
+		"gateway_funding_market_feed_state",
+		"gateway_funding_market_last_success_unixtime",
+		"gateway_funding_market_reconnect_total",
 		"gateway_postgres_operation_duration_seconds",
 		"gateway_in_flight_command_count",
 		"gateway_shutdown_total",
@@ -56,6 +60,10 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 	if !strings.Contains(body, `gateway_account_write_ready{environment="live",product="spot",venue="binance"} 1`) {
 		t.Fatalf("aggregated write readiness missing:\n%s", body)
 	}
+	if !strings.Contains(body, `gateway_funding_market_feed_state{route="binance.perp.usdt.v1",state="live",venue="binance"} 1`) ||
+		!strings.Contains(body, `gateway_funding_market_reconnect_total{route="binance.perp.usdt.v1",venue="binance"} 2`) {
+		t.Fatalf("funding-market lifecycle metrics missing:\n%s", body)
+	}
 }
 
 func TestMetricsCollapseUntrustedDimensionsAndNeverExposeIdentifiers(t *testing.T) {
@@ -68,6 +76,7 @@ func TestMetricsCollapseUntrustedDimensionsAndNeverExposeIdentifiers(t *testing.
 		Venue: canary, Product: canary, Environment: canary,
 		ReadReady: true, WriteReady: true,
 	}})
+	metrics.ObserveFundingMarket(canary, canary, canary, time.Now(), 100)
 
 	response := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))

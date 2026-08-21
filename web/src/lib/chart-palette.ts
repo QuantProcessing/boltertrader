@@ -21,6 +21,7 @@
 
 export interface ChartPalette {
   dim: string;
+  muted: string;
   line: string;
   lineStrong: string;
   raised: string;
@@ -38,6 +39,7 @@ export function readChartPalette(): ChartPalette {
   const down = token("--bt-down");
   return {
     dim: token("--bt-dim"),
+    muted: token("--bt-muted"),
     line: token("--bt-line"),
     lineStrong: token("--bt-line-strong"),
     raised: token("--bt-raised"),

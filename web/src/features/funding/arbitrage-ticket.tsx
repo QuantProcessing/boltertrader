@@ -3,20 +3,24 @@ import { useEffect, useState } from "react";
 
 import { describeError } from "@/api/errors";
 import { ARBITRAGE_PREVIEW_TTL_MS } from "@/api/types";
-import type { Account, ArbitrageOpportunityLeg, OrderType } from "@/api/types";
+import type { Account, AccountBalance, ArbitrageOpportunityLeg, ArbitrageStrategy, OrderType } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Field, Input, inputClass } from "@/components/ui/field";
-import { Num, Side } from "@/components/ui/num";
-import { Panel } from "@/components/ui/panel";
+import { Num } from "@/components/ui/num";
 import { Segmented } from "@/components/ui/segmented";
 import { useToast } from "@/components/ui/toast";
+import { VenueBadge } from "@/components/ui/venue-badge";
 import {
   useOpenArbitrage,
   usePreviewArbitrage,
   type SealedArbitragePreview,
 } from "@/features/funding/queries";
+import { useAccountBalances } from "@/features/trade/queries";
 import { formatDuration, splitDecimal } from "@/lib/format";
 import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+
+const QUANTITY_PERCENTAGES = [25, 50, 75, 100] as const;
 
 /* ---------------------------------------------------------------------------
  * The hedge ticket.
@@ -34,6 +38,7 @@ import { useT } from "@/lib/i18n";
  * ------------------------------------------------------------------------- */
 
 export function ArbitrageTicket({
+	strategy,
   symbol,
   baseAsset,
   quoteAsset,
@@ -42,6 +47,7 @@ export function ArbitrageTicket({
   accounts,
   onSwap,
 }: {
+	strategy: ArbitrageStrategy;
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
@@ -65,8 +71,8 @@ export function ArbitrageTicket({
   const preview = usePreviewArbitrage();
   const open = useOpenArbitrage();
 
-  const longAccounts = accounts.filter((account) => account.venue === long.venue);
-  const shortAccounts = accounts.filter((account) => account.venue === short.venue);
+  const longAccounts = accounts.filter((account) => accountSupportsLeg(account, long));
+  const shortAccounts = accounts.filter((account) => accountSupportsLeg(account, short));
 
   // Derived rather than stored: the candidate list changes when the pair does,
   // and a stored id would survive a swap that left it pointing at the wrong
@@ -101,13 +107,20 @@ export function ArbitrageTicket({
     reachable &&
     longAccountId !== "" &&
     shortAccountId !== "" &&
-    // The server rejects a hedge whose legs share an account: that is the same
-    // position opened twice, not a hedge.
-    longAccountId !== shortAccountId &&
     isPositiveDecimal(quantity) &&
     (orderType === "market" || (isPositiveDecimal(longLimit) && isPositiveDecimal(shortLimit)));
 
-  const edge = spreadOf(long.dailyRate, short.dailyRate);
+  const edge = strategy === "cross_perp_funding"
+    ? spreadOf(long.dailyRate, short.dailyRate)
+    : priceEdgeOf(long.referencePrice, short.referencePrice, strategy);
+  const longBalances = useAccountBalances(longAccountId);
+  const shortBalances = useAccountBalances(shortAccountId);
+  const longAvailable = availableMargin(longBalances.data, quoteAsset);
+  const shortAvailable = availableMargin(shortBalances.data, quoteAsset);
+  const maxQuantity = hedgeCapacity(longAvailable, long.referencePrice, shortAvailable, short.referencePrice);
+  const selectedQuantityPercent = maxQuantity === null
+    ? null
+    : QUANTITY_PERCENTAGES.find((percent) => quantityAtPercent(maxQuantity, percent) === quantity) ?? null;
 
   // Built here rather than at module scope: a module-level array is evaluated
   // once at import and would freeze whichever locale was active then. Inline
@@ -122,6 +135,7 @@ export function ArbitrageTicket({
     if (!ready || long.instrumentId === undefined || short.instrumentId === undefined) return;
     preview.mutate(
       {
+		strategy,
         long: {
           accountId: longAccountId,
           instrumentId: long.instrumentId,
@@ -170,13 +184,26 @@ export function ArbitrageTicket({
   };
 
   return (
-    <Panel title={t("funding.hedge")}>
-      <div className="flex flex-col gap-3">
+    <section className="min-h-full bg-panel">
+      <header className="flex h-row items-center justify-between border-b border-line px-3">
+        <h2 className="text-title font-semibold text-text">{strategy === "spot_perp_basis" ? t("arb.executeOrder") : t("arb.executeHedge")}</h2>
+        <span className="text-meta text-dim">{symbol}</span>
+      </header>
+      <div className="flex flex-col">
+        <div className="flex items-center justify-between border-b border-line px-3 py-2 text-meta">
+          <span className="text-dim">{t("arb.direction")}</span>
+          <span className="text-right">
+            <span className="text-up">{long.product === "spot" ? t("arb.buySpot") : t("arb.long")}</span>
+            <span className="px-1.5 text-dim">/</span>
+            <span className="text-down">{t("arb.sellPerp")}</span>
+          </span>
+        </div>
         <LegCard
           leg="long"
           venue={long.venue}
-          environment={long.environment}
           dailyRate={long.dailyRate}
+		  product={long.product}
+		  referencePrice={long.referencePrice}
           stale={long.stale ?? false}
           unlisted={long.instrumentId === undefined}
           accounts={longAccounts}
@@ -186,22 +213,25 @@ export function ArbitrageTicket({
           onLimitPriceChange={setLongLimit}
           showLimit={orderType === "limit"}
           quoteAsset={quoteAsset}
+          baseAsset={baseAsset}
+          availableMargin={longAvailable}
         />
 
-        <div className="flex items-center gap-2">
+		{strategy === "spot_perp_basis" ? null : <div className="flex items-center gap-2 px-3 py-1.5">
           <span aria-hidden className="h-px flex-1 bg-line" />
           <Button variant="outline" size="sm" onClick={onSwap} aria-label={t("arb.swap.label")}>
             <ArrowUpDown aria-hidden className="size-3" />
             {t("arb.swap")}
           </Button>
           <span aria-hidden className="h-px flex-1 bg-line" />
-        </div>
+		</div>}
 
         <LegCard
           leg="short"
           venue={short.venue}
-          environment={short.environment}
           dailyRate={short.dailyRate}
+		  product={short.product}
+		  referencePrice={short.referencePrice}
           stale={short.stale ?? false}
           unlisted={short.instrumentId === undefined}
           accounts={shortAccounts}
@@ -211,76 +241,65 @@ export function ArbitrageTicket({
           onLimitPriceChange={setShortLimit}
           showLimit={orderType === "limit"}
           quoteAsset={quoteAsset}
+          baseAsset={baseAsset}
+          availableMargin={shortAvailable}
         />
 
-        <Segmented
-          name="arbitrage-order-type"
-          label={t("ticket.orderType")}
-          value={orderType}
-          options={orderTypes}
-          onChange={(next) => {
-            setOrderType(next);
-            // Both legs go out together and a resting hedge is half a hedge for
-            // as long as it rests, so a market pair is immediate-or-cancel.
-            setTimeInForce(next === "market" ? "IOC" : "GTC");
-          }}
-        />
-
-        <Field
-          label={t("arb.quantity", { asset: baseAsset || t("arb.baseAsset") })}
-          error={quantityError}
-          hint={t("arb.sameSize")}
-          required
-        >
-          {(field) => (
-            <Input
-              {...field}
-              inputMode="decimal"
-              autoComplete="off"
-              value={quantity}
-              placeholder="0.00"
-              onChange={(event) => setQuantity(event.target.value)}
-            />
-          )}
-        </Field>
-
-        <Edge
-          symbol={symbol}
-          quoteAsset={quoteAsset}
-          spreadDaily={edge}
-          quantity={quantity}
-          longMark={long.markPrice}
-          shortMark={short.markPrice}
-        />
-
-        {!reachable ? (
-          <p className="text-meta text-warn" role="status">
-            {t("arb.unreachable")}
-          </p>
-        ) : null}
-
-        {sealed === null ? (
-          <Button
-            variant="primary"
-            size="lg"
-            onClick={onReview}
-            disabled={!ready || preview.isPending}
-            className="w-full"
-          >
-            {preview.isPending ? t("ticket.pricing") : t("arb.review")}
-          </Button>
-        ) : (
-          <SealedConfirmation
-            sealed={sealed}
-            remaining={remaining}
-            expired={expired}
-            opening={open.isPending}
-            onConfirm={onConfirm}
-            onDiscard={() => setSealed(null)}
+        <div className="flex flex-col gap-3 border-t border-line px-3 py-3">
+          <Segmented
+            name="arbitrage-order-type"
+            label={t("ticket.orderType")}
+            value={orderType}
+            options={orderTypes}
+            onChange={(next) => {
+              setOrderType(next);
+              setTimeInForce(next === "market" ? "IOC" : "GTC");
+            }}
           />
-        )}
+
+          <Field label={t("arb.quantity", { asset: baseAsset || t("arb.baseAsset") })} error={quantityError} required>
+            {(field) => (
+              <div className="grid grid-cols-[minmax(96px,1fr)_minmax(184px,1.35fr)] items-center gap-2">
+                <Input {...field} data-numeric="" inputMode="decimal" autoComplete="off" value={quantity} placeholder="0.00" onChange={(event) => setQuantity(event.target.value)} />
+                <div className="grid h-[30px] grid-cols-4 gap-0.5 rounded-control bg-fill p-0.5 pointer-coarse:h-bar" role="group" aria-label={t("arb.quantityPercent")}>
+                  {QUANTITY_PERCENTAGES.map((percent) => {
+                    const selected = selectedQuantityPercent === percent;
+                    return (
+                      <Button
+                        key={percent}
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        aria-pressed={selected}
+                        disabled={maxQuantity === null}
+                        className={cn("h-[26px] min-w-0 rounded-control px-1", selected && "bg-raised text-text hover:bg-raised")}
+                        onClick={() => maxQuantity !== null && setQuantity(quantityAtPercent(maxQuantity, percent))}
+                      >
+                        {percent}%
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </Field>
+
+          <div className="border-t border-line pt-2">
+            <Edge strategy={strategy} symbol={symbol} quoteAsset={quoteAsset} spreadDaily={edge} quantity={quantity} longMark={long.markPrice ?? long.referencePrice} shortMark={short.markPrice ?? short.referencePrice} longDaily={long.dailyRate} shortDaily={short.dailyRate} />
+          </div>
+
+          {!reachable ? <p className="text-meta text-warn" role="status">{t("arb.unreachable")}</p> : null}
+
+          {sealed === null ? (
+            <Button variant="primary" size="lg" onClick={onReview} disabled={!ready || preview.isPending} className="w-full bg-up text-bg hover:bg-up/90">
+              {preview.isPending ? t("ticket.pricing") : t("arb.review")}
+            </Button>
+          ) : (
+            <SealedConfirmation sealed={sealed} remaining={remaining} expired={expired} opening={open.isPending} onConfirm={onConfirm} onDiscard={() => setSealed(null)} />
+          )}
+        </div>
       </div>
-    </Panel>
+    </section>
   );
 }
 
@@ -289,8 +308,9 @@ export function ArbitrageTicket({
 function LegCard({
   leg,
   venue,
-  environment,
   dailyRate,
+	product,
+	referencePrice,
   stale,
   unlisted,
   accounts,
@@ -300,11 +320,14 @@ function LegCard({
   onLimitPriceChange,
   showLimit,
   quoteAsset,
+  baseAsset,
+  availableMargin,
 }: {
   leg: "long" | "short";
   venue: string;
-  environment: string;
   dailyRate: string | undefined;
+	product: "spot" | "perp";
+	referencePrice: string | undefined;
   stale: boolean;
   unlisted: boolean;
   accounts: Account[];
@@ -314,29 +337,31 @@ function LegCard({
   onLimitPriceChange: (next: string) => void;
   showLimit: boolean;
   quoteAsset: string;
+  baseAsset: string;
+  availableMargin: string | null;
 }) {
   const t = useT();
   const percent = percentOf(dailyRate);
   const priceError = showLimit && limitPrice !== "" && !isPositiveDecimal(limitPrice) ? t("arb.mustBePositive") : null;
+  const title = product === "spot" ? t("arb.buySpot") : leg === "long" ? t("arb.longPerp") : t("arb.sellPerp");
+  const maxOpen = openCapacity(availableMargin, referencePrice);
 
   return (
-    <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="flex min-w-0 items-baseline gap-2">
-          <Side side={leg} />
-          <span className="truncate text-base text-text">{venue}</span>
-          <span className="shrink-0 text-meta text-dim">{environment}</span>
+    <div className="flex flex-col gap-2 border-b border-line px-3 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn("text-base font-semibold", leg === "long" ? "text-up" : "text-down")}>{title}</span>
+          <VenueBadge venue={venue} />
         </div>
         <div className="flex shrink-0 items-baseline gap-1">
-          {percent === null ? (
+		  {product === "spot" ? null : percent === null ? (
             <span className="text-meta text-dim">{t("arb.noRate")}</span>
           ) : (
             <Num value={percent} decimals={4} signed directional className="text-base" />
           )}
-          <span className="text-meta text-dim">%/d</span>
+		  {product === "perp" ? <span className="text-meta text-dim">%/d</span> : null}
         </div>
       </div>
-
       {stale ? <p className="text-meta text-warn">{t("arb.staleQuote")}</p> : null}
       {unlisted ? <p className="text-meta text-warn">{t("arb.unlisted")}</p> : null}
 
@@ -358,6 +383,11 @@ function LegCard({
           </select>
         )}
       </Field>
+
+      <div className="grid grid-cols-2 gap-3 text-meta">
+        <div><p className="text-dim">{t("ticket.availableMargin")}</p><p className="mt-0.5">{availableMargin === null ? "—" : <><Num value={availableMargin} decimals={2} grouped /> {quoteAsset}</>}</p></div>
+        <div><p className="text-dim">{product === "spot" ? t("arb.maxBuy") : t("arb.maxOpen")}</p><p className="mt-0.5">{maxOpen === null ? "—" : <><Num value={maxOpen.toFixed(6)} decimals={6} grouped /> {baseAsset}</>}</p></div>
+      </div>
 
       {showLimit ? (
         <Field
@@ -396,19 +426,25 @@ function LegCard({
  * operator should see it before asking for a price rather than after.
  */
 function Edge({
+	strategy,
   symbol,
   quoteAsset,
   spreadDaily,
   quantity,
   longMark,
   shortMark,
+  longDaily,
+  shortDaily,
 }: {
+	strategy: ArbitrageStrategy;
   symbol: string;
   quoteAsset: string;
   spreadDaily: number | null;
   quantity: string;
   longMark: string | undefined;
   shortMark: string | undefined;
+  longDaily: string | undefined;
+  shortDaily: string | undefined;
 }) {
   // Above the early return: a hook cannot sit behind a conditional.
   const t = useT();
@@ -419,6 +455,25 @@ function Edge({
     );
   }
   const notional = notionalOf(quantity, longMark, shortMark);
+	const carryRate = strategy === "spot_perp_basis" ? numberOrNull(shortDaily) : spreadOf(longDaily, shortDaily);
+	const dailyCarry = notional === null || carryRate === null ? null : notional * carryRate;
+	if (strategy !== "cross_perp_funding") {
+		const longNotional = legNotional(quantity, longMark);
+		const shortNotional = legNotional(quantity, shortMark);
+		return (
+		  <dl className="flex flex-col gap-1 text-meta">
+			<div className="flex items-baseline justify-between"><dt className="text-dim">{t("arb.estimatedLong")}</dt><dd>{longNotional === null ? "—" : <><Num value={longNotional.toFixed(2)} decimals={2} grouped /> <span className="text-dim">{quoteAsset}</span></>}</dd></div>
+			<div className="flex items-baseline justify-between"><dt className="text-dim">{t("arb.estimatedShort")}</dt><dd>{shortNotional === null ? "—" : <><Num value={shortNotional.toFixed(2)} decimals={2} grouped /> <span className="text-dim">{quoteAsset}</span></>}</dd></div>
+			<div className="flex items-baseline justify-between">
+			  <dt className="text-dim">{strategy === "spot_perp_basis" ? t("arb.basis") : t("arb.priceSpread")}</dt>
+			  <dd><Num value={(spreadDaily * 100).toFixed(4)} decimals={4} signed directional /><span className="text-dim"> %</span></dd>
+			</div>
+			<div className="flex items-baseline justify-between"><dt className="text-dim">{t("arb.fundingCarry")}</dt><dd>{carryRate === null ? "—" : <><Num value={(carryRate * 100).toFixed(4)} decimals={4} signed directional /><span className="text-dim"> %/d</span></>}</dd></div>
+			<div className="flex items-baseline justify-between"><dt className="text-dim">{t("arb.estimatedDailyCarry")}</dt><dd>{dailyCarry === null ? "—" : <><Num value={dailyCarry.toFixed(4)} decimals={4} signed directional /> <span className="text-dim">{quoteAsset}</span></>}</dd></div>
+			<div className="flex items-baseline justify-between"><dt className="text-dim">{t("arb.estimatedFees")}</dt><dd className="text-dim">—</dd></div>
+		  </dl>
+		);
+	}
   return (
     <dl className="flex flex-col gap-1 text-meta">
       <div className="flex items-baseline justify-between">
@@ -449,7 +504,7 @@ function Edge({
           )}
         </dd>
       </div>
-      <p className="text-dim">{t("arb.gross")}</p>
+      <div className="flex items-baseline justify-between"><dt className="text-dim">{t("arb.estimatedFees")}</dt><dd className="text-dim">—</dd></div>
     </dl>
   );
 }
@@ -472,7 +527,7 @@ function SealedConfirmation({
   onDiscard: () => void;
 }) {
   const t = useT();
-  const { blockers, warnings, spreadDaily, spreadApr, notional, dailyFunding } = sealed.preview;
+  const { blockers, warnings, spreadDaily, spreadApr, basisRate, priceSpread, notional, dailyFunding } = sealed.preview;
   const blocked = blockers.length > 0;
 
   return (
@@ -485,29 +540,30 @@ function SealedConfirmation({
       </div>
 
       <dl className="flex flex-col gap-1 text-meta">
-        <div className="flex items-baseline justify-between">
+		{sealed.preview.strategy === "cross_perp_funding" ? <>
+		<div className="flex items-baseline justify-between">
           <dt className="text-dim">{t("arb.sealedSpread")}</dt>
           <dd>
             <Num value={spreadDaily} decimals={6} signed directional />
             <span className="text-dim"> /d</span>
           </dd>
         </div>
-        <div className="flex items-baseline justify-between">
-          <dt className="text-dim">{t("arb.sealedApr")}</dt>
-          <dd>
-            <Num value={spreadApr} decimals={4} signed directional />
-          </dd>
-        </div>
+		<div className="flex items-baseline justify-between">
+		  <dt className="text-dim">{t("arb.sealedApr")}</dt>
+		  <dd><Num value={spreadApr} decimals={4} signed directional /></dd>
+		</div>
+		<div className="flex items-baseline justify-between">
+		  <dt className="text-dim">{t("arb.dailyFunding")}</dt>
+		  <dd><Num value={dailyFunding} decimals={4} signed directional /></dd>
+		</div>
+		</> : <div className="flex items-baseline justify-between">
+		  <dt className="text-dim">{sealed.preview.strategy === "spot_perp_basis" ? t("arb.basis") : t("arb.priceSpread")}</dt>
+		  <dd><Num value={percentOf(basisRate ?? priceSpread) ?? undefined} decimals={4} signed directional /><span className="text-dim"> %</span></dd>
+		</div>}
         <div className="flex items-baseline justify-between">
           <dt className="text-dim">{t("arb.notional")}</dt>
           <dd>
             <Num value={notional} decimals={2} grouped />
-          </dd>
-        </div>
-        <div className="flex items-baseline justify-between">
-          <dt className="text-dim">{t("arb.dailyFunding")}</dt>
-          <dd>
-            <Num value={dailyFunding} decimals={4} signed directional />
           </dd>
         </div>
       </dl>
@@ -586,6 +642,48 @@ function pickAccount(choice: string | null, suggested: string | undefined, candi
   return candidates[0]?.accountId ?? "";
 }
 
+function accountSupportsLeg(account: Account, leg: ArbitrageOpportunityLeg): boolean {
+	if (account.venue !== leg.venue) return false;
+	if (!account.routes || account.routes.length === 0) return true;
+	return account.routes.some((route) => route.product === leg.product && route.requestedState === "active");
+}
+
+function availableMargin(balances: AccountBalance[] | undefined, quoteAsset: string): string | null {
+  const balance = balances?.find((item) => item.asset === quoteAsset || item.settlementAsset === quoteAsset);
+  return balance?.availableMargin ?? balance?.available ?? null;
+}
+
+function hedgeCapacity(longAvailable: string | null, longPrice: string | undefined, shortAvailable: string | null, shortPrice: string | undefined): number | null {
+  const legs = [[longAvailable, longPrice], [shortAvailable, shortPrice]] as const;
+  const capacities = legs.map(([available, price]) => {
+    const funds = Number.parseFloat(available ?? "");
+    const mark = Number.parseFloat(price ?? "");
+    return Number.isFinite(funds) && Number.isFinite(mark) && funds > 0 && mark > 0 ? funds / mark : null;
+  }).filter((value): value is number => value !== null);
+  return capacities.length === 2 ? Math.min(...capacities) : null;
+}
+
+function openCapacity(available: string | null, price: string | undefined): number | null {
+  const funds = Number.parseFloat(available ?? "");
+  const mark = Number.parseFloat(price ?? "");
+  return Number.isFinite(funds) && Number.isFinite(mark) && funds > 0 && mark > 0 ? funds / mark : null;
+}
+
+function numberOrNull(value: string | undefined): number | null {
+  const parsed = Number.parseFloat(value ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function quantityAtPercent(capacity: number, percent: number): string {
+  return (capacity * percent / 100).toFixed(8).replace(/\.?0+$/, "");
+}
+
+function legNotional(quantity: string, price: string | undefined): number | null {
+  const size = Number.parseFloat(quantity);
+  const mark = Number.parseFloat(price ?? "");
+  return Number.isFinite(size) && Number.isFinite(mark) && size > 0 && mark > 0 ? size * mark : null;
+}
+
 function isPositiveDecimal(value: string): boolean {
   const parts = splitDecimal(value);
   if (!parts || parts.sign === "-") return false;
@@ -598,6 +696,14 @@ export function spreadOf(longDaily: string | undefined, shortDaily: string | und
   const short = Number.parseFloat(shortDaily ?? "");
   if (!Number.isFinite(long) || !Number.isFinite(short)) return null;
   return short - long;
+}
+
+function priceEdgeOf(longPrice: string | undefined, shortPrice: string | undefined, strategy: ArbitrageStrategy): number | null {
+	const long = Number.parseFloat(longPrice ?? "");
+	const short = Number.parseFloat(shortPrice ?? "");
+	if (!Number.isFinite(long) || !Number.isFinite(short) || long <= 0 || short <= 0) return null;
+	const denominator = strategy === "spot_perp_basis" ? long : (long + short) / 2;
+	return (short - long) / denominator;
 }
 
 /** A fractional rate as a percent string, ready for `Num`. */

@@ -190,6 +190,14 @@ func (c *WSClient) SubscribeIndexTicker(instId string, handler func(*IndexTicker
 	})
 }
 
+// SubscribeOpenInterest subscribes to the public open-interest channel.
+func (c *WSClient) SubscribeOpenInterest(instId string, handler func(*OpenInterest)) error {
+	args := WsSubscribeArgs{Channel: "open-interest", InstType: "SWAP", InstId: instId}
+	return c.Subscribe(args, marketPushHandler("open interest", func(value OpenInterest, _ string) {
+		handler(&value)
+	}, nil))
+}
+
 // SubscribeOptionSummary subscribes to the public opt-summary channel.
 func (c *WSClient) SubscribeOptionSummary(instFamily string, handler func(*OptionSummary)) error {
 	args := WsSubscribeArgs{

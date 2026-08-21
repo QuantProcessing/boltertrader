@@ -274,6 +274,43 @@ func TestLifecycleStoreAdmitsOneRecoverableOperationPerAccount(t *testing.T) {
 	}
 }
 
+func TestLifecycleStoreRetirementSupersedesFailedCreation(t *testing.T) {
+	store, ctx := newLifecycleTestStore(t)
+	account := lifecycleTestAccount(t)
+	account.RuntimeID = "72e45811-4182-4ec9-a63a-2d536bc99bac"
+	account.DesiredStateRevision = 0
+	account.RuntimeGeneration = 0
+	account.CredentialVersion = 0
+	account.SecretRef = "secret-ref-1"
+	createOperation := lifecycleTestOperation(account, lifecycleCreateOperationID, lifecycle.OperationCreate, lifecycle.OperationApplying)
+	createOperation.SecretRef = account.SecretRef
+	if err := store.CreateDraft(ctx, account, createOperation); err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	removing := account
+	removing.State = lifecycle.StateRemoving
+	removing.UpdatedAt = time.Unix(1710000100, 0).UTC()
+	retireOperation := lifecycleTestOperation(removing, lifecycleRetireOperationID, lifecycle.OperationRetire, lifecycle.OperationCleanupPending)
+	retireOperation.UpdatedAt = removing.UpdatedAt
+	if err := store.BeginCredentialOperation(ctx, 0, removing, retireOperation); err != nil {
+		t.Fatalf("BeginCredentialOperation: %v", err)
+	}
+
+	abandoned, err := store.GetCredentialOperation(ctx, secretstore.OperationID(lifecycleCreateOperationID))
+	if err != nil || abandoned.State != lifecycle.OperationAbandoned || abandoned.StableErrorCode != "ACCOUNT_REMOVED_DURING_CREATION" {
+		t.Fatalf("abandoned create = %+v / %v", abandoned, err)
+	}
+	retiring, err := store.GetCredentialOperation(ctx, secretstore.OperationID(lifecycleRetireOperationID))
+	if err != nil || retiring.State != lifecycle.OperationCleanupPending {
+		t.Fatalf("retirement = %+v / %v", retiring, err)
+	}
+	loaded, err := store.Get(ctx, account.ID)
+	if err != nil || loaded.State != lifecycle.StateRemoving {
+		t.Fatalf("account = %+v / %v", loaded, err)
+	}
+}
+
 func TestLifecycleStoreRoundTripsRotationFenceAndCleanup(t *testing.T) {
 	store, ctx := newLifecycleTestStore(t)
 	account := lifecycleTestAccount(t)

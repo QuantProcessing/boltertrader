@@ -13,6 +13,7 @@ type MetaAndAssetCtxsFull struct {
 		Universe []struct {
 			Name string `json:"name"`
 		} `json:"universe"`
+		CollateralToken int `json:"collateralToken,omitempty"`
 	}
 	AssetCtxs MetaAndAssetCtxsResponse
 }
@@ -201,6 +202,77 @@ func (c *Client) GetPerpDexs(ctx context.Context) ([]PerpDex, error) {
 		dexs = append(dexs, dex)
 	}
 	return dexs, nil
+}
+
+// GetPerpCategories returns Hyperliquid's own category keyed by the full coin
+// name. HIP-3 names include their dex namespace and callers must not join on a
+// bare ticker.
+func (c *Client) GetPerpCategories(ctx context.Context) (map[string]string, error) {
+	data, err := c.Post(ctx, "/info", map[string]string{"type": "perpCategories"})
+	if err != nil {
+		return nil, err
+	}
+	var raw [][]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(raw))
+	for _, item := range raw {
+		if len(item) != 2 {
+			return nil, fmt.Errorf("unexpected perpCategories tuple length %d", len(item))
+		}
+		var coin, category string
+		if err := json.Unmarshal(item[0], &coin); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(item[1], &category); err != nil {
+			return nil, err
+		}
+		if coin == "" || category == "" {
+			continue
+		}
+		if _, exists := result[coin]; exists {
+			return nil, fmt.Errorf("duplicate perpCategories coin %q", coin)
+		}
+		result[coin] = category
+	}
+	return result, nil
+}
+
+// GetPerpConciseAnnotations returns the richer bulk annotation surface. It is
+// kept separate from categories because the two endpoints are independently
+// optional and the catalog can retain whichever official fact is available.
+func (c *Client) GetPerpConciseAnnotations(ctx context.Context) (map[string]PerpAnnotation, error) {
+	data, err := c.Post(ctx, "/info", map[string]string{"type": "perpConciseAnnotations"})
+	if err != nil {
+		return nil, err
+	}
+	var raw [][]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	result := make(map[string]PerpAnnotation, len(raw))
+	for _, item := range raw {
+		if len(item) != 2 {
+			return nil, fmt.Errorf("unexpected perpConciseAnnotations tuple length %d", len(item))
+		}
+		var coin string
+		var annotation PerpAnnotation
+		if err := json.Unmarshal(item[0], &coin); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(item[1], &annotation); err != nil {
+			return nil, err
+		}
+		if coin == "" {
+			continue
+		}
+		if _, exists := result[coin]; exists {
+			return nil, fmt.Errorf("duplicate perpConciseAnnotations coin %q", coin)
+		}
+		result[coin] = annotation
+	}
+	return result, nil
 }
 
 // GetFundingRate retrieves the current funding rate for a specific coin.

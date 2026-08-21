@@ -697,16 +697,14 @@ func instrumentLoaderForConfig(configName string, settings settings) exchange.In
 // fundingBoardLoaderForConfig mirrors instrumentLoaderForConfig for the
 // credential-free funding surface.
 //
-// Only perpetual configs appear: spot has no funding, and aster is absent
-// because the gateway capability matrix marks it as the one perp venue that
-// publishes none (`Funding: code != "ATP"`). A caller asking for any of those
-// gets nil, which the connector turns into a configuration error rather than an
-// empty board — silently answering "no rates" for a venue that has them would
-// look identical to a venue that is merely down.
+// Only perpetual configs appear: spot has no funding. Every configured perp
+// venue, including Aster's public v3 premium-index surface, is represented.
 func fundingBoardLoaderForConfig(configName string, settings settings) exchange.FundingBoardLoader {
 	switch configName {
 	case "binance-usd-perp":
 		return factoryclient.NewBinanceFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+	case "aster-usdt-perp":
+		return factoryclient.NewAsterFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
 	case "okx-usdt-perp":
 		return factoryclient.NewOKXFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
 	case "lighter-perp":
@@ -733,9 +731,10 @@ func fundingBoardLoaderForConfig(configName string, settings settings) exchange.
 // fundingHistoryLoaderForConfig is the per-instrument counterpart of
 // fundingBoardLoaderForConfig.
 //
-// It covers nine of the board's ten configs. Nado is deliberately absent: it
-// publishes the current funding rate and nothing before it, so there is no
-// loader to build rather than one that answers with an empty series. A caller
+// It covers ten of the board's eleven route configs. Nado is deliberately
+// absent: it publishes the current funding rate but no settled series through
+// the supported public API, so there is no loader to build rather than one
+// that answers with an empty series. A caller
 // gets nil and the connector turns that into a configuration error, which is
 // the difference between "this venue keeps no history" and "this instrument was
 // paid nothing" — indistinguishable to the reader of an empty chart, and the
@@ -744,6 +743,8 @@ func fundingHistoryLoaderForConfig(configName string, settings settings) exchang
 	switch configName {
 	case "binance-usd-perp":
 		return factoryclient.NewBinanceFundingHistoryLoader(factorySettingsForConfig(configName, settings))
+	case "aster-usdt-perp":
+		return factoryclient.NewAsterFundingHistoryLoader(factorySettingsForConfig(configName, settings))
 	case "okx-usdt-perp":
 		return factoryclient.NewOKXFundingHistoryLoader(factorySettingsForConfig(configName, settings))
 	case "lighter-perp":

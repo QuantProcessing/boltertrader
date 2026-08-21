@@ -27,12 +27,16 @@ missing cell as missing rather than as zero.
 */
 
 type FundingBoardEntry struct {
-	Symbol          string          `json:"symbol"`
-	NativeSymbol    string          `json:"native_symbol,omitempty"`
-	NativeID        string          `json:"native_id,omitempty"`
-	BaseAsset       string          `json:"base_asset,omitempty"`
-	QuoteAsset      string          `json:"quote_asset,omitempty"`
-	Rate            decimal.Decimal `json:"rate"`
+	Symbol       string          `json:"symbol"`
+	NativeSymbol string          `json:"native_symbol,omitempty"`
+	NativeID     string          `json:"native_id,omitempty"`
+	BaseAsset    string          `json:"base_asset,omitempty"`
+	QuoteAsset   string          `json:"quote_asset,omitempty"`
+	Rate         decimal.Decimal `json:"rate"`
+	// RateValid is projection metadata used when a realtime fact has fresh
+	// price/OI fields but no fresh funding observation. Legacy REST board
+	// loaders always carry a rate, so their adapter sets validity explicitly.
+	RateValid       bool            `json:"-"`
 	IntervalHours   OptionalInt     `json:"interval_hours"`
 	NextFundingTime time.Time       `json:"next_funding_time,omitempty"`
 	MarkPrice       OptionalDecimal `json:"mark_price"`
@@ -44,6 +48,15 @@ type FundingBoardEntry struct {
 	// into the quote/settlement stablecoin (USDT or USDC). Cross-venue products
 	// use this field for display, filtering and sorting.
 	OpenInterestNotional OptionalDecimal `json:"open_interest_notional"`
+	// OpenInterestNotionalAsset is the stablecoin used by the converted
+	// notional. It is explicit because some route profiles settle in USDC while
+	// others settle in USDT; a generic "USD" label would hide that distinction.
+	OpenInterestNotionalAsset string `json:"open_interest_notional_asset,omitempty"`
+	// The three observation clocks are independent. A fresh mark update must
+	// never make an old funding rate or open-interest value appear current.
+	FundingObservedAt      time.Time `json:"funding_observed_at,omitempty"`
+	PriceObservedAt        time.Time `json:"price_observed_at,omitempty"`
+	OpenInterestObservedAt time.Time `json:"open_interest_observed_at,omitempty"`
 }
 
 type FundingBoardSnapshot struct {

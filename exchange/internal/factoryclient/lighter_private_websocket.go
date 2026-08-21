@@ -111,8 +111,6 @@ func (backend *lighterPrivateWSBackend) StartOrders(ctx context.Context, instrum
 		return nil, err
 	}
 	var stopped atomic.Bool
-	ready := make(chan struct{})
-	var readyOnce sync.Once
 	lifecycle, recoveredOnValid := lighterSimpleLifecycle(callbacks)
 	handler := func(payload []byte) {
 		var event lighter.WsAccountOrdersEvent
@@ -131,11 +129,9 @@ func (backend *lighterPrivateWSBackend) StartOrders(ctx context.Context, instrum
 					return
 				}
 				emitLighterEvent(callbacks.Event, exchange.OrderEvent{Kind: exchange.EventDelta, Order: order})
-				readyOnce.Do(func() { close(ready) })
 			}
 		}
 		recoveredOnValid()
-		readyOnce.Do(func() { close(ready) })
 	}
 	key := lighterWSKey("private-orders", meta.marketID)
 	backend.addLifecycle(key, lifecycle)
@@ -151,9 +147,6 @@ func (backend *lighterPrivateWSBackend) StartOrders(ctx context.Context, instrum
 		}
 		return nil
 	})
-	if err := backend.waitFirst(ctx, operation, ready, stop); err != nil {
-		return nil, err
-	}
 	return stop, nil
 }
 
@@ -211,8 +204,6 @@ func (backend *lighterPrivateWSBackend) StartBalances(ctx context.Context, callb
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err
 	}
-	ready := make(chan struct{})
-	var readyOnce sync.Once
 	lifecycle, recoveredOnValid := lighterSimpleLifecycle(callbacks)
 	handler := func(payload []byte) {
 		var event lighter.WsAccountAllAssetsEvent
@@ -231,7 +222,6 @@ func (backend *lighterPrivateWSBackend) StartBalances(ctx context.Context, callb
 		}
 		emitLighterEvent(callbacks.Event, exchange.BalanceEvent{Kind: exchange.EventSnapshot, Balances: balances, Time: lighterUnixMillis(event.Timestamp)})
 		recoveredOnValid()
-		readyOnce.Do(func() { close(ready) })
 	}
 	key := "private-balances"
 	backend.addLifecycle(key, lifecycle)
@@ -246,9 +236,6 @@ func (backend *lighterPrivateWSBackend) StartBalances(ctx context.Context, callb
 		}
 		return nil
 	})
-	if err := backend.waitFirst(ctx, operation, ready, stop); err != nil {
-		return nil, err
-	}
 	return stop, nil
 }
 
@@ -349,10 +336,14 @@ func (hub *lighterAccountFillsHub) add(meta lighterMarketMeta, callbacks streamC
 
 func (hub *lighterAccountFillsHub) subscribeSucceeded() {
 	hub.mu.Lock()
+	defer hub.mu.Unlock()
 	hub.subscribing = false
 	hub.subscribed = true
 	hub.startFailed = false
-	hub.mu.Unlock()
+	if !hub.ready {
+		hub.ready = true
+		close(hub.readyCh)
+	}
 }
 
 func (hub *lighterAccountFillsHub) subscribeFailed() {
@@ -497,10 +488,14 @@ func (hub *lighterAccountPositionsHub) add(meta lighterMarketMeta, callbacks str
 
 func (hub *lighterAccountPositionsHub) subscribeSucceeded() {
 	hub.mu.Lock()
+	defer hub.mu.Unlock()
 	hub.subscribing = false
 	hub.subscribed = true
 	hub.startFailed = false
-	hub.mu.Unlock()
+	if !hub.ready {
+		hub.ready = true
+		close(hub.readyCh)
+	}
 }
 
 func (hub *lighterAccountPositionsHub) subscribeFailed() {
