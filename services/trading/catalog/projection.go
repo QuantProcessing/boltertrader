@@ -189,6 +189,7 @@ func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, e
 		projection.mu.Unlock()
 
 		snapshot, err := projection.source.Fetch(ctx)
+		reason := ReasonUnavailable
 		if err == nil {
 			err = validate(snapshot)
 			if err == nil {
@@ -198,6 +199,9 @@ func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, e
 			if err == nil && (age > projection.ttl || age < 0) {
 				err = fmt.Errorf("Gateway catalog facts are stale or future-dated")
 			}
+			if err != nil {
+				reason = ReasonInvalidFacts
+			}
 		}
 		projection.mu.Lock()
 		if err == nil {
@@ -205,10 +209,8 @@ func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, e
 			projection.snapshot = clone(snapshot)
 			projection.loaded = true
 			projection.reason = "ready"
-		} else if errors.Is(err, ErrUnavailable) {
-			projection.reason = ReasonUnavailable
 		} else {
-			projection.reason = ReasonInvalidFacts
+			projection.reason = reason
 		}
 		close(wait)
 		projection.inFlight = nil

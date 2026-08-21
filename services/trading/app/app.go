@@ -132,8 +132,9 @@ type Service struct {
 // this a real detector instead: it goes red when the Gateway has actually
 // stopped republishing, which is a full cycle missed, and not before.
 const (
-	catalogTTL     = 2 * time.Minute
-	catalogRefresh = catalogTTL / 3
+	catalogTTL            = 2 * time.Minute
+	catalogRefresh        = catalogTTL / 3
+	readinessProbeTimeout = 3 * time.Second
 )
 
 // New assembles the service. It reports a configuration error rather than
@@ -391,7 +392,7 @@ func newReadiness(dependencies Dependencies, catalogProjection *catalog.Projecti
 		if dependencies.MarketDataProbe == nil {
 			return component(false, "market_data_route_probe_missing")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), readinessProbeTimeout)
 		defer cancel()
 		if err := dependencies.MarketDataProbe.CheckMarketDataRoute(ctx); err != nil {
 			return component(false, "market_data_route_unavailable")
@@ -406,7 +407,7 @@ func newReadiness(dependencies Dependencies, catalogProjection *catalog.Projecti
 		if dependencies.RuntimeProbe == nil {
 			return component(false, "account_authority_probe_missing")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), readinessProbeTimeout)
 		defer cancel()
 		if err := dependencies.RuntimeProbe.CheckRuntimeRoute(ctx); err != nil {
 			return component(false, "account_authority_unavailable")

@@ -575,7 +575,10 @@ func NewClient(rawURL string, allowNonLoopbackPlaintext bool, token []byte, live
 		return nil, err
 	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		// A cold catalog read may wait for the Gateway to refresh several public
+		// venue columns. Keep this above the Gateway's per-venue deadline so a
+		// healthy cold start is not mistaken for an invalid catalog.
+		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	origin := strings.TrimRight(parsed.String(), "/")
 	// Both planes default to the capability plane's origin and credential. That
@@ -1063,22 +1066,18 @@ func (client *Client) fetchFundingHistory(ctx context.Context, read marketdata.F
 }
 
 func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
-	var result readEnvelope[struct {
-		Revision    string               `json:"revision"`
-		ObservedAt  time.Time            `json:"observedAt"`
-		Instruments []catalog.Instrument `json:"instruments"`
-	}]
-	if err := client.readLimit(ctx, "", "/internal/v1/catalog/instruments", nil, &result, catalogResponseLimit); err != nil {
-		return fmt.Errorf("probe Gateway catalog authority: %w", err)
+	var result readEnvelope[[]catalog.Venue]
+	if err := client.readLimit(ctx, "", "/internal/v1/catalog/venues", nil, &result, catalogResponseLimit); err != nil {
+		return fmt.Errorf("probe Gateway public market authority: %w", err)
 	}
-	readyInstrument := false
-	for _, instrument := range result.Data.Instruments {
-		if instrument.Ready {
-			readyInstrument = true
+	readyVenue := false
+	for _, venue := range result.Data {
+		if strings.TrimSpace(venue.Venue) != "" && venue.Ready {
+			readyVenue = true
 			break
 		}
 	}
-	if strings.TrimSpace(result.Data.Revision) == "" || result.Data.ObservedAt.IsZero() || len(result.Data.Instruments) == 0 || !readyInstrument {
+	if len(result.Data) == 0 || !readyVenue {
 		return fmt.Errorf("Gateway market-data route is unavailable")
 	}
 	return nil

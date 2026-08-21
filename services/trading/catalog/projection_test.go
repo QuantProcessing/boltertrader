@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -12,13 +13,28 @@ type countingSource struct {
 	mu       sync.Mutex
 	calls    int
 	snapshot Snapshot
+	err      error
 }
 
 func (source *countingSource) Fetch(context.Context) (Snapshot, error) {
 	source.mu.Lock()
 	defer source.mu.Unlock()
 	source.calls++
-	return source.snapshot, nil
+	return source.snapshot, source.err
+}
+
+func TestProjectionReportsSourceFailureAsUnavailable(t *testing.T) {
+	source := &countingSource{err: errors.New("Gateway request timed out")}
+	projection, err := NewProjection(source, time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projection.Snapshot(context.Background()); err == nil {
+		t.Fatal("Snapshot() error = nil, want source failure")
+	}
+	if status := projection.Status(); status.Ready || status.Reason != ReasonUnavailable {
+		t.Fatalf("Status() = %#v, want unavailable source", status)
+	}
 }
 
 func TestProjectionCoalescesGatewayFacts(t *testing.T) {

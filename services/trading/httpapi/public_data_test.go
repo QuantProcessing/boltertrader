@@ -26,6 +26,32 @@ func (function marketSourceFunc) Fetch(ctx context.Context, query marketdata.Que
 	return function(ctx, query)
 }
 
+type countingReadiness struct {
+	statusCalls    int
+	readinessCalls int
+}
+
+func (readiness *countingReadiness) Status() platformsystem.Snapshot {
+	readiness.statusCalls++
+	return platformsystem.Snapshot{Ready: true, Components: map[string]platformsystem.Component{}}
+}
+
+func (readiness *countingReadiness) Readiness() platformsystem.Snapshot {
+	readiness.readinessCalls++
+	return platformsystem.Snapshot{Ready: true, Components: map[string]platformsystem.Component{}}
+}
+
+func TestSystemEndpointEvaluatesReadinessOnlyOnce(t *testing.T) {
+	readiness := &countingReadiness{}
+	api := &PublicDataAPI{dependencies: PublicDataDependencies{Readiness: readiness}}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
+	response := httptest.NewRecorder()
+	api.system(response, request, true)
+	if response.Code != http.StatusOK || readiness.readinessCalls != 1 || readiness.statusCalls != 0 {
+		t.Fatalf("readiness response=%d statusCalls=%d readinessCalls=%d", response.Code, readiness.statusCalls, readiness.readinessCalls)
+	}
+}
+
 func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 	t.Helper()
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)

@@ -22,6 +22,16 @@ import (
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 )
 
+func TestNewClientDefaultTimeoutAllowsColdCatalogBootstrap(t *testing.T) {
+	client, err := NewClient("http://127.0.0.1:18080", false, []byte("gateway-adapter-token-with-at-least-32-bytes"), false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.httpClient.Timeout != 30*time.Second {
+		t.Fatalf("default HTTP timeout = %v, want 30s", client.httpClient.Timeout)
+	}
+}
+
 func TestGatewayAdapterPreservesCompleteBrowserRuntimeLifecycle(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +194,7 @@ func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.
 		t.Fatalf("runtimes=%+v err=%v", runtimes, err)
 	}
 	wantOperations := []gatewayhttp.AuthorityOperation{
-		gatewayhttp.AuthorityCatalogInstruments,
+		gatewayhttp.AuthorityCatalogVenues,
 		gatewayhttp.AuthorityRuntimeReadiness,
 		gatewayhttp.AuthorityCatalogVenues,
 		gatewayhttp.AuthorityCatalogInstruments,
@@ -243,9 +253,9 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 	}
 }
 
-func TestGatewayAdapterMarketDataProbeRequiresCatalogIdentityAndReadyInstrument(t *testing.T) {
+func TestGatewayAdapterMarketDataProbeRequiresReadyVenue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"revision":"","observedAt":"0001-01-01T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"live","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
+		_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"live","ready":false}]}`))
 	}))
 	defer server.Close()
 	adapter, err := NewClient(server.URL, false, []byte("gateway-adapter-token-with-at-least-32-bytes"), false, server.Client())
@@ -253,13 +263,13 @@ func TestGatewayAdapterMarketDataProbeRequiresCatalogIdentityAndReadyInstrument(
 		t.Fatal(err)
 	}
 	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
-		t.Fatal("ready instrument without catalog identity was accepted")
+		t.Fatal("venue without a ready public route was accepted")
 	}
 }
 
 func TestGatewayAdapterMarketDataProbeRejectsEmptyPublicCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-empty-catalog","observedAt":"2026-08-11T00:00:00Z","instruments":[]}}`))
+		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))
 	defer server.Close()
 	adapter, err := NewClient(server.URL, false, []byte("gateway-adapter-token-with-at-least-32-bytes"), false, server.Client())
@@ -271,17 +281,17 @@ func TestGatewayAdapterMarketDataProbeRejectsEmptyPublicCatalog(t *testing.T) {
 	}
 }
 
-func TestGatewayAdapterMarketDataProbeRejectsMissingEmptyCatalogInventory(t *testing.T) {
+func TestGatewayAdapterMarketDataProbeRejectsMissingVenueInventory(t *testing.T) {
 	for _, test := range []struct {
-		name        string
-		instruments string
+		name string
+		data string
 	}{
-		{name: "omitted"},
-		{name: "null", instruments: `,"instruments":null`},
+		{name: "omitted", data: `{}`},
+		{name: "null", data: `{"data":null}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = fmt.Fprintf(w, `{"data":{"revision":"gateway-empty-catalog","observedAt":"2026-08-11T00:00:00Z"%s}}`, test.instruments)
+				_, _ = fmt.Fprint(w, test.data)
 			}))
 			defer server.Close()
 			adapter, err := NewClient(server.URL, false, []byte("gateway-adapter-token-with-at-least-32-bytes"), false, server.Client())
@@ -289,15 +299,15 @@ func TestGatewayAdapterMarketDataProbeRejectsMissingEmptyCatalogInventory(t *tes
 				t.Fatal(err)
 			}
 			if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
-				t.Fatalf("%s instruments inventory was accepted", test.name)
+				t.Fatalf("%s venue inventory was accepted", test.name)
 			}
 		})
 	}
 }
 
-func TestGatewayAdapterMarketDataProbeRejectsWhitespaceEmptyCatalogRevision(t *testing.T) {
+func TestGatewayAdapterMarketDataProbeRejectsWhitespaceVenue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"revision":" ","observedAt":"2026-08-11T00:00:00Z","instruments":[]}}`))
+		_, _ = w.Write([]byte(`{"data":[{"venue":" ","environment":"live","ready":true}]}`))
 	}))
 	defer server.Close()
 	adapter, err := NewClient(server.URL, false, []byte("gateway-adapter-token-with-at-least-32-bytes"), false, server.Client())
@@ -305,13 +315,13 @@ func TestGatewayAdapterMarketDataProbeRejectsWhitespaceEmptyCatalogRevision(t *t
 		t.Fatal(err)
 	}
 	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
-		t.Fatal("empty catalog with a whitespace revision was accepted")
+		t.Fatal("ready route without a venue identity was accepted")
 	}
 }
 
-func TestGatewayAdapterMarketDataProbeRejectsNonEmptyCatalogWithoutReadyInstrument(t *testing.T) {
+func TestGatewayAdapterMarketDataProbeRejectsNonEmptyCatalogWithoutReadyVenue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-unready","observedAt":"2026-08-11T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"live","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":false}]}}`))
+		_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"live","ready":false}]}`))
 	}))
 	defer server.Close()
 	adapter, err := NewClient(server.URL, false, []byte("gateway-adapter-token-with-at-least-32-bytes"), false, server.Client())
@@ -319,7 +329,7 @@ func TestGatewayAdapterMarketDataProbeRejectsNonEmptyCatalogWithoutReadyInstrume
 		t.Fatal(err)
 	}
 	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
-		t.Fatal("non-empty catalog without a ready instrument was accepted")
+		t.Fatal("non-empty venue inventory without a ready route was accepted")
 	}
 }
 

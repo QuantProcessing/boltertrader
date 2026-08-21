@@ -682,8 +682,15 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 	if ctx == nil {
 		return httpapi.AuthorityResponse{}, authorityError(errors.New("context is required"))
 	}
-	authority.mu.Lock()
-	defer authority.mu.Unlock()
+	// Public market reads own no account lifecycle state and may wait on venue
+	// I/O. Serializing them behind the account-control mutex lets one slow
+	// catalog refresh block account readiness and every other public read.
+	// Account mutations and projections remain serialized below; independent
+	// public facts and the lock-free runtime readiness observation do not.
+	if authorityOperationSerialized(request.Operation) {
+		authority.mu.Lock()
+		defer authority.mu.Unlock()
+	}
 
 	var response httpapi.AuthorityResponse
 	var err error
@@ -818,6 +825,21 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		return httpapi.AuthorityResponse{}, authorityError(err)
 	}
 	return response, nil
+}
+
+func authorityOperationSerialized(operation httpapi.AuthorityOperation) bool {
+	switch operation {
+	case httpapi.AuthorityRuntimeReadiness,
+		httpapi.AuthorityCatalogVenues,
+		httpapi.AuthorityCatalogInstruments,
+		httpapi.AuthorityMarketData,
+		httpapi.AuthorityCandles,
+		httpapi.AuthorityFundingBoard,
+		httpapi.AuthorityFundingHistory:
+		return false
+	default:
+		return true
+	}
 }
 
 func authorityQueryExactly(query map[string][]string, fields ...string) bool {

@@ -40,6 +40,26 @@ func TestManagerAuthorityReadsPropagatesConfiguredCatalogFailure(t *testing.T) {
 	}
 }
 
+func TestPublicMarketAuthorityOperationsDoNotTakeAccountControlLock(t *testing.T) {
+	independent := []httpapi.AuthorityOperation{
+		httpapi.AuthorityRuntimeReadiness,
+		httpapi.AuthorityCatalogVenues,
+		httpapi.AuthorityCatalogInstruments,
+		httpapi.AuthorityMarketData,
+		httpapi.AuthorityCandles,
+		httpapi.AuthorityFundingBoard,
+		httpapi.AuthorityFundingHistory,
+	}
+	for _, operation := range independent {
+		if authorityOperationSerialized(operation) {
+			t.Errorf("%s unexpectedly takes the account-control lock", operation)
+		}
+	}
+	if !authorityOperationSerialized(httpapi.AuthorityApplyDesired) {
+		t.Fatal("account mutation no longer takes the account-control lock")
+	}
+}
+
 // Public venue and instrument discovery is Gateway state, not account state.
 // A fresh install must open the trader before it has credentials to configure.
 func TestGatewayAuthorityCatalogAndMarketDataExistWithoutAccounts(t *testing.T) {

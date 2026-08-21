@@ -240,7 +240,10 @@ services:
       test: ["CMD", "/usr/local/bin/exchange-gateway-docker-support", "health", "-config", "/etc/boltertrader/gateway.yaml", "-kind", "ready"]
       interval: 10s
       timeout: 3s
-      start_period: 10s
+      # The first public catalog bootstrap may legitimately wait on several
+      # venue APIs. Do not fail `compose up --wait` while that bounded bootstrap
+      # is still making progress.
+      start_period: 120s
       retries: 6
     <<: *hardening
     restart: unless-stopped

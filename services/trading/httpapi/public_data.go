@@ -137,13 +137,15 @@ func (api *PublicDataAPI) system(w http.ResponseWriter, r *http.Request, readine
 		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
-	snapshot := api.dependencies.Readiness.Status()
+	var snapshot platformsystem.Snapshot
 	status := http.StatusOK
 	if readiness {
 		snapshot = api.dependencies.Readiness.Readiness()
 		if !snapshot.Ready {
 			status = http.StatusServiceUnavailable
 		}
+	} else {
+		snapshot = api.dependencies.Readiness.Status()
 	}
 	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": snapshot})
 }
