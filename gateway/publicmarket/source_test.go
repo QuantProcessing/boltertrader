@@ -109,6 +109,54 @@ func TestSourceServesPublicMarketWithoutAnAccount(t *testing.T) {
 	}
 }
 
+func TestRunBootstrapsCatalogAndSnapshotDoesNotRefreshVenue(t *testing.T) {
+	connector := &signalingConnector{
+		fakeConnector: fakeConnector{instrument: exchange.Instrument{
+			Identity: exchange.InstrumentIdentity{
+				Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT",
+				BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT", NativeSymbol: "BTCUSDT",
+			},
+			Rules: exchange.InstrumentRules{
+				PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"),
+				MinQuantity: decimal.RequireFromString("0.001"),
+			},
+		}},
+		refreshed: make(chan struct{}, 2),
+	}
+	source, err := newSource(fakeFactory{connector: connector}, routeprofile.DefaultRegistry(), sourceOptions{
+		interval: time.Hour, maxAge: 2 * time.Hour, venueTimeout: time.Second, now: time.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- source.Run(ctx) }()
+	select {
+	case <-connector.refreshed:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not bootstrap the catalog")
+	}
+
+	if snapshot, err := source.Snapshot(context.Background()); err != nil || len(snapshot.Instruments) != 1 {
+		t.Fatalf("Snapshot() = %+v, %v", snapshot, err)
+	}
+	select {
+	case <-connector.refreshed:
+		t.Fatal("Snapshot triggered a venue refresh")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop")
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSourceKeepsDepthWhenOptionalMarketFacetsFail(t *testing.T) {
 	observedAt := time.Date(2026, 8, 19, 1, 2, 3, 0, time.UTC)
 	connector := &fakeConnector{
@@ -175,6 +223,19 @@ type fakeConnector struct {
 	fundingErr error
 	historyErr error
 	refreshes  int
+}
+
+type signalingConnector struct {
+	fakeConnector
+	refreshed chan struct{}
+}
+
+func (connector *signalingConnector) Refresh(ctx context.Context) ([]exchange.Instrument, error) {
+	instruments, err := connector.fakeConnector.Refresh(ctx)
+	if err == nil {
+		connector.refreshed <- struct{}{}
+	}
+	return instruments, err
 }
 
 func (connector *fakeConnector) Refresh(context.Context) ([]exchange.Instrument, error) {

@@ -147,11 +147,10 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 // Refresh renews the projection whether or not it has expired, and is how a
 // caller keeps it warm rather than merely reading it.
 //
-// Snapshot cannot serve that purpose: it refetches only once the facts are
-// already older than the TTL, so a loop built on it renews the projection
-// strictly after the window in which Status reports it stale. The two methods
-// therefore answer different questions — Snapshot asks for facts and accepts
-// cached ones, Refresh asks for the fetch itself.
+// Snapshot cannot serve that purpose: once a validated snapshot exists it is a
+// memory-only read, even when the freshness signal says it is stale. The two
+// methods therefore answer different questions — Snapshot asks for the last
+// known directory, Refresh asks the Gateway to replace it.
 func (projection *Projection) Refresh(ctx context.Context) error {
 	_, err := projection.load(ctx, true)
 	return err
@@ -163,7 +162,7 @@ func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, e
 	}
 	for {
 		projection.mu.Lock()
-		if !force && projection.loaded && projection.now().UTC().Sub(projection.snapshot.ObservedAt) <= projection.ttl {
+		if !force && projection.loaded {
 			snapshot := clone(projection.snapshot)
 			projection.mu.Unlock()
 			return snapshot, nil
@@ -212,19 +211,10 @@ func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, e
 		} else if !projection.loaded {
 			projection.reason = reason
 		}
-		fallback := clone(projection.snapshot)
-		hasFallback := projection.loaded
 		close(wait)
 		projection.inFlight = nil
 		projection.mu.Unlock()
 		if err != nil {
-			// A catalog is low-frequency identity data. Once a snapshot has
-			// passed validation, a delayed venue refresh must not erase the
-			// terminal's route directory. Private writes retain their own strict
-			// freshness fence in gateway/catalog.Service.Resolve.
-			if hasFallback {
-				return fallback, nil
-			}
 			return Snapshot{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 		return clone(snapshot), nil

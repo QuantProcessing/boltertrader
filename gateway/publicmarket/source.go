@@ -132,8 +132,74 @@ type Source struct {
 	venueTimeout time.Duration
 	now          func() time.Time
 
-	mu     sync.Mutex
-	closed bool
+	mu        sync.Mutex
+	closed    bool
+	running   bool
+	runCancel context.CancelFunc
+	runDone   chan struct{}
+}
+
+// Run owns the low-frequency catalog refresh loop. Public HTTP reads never
+// determine its cadence: after the initial bootstrap they read only the last
+// successfully published directory from memory.
+func (source *Source) Run(ctx context.Context) error {
+	if source == nil || ctx == nil || ctx.Err() != nil {
+		return ErrUnavailable
+	}
+	source.mu.Lock()
+	if source.closed || source.running {
+		source.mu.Unlock()
+		return ErrUnavailable
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	source.running = true
+	source.runCancel = cancel
+	source.runDone = make(chan struct{})
+	done := source.runDone
+	targets := append([]*column(nil), source.columns...)
+	source.mu.Unlock()
+	defer func() {
+		source.mu.Lock()
+		if source.runDone == done {
+			close(done)
+			source.runDone = nil
+			source.runCancel = nil
+			source.running = false
+		}
+		source.mu.Unlock()
+	}()
+
+	source.refreshAll(runCtx, targets)
+	ticker := time.NewTicker(source.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-runCtx.Done():
+			return runCtx.Err()
+		case <-ticker.C:
+			source.refreshAll(runCtx, targets)
+		}
+	}
+}
+
+func (source *Source) refreshAll(ctx context.Context, targets []*column) {
+	var group sync.WaitGroup
+	for _, current := range targets {
+		group.Add(1)
+		go func(current *column) {
+			defer group.Done()
+			venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
+			defer cancel()
+			if err := current.refresh(venueCtx); err != nil && ctx.Err() == nil {
+				slog.Warn("public market catalog refresh failed",
+					"venue", current.profile.Venue,
+					"route_profile", current.profile.ID,
+					"error", err,
+				)
+			}
+		}(current)
+	}
+	group.Wait()
 }
 
 type column struct {
@@ -232,7 +298,7 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 			defer group.Done()
 			venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
 			defer cancel()
-			snapshot, err := current.snapshot(venueCtx, source.interval, source.now)
+			snapshot, err := current.snapshot(venueCtx)
 			results <- result{column: current, snapshot: snapshot, err: err}
 		}(current)
 	}
@@ -436,7 +502,7 @@ func (source *Source) resolvePublicID(ctx context.Context, instrumentID string) 
 	}
 	for _, current := range source.columns {
 		venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
-		_, err := current.snapshot(venueCtx, source.interval, source.now)
+		_, err := current.snapshot(venueCtx)
 		cancel()
 		if err != nil {
 			continue
@@ -461,7 +527,7 @@ func (source *Source) resolve(ctx context.Context, query Query) (*column, exchan
 			continue
 		}
 		venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
-		_, err := current.snapshot(venueCtx, source.interval, source.now)
+		_, err := current.snapshot(venueCtx)
 		cancel()
 		if err != nil {
 			continue
@@ -474,9 +540,9 @@ func (source *Source) resolve(ctx context.Context, query Query) (*column, exchan
 	return nil, exchange.Instrument{}, ErrUnavailable
 }
 
-func (current *column) snapshot(ctx context.Context, interval time.Duration, now func() time.Time) (catalog.Snapshot, error) {
+func (current *column) snapshot(ctx context.Context) (catalog.Snapshot, error) {
 	cached, cachedErr := current.catalog.Snapshot(current.accountID)
-	if cachedErr == nil && now().UTC().Sub(cached.LoadedAt) <= interval {
+	if cachedErr == nil {
 		return cached, nil
 	}
 	refreshErr := current.refresh(ctx)
@@ -531,9 +597,18 @@ func (source *Source) Close() error {
 		return nil
 	}
 	source.closed = true
+	cancel := source.runCancel
+	done := source.runDone
+	columns := append([]*column(nil), source.columns...)
 	source.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 	var closeErr error
-	for _, current := range source.columns {
+	for _, current := range columns {
 		closeErr = errors.Join(closeErr, current.connector.Close())
 	}
 	return closeErr

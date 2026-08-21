@@ -51,9 +51,16 @@ func TestProjectionServesLastValidatedSnapshotWhenRefreshFails(t *testing.T) {
 
 	now = now.Add(2 * time.Minute)
 	source.err = errors.New("Gateway request timed out")
+	before := source.calls
 	got, err := projection.Snapshot(context.Background())
 	if err != nil || got.Revision != first.Revision {
 		t.Fatalf("Snapshot() = %#v, %v; want last validated snapshot", got, err)
+	}
+	if source.calls != before {
+		t.Fatalf("stale Snapshot performed Gateway I/O: calls=%d, want %d", source.calls, before)
+	}
+	if err := projection.Refresh(context.Background()); err == nil {
+		t.Fatal("Refresh() error = nil, want source failure")
 	}
 	status := projection.Status()
 	if !status.Ready || status.Reason != ReasonStale {

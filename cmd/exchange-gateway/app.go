@@ -124,8 +124,8 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	}
 	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
 	// publicMarkets backs the catalog, order-book and candle authority without
-	// borrowing an account runtime. Construction is local; venue I/O remains
-	// lazy and one failed venue only removes its own catalog column.
+	// borrowing an account runtime. Construction is local; one background loop
+	// owns venue I/O and one failed venue only removes its own catalog column.
 	var publicMarkets *publicmarket.Source
 	if !validationProfile {
 		marketFactory, marketErr := publicmarket.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
@@ -136,6 +136,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		if marketErr != nil {
 			return fmt.Errorf("public market source setup failed")
 		}
+		go func() { _ = publicMarkets.Run(ctx) }()
 		defer publicMarkets.Close()
 	}
 	// fundingBoard backs /internal/v1/funding-board. It is built here, beside
