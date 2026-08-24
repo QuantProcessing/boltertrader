@@ -40,6 +40,37 @@ func TestServiceKeepsHealthyAccountsWhenSiblingSnapshotFails(t *testing.T) {
 	}
 }
 
+func TestServiceDoesNotPromoteFailedInitialSnapshotWhenStreamConnects(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	source := &fakeSource{
+		accounts: []Account{testAccount("acct-a", "Binance")},
+		errors:   map[string]error{"acct-a": errors.New("position snapshot unavailable")},
+	}
+	hub, _ := realtime.NewHub(8, func() time.Time { return now })
+	service, err := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := service.Snapshot(context.Background(), "principal-a", Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(initial.Accounts) != 1 || initial.Accounts[0].Freshness != FreshnessUnavailable || initial.Accounts[0].SourceCursor != "" {
+		t.Fatalf("initial=%+v", initial)
+	}
+	if err := service.applySourceEvent(context.Background(), "principal-a", "acct-a", SourceEvent{Kind: SourceEventConnected}); !errors.Is(err, ErrResyncRequired) {
+		t.Fatalf("connected event error=%v", err)
+	}
+	service.markAccountStale(context.Background(), "principal-a", "acct-a", "event_resync_required")
+	after, err := service.Snapshot(context.Background(), "principal-a", Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Accounts[0].Freshness != FreshnessUnavailable || after.Accounts[0].RouteHealth != RouteUnavailable || len(after.Items) != 0 {
+		t.Fatalf("after=%+v", after)
+	}
+}
+
 func TestServiceAppliesGatewayPositionEventWithStableSlotAndRevision(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	source := &fakeSource{accounts: []Account{testAccount("acct-a", "Binance")}, snapshots: map[string]SourceSnapshot{

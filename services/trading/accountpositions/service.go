@@ -352,6 +352,13 @@ func (service *Service) applySourceEvent(ctx context.Context, principal, account
 	}
 	now := service.now().UTC()
 	if event.Kind == SourceEventConnected {
+		// A transport connection is not proof of account state. In particular,
+		// an initial REST snapshot may have failed before this watch connected;
+		// promoting that account would turn an unknown state into a false empty
+		// live account and persist the data loss illusion.
+		if strings.TrimSpace(state.SourceBootID) == "" || strings.TrimSpace(state.SourceCursor) == "" || state.VerifiedAt.IsZero() {
+			return ErrResyncRequired
+		}
 		state.RouteHealth, state.Freshness, state.Reason = RouteLive, FreshnessLive, ""
 		state.WriteReady, state.VerifiedAt, state.ReceivedAt = accountWriteReady(state.Account, FreshnessLive), now, now
 		items := accountItems(view, accountID)
@@ -517,9 +524,14 @@ func (service *Service) markAccountStale(ctx context.Context, principal, account
 	if !ok {
 		return
 	}
-	state.RouteHealth, state.Freshness, state.WriteReady = RouteDegraded, FreshnessStale, false
-	state.Reason, state.ReceivedAt = reason, service.now().UTC()
 	items := accountItems(view, accountID)
+	if strings.TrimSpace(state.SourceCursor) == "" && len(items) == 0 {
+		state.RouteHealth, state.Freshness = RouteUnavailable, FreshnessUnavailable
+	} else {
+		state.RouteHealth, state.Freshness = RouteDegraded, FreshnessStale
+	}
+	state.WriteReady = false
+	state.Reason, state.ReceivedAt = reason, service.now().UTC()
 	for index := range items {
 		items[index] = decorate(items[index], state.Account, state)
 		view.items[items[index].Key.String()] = items[index]

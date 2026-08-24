@@ -336,11 +336,6 @@ func (handler *Handler) listPositions(w http.ResponseWriter, r *http.Request) {
 			handler.fail(w, err)
 			return
 		}
-		instruments, err := handler.fundingPaymentInstrumentMap(r.Context(), resource.AccountID, instrument)
-		if err != nil {
-			handler.fail(w, err)
-			return
-		}
 		client, err := handler.accounts.PerpRoute(resource.AccountID, resource.Settlement)
 		if err != nil {
 			handler.fail(w, err)
@@ -348,7 +343,17 @@ func (handler *Handler) listPositions(w http.ResponseWriter, r *http.Request) {
 		}
 		positions, err := client.Positions(r.Context(), exchange.PositionsRequest{Instrument: instrument})
 		if err != nil {
-			handler.fail(w, err)
+			handler.fail(w, fmt.Errorf("load positions for route %s: %w", resource.Settlement, err))
+			return
+		}
+		var instruments map[string]fundingPaymentInstrumentRef
+		if instrument != nil {
+			instruments, err = handler.fundingPaymentInstrumentMap(r.Context(), resource.AccountID, instrument)
+		} else {
+			instruments, err = handler.positionInstrumentMap(r.Context(), resource, positions)
+		}
+		if err != nil {
+			handler.fail(w, fmt.Errorf("resolve position instruments for route %s: %w", resource.Settlement, err))
 			return
 		}
 		for _, position := range positions {
@@ -426,22 +431,22 @@ func (handler *Handler) getPositionSnapshot(w http.ResponseWriter, r *http.Reque
 			if loadErr != nil {
 				return nil, loadErr
 			}
-			instruments, loadErr := handler.fundingPaymentInstrumentMap(r.Context(), resource.AccountID, nil)
-			if loadErr != nil {
-				return nil, loadErr
-			}
 			client, loadErr := handler.accounts.PerpRoute(resource.AccountID, resource.Settlement)
 			if loadErr != nil {
 				return nil, loadErr
 			}
 			positions, loadErr := client.Positions(r.Context(), exchange.PositionsRequest{})
 			if loadErr != nil {
-				return nil, loadErr
+				return nil, fmt.Errorf("load positions for route %s: %w", routeID, loadErr)
+			}
+			instruments, loadErr := handler.positionInstrumentMap(r.Context(), resource, positions)
+			if loadErr != nil {
+				return nil, fmt.Errorf("resolve position instruments for route %s: %w", routeID, loadErr)
 			}
 			for _, position := range positions {
 				_, instrumentID, resolveErr := resolveNativeInstrument(nil, "", instruments, position.NativeSymbol, position.NativeID)
 				if resolveErr != nil {
-					return nil, resolveErr
+					return nil, fmt.Errorf("resolve position identity for route %s: %w", routeID, resolveErr)
 				}
 				seeds = append(seeds, gatewayevent.PositionSeed{
 					RouteID: routeID, InstrumentID: instrumentID, Position: position,
@@ -969,6 +974,57 @@ func (handler *Handler) fundingPaymentInstrumentMap(ctx context.Context, account
 				return nil, exchange.ErrMalformedResponse
 			}
 			result[symbolOnlyKey] = ref
+		}
+	}
+	return result, nil
+}
+
+// positionInstrumentMap resolves only the native identities needed by the
+// venue's non-zero position response. Account catalogs can contain inactive or
+// temporarily unresolved instruments; those unrelated rows must not make a
+// complete position snapshot fail. A missing or ambiguous identity that the
+// venue actually returned remains a malformed response.
+func (handler *Handler) positionInstrumentMap(ctx context.Context, resource account.Resource, positions []exchange.Position) (map[string]fundingPaymentInstrumentRef, error) {
+	result := make(map[string]fundingPaymentInstrumentRef)
+	if len(positions) == 0 {
+		return result, nil
+	}
+	snapshot, err := handler.accounts.Instruments(resource.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	ambiguous := make(map[string]struct{})
+	add := func(key string, ref fundingPaymentInstrumentRef) {
+		if _, invalid := ambiguous[key]; invalid {
+			return
+		}
+		if existing, exists := result[key]; exists && existing.id != ref.id {
+			delete(result, key)
+			ambiguous[key] = struct{}{}
+			return
+		}
+		result[key] = ref
+	}
+	for _, item := range snapshot.Instruments {
+		// Native symbols are only unique inside a venue route. Binance spot and
+		// perpetual BTC-USDT, for example, are both BTCUSDT; mixing them here
+		// would make a valid perpetual position appear ambiguous.
+		if item.Product != resource.Product || (resource.Settlement != "" && item.Settlement != resource.Settlement) {
+			continue
+		}
+		resolved, resolveErr := handler.accounts.Resolve(ctx, resource.AccountID, item.ID)
+		if resolveErr != nil {
+			continue
+		}
+		ref := fundingPaymentInstrumentRef{id: item.ID, instrument: resolved}
+		add(nativeInstrumentKey(resolved.Identity.NativeSymbol, resolved.Identity.NativeID), ref)
+		if resolved.Identity.NativeID != "" {
+			add(nativeInstrumentKey(resolved.Identity.NativeSymbol, ""), ref)
+		}
+	}
+	for _, position := range positions {
+		if _, ok := result[nativeInstrumentKey(position.NativeSymbol, position.NativeID)]; !ok {
+			return nil, exchange.ErrMalformedResponse
 		}
 	}
 	return result, nil

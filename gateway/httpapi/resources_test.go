@@ -25,6 +25,8 @@ import (
 
 func TestHandlerPositionSnapshotReturnsCompleteProjectionAndCursor(t *testing.T) {
 	instrumentID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
+	spotInstrumentID := domain.InstrumentID("binance:live:spot::BTC-USDT")
+	unresolvedID := domain.InstrumentID("binance:live:perp:USDT:UNRESOLVED-USDT")
 	resource := account.Resource{
 		AccountID: "acct-p", Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
 		Environment: exchange.EnvironmentLive, Settlement: "USDT", ReadReady: true, WriteReady: true,
@@ -38,6 +40,34 @@ func TestHandlerPositionSnapshotReturnsCompleteProjectionAndCursor(t *testing.T)
 		public: catalog.Instrument{
 			ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 			Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+		},
+		instruments: []catalog.Instrument{
+			{
+				ID: spotInstrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
+				Product: exchange.ProductSpot, Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+			},
+			{
+				ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
+				Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+			},
+			{
+				ID: unresolvedID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
+				Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "UNRESOLVED-USDT", BaseAsset: "UNRESOLVED", QuoteAsset: "USDT",
+			},
+		},
+		resolved: map[domain.InstrumentID]exchange.Instrument{
+			spotInstrumentID: {
+				Identity: exchange.InstrumentIdentity{
+					Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Symbol: "BTC-USDT",
+					BaseAsset: "BTC", QuoteAsset: "USDT", NativeSymbol: "BTCUSDT", NativeID: "BTCUSDT",
+				},
+			},
+			instrumentID: {
+				Identity: exchange.InstrumentIdentity{
+					Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT",
+					BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT", NativeSymbol: "BTCUSDT", NativeID: "BTCUSDT",
+				},
+			},
 		},
 		perp: &fakeHTTPPerpClient{positions: []exchange.Position{{
 			NativeSymbol: "BTCUSDT", NativeID: "BTCUSDT", Side: exchange.SideBuy,
