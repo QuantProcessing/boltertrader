@@ -74,9 +74,13 @@ type BalancePayload struct {
 }
 
 type PositionPayload struct {
-	AccountID    domain.AccountID    `json:"account_id"`
-	InstrumentID domain.InstrumentID `json:"instrument_id"`
-	Position     exchange.Position   `json:"position"`
+	AccountID    domain.AccountID      `json:"account_id"`
+	RouteID      domain.RouteID        `json:"route_id"`
+	InstrumentID domain.InstrumentID   `json:"instrument_id"`
+	PositionSlot exchange.PositionSlot `json:"position_slot"`
+	Operation    PositionOperation     `json:"operation"`
+	Position     exchange.Position     `json:"position"`
+	Reason       string                `json:"reason,omitempty"`
 }
 
 type AccountHealthPayload struct {
@@ -90,6 +94,7 @@ type StreamManager struct {
 	accounts           StreamAccounts
 	reconciler         StreamReconciler
 	hub                *Hub
+	positions          *PositionProjection
 	principal          domain.PrincipalID
 	reconnectBackoff   time.Duration
 	recoveryTimeout    time.Duration
@@ -137,8 +142,13 @@ func NewStreamManager(options StreamOptions) (*StreamManager, error) {
 	if options.SubscriptionBuffer <= 0 {
 		options.SubscriptionBuffer = 64
 	}
+	positions, err := NewPositionProjection(options.Hub, time.Now)
+	if err != nil {
+		return nil, err
+	}
 	return &StreamManager{
 		accounts: options.Accounts, reconciler: options.Reconciler, hub: options.Hub,
+		positions: positions,
 		principal: options.PrincipalID, reconnectBackoff: options.ReconnectBackoff,
 		recoveryTimeout: options.RecoveryTimeout, subscriptionBuffer: options.SubscriptionBuffer,
 		versions: make(map[string]domain.ResourceVersion), barrierSequences: make(map[domain.AccountID]uint64),
@@ -147,6 +157,13 @@ func NewStreamManager(options StreamOptions) (*StreamManager, error) {
 		transitions: make(map[domain.AccountID]*sync.Mutex),
 		closeDone:   make(chan struct{}),
 	}, nil
+}
+
+func (manager *StreamManager) Positions() *PositionProjection {
+	if manager == nil {
+		return nil
+	}
+	return manager.positions
 }
 
 func (manager *StreamManager) Start(ctx context.Context, accountIDs []domain.AccountID) error {
@@ -286,6 +303,7 @@ func (manager *StreamManager) UnregisterAccount(accountID domain.AccountID) {
 		}
 		manager.lifecycleMu.Unlock()
 	}
+	manager.positions.RemoveAccount(accountID)
 }
 
 func (manager *StreamManager) accountTransition(accountID domain.AccountID) *sync.Mutex {
@@ -338,6 +356,9 @@ func (manager *StreamManager) prepareAndInstallAccount(
 	}
 	if err := manager.reconciler.SuspendAccount(accountID); err != nil {
 		return fmt.Errorf("suspend account before private stream failed")
+	}
+	if err := manager.positions.MarkSyncing(manager.principal, accountID); err != nil {
+		return fmt.Errorf("mark position projection syncing failed")
 	}
 	if err := manager.accounts.SetPrivateStreamState(accountID, false, account.ReasonPrivateStreamStarting); err != nil {
 		if errors.Is(err, account.ErrUnknownAccount) {
@@ -472,6 +493,7 @@ func (manager *StreamManager) superviseStaticAccount(ctx context.Context, accoun
 			continue
 		}
 		manager.publishHealth(accountID)
+		_ = manager.positions.MarkLive(manager.principal, accountID)
 
 		select {
 		case <-ctx.Done():
@@ -622,6 +644,7 @@ func (manager *StreamManager) runDynamicAccount(
 					continue
 				}
 				manager.publishHealth(accountID)
+				_ = manager.positions.MarkLive(manager.principal, accountID)
 			case fault := <-faults:
 				if sessions[fault.routeID] != fault.streams {
 					continue
@@ -769,6 +792,7 @@ func (manager *StreamManager) dynamicRouteUnavailable(
 		"account_fence", fence.AccountFence, "reason", reason, "resync", resync)
 	_ = manager.reconciler.SuspendAccount(accountID)
 	_ = observer.SetPrivateStreamRouteState(fence, false, reason)
+	_ = manager.positions.MarkStale(manager.principal, accountID, reason)
 	manager.publishHealth(accountID)
 	if resync {
 		_, _ = manager.hub.PublishResync(manager.principal, accountID, reason)
@@ -819,6 +843,7 @@ func (manager *StreamManager) unavailable(accountID domain.AccountID, reason str
 		"account_id", string(accountID), "reason", reason, "resync", resync)
 	_ = manager.reconciler.SuspendAccount(accountID)
 	_ = manager.accounts.SetPrivateStreamState(accountID, false, reason)
+	_ = manager.positions.MarkStale(manager.principal, accountID, reason)
 	manager.publishHealth(accountID)
 	if resync {
 		_, _ = manager.hub.PublishResync(manager.principal, accountID, reason)
@@ -972,7 +997,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 			if resolveErr != nil {
 				return closeOnError(resolveErr)
 			}
-			if err := manager.openPerpInstrument(streamContext, streams, socket, accountID, public.ID, instrument); err != nil {
+			if err := manager.openPerpInstrument(streamContext, streams, socket, accountID, staticRoute, public.ID, instrument); err != nil {
 				return closeOnError(err)
 			}
 		}
@@ -1088,7 +1113,7 @@ func (manager *StreamManager) openDynamicAccountStreams(
 			if socket == nil {
 				return fmt.Errorf("private stream perp socket unavailable")
 			}
-			if err := manager.openPerpInstrument(ctx, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
+			if err := manager.openPerpInstrument(ctx, streams, socket, accountID, route.RouteID, streamRoute.instrumentID, route.Instrument); err != nil {
 				return err
 			}
 			if _, opened := openedBalanceRoutes[route.RouteID]; !opened {
@@ -1156,7 +1181,7 @@ func (manager *StreamManager) openDynamicRouteStreams(
 			if socket == nil {
 				return closeOnError(fmt.Errorf("private stream perp socket unavailable"))
 			}
-			if err := manager.openPerpInstrument(streamContext, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
+			if err := manager.openPerpInstrument(streamContext, streams, socket, accountID, route.RouteID, streamRoute.instrumentID, route.Instrument); err != nil {
 				return closeOnError(err)
 			}
 			if !balanceOpened {
@@ -1213,6 +1238,7 @@ func (manager *StreamManager) openPerpInstrument(
 	streams *accountStreams,
 	socket exchange.PerpWebSocket,
 	accountID domain.AccountID,
+	routeID domain.RouteID,
 	instrumentID domain.InstrumentID,
 	instrument exchange.Instrument,
 ) error {
@@ -1226,7 +1252,7 @@ func (manager *StreamManager) openPerpInstrument(
 		return err
 	}
 	monitorSubscription(ctx, streams, positions, func(event exchange.PositionEvent) error {
-		return manager.publishPositions(accountID, instrumentID, event)
+		return manager.publishPositions(accountID, routeID, instrumentID, event)
 	}, nil, "positions", accountID)
 	return nil
 }
@@ -1352,19 +1378,8 @@ func (manager *StreamManager) publishBalances(accountID domain.AccountID, event 
 	return nil
 }
 
-func (manager *StreamManager) publishPositions(accountID domain.AccountID, instrumentID domain.InstrumentID, event exchange.PositionEvent) error {
-	for _, position := range event.Positions {
-		resource := position.NativeID
-		if resource == "" {
-			resource = position.NativeSymbol
-		}
-		if err := manager.publish(accountID, KindPosition, resource, event.Time, PositionPayload{
-			AccountID: accountID, InstrumentID: instrumentID, Position: position,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+func (manager *StreamManager) publishPositions(accountID domain.AccountID, routeID domain.RouteID, instrumentID domain.InstrumentID, event exchange.PositionEvent) error {
+	return manager.positions.Apply(manager.principal, accountID, routeID, instrumentID, event)
 }
 
 func (manager *StreamManager) publish(accountID domain.AccountID, kind Kind, resource string, occurredAt time.Time, payload any) error {

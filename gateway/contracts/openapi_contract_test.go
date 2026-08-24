@@ -57,6 +57,7 @@ func TestOpenAPIInventoryAndSecurityAreStructurallyFrozen(t *testing.T) {
 		"/v1/fills":                       {"get": "listFills"},
 		"/v1/balances":                    {"get": "listBalances"},
 		"/v1/positions":                   {"get": "listPositions"},
+		"/v1/position-snapshot":           {"get": "getPositionSnapshot"},
 		"/v1/funding-payments":            {"get": "listFundingPayments"},
 		"/v1/funding-rates":               {"get": "listFundingRates"},
 		"/v1/funding-rates/history":       {"get": "listFundingRateHistory"},
@@ -207,6 +208,18 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		"FundingPaymentPage": {
 			required:   []string{"account_id", "as_of", "end", "items", "page", "pagination_traversal", "scope", "start", "status", "watermark"},
 			properties: []string{"account_id", "as_of", "complete_through", "end", "instrument_id", "items", "next_cursor", "page", "pagination_traversal", "revision", "scope", "settlement_asset", "start", "status", "watermark"},
+		},
+		"PositionSnapshotResponse": {
+			required:   []string{"data"},
+			properties: []string{"data"},
+		},
+		"PositionSnapshot": {
+			required:   []string{"account_id", "boot_id", "cursor", "freshness", "items", "sequence", "verified_at"},
+			properties: []string{"account_id", "boot_id", "cursor", "freshness", "items", "reason", "sequence", "verified_at"},
+		},
+		"ProjectedPosition": {
+			required:   []string{"account_id", "instrument_id", "observed_at", "position", "position_slot", "resource_version", "route_id", "verified_at"},
+			properties: []string{"account_id", "instrument_id", "observed_at", "position", "position_slot", "resource_version", "route_id", "verified_at"},
 		},
 		"ResyncRequiredEvent": {
 			required:   nil,

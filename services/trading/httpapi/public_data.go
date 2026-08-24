@@ -60,6 +60,7 @@ type ReadinessProjection interface {
 type RealtimeProjection interface {
 	ReplayScoped(string, string) ([]realtime.Event, error)
 	SubscribeScoped(int, string) (<-chan realtime.Event, func())
+	ReplayAndSubscribeScoped(string, int, string) ([]realtime.Event, <-chan realtime.Event, func(), error)
 }
 
 type PublicDataDependencies struct {
@@ -392,7 +393,7 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "authentication required", nil, false, httpx.RequestID(r))
 		return
 	}
-	events, err := api.dependencies.Realtime.ReplayScoped(cursor, principal)
+	events, updates, unsubscribe, err := api.dependencies.Realtime.ReplayAndSubscribeScoped(cursor, 16, principal)
 	if errors.Is(err, realtime.ErrResnapshotRequired) {
 		httpx.WriteError(w, http.StatusConflict, "RESNAPSHOT_REQUIRED", "realtime cursor cannot prove continuity", nil, true, httpx.RequestID(r))
 		return
@@ -401,6 +402,7 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusServiceUnavailable, "REALTIME_UNAVAILABLE", "realtime stream is unavailable", nil, true, httpx.RequestID(r))
 		return
 	}
+	defer unsubscribe()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -419,8 +421,6 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	flusher.Flush()
-	updates, unsubscribe := api.dependencies.Realtime.SubscribeScoped(16, principal)
-	defer unsubscribe()
 	for {
 		select {
 		case <-r.Context().Done():

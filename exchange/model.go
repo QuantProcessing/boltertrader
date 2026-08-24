@@ -583,6 +583,7 @@ type Balance struct {
 type Position struct {
 	NativeSymbol     string          `json:"native_symbol,omitempty"`
 	NativeID         string          `json:"native_id,omitempty"`
+	PositionSlot     PositionSlot    `json:"position_slot,omitempty"`
 	Side             Side            `json:"side,omitempty"`
 	Quantity         decimal.Decimal `json:"quantity"`
 	EntryPrice       decimal.Decimal `json:"entry_price"`
@@ -591,6 +592,28 @@ type Position struct {
 	LiquidationPrice OptionalDecimal `json:"liquidation_price"`
 	Leverage         OptionalDecimal `json:"leverage"`
 	MarginUsed       OptionalDecimal `json:"margin_used"`
+}
+
+// PositionSlot is the stable identity of a position inside one instrument.
+// One-way accounts use net even when the position flips side; hedge-mode
+// accounts use independent long and short slots. Side is deliberately not the
+// key because a net position changing sign must replace one row, not leave a
+// stale long or short row behind.
+type PositionSlot string
+
+const (
+	PositionSlotNet   PositionSlot = "net"
+	PositionSlotLong  PositionSlot = "long"
+	PositionSlotShort PositionSlot = "short"
+)
+
+func (slot PositionSlot) Valid() bool {
+	switch slot {
+	case PositionSlotNet, PositionSlotLong, PositionSlotShort:
+		return true
+	default:
+		return false
+	}
 }
 
 type FundingRateRequest struct {

@@ -1879,7 +1879,11 @@ func convertBybitPositions(ctx context.Context, meta clientMeta, op string, rows
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Position{NativeSymbol: row.Symbol, NativeID: nativeID, Side: side, Quantity: quantity, EntryPrice: entryPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
+		slot, err := bybitPositionSlot(row.PositionIdx)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, exchange.Position{NativeSymbol: row.Symbol, NativeID: nativeID, PositionSlot: slot, Side: side, Quantity: quantity, EntryPrice: entryPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
 	}
 	return out, nil
 }
@@ -1925,9 +1929,35 @@ func convertBitgetPositions(ctx context.Context, meta clientMeta, op string, row
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Position{NativeSymbol: row.Symbol, NativeID: nativeID, Side: side, Quantity: quantity, EntryPrice: entryPrice, MarkPrice: markPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
+		slot := bitgetPositionSlot(row.HoldMode, firstNonEmpty(row.PosSide, row.HoldSide), side)
+		out = append(out, exchange.Position{NativeSymbol: row.Symbol, NativeID: nativeID, PositionSlot: slot, Side: side, Quantity: quantity, EntryPrice: entryPrice, MarkPrice: markPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
 	}
 	return out, nil
+}
+
+func bybitPositionSlot(index int) (exchange.PositionSlot, error) {
+	switch index {
+	case 0:
+		return exchange.PositionSlotNet, nil
+	case 1:
+		return exchange.PositionSlotLong, nil
+	case 2:
+		return exchange.PositionSlotShort, nil
+	default:
+		return "", fmt.Errorf("unknown Bybit position index")
+	}
+}
+
+func bitgetPositionSlot(mode, nativeSide string, side exchange.Side) exchange.PositionSlot {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	nativeSide = strings.ToLower(strings.TrimSpace(nativeSide))
+	if strings.Contains(mode, "double") || strings.Contains(mode, "hedge") || nativeSide == "long" || nativeSide == "short" {
+		if side == exchange.SideSell {
+			return exchange.PositionSlotShort
+		}
+		return exchange.PositionSlotLong
+	}
+	return exchange.PositionSlotNet
 }
 
 func canonicalSymbol(native, base, quote string) string {

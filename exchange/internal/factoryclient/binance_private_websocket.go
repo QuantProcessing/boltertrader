@@ -1150,8 +1150,9 @@ func binancePerpWSPositions(expectedInstrument exchange.Instrument, event *binan
 		if canonical.Identity.NativeSymbol != expectedInstrument.Identity.NativeSymbol {
 			continue
 		}
-		if row.PositionSide != "" && row.PositionSide != "BOTH" {
-			return nil, binancePerpMalformed("WatchPositions", "hedge position side is not supported")
+		slot, err := binancePerpPositionSlot(row.PositionSide)
+		if err != nil {
+			return nil, err
 		}
 		amount, err := decimal.NewFromString(row.PositionAmount)
 		if err != nil {
@@ -1159,9 +1160,9 @@ func binancePerpWSPositions(expectedInstrument exchange.Instrument, event *binan
 		}
 		side := exchange.SideBuy
 		quantity := amount
-		if amount.IsNegative() {
+		if slot == exchange.PositionSlotShort || (slot == exchange.PositionSlotNet && amount.IsNegative()) {
 			side = exchange.SideSell
-			quantity = amount.Neg()
+			quantity = amount.Abs()
 		}
 		entry, err := binanceNonNegativeDecimal(row.EntryPrice)
 		if err != nil {
@@ -1181,6 +1182,7 @@ func binancePerpWSPositions(expectedInstrument exchange.Instrument, event *binan
 		}
 		positions = append(positions, exchange.Position{
 			NativeSymbol:  canonical.Identity.NativeSymbol,
+			PositionSlot:  slot,
 			Side:          side,
 			Quantity:      quantity,
 			EntryPrice:    entry,

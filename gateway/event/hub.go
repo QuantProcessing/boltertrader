@@ -176,6 +176,24 @@ func (hub *Hub) BootID() domain.BootID {
 	return hub.bootID
 }
 
+// AccountCursor returns the replay boundary for one account. Callers that own
+// a materialized projection capture this while holding their projection lock;
+// event application uses projection-before-publish ordering, which makes the
+// resulting snapshot cursor safe without coupling the two stores to one lock.
+func (hub *Hub) AccountCursor(accountID domain.AccountID) (domain.BootID, uint64, string) {
+	if hub == nil {
+		return "", 0, ""
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	sequence := uint64(0)
+	if buffer := hub.accounts[accountID]; buffer != nil {
+		sequence = buffer.sequence
+	}
+	cursor := string(hub.bootID) + ":" + strconv.FormatUint(sequence, 10)
+	return hub.bootID, sequence, cursor
+}
+
 func (hub *Hub) Publish(request PublishRequest) (Event, error) {
 	if hub == nil {
 		return Event{}, ErrClosed

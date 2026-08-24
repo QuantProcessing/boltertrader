@@ -324,6 +324,7 @@ func TestModelsCarryMatrixRequiredNormalizedFields(t *testing.T) {
 
 	position := Position{
 		NativeSymbol:     "BTCUSDT",
+		PositionSlot:     PositionSlotShort,
 		Quantity:         decimal.RequireFromString("-0.5"),
 		EntryPrice:       decimal.RequireFromString("100"),
 		MarkPrice:        decimal.RequireFromString("90"),
@@ -333,6 +334,9 @@ func TestModelsCarryMatrixRequiredNormalizedFields(t *testing.T) {
 	}
 	if !position.Quantity.IsNegative() {
 		t.Fatal("position quantity must preserve its sign")
+	}
+	if !position.PositionSlot.Valid() || PositionSlot("").Valid() || PositionSlot("both").Valid() {
+		t.Fatal("position slot must distinguish net and hedge-mode identities")
 	}
 
 	order := Order{

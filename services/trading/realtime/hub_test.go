@@ -76,3 +76,38 @@ func TestHubScopesPrivateReplayAndLiveEvents(t *testing.T) {
 		t.Fatal("SubscribeScoped() did not deliver scoped event")
 	}
 }
+
+func TestHubReplayAndSubscribeSharesOneBoundary(t *testing.T) {
+	hub, _ := NewHub(8, time.Now)
+	first, _ := hub.PublishScoped("principal-a", "portfolio.position.upsert", map[string]string{"quantity": "1"})
+	replayed, updates, unsubscribe, err := hub.ReplayAndSubscribeScoped(first.Cursor, 2, "principal-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	if len(replayed) != 0 {
+		t.Fatalf("replayed=%+v", replayed)
+	}
+	second, _ := hub.PublishScoped("principal-a", "portfolio.position.upsert", map[string]string{"quantity": "2"})
+	if event := <-updates; event.EventID != second.EventID {
+		t.Fatalf("live event=%+v, want=%+v", event, second)
+	}
+}
+
+func TestHubClosesSlowSubscriberInsteadOfSilentlyDroppingCursor(t *testing.T) {
+	hub, _ := NewHub(8, time.Now)
+	updates, unsubscribe := hub.SubscribeScoped(1, "principal-a")
+	defer unsubscribe()
+	first, _ := hub.PublishScoped("principal-a", "one", map[string]bool{"ready": true})
+	second, _ := hub.PublishScoped("principal-a", "two", map[string]bool{"ready": true})
+	if event, open := <-updates; !open || event.EventID != first.EventID {
+		t.Fatalf("buffered event=%+v open=%v", event, open)
+	}
+	if _, open := <-updates; open {
+		t.Fatal("slow subscriber remained open after overflow")
+	}
+	replayed, err := hub.ReplayScoped(first.Cursor, "principal-a")
+	if err != nil || len(replayed) != 1 || replayed[0].EventID != second.EventID {
+		t.Fatalf("replay=%+v err=%v", replayed, err)
+	}
+}

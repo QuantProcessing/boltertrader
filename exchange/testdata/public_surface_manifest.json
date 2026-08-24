@@ -6064,6 +6064,46 @@
       ]
     },
     {
+      "id": "exchange.PositionSlot",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PositionSlot.Valid",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PositionSlotLong",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PositionSlotNet",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PositionSlotShort",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
       "id": "exchange.PositionEvent",
       "kind": "type",
       "coverage": "contract",

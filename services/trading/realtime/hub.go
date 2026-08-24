@@ -57,6 +57,18 @@ func (hub *Hub) PublishScoped(principal, kind string, payload any) (Event, error
 	return hub.publish(principal, kind, payload)
 }
 
+// Cursor returns the current global replay boundary. A materialized projection
+// calls this while holding its own read lock; if that projection applies state
+// before publishing, snapshot consumers cannot skip a matching realtime event.
+func (hub *Hub) Cursor() string {
+	if hub == nil {
+		return ""
+	}
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	return encodeCursor(hub.next)
+}
+
 func (hub *Hub) publish(principal, kind string, payload any) (Event, error) {
 	if strings.TrimSpace(kind) == "" {
 		return Event{}, fmt.Errorf("realtime event kind is required")
@@ -76,13 +88,18 @@ func (hub *Hub) publish(principal, kind string, payload any) (Event, error) {
 	if len(hub.events) > hub.capacity {
 		hub.events = append([]Event(nil), hub.events[len(hub.events)-hub.capacity:]...)
 	}
-	for _, watcher := range hub.watchers {
+	for id, watcher := range hub.watchers {
 		if watcher.scoped && !visibleTo(event, watcher.principal) {
 			continue
 		}
 		select {
 		case watcher.updates <- event:
 		default:
+			// A silent drop destroys cursor continuity. Closing the subscriber
+			// makes EventSource reconnect with its last delivered event id; replay
+			// either fills the gap or explicitly requires a fresh snapshot.
+			delete(hub.watchers, id)
+			close(watcher.updates)
 		}
 	}
 	return cloneEvent(event), nil
@@ -99,9 +116,37 @@ func (hub *Hub) ReplayScoped(cursor, principal string) ([]Event, error) {
 	return hub.replay(cursor, principal, true)
 }
 
+// ReplayAndSubscribeScoped establishes the replay boundary and the live
+// subscription under one Hub lock. An event can therefore be in the replay or
+// in the live channel, but can never fall into the old replay/subscribe gap.
+func (hub *Hub) ReplayAndSubscribeScoped(cursor string, buffer int, principal string) ([]Event, <-chan Event, func(), error) {
+	if strings.TrimSpace(principal) == "" {
+		return nil, nil, nil, fmt.Errorf("realtime replay scope is required")
+	}
+	if buffer <= 0 {
+		buffer = 1
+	}
+	hub.mu.Lock()
+	events, err := hub.replayLocked(cursor, principal, true)
+	if err != nil {
+		hub.mu.Unlock()
+		return nil, nil, nil, err
+	}
+	hub.watcher++
+	id := hub.watcher
+	updates := make(chan Event, buffer)
+	hub.watchers[id] = watcher{updates: updates, principal: principal, scoped: true}
+	hub.mu.Unlock()
+	return events, updates, hub.unsubscribe(id), nil
+}
+
 func (hub *Hub) replay(cursor, principal string, scoped bool) ([]Event, error) {
 	hub.mu.RLock()
 	defer hub.mu.RUnlock()
+	return hub.replayLocked(cursor, principal, scoped)
+}
+
+func (hub *Hub) replayLocked(cursor, principal string, scoped bool) ([]Event, error) {
 	sequence, err := decodeCursor(cursor)
 	if err != nil {
 		return nil, ErrResnapshotRequired
@@ -151,13 +196,18 @@ func (hub *Hub) subscribe(buffer int, principal string, scoped bool) (<-chan Eve
 	updates := make(chan Event, buffer)
 	hub.watchers[id] = watcher{updates: updates, principal: principal, scoped: scoped}
 	hub.mu.Unlock()
+	return updates, hub.unsubscribe(id)
+}
+
+func (hub *Hub) unsubscribe(id uint64) func() {
 	var once sync.Once
-	return updates, func() {
+	return func() {
 		once.Do(func() {
 			hub.mu.Lock()
-			watcher := hub.watchers[id]
-			delete(hub.watchers, id)
-			close(watcher.updates)
+			if watcher, exists := hub.watchers[id]; exists {
+				delete(hub.watchers, id)
+				close(watcher.updates)
+			}
 			hub.mu.Unlock()
 		})
 	}

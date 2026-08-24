@@ -130,14 +130,23 @@ describe("trading envelopes", () => {
   });
 
   it("scopes live venue positions to one owned account and instrument", async () => {
-    const calls = record({ meta: {}, data: { items: [{ quantity: "1" }] } });
+    const calls = record({ meta: {}, data: { projectionRevision: 2, cursor: "cursor-2", summary: {}, accounts: [], items: [{ quantity: "1" }] } });
 
     const positions = await accountData.positions("acct-1", "binance:live:perp:USDT:BTC-USDT");
 
-    expect(positions).toHaveLength(1);
+    expect(positions.items).toHaveLength(1);
+    expect(positions.cursor).toBe("cursor-2");
     expect(calls[0]!.url).toBe(
       "/api/v1/account-positions?accountId=acct-1&instrumentId=binance%3Alive%3Aperp%3AUSDT%3ABTC-USDT",
     );
+  });
+
+  it("filters the principal-wide authoritative position snapshot", async () => {
+    const calls = record({ meta: {}, data: { projectionRevision: 3, cursor: "cursor-3", summary: {}, accounts: [], items: [] } });
+
+    await accountData.portfolioPositions({ venue: "okx", status: "stale" });
+
+    expect(calls[0]!.url).toBe("/api/v1/portfolio/positions?venue=okx&status=stale");
   });
 
   it("keeps the catalog's bare array and its projection metadata together", async () => {

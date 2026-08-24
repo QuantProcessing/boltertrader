@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
+	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
@@ -252,12 +253,13 @@ func (log *ActivityLog) ListActivity(_ context.Context, principal string, query 
 }
 
 type BrowserProjectionRoutesOptions struct {
-	Runtimes  AccountRuntimeProjectionReader
-	Balances  AccountBalanceProjectionReader
-	Positions AccountPositionProjectionReader
-	Commands  CommandProjectionReader
-	Activity  ActivityProjectionReader
-	Principal func(*http.Request) (principalID string, err error)
+	Runtimes           AccountRuntimeProjectionReader
+	Balances           AccountBalanceProjectionReader
+	Positions          AccountPositionProjectionReader
+	PortfolioPositions accountpositions.Reader
+	Commands           CommandProjectionReader
+	Activity           ActivityProjectionReader
+	Principal          func(*http.Request) (principalID string, err error)
 }
 
 func RegisterBrowserProjectionRoutes(mux *http.ServeMux, options BrowserProjectionRoutesOptions) error {
@@ -267,10 +269,15 @@ func RegisterBrowserProjectionRoutes(mux *http.ServeMux, options BrowserProjecti
 	if options.Positions == nil {
 		options.Positions = FailClosedAccountPositionProjectionReader{}
 	}
-	handler := &browserProjectionHandler{options: options}
+	authoritativePositions := options.PortfolioPositions
+	if options.PortfolioPositions == nil {
+		options.PortfolioPositions = failClosedPortfolioPositionReader{}
+	}
+	handler := &browserProjectionHandler{options: options, authoritativePositions: authoritativePositions}
 	mux.HandleFunc("GET /api/v1/accounts/{accountId}/runtimes", handler.accountRuntimes)
 	mux.HandleFunc("GET /api/v1/balances", handler.balances)
 	mux.HandleFunc("GET /api/v1/account-positions", handler.accountPositions)
+	mux.HandleFunc("GET /api/v1/portfolio/positions", handler.portfolioPositions)
 	mux.HandleFunc("GET /api/v1/commands", handler.commands)
 	mux.HandleFunc("GET /api/v1/fills", handler.fills)
 	mux.HandleFunc("GET /api/v1/activity", handler.activity)
@@ -288,12 +295,49 @@ func (handler *browserProjectionHandler) accountPositions(w http.ResponseWriter,
 		projectionError(w, r, http.StatusBadRequest, "ACCOUNT_POSITION_SCOPE_REQUIRED")
 		return
 	}
+	if handler.authoritativePositions != nil {
+		snapshot, err := handler.authoritativePositions.Snapshot(r.Context(), principal, accountpositions.Filter{AccountID: accountID, InstrumentID: instrumentID})
+		if err != nil {
+			projectionFailure(w, r, "ACCOUNT_POSITION_PROJECTION_UNAVAILABLE", err)
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": snapshot})
+		return
+	}
 	items, err := handler.options.Positions.ListAccountPositions(r.Context(), principal, accountID, instrumentID)
 	if err != nil {
 		projectionFailure(w, r, "ACCOUNT_POSITION_PROJECTION_UNAVAILABLE", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
+}
+
+func (handler *browserProjectionHandler) portfolioPositions(w http.ResponseWriter, r *http.Request) {
+	principal, ok := handler.identity(w, r)
+	if !ok || !validOptionalQuery(r, []string{"accountId", "instrumentId", "venue", "product", "status"}, w) {
+		return
+	}
+	status := accountpositions.Freshness(strings.TrimSpace(r.URL.Query().Get("status")))
+	if status != "" && status != accountpositions.FreshnessSyncing && status != accountpositions.FreshnessLive &&
+		status != accountpositions.FreshnessDelayed && status != accountpositions.FreshnessStale && status != accountpositions.FreshnessUnavailable {
+		projectionError(w, r, http.StatusBadRequest, "VALIDATION_ERROR")
+		return
+	}
+	snapshot, err := handler.options.PortfolioPositions.Snapshot(r.Context(), principal, accountpositions.Filter{
+		AccountID: strings.TrimSpace(r.URL.Query().Get("accountId")), InstrumentID: strings.TrimSpace(r.URL.Query().Get("instrumentId")),
+		Venue: strings.TrimSpace(r.URL.Query().Get("venue")), Product: strings.TrimSpace(r.URL.Query().Get("product")), Status: status,
+	})
+	if err != nil {
+		projectionFailure(w, r, "PORTFOLIO_POSITION_PROJECTION_UNAVAILABLE", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": snapshot})
+}
+
+type failClosedPortfolioPositionReader struct{}
+
+func (failClosedPortfolioPositionReader) Snapshot(context.Context, string, accountpositions.Filter) (accountpositions.Snapshot, error) {
+	return accountpositions.Snapshot{}, fmt.Errorf("portfolio position projection is unavailable")
 }
 
 func (handler *browserProjectionHandler) balances(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +359,8 @@ func (handler *browserProjectionHandler) balances(w http.ResponseWriter, r *http
 }
 
 type browserProjectionHandler struct {
-	options BrowserProjectionRoutesOptions
+	options                BrowserProjectionRoutesOptions
+	authoritativePositions accountpositions.Reader
 }
 
 func (handler *browserProjectionHandler) accountRuntimes(w http.ResponseWriter, r *http.Request) {

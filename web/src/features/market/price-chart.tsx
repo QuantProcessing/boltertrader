@@ -54,7 +54,7 @@ export function PriceChart({
   instrument: Instrument | null;
   /** The same book midpoint rendered in the order-book centre row. */
   livePrice?: string;
-  /** Current selected-account positions; only their entry prices are drawn. */
+  /** Current selected-account positions; entry and venue liquidation prices are drawn. */
   positions?: AccountPosition[];
   interval: CandleInterval;
   onIntervalChange: (next: CandleInterval) => void;
@@ -261,13 +261,19 @@ export function PriceChart({
     }
 
     for (const descriptor of next) {
+      const sideColor = descriptor.side === "sell" ? palette.down : palette.up;
       const options = {
         price: descriptor.price,
-        color: descriptor.side === "sell" ? palette.down : palette.up,
+        color: descriptor.stale ? palette.dim : descriptor.kind === "liquidation" ? palette.down : sideColor,
         lineWidth: 1 as const,
-        lineStyle: LineStyle.Dashed,
+        lineStyle: descriptor.kind === "liquidation" ? LineStyle.Dashed : LineStyle.Solid,
         axisLabelVisible: true,
-        title: `${t(descriptor.side === "sell" ? "chart.position.short" : "chart.position.long")} ${descriptor.quantity}`,
+        title: [
+          descriptor.stale ? t("chart.position.stale") : "",
+          t(descriptor.kind === "liquidation" ? "chart.position.liquidation" : descriptor.side === "sell" ? "chart.position.short" : "chart.position.long"),
+          descriptor.kind === "entry" ? descriptor.quantity : "",
+          descriptor.accountLabel,
+        ].filter(Boolean).join(" · "),
       };
       const existing = positionLinesRef.current.get(descriptor.key);
       if (existing) existing.applyOptions(options);
@@ -337,22 +343,29 @@ export interface PositionLineDescriptor {
   price: number;
   side: "buy" | "sell";
   quantity: string;
+  kind: "entry" | "liquidation";
+  accountLabel: string;
+  stale: boolean;
 }
 
-/** Position overlays exclude flat rows and all order history by construction. */
+/** Position overlays exclude flat, unavailable rows and all order history by construction. */
 export function positionLineDescriptors(positions: AccountPosition[]): PositionLineDescriptor[] {
   const descriptors: PositionLineDescriptor[] = [];
   for (const position of positions) {
-    const price = Number.parseFloat(position.entryPrice);
     const quantity = Number.parseFloat(position.quantity);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity === 0) continue;
+    if (!Number.isFinite(quantity) || quantity === 0 || position.freshness === "unavailable") continue;
     const side = position.side ?? (quantity < 0 ? "sell" : "buy");
-    descriptors.push({
-      key: `${position.accountId}:${position.instrumentId}:${side}`,
-      price,
+    const identity = `${position.accountId}:${position.routeId ?? ""}:${position.instrumentId}:${position.positionSlot ?? "net"}`;
+    const common = {
       side,
       quantity: position.quantity.replace(/^-/, ""),
-    });
+      accountLabel: position.accountLabel || position.accountId,
+      stale: position.freshness === "stale",
+    };
+    const entry = Number.parseFloat(position.entryPrice);
+    if (Number.isFinite(entry) && entry > 0) descriptors.push({ key: `${identity}:entry`, price: entry, kind: "entry", ...common });
+    const liquidation = Number.parseFloat(position.liquidationPrice ?? "");
+    if (Number.isFinite(liquidation) && liquidation > 0) descriptors.push({ key: `${identity}:liquidation`, price: liquidation, kind: "liquidation", ...common });
   }
   return descriptors;
 }

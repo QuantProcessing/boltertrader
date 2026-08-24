@@ -101,6 +101,7 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/accounts/{accountId}/runtimes", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/balances", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/account-positions", Upstream: Trading},
+	{Method: http.MethodGet, Path: "/api/v1/portfolio/positions", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/venues", Upstream: Trading},
 	{Method: http.MethodPost, Path: "/api/v1/products/manual/execution-previews", Upstream: Trading},
 	{Method: http.MethodPost, Path: "/api/v1/products/manual/commands", Upstream: Trading},

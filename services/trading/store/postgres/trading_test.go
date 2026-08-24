@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
@@ -17,7 +18,8 @@ func TestTradingStoresImplementPlatformContracts(t *testing.T) {
 	var _ orders.Store = (*CommandStore)(nil)
 	var _ ledger.Store = (*LedgerStore)(nil)
 	var _ portfolio.Store = (*PortfolioStore)(nil)
-	if NewReservationStore(nil) != nil || NewCommandStore(nil) != nil || NewLedgerStore(nil) != nil || NewPortfolioStore(nil) != nil {
+	var _ accountpositions.Store = (*AccountPositionStore)(nil)
+	if NewReservationStore(nil) != nil || NewCommandStore(nil) != nil || NewLedgerStore(nil) != nil || NewPortfolioStore(nil) != nil || NewAccountPositionStore(nil) != nil {
 		t.Fatal("nil database accepted")
 	}
 }

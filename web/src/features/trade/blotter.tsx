@@ -4,7 +4,7 @@ import { Inbox } from "lucide-react";
 import { useState } from "react";
 
 import { ApiError } from "@/api/errors";
-import type { AccountPosition, Command, CommandState, Fill, ManualIntent } from "@/api/types";
+import type { AccountPosition, AccountPositionState, Command, CommandState, Fill, ManualIntent, PositionFreshness } from "@/api/types";
 import { isResumable } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
@@ -36,6 +36,7 @@ export function Blotter({
   positionsFetching,
   positionsError,
   positionsUpdatedAt,
+  positionAccounts,
   liveMarkPrice,
 }: {
   instrumentId: string | null;
@@ -44,6 +45,7 @@ export function Blotter({
   positionsFetching: boolean;
   positionsError: boolean;
   positionsUpdatedAt: number;
+  positionAccounts: AccountPositionState[];
   liveMarkPrice?: string;
 }) {
   const orders = useOrders();
@@ -60,6 +62,7 @@ export function Blotter({
       positionsFetching={positionsFetching}
       positionsError={positionsError}
       positionsUpdatedAt={positionsUpdatedAt}
+      positionAccounts={positionAccounts}
       liveMarkPrice={liveMarkPrice}
       fillsLoading={fills.isFetching && fills.data === undefined}
     />
@@ -83,6 +86,7 @@ export function ReadOnlyBlotter({ instrumentId }: { instrumentId: string | null 
       positionsFetching={false}
       positionsError={false}
       positionsUpdatedAt={0}
+      positionAccounts={[]}
       fillsLoading={false}
     />
   );
@@ -98,6 +102,7 @@ function BlotterContent({
   positionsFetching,
   positionsError,
   positionsUpdatedAt,
+  positionAccounts,
   liveMarkPrice,
   fillsLoading,
 }: {
@@ -110,6 +115,7 @@ function BlotterContent({
   positionsFetching: boolean;
   positionsError: boolean;
   positionsUpdatedAt: number;
+  positionAccounts: AccountPositionState[];
   liveMarkPrice?: string;
   fillsLoading: boolean;
 }) {
@@ -135,6 +141,7 @@ function BlotterContent({
             fetching={positionsFetching}
             error={positionsError}
             updatedAt={positionsUpdatedAt}
+            accounts={positionAccounts}
           />
         ) : null}
       </Tabs.List>
@@ -157,19 +164,24 @@ function PositionSyncStatus({
   fetching,
   error,
   updatedAt,
+  accounts,
 }: {
   loading: boolean;
   fetching: boolean;
   error: boolean;
   updatedAt: number;
+  accounts: AccountPositionState[];
 }) {
   const t = useT();
-  const tone = error ? "bg-danger" : loading || fetching ? "bg-pending" : "bg-ok";
+  const freshness = worstFreshness(accounts.map((account) => account.freshness));
+  const tone = error || freshness === "unavailable" ? "bg-danger" : loading || fetching || freshness === "syncing" ? "bg-pending" : freshness === "delayed" || freshness === "stale" ? "bg-warn" : "bg-ok";
   const label = error
     ? t("blotter.positions.syncError")
     : loading
       ? t("blotter.positions.syncing")
-      : t("blotter.positions.snapshot", {
+      : freshness && freshness !== "live"
+        ? positionFreshnessLabel(freshness, t)
+        : t("blotter.positions.snapshot", {
           time: updatedAt > 0 ? formatTimestamp(new Date(updatedAt).toISOString()) : "—",
         });
   return (
@@ -380,14 +392,14 @@ function PositionsTable({
       id: "side",
       header: t("col.side"),
       accessorFn: (position) => position.side ?? (decimalSign(position.quantity) < 0 ? "sell" : "buy"),
-      cell: (context) => <Side side={String(context.getValue() ?? "")} />,
+      cell: (context) => <PositionSide side={String(context.getValue() ?? "")} t={t} />,
       meta: { width: "72px" },
     },
     {
       id: "quantity",
       header: t("col.quantity"),
       accessorFn: (position) => position.quantity,
-      cell: (context) => <Num value={String(context.getValue() ?? "")} directional />,
+      cell: ({ row }) => <Num value={row.original.quantity.replace(/^-/, "")} suffix={positionQuantityUnit(row.original)} />,
       meta: { numeric: true },
     },
     {
@@ -411,6 +423,25 @@ function PositionsTable({
       cell: (context) => <Num value={String(context.getValue() ?? "")} directional signed />,
       meta: { numeric: true },
     },
+    {
+      id: "liquidation",
+      header: t("portfolio.liquidation"),
+      accessorFn: (position) => position.liquidationPrice,
+      cell: (context) => <Num value={String(context.getValue() ?? "")} />,
+      meta: { numeric: true },
+    },
+    {
+      id: "freshness",
+      header: t("col.state"),
+      accessorFn: (position) => position.freshness,
+      cell: ({ row }) => (
+        <StateBadge
+          tone={positionFreshnessTone(row.original.freshness)}
+          label={positionFreshnessLabel(row.original.freshness, t)}
+          detail={row.original.blockedReason}
+        />
+      ),
+    },
   ];
 
   return (
@@ -418,7 +449,7 @@ function PositionsTable({
       columns={columns}
       data={positions}
       loading={loading}
-      getRowId={(position) => `${position.accountId}:${position.instrumentId}:${position.side ?? "net"}`}
+      getRowId={(position) => `${position.accountId}:${position.routeId ?? ""}:${position.instrumentId}:${position.positionSlot ?? "net"}`}
       caption={t("blotter.caption.positions")}
       empty={
         <EmptyState
@@ -429,6 +460,38 @@ function PositionsTable({
       }
     />
   );
+}
+
+function worstFreshness(values: PositionFreshness[]): PositionFreshness | undefined {
+  return (["unavailable", "stale", "delayed", "syncing", "live"] as PositionFreshness[])
+    .find((candidate) => values.includes(candidate));
+}
+
+function positionFreshnessTone(value: PositionFreshness | undefined): StateTone {
+  if (value === "live") return "ok";
+  if (value === "syncing") return "pending";
+  if (value === "delayed" || value === "stale") return "warn";
+  return "danger";
+}
+
+function positionFreshnessLabel(value: PositionFreshness | undefined, t: Translate): string {
+  if (value === "live") return t("portfolio.freshness.live");
+  if (value === "delayed") return t("portfolio.freshness.delayed");
+  if (value === "stale") return t("portfolio.freshness.stale");
+  if (value === "syncing") return t("portfolio.freshness.syncing");
+  return t("portfolio.freshness.unavailable");
+}
+
+function PositionSide({ side, t }: { side: string; t: Translate }) {
+  const sell = side.toLowerCase() === "sell" || side.toLowerCase() === "short";
+  return <span className={cn("font-medium", sell ? "text-down" : "text-up")}>{t(sell ? "ticket.side.sell" : "ticket.side.buy")}</span>;
+}
+
+function positionQuantityUnit(position: AccountPosition): string | undefined {
+  const symbol = position.symbol || instrumentSymbol(position.instrumentId);
+  const [base, quote] = symbol.toUpperCase().split(/[-_/]/);
+  if (!base || !quote) return undefined;
+  return ` ${base}`;
 }
 
 /* --- Fills --------------------------------------------------------------- */

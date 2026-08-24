@@ -990,6 +990,10 @@ func okxPosition(row okx.Position, multiplier decimal.Decimal) (exchange.Positio
 	if err != nil {
 		return exchange.Position{}, err
 	}
+	slot, err := okxPositionSlot(string(row.PosSide))
+	if err != nil {
+		return exchange.Position{}, err
+	}
 	entry, err := okxNonNegativeDecimal(row.AvgPx)
 	if err != nil {
 		return exchange.Position{}, err
@@ -1014,7 +1018,7 @@ func okxPosition(row okx.Position, multiplier decimal.Decimal) (exchange.Positio
 	if err != nil {
 		return exchange.Position{}, err
 	}
-	return exchange.Position{NativeSymbol: row.InstId, Side: side, Quantity: signedQty.Mul(multiplier), EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: liq, Leverage: lev, MarginUsed: margin}, nil
+	return exchange.Position{NativeSymbol: row.InstId, PositionSlot: slot, Side: side, Quantity: signedQty.Mul(multiplier), EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: liq, Leverage: lev, MarginUsed: margin}, nil
 }
 
 func okxCandle(row okx.Candle, product exchange.Product, interval time.Duration) (exchange.Candle, error) {
@@ -1338,6 +1342,19 @@ func okxPositionSideAndQuantity(posSide string, qty decimal.Decimal) (exchange.S
 		return exchange.SideBuy, qty, nil
 	default:
 		return "", decimal.Zero, errors.New("unknown position side")
+	}
+}
+
+func okxPositionSlot(posSide string) (exchange.PositionSlot, error) {
+	switch posSide {
+	case "long":
+		return exchange.PositionSlotLong, nil
+	case "short":
+		return exchange.PositionSlotShort, nil
+	case "net", "":
+		return exchange.PositionSlotNet, nil
+	default:
+		return "", errors.New("unknown position side")
 	}
 }
 

@@ -74,6 +74,7 @@ type Options struct {
 	References   ReferenceService
 	Orders       OrderService
 	Events       *gatewayevent.Hub
+	Positions    *gatewayevent.PositionProjection
 	Auditor      store.AuditStore
 	Identity     *domain.IdentityGenerator
 	MaxBodyBytes int64
@@ -85,6 +86,7 @@ type Handler struct {
 	references ReferenceService
 	orders     OrderService
 	events     *gatewayevent.Hub
+	positions  *gatewayevent.PositionProjection
 	auditor    store.AuditStore
 	identity   *domain.IdentityGenerator
 	bodyLimit  int64
@@ -138,6 +140,7 @@ var routes = []Route{
 	{http.MethodGet, "/v1/fills"},
 	{http.MethodGet, "/v1/balances"},
 	{http.MethodGet, "/v1/positions"},
+	{http.MethodGet, "/v1/position-snapshot"},
 	{http.MethodGet, "/v1/funding-payments"},
 	{http.MethodGet, "/v1/funding-rates"},
 	{http.MethodGet, "/v1/funding-rates/history"},
@@ -184,7 +187,7 @@ func NewHandler(options Options) (*Handler, error) {
 	}
 	handler := &Handler{
 		monitor: options.Monitor, accounts: options.Accounts, references: options.References,
-		orders: options.Orders, events: options.Events, auditor: options.Auditor,
+		orders: options.Orders, events: options.Events, positions: options.Positions, auditor: options.Auditor,
 		identity: options.Identity, bodyLimit: bodyLimit,
 		mux: http.NewServeMux(),
 	}
@@ -219,6 +222,7 @@ func (handler *Handler) register() {
 	handler.mux.HandleFunc("GET /v1/fills", handler.listFills)
 	handler.mux.HandleFunc("GET /v1/balances", handler.listBalances)
 	handler.mux.HandleFunc("GET /v1/positions", handler.listPositions)
+	handler.mux.HandleFunc("GET /v1/position-snapshot", handler.getPositionSnapshot)
 	handler.mux.HandleFunc("GET /v1/funding-payments", handler.listFundingPayments)
 	handler.mux.HandleFunc("GET /v1/funding-rates", handler.listFundingRates)
 	handler.mux.HandleFunc("GET /v1/funding-rates/history", handler.listFundingRateHistory)

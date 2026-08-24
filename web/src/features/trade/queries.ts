@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 
 import { accountData, manual, trading } from "@/api/endpoints";
-import type { AccountBalance, AccountPosition, Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
+import type { AccountBalance, AccountPositionSnapshot, Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
 import { isResumable } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
@@ -29,7 +29,18 @@ export const tradeKeys = {
   balances: (accountId: string) => ["trading", "balances", accountId] as const,
   accountPositions: (accountId: string, instrumentId: string) => ["trading", "account-positions", accountId, instrumentId] as const,
   fills: () => ["trading", "fills"] as const,
+  portfolioPositions: () => ["trading", "portfolio-positions"] as const,
 };
+
+let realtimeConnected = false;
+
+export function setTradeRealtimeConnected(connected: boolean): void {
+  realtimeConnected = connected;
+}
+
+export function privateFallbackInterval(): number | false {
+  return realtimeConnected ? false : 5_000;
+}
 
 /**
  * All three ledgers below belong to a principal, and all three poll.
@@ -83,14 +94,14 @@ export function useAccountBalances(accountId: string): UseQueryResult<AccountBal
   });
 }
 
-export function useAccountPositions(accountId: string, instrumentId: string): UseQueryResult<AccountPosition[]> {
+export function useAccountPositions(accountId: string, instrumentId: string): UseQueryResult<AccountPositionSnapshot> {
   const readOnly = useReadOnly();
   return useQuery({
     queryKey: tradeKeys.accountPositions(accountId, instrumentId),
     queryFn: ({ signal }) => accountData.positions(accountId, instrumentId, signal),
     enabled: !readOnly && accountId !== "" && instrumentId !== "",
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 5_000,
+    refetchInterval: privateFallbackInterval,
     refetchOnWindowFocus: "always",
   });
 }
@@ -168,6 +179,7 @@ export function invalidateTradeLedgers(queryClient: ReturnType<typeof useQueryCl
   void queryClient.invalidateQueries({ queryKey: tradeKeys.orders() });
   void queryClient.invalidateQueries({ queryKey: tradeKeys.positions() });
   void queryClient.invalidateQueries({ queryKey: ["trading", "account-positions"] });
+  void queryClient.invalidateQueries({ queryKey: tradeKeys.portfolioPositions() });
   void queryClient.invalidateQueries({ queryKey: ["trading", "balances"] });
   void queryClient.invalidateQueries({ queryKey: tradeKeys.fills() });
 }

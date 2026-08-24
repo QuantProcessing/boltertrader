@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/auth"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 )
@@ -370,6 +372,117 @@ func (handler *Handler) listPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, collection[positionResource]{Items: items})
+}
+
+type activePositionRouteSource interface {
+	ActiveRoute(domain.AccountID, string, string) (domain.RouteID, *account.GenerationAdmission, error)
+}
+
+// getPositionSnapshot returns one complete account projection beside the
+// exact replay cursor from the same Gateway event Hub. A transient venue or
+// routing failure is an error, never an empty list: only a successfully loaded
+// complete snapshot may prove that an account has no positions.
+func (handler *Handler) getPositionSnapshot(w http.ResponseWriter, r *http.Request) {
+	if handler.positions == nil {
+		writeError(w, http.StatusServiceUnavailable, "POSITION_PROJECTION_UNAVAILABLE", "position projection is unavailable", "", true)
+		return
+	}
+	if len(r.URL.Query()) != 1 {
+		handler.invalid(w)
+		return
+	}
+	accountID, err := parseAccountID(r.URL.Query().Get("account_id"))
+	if err != nil {
+		handler.invalid(w)
+		return
+	}
+	principal, ok := auth.Principal(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized", "", false)
+		return
+	}
+	selection, err := handler.resourceSelection(requestWithPositionScope(r, accountID), true)
+	if err != nil {
+		handler.fail(w, err)
+		return
+	}
+	perpRoutes := 0
+	for _, resource := range selection.accounts {
+		if resource.Product == exchange.ProductPerp {
+			perpRoutes++
+		}
+	}
+	if perpRoutes == 0 {
+		handler.fail(w, account.ErrProductMismatch)
+		return
+	}
+	snapshot, err := handler.positions.SynchronizeAccount(principal, accountID, func() ([]gatewayevent.PositionSeed, error) {
+		seeds := make([]gatewayevent.PositionSeed, 0)
+		for _, resource := range selection.accounts {
+			if resource.Product == exchange.ProductSpot {
+				continue
+			}
+			routeID, loadErr := handler.positionRouteID(resource)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			instruments, loadErr := handler.fundingPaymentInstrumentMap(r.Context(), resource.AccountID, nil)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			client, loadErr := handler.accounts.PerpRoute(resource.AccountID, resource.Settlement)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			positions, loadErr := client.Positions(r.Context(), exchange.PositionsRequest{})
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			for _, position := range positions {
+				_, instrumentID, resolveErr := resolveNativeInstrument(nil, "", instruments, position.NativeSymbol, position.NativeID)
+				if resolveErr != nil {
+					return nil, resolveErr
+				}
+				seeds = append(seeds, gatewayevent.PositionSeed{
+					RouteID: routeID, InstrumentID: instrumentID, Position: position,
+				})
+			}
+		}
+		return seeds, nil
+	})
+	if err != nil {
+		handler.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": snapshot})
+}
+
+func requestWithPositionScope(r *http.Request, accountID domain.AccountID) *http.Request {
+	clone := r.Clone(r.Context())
+	query := clone.URL.Query()
+	query.Set("account_id", string(accountID))
+	query.Set("pagination.limit", "500")
+	clone.URL.RawQuery = query.Encode()
+	return clone
+}
+
+func (handler *Handler) positionRouteID(resource account.Resource) (domain.RouteID, error) {
+	if routes, ok := handler.accounts.(activePositionRouteSource); ok {
+		routeID, _, err := routes.ActiveRoute(resource.AccountID, string(resource.Product), resource.Settlement)
+		return routeID, err
+	}
+	// Tests and the source-compatibility account manager predate dynamic route
+	// identities. Keep their snapshots deterministic without claiming this
+	// synthetic value is a production route.
+	value := "static-" + string(resource.Product)
+	if resource.Settlement != "" {
+		value += "-" + strings.ToLower(resource.Settlement)
+	}
+	routeID := domain.RouteID(value)
+	if err := routeID.Validate(); err != nil {
+		return "", err
+	}
+	return routeID, nil
 }
 
 func (handler *Handler) listFundingPayments(w http.ResponseWriter, r *http.Request) {

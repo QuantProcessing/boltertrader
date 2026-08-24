@@ -1,273 +1,294 @@
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Inbox, Wallet } from "lucide-react";
-import { useMemo, useState } from "react";
+import { AlertTriangle, Inbox, RefreshCcw, Search, Wallet } from "lucide-react";
+import { useMemo } from "react";
 
-import type { LedgerEntry, Position } from "@/api/types";
+import type { AccountPosition, LedgerEntry, PositionFreshness, PositionSettlementSummary } from "@/api/types";
+import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/field";
 import { InstrumentName } from "@/components/ui/instrument-name";
 import { Num } from "@/components/ui/num";
 import { Metric } from "@/components/ui/panel";
-import { Tag } from "@/components/ui/state-badge";
-import { useAccounts } from "@/features/market/queries";
-import { pnlKeyOf, useLedger, usePnL, usePortfolioPositions } from "@/features/portfolio/queries";
+import { StateBadge, Tag, type StateTone } from "@/components/ui/state-badge";
+import { useLedger, usePortfolioPositions } from "@/features/portfolio/queries";
+import { useTradeRealtime } from "@/features/trade/realtime";
 import { decimalSign, formatDecimal, formatTimestamp } from "@/lib/format";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-/* ---------------------------------------------------------------------------
- * Portfolio: what is held, and what it earned.
- *
- * Selecting a position is not a convenience here, it is the query. P&L is
- * attributed per lineage per instrument and the server refuses anything less
- * specific, so the strip at the top is the breakdown for the row below that the
- * operator pointed at — never a total, because a total across settlement
- * currencies is a number with no unit and the ledger service says so out loud.
- *
- * Same three-band layout as the terminal — strip, primary table, record
- * beneath — so the two pages read the same way.
- * ------------------------------------------------------------------------- */
+export type PortfolioGroup = "account" | "venue" | "instrument";
 
-/** Stable across refetches: a lineage holds one instrument at a time. */
-const rowIdOf = (position: Position): string => `${position.lineageId}:${position.instrumentId}`;
+export interface PortfolioSearch {
+  account?: string;
+  venue?: string;
+  product?: string;
+  status?: PositionFreshness;
+  query?: string;
+  group?: PortfolioGroup;
+}
 
+const FRESHNESS: PositionFreshness[] = ["live", "delayed", "stale", "syncing", "unavailable"];
+const GROUPS: PortfolioGroup[] = ["account", "venue", "instrument"];
+
+export function validatePortfolioSearch(search: Record<string, unknown>): PortfolioSearch {
+  const value = (candidate: unknown) => typeof candidate === "string" && candidate.trim() !== "" ? candidate.trim() : undefined;
+  const status = value(search.status);
+  const group = value(search.group);
+  return {
+    account: value(search.account),
+    venue: value(search.venue),
+    product: value(search.product),
+    status: FRESHNESS.includes(status as PositionFreshness) ? status as PositionFreshness : undefined,
+    query: value(search.query),
+    group: GROUPS.includes(group as PortfolioGroup) ? group as PortfolioGroup : undefined,
+  };
+}
+
+/** All venue positions for the signed-in principal; no cross-venue netting. */
 export function PortfolioPage() {
   const t = useT();
-  const accounts = useAccounts();
-  const [accountId, setAccountId] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const search = useSearch({ from: "/app/portfolio" });
+  const navigate = useNavigate();
+  const query = useMemo(() => ({
+    accountId: search.account,
+    venue: search.venue,
+    product: search.product,
+    status: search.status,
+  }), [search.account, search.product, search.status, search.venue]);
+  const positions = usePortfolioPositions(query);
+  const snapshot = positions.data;
+  useTradeRealtime(Boolean(snapshot?.cursor), snapshot?.cursor);
 
-  const positions = usePortfolioPositions(useMemo(() => (accountId ? { accountId } : {}), [accountId]));
-  const rows = positions.data ?? [];
+  const needle = search.query?.toLowerCase() ?? "";
+  const rows = useMemo(() => (snapshot?.items ?? []).filter((position) => {
+    if (needle === "") return true;
+    return [position.symbol, position.instrumentId, position.accountLabel, position.accountId, position.venue]
+      .some((candidate) => candidate?.toLowerCase().includes(needle));
+  }), [needle, snapshot?.items]);
+  const group = search.group ?? "account";
+  const groups = useMemo(() => groupPositions(rows, group), [group, rows]);
+  const accounts = useMemo(() => unique([
+    ...(snapshot?.accounts.map((account) => account.accountId) ?? []),
+    ...(search.account ? [search.account] : []),
+  ]), [search.account, snapshot?.accounts]);
+  const venues = useMemo(() => unique([...(snapshot?.accounts.map((account) => account.venue) ?? []), ...(search.venue ? [search.venue] : [])]), [search.venue, snapshot?.accounts]);
+  const products = useMemo(() => unique([...(snapshot?.items.map((item) => item.product ?? "") ?? []), ...(search.product ? [search.product] : [])]), [search.product, snapshot?.items]);
+  const accountLabels = new Map(snapshot?.accounts.map((account) => [account.accountId, account.label]) ?? []);
 
-  // Resolved from the live list rather than held as a snapshot, so a row that
-  // closes while it is selected stops being selected instead of freezing a
-  // stale quantity on screen.
-  const selected = rows.find((position) => rowIdOf(position) === selectedId) ?? null;
-
-  const pnl = usePnL(selected ? pnlKeyOf(selected) : null);
-
-  // Without a selection the ledger is everything in scope; with one it narrows
-  // to the same lineage the strip is describing.
-  const ledger = useLedger(
-    useMemo(
-      () => (selected ? pnlKeyOf(selected) : accountId ? { accountId } : {}),
-      [selected, accountId],
-    ),
-  );
+  const update = (patch: Partial<PortfolioSearch>) => {
+    void navigate({ to: "/portfolio", search: { ...search, ...patch }, replace: true });
+  };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-bar shrink-0 items-center gap-4 border-b border-line px-3">
-        {selected ? (
-          <>
-            <div className="min-w-0">
-              <InstrumentName instrumentId={selected.instrumentId} className="flex" />
-              <div className="mt-1 truncate text-meta text-dim">
-                {selected.accountId} · {selected.productId}
-              </div>
-            </div>
-            <div className="flex min-w-0 flex-1 items-center gap-6 overflow-x-auto">
-              <Money label={t("portfolio.realized")} value={pnl.data?.realizedPnl} />
-              <Money label={t("portfolio.unrealized")} value={pnl.data?.unrealizedPnl} />
-              <Money label={t("portfolio.fees")} value={pnl.data?.fees} />
-              <Money label={t("portfolio.funding")} value={pnl.data?.funding} />
-              <Money label={t("portfolio.net")} value={pnl.data?.netPnl} unit={selected.settlementCurrency} />
-            </div>
-          </>
-        ) : (
-          <p className="min-w-0 flex-1 truncate text-meta text-dim">{t("portfolio.hint")}</p>
-        )}
-
-        <label className="flex shrink-0 items-center gap-2">
-          <span className="th">{t("portfolio.account")}</span>
-          <select
-            value={accountId}
-            onChange={(event) => {
-              setAccountId(event.target.value);
-              setSelectedId(null);
-            }}
-            className={cn(inputClass, "w-48")}
-          >
-            <option value="">{t("filter.allAccounts")}</option>
-            {(accounts.data ?? []).map((account) => (
-              <option key={account.accountId} value={account.accountId}>
-                {account.displayName}
-              </option>
-            ))}
-          </select>
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
+      <header className="flex min-h-bar shrink-0 flex-wrap items-center gap-2 border-b border-line px-3 py-1.5">
+        <div className="mr-2 flex items-baseline gap-2">
+          <h1 className="text-title font-semibold text-text">{t("portfolio.title")}</h1>
+          <Tag>{t("portfolio.positionsCount", { count: snapshot?.summary.positionCount ?? rows.length })}</Tag>
+        </div>
+        <select className={cn(inputClass, "w-44")} value={search.account ?? ""} onChange={(event) => update({ account: event.target.value || undefined })} aria-label={t("portfolio.account")}>
+          <option value="">{t("filter.allAccounts")}</option>
+          {accounts.map((account) => <option key={account} value={account}>{accountLabels.get(account) ?? account}</option>)}
+        </select>
+        <select className={cn(inputClass, "w-36")} value={search.venue ?? ""} onChange={(event) => update({ venue: event.target.value || undefined })} aria-label={t("portfolio.venue")}>
+          <option value="">{t("portfolio.allVenues")}</option>
+          {venues.map((venue) => <option key={venue} value={venue}>{venue}</option>)}
+        </select>
+        <select className={cn(inputClass, "w-36")} value={search.product ?? ""} onChange={(event) => update({ product: event.target.value || undefined })} aria-label={t("col.product")}>
+          <option value="">{t("portfolio.allProducts")}</option>
+          {products.map((product) => <option key={product} value={product}>{product}</option>)}
+        </select>
+        <select className={cn(inputClass, "w-36")} value={search.status ?? ""} onChange={(event) => update({ status: (event.target.value || undefined) as PositionFreshness | undefined })} aria-label={t("portfolio.status")}>
+          <option value="">{t("portfolio.allStatuses")}</option>
+          {FRESHNESS.map((status) => <option key={status} value={status}>{freshnessLabel(status, t)}</option>)}
+        </select>
+        <label className="relative min-w-44 flex-1">
+          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-dim" aria-hidden="true" />
+          <input className={cn(inputClass, "w-full pl-7")} value={search.query ?? ""} onChange={(event) => update({ query: event.target.value || undefined })} placeholder={t("portfolio.search")} aria-label={t("portfolio.search")} />
         </label>
+        <select className={cn(inputClass, "w-36")} value={group} onChange={(event) => update({ group: event.target.value as PortfolioGroup })} aria-label={t("portfolio.groupBy")}>
+          {GROUPS.map((option) => <option key={option} value={option}>{groupLabel(option, t)}</option>)}
+        </select>
+        <Button variant="ghost" size="icon" aria-label={t("utility.refresh")} title={t("utility.refresh")} onClick={() => void positions.refetch()} disabled={positions.isFetching}>
+          <RefreshCcw className={cn("size-4", positions.isFetching && "animate-spin")} />
+        </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <DataTable
-          columns={positionColumns(selectedId, t)}
-          data={rows}
-          getRowId={rowIdOf}
-          caption={t("portfolio.caption.positions")}
-          loading={positions.isPending}
-          onRowClick={(position) => {
-            const id = rowIdOf(position);
-            setSelectedId((current) => (current === id ? null : id));
-          }}
-          empty={
-            <EmptyState
-              icon={Wallet}
-              title={t("portfolio.empty.positions")}
-              detail={t("portfolio.empty.positions.detail")}
-            />
-          }
-        />
-      </div>
+      <SummaryStrip summaries={snapshot?.summary.bySettlementAsset ?? []} staleAccounts={snapshot?.summary.staleAccountCount ?? 0} verifiedAt={snapshot?.verifiedAt} t={t} />
 
-      <section className="flex h-deck shrink-0 flex-col border-t border-line">
-        <header className="flex h-row shrink-0 items-center gap-2 border-b border-line px-3">
-          <h2 className="text-base font-medium text-text">{t("portfolio.ledger")}</h2>
-          {selected ? <Tag>{t("portfolio.thisLineage")}</Tag> : null}
-          <span className="ml-auto text-meta text-dim">
-            {t("portfolio.entries", { count: ledger.data?.length ?? 0 })}
-          </span>
-        </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <DataTable
-            columns={ledgerColumns(t)}
-            data={ledger.data ?? []}
-            getRowId={(entry) => entry.entryId}
-            caption={t("portfolio.caption.ledger")}
-            loading={ledger.isPending}
-            empty={
-              <EmptyState
-                icon={Inbox}
-                title={t("portfolio.empty.ledger")}
-                detail={t("portfolio.empty.ledger.detail")}
-              />
-            }
-          />
+      {snapshot && snapshot.summary.staleAccountCount > 0 ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-warn/30 bg-warn/5 px-3 py-1.5 text-meta text-warn" role="status">
+          <AlertTriangle className="size-3.5" aria-hidden="true" />
+          {t("portfolio.staleAccounts", { count: snapshot.summary.staleAccountCount })}
         </div>
-      </section>
+      ) : null}
+
+      <main className="min-h-0 flex-1 overflow-y-auto">
+        {positions.isError ? (
+          <EmptyState icon={AlertTriangle} title={t("portfolio.unavailable")} detail={t("portfolio.unavailable.detail")} action={<Button size="sm" onClick={() => void positions.refetch()}>{t("utility.refresh")}</Button>} />
+        ) : !positions.isPending && rows.length === 0 ? (
+          <EmptyState icon={Wallet} title={t("portfolio.empty.positions")} detail={t("portfolio.empty.authoritativeDetail")} />
+        ) : (
+          groups.map(([key, items]) => (
+            <section key={key} className="border-b border-line">
+              <header className="flex h-row items-center gap-2 bg-panel px-3">
+                <h2 className="text-base font-medium text-text">{groupTitle(group, key, items, accountLabels)}</h2>
+                <Tag>{items.length}</Tag>
+                <span className="ml-auto text-meta text-dim">{groupState(items, t)}</span>
+              </header>
+              <DataTable columns={positionColumns(t)} data={items} getRowId={positionId} caption={t("portfolio.caption.positions")} loading={positions.isPending} />
+            </section>
+          ))
+        )}
+      </main>
+
+      <LedgerPanel accountId={search.account} />
     </div>
   );
 }
 
-/** One figure in the strip. Blank rather than zero while the P&L is loading. */
-function Money({ label, value, unit }: { label: string; value: string | undefined; unit?: string }) {
-  const sign = decimalSign(value);
+function SummaryStrip({ summaries, staleAccounts, verifiedAt, t }: { summaries: PositionSettlementSummary[]; staleAccounts: number; verifiedAt?: string; t: Translate }) {
   return (
-    <Metric
-      label={label}
-      value={value === undefined ? "—" : formatDecimal(value, { decimals: 2, signed: true, grouped: true })}
-      unit={unit}
-      tone={sign > 0 ? "up" : sign < 0 ? "down" : "none"}
-      className="shrink-0"
-    />
+    <section className="flex min-h-bar shrink-0 items-center gap-7 overflow-x-auto border-b border-line px-3 py-1.5" aria-label={t("portfolio.summary")}>
+      {summaries.length === 0 ? <p className="text-meta text-dim">{t("portfolio.noSummary")}</p> : summaries.map((summary) => (
+        <div key={summary.settlementAsset} className="flex shrink-0 items-center gap-5">
+          <Metric label={summary.settlementAsset} value={t("portfolio.positionsCount", { count: summary.positionCount })} />
+          <Metric label={t("portfolio.unrealized")} value={summary.unrealizedPnl === undefined ? "—" : formatDecimal(summary.unrealizedPnl, { decimals: 2, signed: true, grouped: true })} unit={summary.settlementAsset} tone={decimalSign(summary.unrealizedPnl) > 0 ? "up" : decimalSign(summary.unrealizedPnl) < 0 ? "down" : "none"} />
+          {summary.excludedPnlCount > 0 ? <span className="text-meta text-warn">{t("portfolio.excluded", { count: summary.excludedPnlCount })}</span> : null}
+        </div>
+      ))}
+      <div className="ml-auto flex shrink-0 items-center gap-3 text-meta text-dim">
+        {staleAccounts > 0 ? t("portfolio.staleAccountsShort", { count: staleAccounts }) : null}
+        <span>{t("portfolio.verified", { time: verifiedAt ? formatTimestamp(verifiedAt) : "—" })}</span>
+      </div>
+    </section>
   );
 }
 
-function positionColumns(selectedId: string | null, t: Translate): ColumnDef<Position, unknown>[] {
+function LedgerPanel({ accountId }: { accountId?: string }) {
+  const t = useT();
+  const ledger = useLedger(useMemo(() => accountId ? { accountId } : {}, [accountId]));
+  return (
+    <section className="flex h-deck shrink-0 flex-col border-t border-line">
+      <header className="flex h-row shrink-0 items-center gap-2 border-b border-line px-3">
+        <h2 className="text-base font-medium text-text">{t("portfolio.attributionLedger")}</h2>
+        {accountId ? <Tag>{accountId}</Tag> : null}
+        <span className="ml-auto text-meta text-dim">{t("portfolio.entries", { count: ledger.data?.length ?? 0 })}</span>
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <DataTable columns={ledgerColumns(t)} data={ledger.data ?? []} getRowId={(entry) => entry.entryId} caption={t("portfolio.caption.ledger")} loading={ledger.isPending} empty={<EmptyState icon={Inbox} title={t("portfolio.empty.ledger")} detail={t("portfolio.empty.ledger.detail")} />} />
+      </div>
+    </section>
+  );
+}
+
+function positionColumns(t: Translate): ColumnDef<AccountPosition, unknown>[] {
   return [
-    {
-      id: "instrument",
-      header: t("col.instrument"),
-      accessorKey: "instrumentId",
-      cell: ({ row }) => (
-        <span className="flex items-center gap-2">
-          <span
-            aria-hidden="true"
-            className={cn(
-              "h-3.5 w-0.5 shrink-0 rounded-full",
-              rowIdOf(row.original) === selectedId ? "bg-accent" : "bg-transparent",
-            )}
-          />
-          <InstrumentName instrumentId={row.original.instrumentId} />
-        </span>
-      ),
-    },
-    { id: "account", header: t("col.account"), accessorKey: "accountId", meta: { width: "12rem" } },
-    { id: "product", header: t("col.product"), accessorKey: "productId", meta: { width: "6rem" } },
-    {
-      id: "quantity",
-      header: t("col.quantity"),
-      accessorKey: "quantity",
-      meta: { numeric: true },
-      cell: ({ row }) => <Num value={row.original.quantity} signed directional />,
-    },
-    {
-      id: "entry",
-      header: t("col.entry"),
-      accessorKey: "averageEntryPrice",
-      meta: { numeric: true },
-      cell: ({ row }) => <Num value={row.original.averageEntryPrice} />,
-    },
-    {
-      id: "mark",
-      header: t("col.mark"),
-      accessorKey: "markPrice",
-      meta: { numeric: true },
-      cell: ({ row }) => <Num value={row.original.markPrice} />,
-    },
-    {
-      id: "unrealized",
-      header: t("col.unrealized"),
-      accessorKey: "unrealizedPnl",
-      meta: { numeric: true },
-      cell: ({ row }) => <Num value={row.original.unrealizedPnl} decimals={2} signed grouped directional />,
-    },
-    {
-      id: "realized",
-      header: t("col.realized"),
-      accessorKey: "realizedPnl",
-      meta: { numeric: true },
-      cell: ({ row }) => <Num value={row.original.realizedPnl} decimals={2} signed grouped directional />,
-    },
-    {
-      id: "currency",
-      header: t("col.currency"),
-      accessorKey: "settlementCurrency",
-      meta: { width: "5rem" },
-    },
-    {
-      id: "updated",
-      header: t("col.updated"),
-      accessorKey: "updatedAt",
-      meta: { align: "right", width: "7rem" },
-      cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.updatedAt)}</span>,
-    },
+    { id: "instrument", header: t("col.instrument"), accessorFn: (item) => item.symbol || item.instrumentId, cell: ({ row }) => <div><InstrumentName instrumentId={row.original.instrumentId} /><div className="text-meta text-dim">{[row.original.venue, row.original.product, row.original.settlementAsset].filter(Boolean).join(" · ")}</div></div>, meta: { sticky: true, width: "14rem" } },
+    { id: "account", header: t("col.account"), accessorFn: (item) => item.accountLabel || item.accountId, cell: ({ row }) => <span title={row.original.accountId}>{row.original.accountLabel || row.original.accountId}</span> },
+    { id: "side", header: t("col.side"), accessorFn: (item) => item.side ?? (decimalSign(item.quantity) < 0 ? "sell" : "buy"), cell: ({ getValue }) => <PositionSide side={String(getValue() ?? "")} t={t} /> },
+    { id: "quantity", header: t("col.quantity"), accessorKey: "quantity", cell: ({ row }) => <Num value={row.original.quantity.replace(/^-/, "")} suffix={positionQuantityUnit(row.original)} />, meta: { numeric: true } },
+    { id: "entry", header: t("col.entry"), accessorKey: "entryPrice", cell: ({ row }) => value(row.original.entryPrice), meta: { numeric: true } },
+    { id: "mark", header: t("col.mark"), accessorKey: "markPrice", cell: ({ row }) => sourcedValue(row.original.markPrice, row.original.markPriceSource, t), meta: { numeric: true } },
+    { id: "unrealized", header: t("col.unrealized"), accessorKey: "unrealizedPnl", cell: ({ row }) => sourcedPnl(row.original, t), meta: { numeric: true } },
+    { id: "liquidation", header: t("portfolio.liquidation"), accessorKey: "liquidationPrice", cell: ({ row }) => value(row.original.liquidationPrice), meta: { numeric: true } },
+    { id: "margin", header: t("portfolio.margin"), accessorKey: "marginUsed", cell: ({ row }) => <div>{value(row.original.marginUsed)}{row.original.marginMode ? <div className="text-meta text-dim">{row.original.marginMode}</div> : null}</div>, meta: { numeric: true } },
+    { id: "freshness", header: t("portfolio.status"), accessorKey: "freshness", cell: ({ row }) => <StateBadge tone={freshnessTone(row.original.freshness)} label={freshnessLabel(row.original.freshness, t)} detail={row.original.blockedReason} />, meta: { width: "8rem" } },
+    { id: "verified", header: t("col.updated"), accessorKey: "verifiedAt", cell: ({ row }) => <span className="text-dim">{row.original.verifiedAt ? formatTimestamp(row.original.verifiedAt) : "—"}</span>, meta: { align: "right", width: "7rem" } },
   ];
 }
 
-/**
- * A builder rather than a constant, now that the headers are translated: a
- * module-level array is evaluated once at import and would freeze whichever
- * locale happened to be active then.
- *
- * `kind` is the server's own vocabulary (`command.submitted`, `fee`) and is not
- * translated — the activity log and the audit trail print the same token.
- */
+function sourcedValue(amount: string | undefined, source: AccountPosition["markPriceSource"], t: Translate) {
+  if (!amount) return <span className="text-dim">—</span>;
+  return <span title={sourceLabel(source, t)}>{source === "estimated" ? "≈ " : ""}<Num value={amount} /></span>;
+}
+
+function sourcedPnl(position: AccountPosition, t: Translate) {
+  if (!position.unrealizedPnl) return <span className="text-dim">—</span>;
+  return <span title={sourceLabel(position.unrealizedPnlSource, t)}>{position.unrealizedPnlSource === "estimated" ? "≈ " : ""}<Num value={position.unrealizedPnl} decimals={2} signed grouped directional /> <span className="text-meta text-dim">{position.unrealizedPnlCurrency || position.settlementAsset}</span></span>;
+}
+
+function value(amount: string | undefined) {
+  return amount ? <Num value={amount} /> : <span className="text-dim">—</span>;
+}
+
+function positionId(position: AccountPosition): string {
+  return [position.accountId, position.routeId ?? "", position.instrumentId, position.positionSlot ?? "net"].join(":");
+}
+
+function groupPositions(rows: AccountPosition[], group: PortfolioGroup): Array<[string, AccountPosition[]]> {
+  const grouped = new Map<string, AccountPosition[]>();
+  for (const row of rows) {
+    const key = group === "account" ? row.accountId : group === "venue" ? row.venue ?? "—" : row.symbol || row.instrumentId;
+    grouped.set(key, [...(grouped.get(key) ?? []), row]);
+  }
+  return [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right));
+}
+
+function groupTitle(group: PortfolioGroup, key: string, rows: AccountPosition[], labels: Map<string, string>): string {
+  if (group === "account") return [rows[0]?.venue, labels.get(key) ?? rows[0]?.accountLabel ?? key].filter(Boolean).join(" · ");
+  return key;
+}
+
+function groupState(rows: AccountPosition[], t: Translate): string {
+  const priority: PositionFreshness[] = ["unavailable", "stale", "delayed", "syncing", "live"];
+  const state = priority.find((candidate) => rows.some((row) => row.freshness === candidate));
+  return freshnessLabel(state, t);
+}
+
+function freshnessLabel(freshness: PositionFreshness | undefined, t: Translate): string {
+  if (freshness === "live") return t("portfolio.freshness.live");
+  if (freshness === "delayed") return t("portfolio.freshness.delayed");
+  if (freshness === "stale") return t("portfolio.freshness.stale");
+  if (freshness === "syncing") return t("portfolio.freshness.syncing");
+  return t("portfolio.freshness.unavailable");
+}
+
+function freshnessTone(freshness: PositionFreshness | undefined): StateTone {
+  if (freshness === "live") return "ok";
+  if (freshness === "syncing") return "pending";
+  if (freshness === "delayed" || freshness === "stale") return "warn";
+  return "danger";
+}
+
+function sourceLabel(source: string | undefined, t: Translate): string {
+  if (source === "estimated") return t("portfolio.source.estimated");
+  if (source === "venue_public") return t("portfolio.source.public");
+  if (source === "venue_position") return t("portfolio.source.venue");
+  return t("portfolio.source.unavailable");
+}
+
+function PositionSide({ side, t }: { side: string; t: Translate }) {
+  const sell = side.toLowerCase() === "sell" || side.toLowerCase() === "short";
+  return <span className={cn("font-medium", sell ? "text-down" : "text-up")}>{t(sell ? "ticket.side.sell" : "ticket.side.buy")}</span>;
+}
+
+function positionQuantityUnit(position: AccountPosition): string | undefined {
+  const symbol = position.symbol || position.instrumentId.split(":").at(-1) || "";
+  const [base, quote] = symbol.toUpperCase().split(/[-_/]/);
+  if (!base || !quote) return undefined;
+  return ` ${base}`;
+}
+
+function groupLabel(group: PortfolioGroup, t: Translate): string {
+  if (group === "venue") return t("portfolio.group.venue");
+  if (group === "instrument") return t("portfolio.group.instrument");
+  return t("portfolio.group.account");
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
 function ledgerColumns(t: Translate): ColumnDef<LedgerEntry, unknown>[] {
   return [
-    {
-      id: "occurred",
-      header: t("col.time"),
-      accessorKey: "occurredAt",
-      meta: { width: "7rem" },
-      cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.occurredAt)}</span>,
-    },
+    { id: "occurred", header: t("col.time"), accessorKey: "occurredAt", meta: { width: "7rem" }, cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.occurredAt)}</span> },
     { id: "kind", header: t("col.kind"), accessorKey: "kind", meta: { width: "9rem" } },
-    {
-      id: "instrument",
-      header: t("col.instrument"),
-      accessorKey: "instrumentId",
-      cell: ({ row }) => <InstrumentName instrumentId={row.original.instrumentId} />,
-    },
+    { id: "instrument", header: t("col.instrument"), accessorKey: "instrumentId", cell: ({ row }) => <InstrumentName instrumentId={row.original.instrumentId} /> },
     { id: "account", header: t("col.account"), accessorKey: "accountId", meta: { width: "12rem" } },
-    {
-      id: "amount",
-      header: t("col.amount"),
-      accessorKey: "amount",
-      meta: { numeric: true },
-      cell: ({ row }) => <Num value={row.original.amount} decimals={2} signed grouped directional />,
-    },
+    { id: "amount", header: t("col.amount"), accessorKey: "amount", meta: { numeric: true }, cell: ({ row }) => <Num value={row.original.amount} decimals={2} signed grouped directional /> },
     { id: "currency", header: t("col.currency"), accessorKey: "currency", meta: { width: "5rem" } },
   ];
 }

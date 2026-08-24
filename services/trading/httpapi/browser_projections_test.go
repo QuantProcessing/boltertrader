@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
@@ -30,6 +31,17 @@ type positionProjectionFixture struct {
 	accountID    string
 	instrumentID string
 	items        []AccountPositionProjection
+}
+
+type portfolioPositionFixture struct {
+	principal string
+	filter    accountpositions.Filter
+	snapshot  accountpositions.Snapshot
+}
+
+func (fixture *portfolioPositionFixture) Snapshot(_ context.Context, principal string, filter accountpositions.Filter) (accountpositions.Snapshot, error) {
+	fixture.principal, fixture.filter = principal, filter
+	return fixture.snapshot, nil
 }
 
 func (fixture *positionProjectionFixture) ListAccountPositions(_ context.Context, principal, accountID, instrumentID string) ([]AccountPositionProjection, error) {
@@ -170,6 +182,45 @@ func TestBrowserProjectionRoutesRejectUnknownFilters(t *testing.T) {
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
 		t.Fatalf("unknown filter response=%d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestBrowserPortfolioPositionsExposeGlobalAndExactScopeFromOneProjection(t *testing.T) {
+	fixture := &portfolioPositionFixture{snapshot: accountpositions.Snapshot{
+		ProjectionRevision: 7, Cursor: "AAAAAAAAAAc", Summary: accountpositions.Summary{PositionCount: 1, AccountCount: 1},
+		Items: []accountpositions.Item{{
+			Key:          accountpositions.Key{AccountID: "account-a", RouteID: "perp-usdt", InstrumentID: "binance:live:perp:USDT:BTC-USDT", PositionSlot: "long"},
+			AccountLabel: "Main", Venue: "binance", Product: "perp", SettlementAsset: "USDT", Symbol: "BTC-USDT",
+			Side: "buy", Quantity: "0.1", Freshness: accountpositions.FreshnessLive, RouteHealth: accountpositions.RouteLive,
+		}},
+	}}
+	principal := func(*http.Request) (string, error) { return testPrincipalID, nil }
+	mux := http.NewServeMux()
+	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{
+		Runtimes: &runtimeProjectionFixture{}, Balances: &balanceProjectionFixture{}, Positions: &positionProjectionFixture{},
+		PortfolioPositions: fixture, Commands: &commandProjectionFixture{}, Activity: mustActivityLog(t), Principal: principal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		path       string
+		accountID  string
+		instrument string
+	}{
+		{path: "/api/v1/portfolio/positions?venue=binance&status=live"},
+		{path: "/api/v1/account-positions?accountId=account-a&instrumentId=binance:live:perp:USDT:BTC-USDT", accountID: "account-a", instrument: "binance:live:perp:USDT:BTC-USDT"},
+	} {
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"positionSlot":"long"`) || !strings.Contains(response.Body.String(), `"projectionRevision":7`) {
+			t.Fatalf("GET %s status=%d body=%s", test.path, response.Code, response.Body.String())
+		}
+		if test.accountID != "" && (fixture.filter.AccountID != test.accountID || fixture.filter.InstrumentID != test.instrument) {
+			t.Fatalf("exact filter=%+v", fixture.filter)
+		}
+	}
+	if fixture.principal != testPrincipalID {
+		t.Fatalf("principal=%q", fixture.principal)
 	}
 }
 

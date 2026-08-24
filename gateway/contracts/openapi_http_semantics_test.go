@@ -63,6 +63,7 @@ func TestOpenAPIDocumentsImplementedFiltersPaginationBodiesAndStatuses(t *testin
 		"get /v1/fills":                        {"query:account_id", "query:gateway_order_id", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit"},
 		"get /v1/balances":                     {"query:account_id", "query:pagination.limit"},
 		"get /v1/positions":                    {"query:account_id", "query:instrument_id", "query:pagination.limit"},
+		"get /v1/position-snapshot":            {"query:account_id!"},
 		"get /v1/funding-payments":             {"query:account_id!", "query:end!", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit", "query:settlement_asset", "query:start!"},
 		"get /v1/funding-rates":                {"query:account_id!", "query:instrument_id!"},
 		"get /v1/funding-rates/history":        {"query:account_id!", "query:end", "query:instrument_id!", "query:pagination.cursor", "query:pagination.limit", "query:start"},

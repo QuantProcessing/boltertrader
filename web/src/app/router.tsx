@@ -35,7 +35,7 @@ import {
 } from "@/routes/arbitrage.strategy";
 import { FundingPage } from "@/routes/funding";
 import { LoginPage } from "@/routes/login";
-import { PortfolioPage } from "@/routes/portfolio";
+import { PortfolioPage, validatePortfolioSearch } from "@/routes/portfolio";
 import { SettingsPage } from "@/routes/settings";
 import { TradePage } from "@/routes/trade";
 
@@ -234,7 +234,12 @@ const legacyArbitrageRoute = createRoute({
   },
 });
 
-const portfolioRoute = createRoute({ getParentRoute: () => appRoute, path: "/portfolio", component: PortfolioPage });
+const portfolioRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/portfolio",
+  validateSearch: validatePortfolioSearch,
+  component: PortfolioPage,
+});
 const activityRoute = createRoute({ getParentRoute: () => appRoute, path: "/activity", component: ActivityPage });
 const settingsRoute = createRoute({
   getParentRoute: () => appRoute,

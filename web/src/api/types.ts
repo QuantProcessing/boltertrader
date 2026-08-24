@@ -630,15 +630,81 @@ export interface AccountBalance {
   total: string;
 }
 
-/** Current venue position for one owned account; positive is long. */
+export type PositionFreshness = "syncing" | "live" | "delayed" | "stale" | "unavailable";
+export type PositionRouteHealth = "live" | "degraded" | "unavailable";
+export type PositionSlot = "net" | "long" | "short";
+
+/** Venue-authoritative position for one real account route. */
 export interface AccountPosition {
   accountId: string;
+  routeId?: string;
   instrumentId: string;
+  positionSlot?: PositionSlot;
+  accountLabel?: string;
+  venue?: string;
+  environment?: string;
+  product?: string;
+  settlementAsset?: string;
+  symbol?: string;
   side?: OrderSide;
   quantity: string;
   entryPrice: string;
   markPrice: string;
+  markPriceSource?: "venue_position" | "venue_public" | "estimated" | "unavailable";
   unrealizedPnl: string;
+  unrealizedPnlCurrency?: string;
+  unrealizedPnlSource?: "venue_position" | "estimated" | "unavailable";
+  liquidationPrice?: string;
+  leverage?: string;
+  marginUsed?: string;
+  marginMode?: string;
+  routeHealth?: PositionRouteHealth;
+  freshness?: PositionFreshness;
+  writeReady?: boolean;
+  blockedReason?: string;
+  sourceBootId?: string;
+  sourceSequence?: number;
+  resourceVersion?: number;
+  observedAt?: string;
+  verifiedAt?: string;
+  receivedAt?: string;
+}
+
+export interface AccountPositionState {
+  accountId: string;
+  label: string;
+  venue: string;
+  environment: string;
+  status: string;
+  routeHealth: PositionRouteHealth;
+  freshness: PositionFreshness;
+  writeReady: boolean;
+  reason?: string;
+  verifiedAt?: string;
+  receivedAt: string;
+}
+
+export interface PositionSettlementSummary {
+  settlementAsset: string;
+  positionCount: number;
+  liveCount: number;
+  staleCount: number;
+  unrealizedPnl?: string;
+  excludedPnlCount: number;
+}
+
+export interface AccountPositionSnapshot {
+  projectionRevision: number;
+  cursor: string;
+  verifiedAt?: string;
+  summary: {
+    positionCount: number;
+    accountCount: number;
+    staleAccountCount: number;
+    bySettlementAsset: PositionSettlementSummary[];
+  };
+  accounts: AccountPositionState[];
+  items: AccountPosition[];
 }
 
 /** `ledger.Entry` */

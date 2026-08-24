@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
@@ -14,12 +15,73 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/shopspring/decimal"
 )
+
+func TestHandlerPositionSnapshotReturnsCompleteProjectionAndCursor(t *testing.T) {
+	instrumentID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
+	resource := account.Resource{
+		AccountID: "acct-p", Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
+		Environment: exchange.EnvironmentLive, Settlement: "USDT", ReadReady: true, WriteReady: true,
+	}
+	accounts := &fakeHTTPAccounts{
+		resource: resource, status: account.Status{Resource: resource},
+		instrument: exchange.Instrument{Identity: exchange.InstrumentIdentity{
+			Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT",
+			BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT", NativeSymbol: "BTCUSDT", NativeID: "BTCUSDT",
+		}},
+		public: catalog.Instrument{
+			ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
+			Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+		},
+		perp: &fakeHTTPPerpClient{positions: []exchange.Position{{
+			NativeSymbol: "BTCUSDT", NativeID: "BTCUSDT", Side: exchange.SideBuy,
+			Quantity: decimal.RequireFromString("0.1"),
+		}}},
+		capability: capability.StaticMatrix().Rows[1],
+	}
+	hub := newTestEventHub(t)
+	projection, err := gatewayevent.NewPositionProjection(hub, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor := health.NewMonitor()
+	monitor.SetPostgresHealthy(true)
+	handler, err := NewHandler(Options{
+		Monitor: monitor, Accounts: accounts, References: &fakeHTTPReferences{accounts: accounts},
+		Orders: &fakeHTTPOrders{}, Events: hub, Positions: projection, Auditor: &fakeHTTPAuditor{},
+		Identity: domain.NewIdentityGenerator(domain.IdentityGeneratorOptions{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := secret.ParseRef("env://TOKEN")
+	middleware, err := auth.NewBearerMiddleware(context.Background(), secret.StaticProvider{ref.RawForProvider(): "test-token"}, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/position-snapshot?account_id=acct-p", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+	middleware.Wrap(handler).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data gatewayevent.PositionSnapshot `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Items) != 1 || envelope.Data.Items[0].InstrumentID != instrumentID || envelope.Data.Cursor == "" {
+		t.Fatalf("snapshot=%+v", envelope.Data)
+	}
+}
 
 func TestHandlerPerpPrivateResourcesUseResolvedInstrumentAndCapabilityGates(t *testing.T) {
 	instrumentID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")

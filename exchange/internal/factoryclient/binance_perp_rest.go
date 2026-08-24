@@ -890,12 +890,17 @@ func binancePerpPosition(resp binanceperp.PositionRiskResponse) (exchange.Positi
 	if err != nil {
 		return exchange.Position{}, err
 	}
+	slot, err := binancePerpPositionSlot(resp.PositionSide)
+	if err != nil {
+		return exchange.Position{}, err
+	}
 	side := exchange.SideBuy
-	if quantity.IsNegative() {
+	if slot == exchange.PositionSlotShort || (slot == exchange.PositionSlotNet && quantity.IsNegative()) {
 		side = exchange.SideSell
 	}
 	return exchange.Position{
 		NativeSymbol:     canonical.Identity.NativeSymbol,
+		PositionSlot:     slot,
 		Side:             side,
 		Quantity:         quantity,
 		EntryPrice:       entry,
@@ -905,6 +910,19 @@ func binancePerpPosition(resp binanceperp.PositionRiskResponse) (exchange.Positi
 		Leverage:         leverage,
 		MarginUsed:       marginUsed,
 	}, nil
+}
+
+func binancePerpPositionSlot(value string) (exchange.PositionSlot, error) {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "", "BOTH":
+		return exchange.PositionSlotNet, nil
+	case "LONG":
+		return exchange.PositionSlotLong, nil
+	case "SHORT":
+		return exchange.PositionSlotShort, nil
+	default:
+		return "", binancePerpMalformed("Positions", "position side is invalid")
+	}
 }
 
 func binancePerpAck(operation exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string) exchange.OrderAcknowledgement {

@@ -129,6 +129,19 @@ paths:
         - {name: instrument_id, in: query, schema: {type: string}}
         - {$ref: '#/components/parameters/PaginationLimit'}
       responses: {'200': {description: positions}, default: {$ref: '#/components/responses/Error'}}
+  /v1/position-snapshot:
+    get:
+      operationId: getPositionSnapshot
+      description: Returns a complete account position projection and a cursor from the same private-event sequence. An empty items array proves no positions only when this request succeeds.
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: complete account position snapshot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PositionSnapshotResponse'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/funding-payments:
     get:
       operationId: listFundingPayments
@@ -591,6 +604,40 @@ components:
         as_of: {type: string, format: date-time}
         complete_through: {type: string, format: date-time}
         revision: {type: integer, minimum: 0}
+    PositionSnapshotResponse:
+      type: object
+      required: [data]
+      additionalProperties: false
+      properties:
+        data: {$ref: '#/components/schemas/PositionSnapshot'}
+    PositionSnapshot:
+      type: object
+      required: [account_id, boot_id, sequence, cursor, freshness, verified_at, items]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        boot_id: {type: string}
+        sequence: {type: integer, minimum: 0}
+        cursor: {type: string}
+        freshness: {type: string, enum: [syncing, live, delayed, stale, unavailable]}
+        reason: {type: string}
+        verified_at: {type: string, format: date-time}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ProjectedPosition'}
+    ProjectedPosition:
+      type: object
+      required: [account_id, route_id, instrument_id, position_slot, position, resource_version, observed_at, verified_at]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        route_id: {type: string}
+        instrument_id: {type: string}
+        position_slot: {type: string, enum: [net, long, short]}
+        position: {type: object, additionalProperties: true}
+        resource_version: {type: integer, minimum: 1}
+        observed_at: {type: string, format: date-time}
+        verified_at: {type: string, format: date-time}
     PublicMarketEvent:
       type: object
       required: [boot_id, sequence, event_id, account_id, instrument_id, kind, event_type, occurred_at, payload]

@@ -32,7 +32,7 @@ import { apiRequest, advanceSessionEpoch, setCsrfToken, type ResponseMeta } from
 import type {
   Account,
   AccountBalance,
-  AccountPosition,
+  AccountPositionSnapshot,
   AccountRoute,
   AccountRuntime,
   ActivityEvent,
@@ -172,6 +172,7 @@ export const paths = {
   positions: "/api/v1/positions",
   balances: "/api/v1/balances",
   accountPositions: "/api/v1/account-positions",
+  portfolioPositions: "/api/v1/portfolio/positions",
   ledger: "/api/v1/ledger",
   pnl: "/api/v1/pnl",
   fills: "/api/v1/fills",
@@ -399,13 +400,20 @@ export const accountData = {
         signal,
       }),
     ),
-  positions: async (accountId: string, instrumentId: string, signal?: AbortSignal): Promise<AccountPosition[]> =>
-    items(
-      await apiRequest<ItemsEnvelope<AccountPosition>>(paths.accountPositions, {
+  positions: async (accountId: string, instrumentId: string, signal?: AbortSignal): Promise<AccountPositionSnapshot> =>
+    (
+      await apiRequest<DataEnvelope<AccountPositionSnapshot>>(paths.accountPositions, {
         query: { accountId, instrumentId },
         signal,
-      }),
-    ),
+      })
+    ).data,
+  portfolioPositions: async (query: PortfolioPositionQuery = {}, signal?: AbortSignal): Promise<AccountPositionSnapshot> =>
+    (
+      await apiRequest<DataEnvelope<AccountPositionSnapshot>>(paths.portfolioPositions, {
+        query: { ...query },
+        signal,
+      })
+    ).data,
 };
 
 /**
@@ -416,6 +424,14 @@ export const accountData = {
 export interface PositionQuery {
   accountId?: string;
   productId?: string;
+}
+
+export interface PortfolioPositionQuery {
+  accountId?: string;
+  instrumentId?: string;
+  venue?: string;
+  product?: string;
+  status?: string;
 }
 
 export interface LedgerQuery {

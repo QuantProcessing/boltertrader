@@ -22,14 +22,21 @@ describe("price chart crosshair", () => {
 });
 
 describe("position overlays", () => {
-  it("draws entry lines only for open positions and preserves direction", () => {
+  it("draws entry and venue liquidation lines only for open positions", () => {
     expect(positionLineDescriptors([
-      { accountId: "a", instrumentId: "BTC-USDT", side: "buy", quantity: "0.001", entryPrice: "77000", markPrice: "77100", unrealizedPnl: "0.1" },
-      { accountId: "a", instrumentId: "ETH-USDT", side: "sell", quantity: "-0.2", entryPrice: "3500", markPrice: "3490", unrealizedPnl: "2" },
+      { accountId: "a", routeId: "perp", instrumentId: "BTC-USDT", positionSlot: "long", accountLabel: "main", side: "buy", quantity: "0.001", entryPrice: "77000", markPrice: "77100", unrealizedPnl: "0.1", liquidationPrice: "63000", freshness: "live" },
+      { accountId: "a", routeId: "perp", instrumentId: "ETH-USDT", positionSlot: "short", side: "sell", quantity: "-0.2", entryPrice: "3500", markPrice: "3490", unrealizedPnl: "2", freshness: "stale" },
       { accountId: "a", instrumentId: "SOL-USDT", side: "buy", quantity: "0", entryPrice: "180", markPrice: "181", unrealizedPnl: "0" },
     ])).toEqual([
-      { key: "a:BTC-USDT:buy", price: 77000, side: "buy", quantity: "0.001" },
-      { key: "a:ETH-USDT:sell", price: 3500, side: "sell", quantity: "0.2" },
+      { key: "a:perp:BTC-USDT:long:entry", price: 77000, side: "buy", quantity: "0.001", kind: "entry", accountLabel: "main", stale: false },
+      { key: "a:perp:BTC-USDT:long:liquidation", price: 63000, side: "buy", quantity: "0.001", kind: "liquidation", accountLabel: "main", stale: false },
+      { key: "a:perp:ETH-USDT:short:entry", price: 3500, side: "sell", quantity: "0.2", kind: "entry", accountLabel: "a", stale: true },
     ]);
+  });
+
+  it("does not render unavailable last-known positions", () => {
+    expect(positionLineDescriptors([
+      { accountId: "a", instrumentId: "BTC-USDT", quantity: "1", entryPrice: "77000", markPrice: "", unrealizedPnl: "", freshness: "unavailable" },
+    ])).toEqual([]);
   });
 });

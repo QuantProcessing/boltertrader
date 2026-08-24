@@ -1,9 +1,10 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 
-import { trading, type LedgerQuery, type PositionQuery } from "@/api/endpoints";
-import type { LedgerEntry, PnLSnapshot, Position } from "@/api/types";
+import { accountData, trading, type LedgerQuery, type PortfolioPositionQuery } from "@/api/endpoints";
+import type { AccountPositionSnapshot, LedgerEntry, PnLSnapshot, Position } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
+import { privateFallbackInterval } from "@/features/trade/queries";
 
 /* ---------------------------------------------------------------------------
  * The ledgers behind a position.
@@ -23,7 +24,7 @@ import { PRIVATE_QUERY_META } from "@/app/query-privacy";
  * ------------------------------------------------------------------------- */
 
 export const portfolioKeys = {
-  positions: (query: PositionQuery) => ["trading", "positions", query] as const,
+  positions: (query: PortfolioPositionQuery) => ["trading", "portfolio-positions", query] as const,
   ledger: (query: LedgerQuery) => ["trading", "ledger", query] as const,
   pnl: (query: PnLKey | null) => ["trading", "pnl", query] as const,
 };
@@ -44,14 +45,14 @@ export function pnlKeyOf(position: Position): PnLKey {
   };
 }
 
-export function usePortfolioPositions(query: PositionQuery): UseQueryResult<Position[]> {
+export function usePortfolioPositions(query: PortfolioPositionQuery): UseQueryResult<AccountPositionSnapshot> {
   const readOnly = useReadOnly();
   return useQuery({
     queryKey: portfolioKeys.positions(query),
-    queryFn: ({ signal }) => trading.positions(query, signal),
+    queryFn: ({ signal }) => accountData.portfolioPositions(query, signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 5_000,
+    refetchInterval: privateFallbackInterval,
     // Changing the account filter should swap the rows, not blank the table
     // and re-flash a loading state over a list that is mostly the same.
     placeholderData: (previous) => previous,

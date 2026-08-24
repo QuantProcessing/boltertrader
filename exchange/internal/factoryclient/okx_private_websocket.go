@@ -638,7 +638,10 @@ func (backend *okxPrivateWSBackend) emitPosition(row *okx.Position) {
 		backend.emitPositionError(okxWSError(backend.meta, "WatchPositions", exchange.KindMalformedResponse, err.Error()))
 		return
 	}
-	event := exchange.PositionEvent{Kind: exchange.EventSnapshot, Positions: []exchange.Position{position}}
+	// OKX pushes one changed position row at a time. Calling it a snapshot
+	// would let an account projection delete the opposite hedge slot merely
+	// because that unchanged row was absent from this message.
+	event := exchange.PositionEvent{Kind: exchange.EventDelta, Positions: []exchange.Position{position}}
 	if at, err := okxOptionalMillis(row.UTime); err == nil {
 		event.Time = at
 	}

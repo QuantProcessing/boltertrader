@@ -3,7 +3,7 @@ import { useEffect } from "react";
 
 import { paths } from "@/api/endpoints";
 
-import { invalidateTradeLedgers, tradeKeys } from "./queries";
+import { invalidateTradeLedgers, setTradeRealtimeConnected, tradeKeys } from "./queries";
 
 export const TRADE_REALTIME_EVENTS = [
   "command.accepted",
@@ -14,10 +14,13 @@ export const TRADE_REALTIME_EVENTS = [
   "command.failed",
   "command.cancel_accepted",
   "fill.recorded",
+  "portfolio.position.upsert",
+  "portfolio.position.remove",
+  "portfolio.account.state",
 ] as const;
 
 export function realtimeEventMovesPositions(kind: string): boolean {
-  return kind === "fill.recorded" || kind === "command.filled";
+  return kind === "fill.recorded" || kind === "command.filled" || kind.startsWith("portfolio.position.") || kind === "portfolio.account.state";
 }
 
 /**
@@ -25,12 +28,13 @@ export function realtimeEventMovesPositions(kind: string): boolean {
  * Every event causes a fresh authoritative read; polling remains a fallback if
  * a proxy or browser temporarily drops the stream.
  */
-export function useTradeRealtime(enabled: boolean): void {
+export function useTradeRealtime(enabled: boolean, cursor?: string): void {
   const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!enabled || typeof EventSource === "undefined") return;
-    const source = new EventSource(paths.realtimeStream);
+    const url = cursor ? `${paths.realtimeStream}?cursor=${encodeURIComponent(cursor)}` : paths.realtimeStream;
+    const source = new EventSource(url);
     const listeners = new Map<string, EventListener>();
 
     for (const kind of TRADE_REALTIME_EVENTS) {
@@ -46,13 +50,23 @@ export function useTradeRealtime(enabled: boolean): void {
 
     // Opening includes reconnecting after sleep. Resnapshot immediately so an
     // expired replay cursor cannot leave the tab showing yesterday's rows.
-    const onOpen = () => invalidateTradeLedgers(queryClient);
+    const onOpen = () => {
+      setTradeRealtimeConnected(true);
+      invalidateTradeLedgers(queryClient);
+    };
+    const onError = () => {
+      setTradeRealtimeConnected(false);
+      invalidateTradeLedgers(queryClient);
+    };
     source.addEventListener("open", onOpen);
+    source.addEventListener("error", onError);
 
     return () => {
       source.removeEventListener("open", onOpen);
+      source.removeEventListener("error", onError);
       for (const [kind, listener] of listeners) source.removeEventListener(kind, listener);
       source.close();
+      setTradeRealtimeConnected(false);
     };
-  }, [enabled, queryClient]);
+  }, [cursor, enabled, queryClient]);
 }

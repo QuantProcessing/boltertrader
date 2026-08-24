@@ -78,6 +78,7 @@ func run(ctx context.Context) error {
 		RuntimeProjection:     gatewayClient,
 		BalanceProjection:     gatewayClient,
 		PositionProjection:    gatewayClient,
+		AccountPositionSource: gatewayClient,
 		ManualGateway:         gatewayClient,
 		ManualAccounts:        gatewayClient.Accounts(),
 		ReconciliationGateway: gatewayClient,

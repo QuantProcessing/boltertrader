@@ -75,7 +75,8 @@ export function TradePage() {
   }, [accountId, eligible]);
 
   const accountPositions = useAccountPositions(accountId, instrument?.instrumentId ?? "");
-  useTradeRealtime(!readOnly);
+  const positionItems = accountPositions.data?.items ?? [];
+  useTradeRealtime(!readOnly && Boolean(accountPositions.data?.cursor), accountPositions.data?.cursor);
   const restFact = fact.data?.value;
   const marketFact = useMemo(() => {
     if (!stream.book) return restFact;
@@ -129,7 +130,7 @@ export function TradePage() {
             liveCandle={stream.candle}
             instrument={instrument}
             livePrice={midPrice}
-            positions={accountPositions.data ?? []}
+            positions={positionItems}
             interval={interval}
             onIntervalChange={setInterval}
           />
@@ -139,11 +140,12 @@ export function TradePage() {
             ) : (
               <Blotter
                 instrumentId={instrument?.instrumentId ?? null}
-                positions={accountPositions.data ?? []}
+                positions={positionItems}
                 positionsLoading={accountPositions.isFetching && accountPositions.data === undefined}
                 positionsFetching={accountPositions.isFetching}
                 positionsError={accountPositions.isError}
                 positionsUpdatedAt={accountPositions.dataUpdatedAt}
+                positionAccounts={accountPositions.data?.accounts ?? []}
                 liveMarkPrice={marketFact?.markPrice}
               />
             )}
@@ -168,7 +170,7 @@ export function TradePage() {
             accounts={eligible}
             accountId={accountId}
             onAccountIdChange={setAccountId}
-            positions={accountPositions.data ?? []}
+            positions={positionItems}
             limitPrice={limitPrice}
             onLimitPriceChange={setLimitPrice}
             bestBid={marketFact?.bestBid}

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
+	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/arbitrage"
 	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
@@ -88,6 +89,7 @@ type Dependencies struct {
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
 	BalanceProjection     httpapi.AccountBalanceProjectionReader
 	PositionProjection    httpapi.AccountPositionProjectionReader
+	AccountPositionSource accountpositions.Source
 	ManualGateway         manual.Gateway
 	ManualAccounts        httpapi.ManualAccountAuthority
 	ReconciliationGateway orders.ReconciliationGateway
@@ -110,6 +112,7 @@ type Service struct {
 	catalog     *catalog.Projection
 	board       *marketdata.BoardService
 	boardStream marketdata.BoardStream
+	positions   *accountpositions.Service
 }
 
 // catalogTTL is how long the catalog projection's facts are considered fresh;
@@ -209,6 +212,17 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	var accountPositionProjection *accountpositions.Service
+	if dependencies.AccountPositionSource != nil {
+		var accountPositionStore accountpositions.Store = accountpositions.NewMemoryStore()
+		if dependencies.Database != nil {
+			accountPositionStore = tradingpg.NewAccountPositionStore(dependencies.Database)
+		}
+		accountPositionProjection, err = accountpositions.NewService(dependencies.AccountPositionSource, accountPositionStore, hub, now)
+		if err != nil {
+			return nil, err
+		}
+	}
 	activityLog, err := httpapi.NewActivityLog(1024, now, hub)
 	if err != nil {
 		return nil, err
@@ -287,7 +301,8 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				Activity: activityLog,
 			},
 			Projections: &httpapi.BrowserProjectionRoutesOptions{
-				Runtimes: runtimeProjection, Balances: balanceProjection, Positions: positionProjection, Commands: commandStore, Activity: activityLog,
+				Runtimes: runtimeProjection, Balances: balanceProjection, Positions: positionProjection,
+				PortfolioPositions: accountPositionProjection, Commands: commandStore, Activity: activityLog,
 				Principal: dependencies.Principal,
 			},
 		},
@@ -296,6 +311,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		catalog:     catalogProjection,
 		board:       boardService,
 		boardStream: dependencies.FundingBoardStream,
+		positions:   accountPositionProjection,
 	}, nil
 }
 
@@ -332,6 +348,15 @@ func (service *Service) Run(ctx context.Context) {
 		}
 		_ = service.boardStream.RunFundingBoard(ctx, service.board.Replace)
 	}()
+	positionsDone := make(chan struct{})
+	go func() {
+		defer close(positionsDone)
+		if service.positions == nil {
+			<-ctx.Done()
+			return
+		}
+		service.positions.Run(ctx)
+	}()
 	if service.reconciler != nil {
 		service.reconciler.Run(ctx)
 	} else {
@@ -339,6 +364,7 @@ func (service *Service) Run(ctx context.Context) {
 	}
 	<-refreshed
 	<-boardDone
+	<-positionsDone
 }
 
 // refreshCatalog renews the catalog projection for as long as ctx lives.

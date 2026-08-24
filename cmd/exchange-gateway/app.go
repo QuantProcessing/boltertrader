@@ -540,10 +540,11 @@ func defaultHandlerFactory(
 		}
 		handler, err := httpapi.NewHandler(httpapi.Options{
 			Monitor: monitor, Accounts: manager, References: references,
-			Orders:   coordinator.Coordinator,
-			Events:   coordinator.Events,
-			Auditor:  postgres.NewStore(realPool),
-			Identity: domain.NewIdentityGenerator(domain.IdentityGeneratorOptions{}),
+			Orders:    coordinator.Coordinator,
+			Events:    coordinator.Events,
+			Positions: coordinator.Streams.Positions(),
+			Auditor:   postgres.NewStore(realPool),
+			Identity:  domain.NewIdentityGenerator(domain.IdentityGeneratorOptions{}),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("HTTP API setup")
