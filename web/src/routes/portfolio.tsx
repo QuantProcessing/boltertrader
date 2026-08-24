@@ -11,8 +11,9 @@ import { inputClass } from "@/components/ui/field";
 import { InstrumentName } from "@/components/ui/instrument-name";
 import { Num } from "@/components/ui/num";
 import { Metric } from "@/components/ui/panel";
-import { StateBadge, Tag, type StateTone } from "@/components/ui/state-badge";
+import { Tag } from "@/components/ui/state-badge";
 import { useLedger, usePortfolioPositions } from "@/features/portfolio/queries";
+import { liquidationPrice } from "@/features/trade/live-position";
 import { useTradeRealtime } from "@/features/trade/realtime";
 import { decimalSign, formatDecimal, formatTimestamp } from "@/lib/format";
 import { useT, type Translate } from "@/lib/i18n";
@@ -24,23 +25,19 @@ export interface PortfolioSearch {
   account?: string;
   venue?: string;
   product?: string;
-  status?: PositionFreshness;
   query?: string;
   group?: PortfolioGroup;
 }
 
-const FRESHNESS: PositionFreshness[] = ["live", "delayed", "stale", "syncing", "unavailable"];
 const GROUPS: PortfolioGroup[] = ["account", "venue", "instrument"];
 
 export function validatePortfolioSearch(search: Record<string, unknown>): PortfolioSearch {
   const value = (candidate: unknown) => typeof candidate === "string" && candidate.trim() !== "" ? candidate.trim() : undefined;
-  const status = value(search.status);
   const group = value(search.group);
   return {
     account: value(search.account),
     venue: value(search.venue),
     product: value(search.product),
-    status: FRESHNESS.includes(status as PositionFreshness) ? status as PositionFreshness : undefined,
     query: value(search.query),
     group: GROUPS.includes(group as PortfolioGroup) ? group as PortfolioGroup : undefined,
   };
@@ -55,8 +52,7 @@ export function PortfolioPage() {
     accountId: search.account,
     venue: search.venue,
     product: search.product,
-    status: search.status,
-  }), [search.account, search.product, search.status, search.venue]);
+  }), [search.account, search.product, search.venue]);
   const positions = usePortfolioPositions(query);
   const snapshot = positions.data;
   useTradeRealtime(Boolean(snapshot?.cursor), snapshot?.cursor);
@@ -100,10 +96,6 @@ export function PortfolioPage() {
           <option value="">{t("portfolio.allProducts")}</option>
           {products.map((product) => <option key={product} value={product}>{product}</option>)}
         </select>
-        <select className={cn(inputClass, "w-36")} value={search.status ?? ""} onChange={(event) => update({ status: (event.target.value || undefined) as PositionFreshness | undefined })} aria-label={t("portfolio.status")}>
-          <option value="">{t("portfolio.allStatuses")}</option>
-          {FRESHNESS.map((status) => <option key={status} value={status}>{freshnessLabel(status, t)}</option>)}
-        </select>
         <label className="relative min-w-44 flex-1">
           <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-dim" aria-hidden="true" />
           <input className={cn(inputClass, "w-full pl-7")} value={search.query ?? ""} onChange={(event) => update({ query: event.target.value || undefined })} placeholder={t("portfolio.search")} aria-label={t("portfolio.search")} />
@@ -116,7 +108,7 @@ export function PortfolioPage() {
         </Button>
       </header>
 
-      <SummaryStrip summaries={snapshot?.summary.bySettlementAsset ?? []} staleAccounts={snapshot?.summary.staleAccountCount ?? 0} verifiedAt={snapshot?.verifiedAt} t={t} />
+      <SummaryStrip summaries={snapshot?.summary.bySettlementAsset ?? []} staleAccounts={snapshot?.summary.staleAccountCount ?? 0} t={t} />
 
       {snapshot && snapshot.summary.staleAccountCount > 0 ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-warn/30 bg-warn/5 px-3 py-1.5 text-meta text-warn" role="status">
@@ -131,16 +123,19 @@ export function PortfolioPage() {
         ) : !positions.isPending && rows.length === 0 ? (
           <EmptyState icon={Wallet} title={t("portfolio.empty.positions")} detail={t("portfolio.empty.authoritativeDetail")} />
         ) : (
-          groups.map(([key, items]) => (
-            <section key={key} className="border-b border-line">
-              <header className="flex h-row items-center gap-2 bg-panel px-3">
-                <h2 className="text-base font-medium text-text">{groupTitle(group, key, items, accountLabels)}</h2>
-                <Tag>{items.length}</Tag>
-                <span className="ml-auto text-meta text-dim">{groupState(items, t)}</span>
-              </header>
-              <DataTable columns={positionColumns(t)} data={items} getRowId={positionId} caption={t("portfolio.caption.positions")} loading={positions.isPending} />
-            </section>
-          ))
+          groups.map(([key, items]) => {
+            const state = groupState(items, t);
+            return (
+              <section key={key} className="border-b border-line">
+                <header className="flex h-row items-center gap-2 bg-panel px-3">
+                  <h2 className="text-base font-medium text-text">{groupTitle(group, key, items, accountLabels)}</h2>
+                  <Tag>{items.length}</Tag>
+                  {state ? <span className="ml-auto text-meta text-dim">{state}</span> : null}
+                </header>
+                <DataTable columns={positionColumns(t)} data={items} getRowId={positionId} caption={t("portfolio.caption.positions")} loading={positions.isPending} />
+              </section>
+            );
+          })
         )}
       </main>
 
@@ -149,7 +144,7 @@ export function PortfolioPage() {
   );
 }
 
-function SummaryStrip({ summaries, staleAccounts, verifiedAt, t }: { summaries: PositionSettlementSummary[]; staleAccounts: number; verifiedAt?: string; t: Translate }) {
+function SummaryStrip({ summaries, staleAccounts, t }: { summaries: PositionSettlementSummary[]; staleAccounts: number; t: Translate }) {
   return (
     <section className="flex min-h-bar shrink-0 items-center gap-7 overflow-x-auto border-b border-line px-3 py-1.5" aria-label={t("portfolio.summary")}>
       {summaries.length === 0 ? <p className="text-meta text-dim">{t("portfolio.noSummary")}</p> : summaries.map((summary) => (
@@ -159,10 +154,7 @@ function SummaryStrip({ summaries, staleAccounts, verifiedAt, t }: { summaries: 
           {summary.excludedPnlCount > 0 ? <span className="text-meta text-warn">{t("portfolio.excluded", { count: summary.excludedPnlCount })}</span> : null}
         </div>
       ))}
-      <div className="ml-auto flex shrink-0 items-center gap-3 text-meta text-dim">
-        {staleAccounts > 0 ? t("portfolio.staleAccountsShort", { count: staleAccounts }) : null}
-        <span>{t("portfolio.verified", { time: verifiedAt ? formatTimestamp(verifiedAt) : "—" })}</span>
-      </div>
+      {staleAccounts > 0 ? <span className="ml-auto shrink-0 text-meta text-warn">{t("portfolio.staleAccountsShort", { count: staleAccounts })}</span> : null}
     </section>
   );
 }
@@ -193,9 +185,8 @@ function positionColumns(t: Translate): ColumnDef<AccountPosition, unknown>[] {
     { id: "entry", header: t("col.entry"), accessorKey: "entryPrice", cell: ({ row }) => value(row.original.entryPrice), meta: { numeric: true } },
     { id: "mark", header: t("col.mark"), accessorKey: "markPrice", cell: ({ row }) => sourcedValue(row.original.markPrice, row.original.markPriceSource, t), meta: { numeric: true } },
     { id: "unrealized", header: t("col.unrealized"), accessorKey: "unrealizedPnl", cell: ({ row }) => sourcedPnl(row.original, t), meta: { numeric: true } },
-    { id: "liquidation", header: t("portfolio.liquidation"), accessorKey: "liquidationPrice", cell: ({ row }) => value(row.original.liquidationPrice), meta: { numeric: true } },
+    { id: "liquidation", header: t("portfolio.liquidation"), accessorFn: liquidationPrice, cell: ({ getValue }) => value(String(getValue() ?? "")), meta: { numeric: true } },
     { id: "margin", header: t("portfolio.margin"), accessorKey: "marginUsed", cell: ({ row }) => <div>{value(row.original.marginUsed)}{row.original.marginMode ? <div className="text-meta text-dim">{row.original.marginMode}</div> : null}</div>, meta: { numeric: true } },
-    { id: "freshness", header: t("portfolio.status"), accessorKey: "freshness", cell: ({ row }) => <StateBadge tone={freshnessTone(row.original.freshness)} label={freshnessLabel(row.original.freshness, t)} detail={row.original.blockedReason} />, meta: { width: "8rem" } },
     { id: "verified", header: t("col.updated"), accessorKey: "verifiedAt", cell: ({ row }) => <span className="text-dim">{row.original.verifiedAt ? formatTimestamp(row.original.verifiedAt) : "—"}</span>, meta: { align: "right", width: "7rem" } },
   ];
 }
@@ -232,9 +223,10 @@ function groupTitle(group: PortfolioGroup, key: string, rows: AccountPosition[],
   return key;
 }
 
-function groupState(rows: AccountPosition[], t: Translate): string {
+function groupState(rows: AccountPosition[], t: Translate): string | null {
   const priority: PositionFreshness[] = ["unavailable", "stale", "delayed", "syncing", "live"];
   const state = priority.find((candidate) => rows.some((row) => row.freshness === candidate));
+  if (!state || state === "live") return null;
   return freshnessLabel(state, t);
 }
 
@@ -244,13 +236,6 @@ function freshnessLabel(freshness: PositionFreshness | undefined, t: Translate):
   if (freshness === "stale") return t("portfolio.freshness.stale");
   if (freshness === "syncing") return t("portfolio.freshness.syncing");
   return t("portfolio.freshness.unavailable");
-}
-
-function freshnessTone(freshness: PositionFreshness | undefined): StateTone {
-  if (freshness === "live") return "ok";
-  if (freshness === "syncing") return "pending";
-  if (freshness === "delayed" || freshness === "stale") return "warn";
-  return "danger";
 }
 
 function sourceLabel(source: string | undefined, t: Translate): string {

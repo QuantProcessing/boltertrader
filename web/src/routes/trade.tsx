@@ -142,9 +142,7 @@ export function TradePage() {
                 instrumentId={instrument?.instrumentId ?? null}
                 positions={positionItems}
                 positionsLoading={accountPositions.isFetching && accountPositions.data === undefined}
-                positionsFetching={accountPositions.isFetching}
                 positionsError={accountPositions.isError}
-                positionsUpdatedAt={accountPositions.dataUpdatedAt}
                 positionAccounts={accountPositions.data?.accounts ?? []}
                 liveMarkPrice={marketFact?.markPrice}
               />

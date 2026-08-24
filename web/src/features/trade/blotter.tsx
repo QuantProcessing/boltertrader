@@ -14,6 +14,7 @@ import { Num, Side } from "@/components/ui/num";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
 import { commandFailureReason, venueOfCommand } from "@/features/trade/order-status";
+import { liquidationPrice, positionMarkPrice, positionUnrealizedPnl } from "@/features/trade/live-position";
 import { useCancelOrder, useFills, useOrders } from "@/features/trade/queries";
 import { compactIdentifier, decimalSign, formatTimestamp } from "@/lib/format";
 import { instrumentSymbol } from "@/lib/instrument";
@@ -33,18 +34,14 @@ export function Blotter({
   instrumentId,
   positions,
   positionsLoading,
-  positionsFetching,
   positionsError,
-  positionsUpdatedAt,
   positionAccounts,
   liveMarkPrice,
 }: {
   instrumentId: string | null;
   positions: AccountPosition[];
   positionsLoading: boolean;
-  positionsFetching: boolean;
   positionsError: boolean;
-  positionsUpdatedAt: number;
   positionAccounts: AccountPositionState[];
   liveMarkPrice?: string;
 }) {
@@ -59,9 +56,7 @@ export function Blotter({
       fills={fills.data ?? []}
       ordersLoading={orders.isFetching && orders.data === undefined}
       positionsLoading={positionsLoading}
-      positionsFetching={positionsFetching}
       positionsError={positionsError}
-      positionsUpdatedAt={positionsUpdatedAt}
       positionAccounts={positionAccounts}
       liveMarkPrice={liveMarkPrice}
       fillsLoading={fills.isFetching && fills.data === undefined}
@@ -83,9 +78,7 @@ export function ReadOnlyBlotter({ instrumentId }: { instrumentId: string | null 
       fills={[]}
       ordersLoading={false}
       positionsLoading={false}
-      positionsFetching={false}
       positionsError={false}
-      positionsUpdatedAt={0}
       positionAccounts={[]}
       fillsLoading={false}
     />
@@ -99,9 +92,7 @@ function BlotterContent({
   fills,
   ordersLoading,
   positionsLoading,
-  positionsFetching,
   positionsError,
-  positionsUpdatedAt,
   positionAccounts,
   liveMarkPrice,
   fillsLoading,
@@ -112,9 +103,7 @@ function BlotterContent({
   fills: Fill[];
   ordersLoading: boolean;
   positionsLoading: boolean;
-  positionsFetching: boolean;
   positionsError: boolean;
-  positionsUpdatedAt: number;
   positionAccounts: AccountPositionState[];
   liveMarkPrice?: string;
   fillsLoading: boolean;
@@ -138,9 +127,7 @@ function BlotterContent({
         {activeTab === "positions" ? (
           <PositionSyncStatus
             loading={positionsLoading}
-            fetching={positionsFetching}
             error={positionsError}
-            updatedAt={positionsUpdatedAt}
             accounts={positionAccounts}
           />
         ) : null}
@@ -161,29 +148,22 @@ function BlotterContent({
 
 function PositionSyncStatus({
   loading,
-  fetching,
   error,
-  updatedAt,
   accounts,
 }: {
   loading: boolean;
-  fetching: boolean;
   error: boolean;
-  updatedAt: number;
   accounts: AccountPositionState[];
 }) {
   const t = useT();
   const freshness = worstFreshness(accounts.map((account) => account.freshness));
-  const tone = error || freshness === "unavailable" ? "bg-danger" : loading || fetching || freshness === "syncing" ? "bg-pending" : freshness === "delayed" || freshness === "stale" ? "bg-warn" : "bg-ok";
+  if (!error && !loading && (!freshness || freshness === "live")) return null;
+  const tone = error || freshness === "unavailable" ? "bg-danger" : loading || freshness === "syncing" ? "bg-pending" : "bg-warn";
   const label = error
     ? t("blotter.positions.syncError")
     : loading
       ? t("blotter.positions.syncing")
-      : freshness && freshness !== "live"
-        ? positionFreshnessLabel(freshness, t)
-        : t("blotter.positions.snapshot", {
-          time: updatedAt > 0 ? formatTimestamp(new Date(updatedAt).toISOString()) : "—",
-        });
+      : positionFreshnessLabel(freshness, t);
   return (
     <span className="ml-auto flex items-center gap-1.5 px-3 text-meta text-dim">
       <span className={cn("size-1.5 rounded-full", tone)} aria-hidden="true" />
@@ -412,35 +392,26 @@ function PositionsTable({
     {
       id: "mark",
       header: t("col.mark"),
-      accessorFn: (position) => decimalSign(liveMarkPrice) !== 0 ? liveMarkPrice : position.markPrice,
+      accessorFn: (position) => positionMarkPrice(position, liveMarkPrice).value,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
     {
       id: "unrealized",
       header: t("col.unrealized"),
-      accessorFn: (position) => position.unrealizedPnl,
-      cell: (context) => <Num value={String(context.getValue() ?? "")} directional signed />,
+      accessorFn: (position) => positionUnrealizedPnl(position, liveMarkPrice).value,
+      cell: ({ row }) => {
+        const pnl = positionUnrealizedPnl(row.original, liveMarkPrice);
+        return <span title={pnl.estimated ? t("portfolio.source.estimated") : undefined}>{pnl.estimated ? "≈ " : ""}<Num value={pnl.value} directional signed /></span>;
+      },
       meta: { numeric: true },
     },
     {
       id: "liquidation",
       header: t("portfolio.liquidation"),
-      accessorFn: (position) => position.liquidationPrice,
+      accessorFn: liquidationPrice,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
-    },
-    {
-      id: "freshness",
-      header: t("col.state"),
-      accessorFn: (position) => position.freshness,
-      cell: ({ row }) => (
-        <StateBadge
-          tone={positionFreshnessTone(row.original.freshness)}
-          label={positionFreshnessLabel(row.original.freshness, t)}
-          detail={row.original.blockedReason}
-        />
-      ),
     },
   ];
 
@@ -465,13 +436,6 @@ function PositionsTable({
 function worstFreshness(values: PositionFreshness[]): PositionFreshness | undefined {
   return (["unavailable", "stale", "delayed", "syncing", "live"] as PositionFreshness[])
     .find((candidate) => values.includes(candidate));
-}
-
-function positionFreshnessTone(value: PositionFreshness | undefined): StateTone {
-  if (value === "live") return "ok";
-  if (value === "syncing") return "pending";
-  if (value === "delayed" || value === "stale") return "warn";
-  return "danger";
 }
 
 function positionFreshnessLabel(value: PositionFreshness | undefined, t: Translate): string {
