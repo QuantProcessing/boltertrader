@@ -21,6 +21,7 @@ const internalPublicBookLimit = 100
 type InternalPublicMarketStreams interface {
 	WatchOrderBook(context.Context, string, int) (publicmarket.OrderBookStream, error)
 	WatchCandles(context.Context, string, string) (publicmarket.CandleStream, error)
+	WatchMarkPrice(context.Context, string) (publicmarket.MarkPriceStream, error)
 }
 
 type internalMarketStreamEvent struct {
@@ -33,6 +34,7 @@ type internalMarketStreamEvent struct {
 	Bids         []exchange.BookLevel `json:"bids,omitempty"`
 	Asks         []exchange.BookLevel `json:"asks,omitempty"`
 	Candle       *internalCandle      `json:"candle,omitempty"`
+	Price        string               `json:"price,omitempty"`
 	Reason       string               `json:"reason,omitempty"`
 }
 
@@ -62,8 +64,8 @@ func (handler *InternalHandler) publicMarketStream(w http.ResponseWriter, r *htt
 	instrumentID := strings.TrimSpace(values.Get("instrumentId"))
 	kind := strings.TrimSpace(values.Get("kind"))
 	interval := strings.TrimSpace(values.Get("interval"))
-	if instrumentID == "" || (kind != "order_book" && kind != "candles") ||
-		(kind == "order_book" && interval != "") || (kind == "candles" && !portableStreamInterval(interval)) {
+	if instrumentID == "" || (kind != "order_book" && kind != "candles" && kind != "mark_price") ||
+		((kind == "order_book" || kind == "mark_price") && interval != "") || (kind == "candles" && !portableStreamInterval(interval)) {
 		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
 		return
 	}
@@ -85,6 +87,14 @@ func (handler *InternalHandler) publicMarketStream(w http.ResponseWriter, r *htt
 			return
 		}
 		handler.serveCandleStream(w, r, instrumentID, stream)
+	case "mark_price":
+		stream, err := handler.publicMarkets.WatchMarkPrice(r.Context(), instrumentID)
+		if err != nil {
+			slog.Warn("public mark-price stream unavailable", "instrument_id", instrumentID, "cause", err)
+			handler.writeError(w, r, http.StatusServiceUnavailable, "PUBLIC_STREAM_UNAVAILABLE", true)
+			return
+		}
+		handler.serveMarkPriceStream(w, r, instrumentID, stream)
 	}
 }
 
@@ -250,6 +260,64 @@ func (handler *InternalHandler) serveCandleStream(w http.ResponseWriter, r *http
 				continue
 			}
 			writeInternalResync(ctx, connection, instrumentID, "candles", "stream-error")
+			return
+		}
+	}
+}
+
+func (handler *InternalHandler) serveMarkPriceStream(w http.ResponseWriter, r *http.Request, instrumentID string, stream publicmarket.MarkPriceStream) {
+	defer stream.Subscription.Close()
+	connection, ctx, ok := handler.acceptInternalMarketSocket(w, r)
+	if !ok {
+		return
+	}
+	defer connection.CloseNow()
+
+	if !sameStreamInstrument(stream.Instrument, stream.Snapshot.Instrument) {
+		return
+	}
+	if err := writeInternalMarketEvent(ctx, connection, internalMarketStreamEvent{
+		Kind: "mark_price", EventType: "snapshot", InstrumentID: instrumentID,
+		ObservedAt: observedTime(stream.Snapshot.Time), Price: stream.Snapshot.Price.String(),
+	}); err != nil {
+		return
+	}
+
+	events, statuses, streamErrors := stream.Subscription.Events(), stream.Subscription.Status(), stream.Subscription.Errors()
+	for events != nil || statuses != nil || streamErrors != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case event, open := <-events:
+			if !open {
+				events = nil
+				continue
+			}
+			if !sameStreamInstrument(stream.Instrument, event.Instrument) {
+				writeInternalResync(ctx, connection, instrumentID, "mark_price", "instrument-mismatch")
+				return
+			}
+			if err := writeInternalMarketEvent(ctx, connection, internalMarketStreamEvent{
+				Kind: "mark_price", EventType: "update", InstrumentID: instrumentID,
+				ObservedAt: observedTime(event.Time), Price: event.Price.String(),
+			}); err != nil {
+				return
+			}
+		case status, open := <-statuses:
+			if !open {
+				statuses = nil
+				continue
+			}
+			if streamStatusRequiresResync(status) {
+				writeInternalResync(ctx, connection, instrumentID, "mark_price", "stream-gap")
+				return
+			}
+		case _, open := <-streamErrors:
+			if !open {
+				streamErrors = nil
+				continue
+			}
+			writeInternalResync(ctx, connection, instrumentID, "mark_price", "stream-error")
 			return
 		}
 	}

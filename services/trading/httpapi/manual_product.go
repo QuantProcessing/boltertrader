@@ -28,9 +28,18 @@ type manualPreviewRequest struct {
 type manualPreview struct {
 	PreviewID string `json:"previewId"`
 	manualPreviewRequest
-	PrincipalID string   `json:"-"`
-	Blockers    []string `json:"blockers"`
-	Warnings    []string `json:"warnings"`
+	PrincipalID string               `json:"-"`
+	Blockers    []string             `json:"blockers"`
+	Warnings    []string             `json:"warnings"`
+	Checks      []manualPreviewCheck `json:"checks"`
+	Notional    string               `json:"notional,omitempty"`
+}
+
+type manualPreviewCheck struct {
+	Code     string `json:"code"`
+	Status   string `json:"status"`
+	Actual   string `json:"actual,omitempty"`
+	Required string `json:"required,omitempty"`
 }
 
 type manualCommandRequest struct {
@@ -172,6 +181,11 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
+	instrument, ok := snapshot.Instrument(request.InstrumentID)
+	if !ok {
+		tradingError(w, http.StatusNotFound, "NOT_FOUND")
+		return
+	}
 	if !manualLeverageValid(authority.Product, request.Leverage) {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
@@ -200,8 +214,54 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	preview := manualPreview{PreviewID: previewID, manualPreviewRequest: request, PrincipalID: principal, Blockers: []string{}, Warnings: []string{}}
+	checks, blockers, warnings, notional := manualOrderChecks(instrument, request)
+	preview := manualPreview{
+		PreviewID: previewID, manualPreviewRequest: request, PrincipalID: principal,
+		Blockers: blockers, Warnings: warnings, Checks: checks, Notional: notional,
+	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"meta": httpx.Meta(r), "data": preview})
+}
+
+func manualOrderChecks(instrument catalog.Instrument, request manualPreviewRequest) ([]manualPreviewCheck, []string, []string, string) {
+	quantity, _ := decimal.NewFromString(request.Quantity)
+	quantityStep, _ := decimal.NewFromString(instrument.Rules.QuantityIncrement)
+	minimumQuantity, _ := decimal.NewFromString(instrument.Rules.MinQuantity)
+	checks := make([]manualPreviewCheck, 0, 4)
+	blockers := make([]string, 0, 4)
+	warnings := make([]string, 0, 1)
+
+	appendCheck := func(code string, passed bool, actual, required decimal.Decimal) {
+		status := "passed"
+		if !passed {
+			status = "blocked"
+			blockers = append(blockers, code)
+		}
+		checks = append(checks, manualPreviewCheck{
+			Code: code, Status: status, Actual: actual.String(), Required: required.String(),
+		})
+	}
+
+	if minimumQuantity.IsPositive() {
+		appendCheck("quantity_minimum", !quantity.LessThan(minimumQuantity), quantity, minimumQuantity)
+	}
+	appendCheck("quantity_increment", quantity.Mod(quantityStep).IsZero(), quantity, quantityStep)
+
+	if strings.EqualFold(request.OrderType, "market") {
+		if minimumNotional, err := decimal.NewFromString(instrument.Rules.MinNotional); err == nil && minimumNotional.IsPositive() {
+			checks = append(checks, manualPreviewCheck{Code: "market_notional", Status: "unavailable", Required: minimumNotional.String()})
+			warnings = append(warnings, "market_notional")
+		}
+		return checks, blockers, warnings, ""
+	}
+
+	price, _ := decimal.NewFromString(request.LimitPrice)
+	priceStep, _ := decimal.NewFromString(instrument.Rules.PriceIncrement)
+	appendCheck("price_increment", price.Mod(priceStep).IsZero(), price, priceStep)
+	notional := quantity.Mul(price)
+	if minimumNotional, err := decimal.NewFromString(instrument.Rules.MinNotional); err == nil && minimumNotional.IsPositive() {
+		appendCheck("minimum_notional", !notional.LessThan(minimumNotional), notional, minimumNotional)
+	}
+	return checks, blockers, warnings, notional.String()
 }
 
 func validateManualPreview(request manualPreviewRequest) error {

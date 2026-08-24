@@ -515,6 +515,8 @@ type placeResponse struct {
 	ClientOrderID   string `json:"client_order_id"`
 	State           string `json:"state"`
 	ResourceVersion int64  `json:"resource_version"`
+	VenueCode       string `json:"venue_code,omitempty"`
+	VenueMessage    string `json:"venue_message,omitempty"`
 }
 
 // fillCollection decodes strictly, like every read on this client, so it has to
@@ -1179,7 +1181,7 @@ func (client *Client) place(ctx context.Context, idempotencyID string, intent or
 	}
 	evidence := orders.ExecutionEvidence{
 		CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID,
-		State: result.State, ResourceVersion: result.ResourceVersion,
+		State: result.State, ResourceVersion: result.ResourceVersion, VenueCode: result.VenueCode, VenueMessage: result.VenueMessage,
 		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}},
 	}
 	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {

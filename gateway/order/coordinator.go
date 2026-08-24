@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -758,6 +759,9 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 		}
 	}
 	result = resultFromStored(current)
+	if current.State == domain.StateRejected {
+		result.VenueCode, result.VenueMessage = safeVenueRejection(ack, placeErr)
+	}
 	if uncertain || current.State == domain.StateUncertain {
 		return result, ErrOutcomeUncertain
 	}
@@ -767,6 +771,22 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 		handoffState = store.OrderHandoffAccepted
 	}
 	return result, nil
+}
+
+func safeVenueRejection(ack exchange.OrderAcknowledgement, err error) (string, string) {
+	code := strings.TrimSpace(ack.VenueCode)
+	message := strings.TrimSpace(ack.VenueMessage)
+	var venueErr *exchange.Error
+	if errors.As(err, &venueErr) && venueErr.Kind() == exchange.KindVenueRejected {
+		details := venueErr.Details()
+		if code == "" {
+			code = strings.TrimSpace(details.Code)
+		}
+		if message == "" {
+			message = strings.TrimSpace(details.SafeMessage)
+		}
+	}
+	return code, message
 }
 
 func (coordinator *Coordinator) reconcile(ctx context.Context, route Route, command store.StoredCommand) (bool, error) {

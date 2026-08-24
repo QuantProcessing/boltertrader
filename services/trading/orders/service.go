@@ -68,6 +68,8 @@ type ExecutionEvidence struct {
 	ClientOrderID   string               `json:"clientOrderId,omitempty"`
 	State           string               `json:"state,omitempty"`
 	ResourceVersion int64                `json:"resourceVersion,omitempty"`
+	VenueCode       string               `json:"venueCode,omitempty"`
+	VenueMessage    string               `json:"venueMessage,omitempty"`
 	OrderEvents     []OrderEventEvidence `json:"orderEvents,omitempty"`
 	Fills           []FillEvidence       `json:"fills,omitempty"`
 }
@@ -290,14 +292,16 @@ func validateExecutionEvidence(current, next ExecutionEvidence) error {
 	if next.CommandID == "" || next.GatewayOrderID == "" || next.ClientOrderID == "" || next.State == "" || next.ResourceVersion < 1 {
 		return fmt.Errorf("Gateway execution evidence is incomplete")
 	}
-	if !executionEvidenceEmpty(current) && (current.CommandID != next.CommandID || current.GatewayOrderID != next.GatewayOrderID || current.ClientOrderID != next.ClientOrderID || next.ResourceVersion < current.ResourceVersion) {
+	if !executionEvidenceEmpty(current) && (current.CommandID != next.CommandID || current.GatewayOrderID != next.GatewayOrderID || current.ClientOrderID != next.ClientOrderID || next.ResourceVersion < current.ResourceVersion ||
+		(current.VenueCode != "" && next.VenueCode != "" && current.VenueCode != next.VenueCode) ||
+		(current.VenueMessage != "" && next.VenueMessage != "" && current.VenueMessage != next.VenueMessage)) {
 		return fmt.Errorf("Gateway execution evidence conflicts with the durable command")
 	}
 	return nil
 }
 
 func executionEvidenceEmpty(value ExecutionEvidence) bool {
-	return value.CommandID == "" && value.GatewayOrderID == "" && value.ClientOrderID == "" && value.State == "" && value.ResourceVersion == 0 && len(value.OrderEvents) == 0 && len(value.Fills) == 0
+	return value.CommandID == "" && value.GatewayOrderID == "" && value.ClientOrderID == "" && value.State == "" && value.ResourceVersion == 0 && value.VenueCode == "" && value.VenueMessage == "" && len(value.OrderEvents) == 0 && len(value.Fills) == 0
 }
 
 func mergeExecutionEvidence(current, next ExecutionEvidence) (ExecutionEvidence, error) {
@@ -305,6 +309,12 @@ func mergeExecutionEvidence(current, next ExecutionEvidence) (ExecutionEvidence,
 		return current, nil
 	}
 	merged := next
+	if merged.VenueCode == "" {
+		merged.VenueCode = current.VenueCode
+	}
+	if merged.VenueMessage == "" {
+		merged.VenueMessage = current.VenueMessage
+	}
 	events := make(map[string]OrderEventEvidence, len(current.OrderEvents)+len(next.OrderEvents))
 	merged.OrderEvents = nil
 	for _, event := range append(append([]OrderEventEvidence(nil), current.OrderEvents...), next.OrderEvents...) {

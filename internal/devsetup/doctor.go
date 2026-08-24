@@ -3,8 +3,10 @@ package devsetup
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -17,6 +19,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+const tradingReadyPollInterval = 500 * time.Millisecond
 
 // Status is the outcome of one check.
 type Status string
@@ -44,6 +48,12 @@ type Check struct {
 	Fix    string
 }
 
+// DiagnoseOptions changes how long Diagnose tolerates startup-only states.
+// Zero values preserve the one-shot behavior expected from `make doctor`.
+type DiagnoseOptions struct {
+	TradingReadyWait time.Duration
+}
+
 // Diagnose reports on every part of the local stack, in dependency order, and
 // never stops early. A run that finds five problems should say so once rather
 // than be re-run five times.
@@ -52,6 +62,14 @@ type Check struct {
 // the running stack actually published rather than the defaults — which is the
 // entire point of `POSTGRES_PORT=15433 make up` being remembered.
 func Diagnose(ctx context.Context, root string) ([]Check, error) {
+	return DiagnoseWithOptions(ctx, root, DiagnoseOptions{})
+}
+
+// DiagnoseWithOptions is Diagnose with bounded waits for callers that have just
+// started the stack. Trading has no Compose healthcheck because its readiness
+// endpoint requires a token, so `make up` uses this path to close the gap
+// between Compose's service_started observation and application readiness.
+func DiagnoseWithOptions(ctx context.Context, root string, options DiagnoseOptions) ([]Check, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository root: %w", err)
@@ -93,7 +111,7 @@ func Diagnose(ctx context.Context, root string) ([]Check, error) {
 	}
 
 	add(checkGateway(ctx, valueOr(values, gatewayPortVar, defaultGatewayPort), filepath.Join(root, SecretDirName, StackDirName, GatewayAuthTokenFile)))
-	add(checkTrading(ctx, valueOr(values, tradingPortVar, defaultTradingPort), filepath.Join(root, SecretDirName, StackDirName, TradingServiceTokenFile)))
+	add(checkTrading(ctx, valueOr(values, tradingPortVar, defaultTradingPort), filepath.Join(root, SecretDirName, StackDirName, TradingServiceTokenFile), options.TradingReadyWait))
 	add(checkAuthEdge(ctx, valueOr(values, authEdgePortVar, defaultAuthEdgePort)))
 	add(checkWeb(ctx, valueOr(values, webPortVar, defaultWebPort)))
 	return checks, nil
@@ -437,13 +455,15 @@ func checkGateway(ctx context.Context, port, tokenPath string) Check {
 // healthcheck. cmd/trading wraps its whole mux in the service-token
 // authenticator, readiness included, so the probe has to carry the token — and
 // the image is distroless, with no shell to read the file with.
-func checkTrading(ctx context.Context, port, tokenPath string) Check {
+func checkTrading(ctx context.Context, port, tokenPath string, readyWait time.Duration) Check {
 	token, err := os.ReadFile(tokenPath)
 	if err != nil {
 		return Check{Name: "trading", Status: Skip, Detail: "no service token to authenticate with", Fix: "run `make up`"}
 	}
-	status, err := probeHTTP(ctx, "http://127.0.0.1:"+port+"/api/v1/system/readiness", map[string]string{
-		"Authorization": "Bearer " + strings.TrimSpace(string(token)),
+	url := "http://127.0.0.1:" + port + "/api/v1/system/readiness"
+	headers := map[string]string{"Authorization": "Bearer " + strings.TrimSpace(string(token))}
+	status, body, err := probeTradingUntil(ctx, readyWait, tradingReadyPollInterval, func(probeCtx context.Context) (int, []byte, error) {
+		return probeHTTPBody(probeCtx, url, headers)
 	})
 	if err != nil {
 		return Check{
@@ -467,8 +487,75 @@ func checkTrading(ctx context.Context, port, tokenPath string) Check {
 			Fix:    "the running container holds an older token; `make down` then `make up`",
 		}
 	default:
-		return Check{Name: "trading", Status: Fail, Detail: fmt.Sprintf("readiness returned %d", status), Fix: "`make logs` has the reason"}
+		detail := fmt.Sprintf("readiness returned %d", status)
+		if reasons := tradingBlockingReasons(body); len(reasons) > 0 {
+			detail += "; blocked by " + strings.Join(reasons, ", ")
+		}
+		return Check{Name: "trading", Status: Fail, Detail: detail, Fix: "`make logs` has the reason"}
 	}
+}
+
+// probeTradingUntil retries only states that are normal while the process is
+// starting: no listener yet, a timed-out dependency probe, or readiness 503.
+// Authentication and other HTTP failures are configuration errors and return
+// immediately. The last complete HTTP response wins over a final context error
+// so a timeout still reports the component that held readiness back.
+func probeTradingUntil(ctx context.Context, wait, interval time.Duration, probe func(context.Context) (int, []byte, error)) (int, []byte, error) {
+	if wait <= 0 {
+		return probe(ctx)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	var lastStatus int
+	var lastBody []byte
+	var lastErr error
+	haveResult := false
+	for {
+		status, body, err := probe(waitCtx)
+		if err == nil || !haveResult {
+			lastStatus, lastBody, lastErr = status, body, err
+			haveResult = true
+		}
+		if err == nil && status != http.StatusServiceUnavailable {
+			return status, body, nil
+		}
+
+		timer := time.NewTimer(interval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return lastStatus, lastBody, lastErr
+		case <-timer.C:
+		}
+	}
+}
+
+func tradingBlockingReasons(body []byte) []string {
+	var response struct {
+		Data struct {
+			Components map[string]struct {
+				Ready  bool   `json:"ready"`
+				Reason string `json:"reason"`
+			} `json:"components"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+	reasons := make([]string, 0)
+	for name, component := range response.Data.Components {
+		if component.Ready {
+			continue
+		}
+		reason := strings.TrimSpace(component.Reason)
+		if reason == "" {
+			reason = "not_ready"
+		}
+		reasons = append(reasons, name+":"+reason)
+	}
+	sort.Strings(reasons)
+	return reasons
 }
 
 // checkAuthEdge expects a 401. Every route this service exposes either
@@ -522,22 +609,31 @@ func checkWeb(ctx context.Context, port string) Check {
 }
 
 func probeHTTP(ctx context.Context, url string, headers map[string]string) (int, error) {
+	status, _, err := probeHTTPBody(ctx, url, headers)
+	return status, err
+}
+
+func probeHTTPBody(ctx context.Context, url string, headers map[string]string) (int, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	for name, value := range headers {
 		request.Header.Set(name, value)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
-	return response.StatusCode, nil
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return response.StatusCode, nil, err
+	}
+	return response.StatusCode, body, nil
 }
 
 // heldBy names whatever is listening on a port, when the operating system will

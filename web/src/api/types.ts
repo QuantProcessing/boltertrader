@@ -100,6 +100,9 @@ export interface ExecutionEvidence {
   clientOrderId?: string;
   state?: string;
   resourceVersion?: number;
+  /** Safe normalized venue rejection details, never raw credential material. */
+  venueCode?: string;
+  venueMessage?: string;
   orderEvents?: OrderEventEvidence[];
   fills?: FillEvidence[];
 }
@@ -207,6 +210,17 @@ export interface ManualPreview {
   previewId: string;
   blockers: string[];
   warnings: string[];
+  /** Server-side checks against the catalog revision sealed into this preview. */
+  checks?: ManualPreviewCheck[];
+  /** Exact quantity × limit price. Absent for market orders. */
+  notional?: string;
+}
+
+export interface ManualPreviewCheck {
+  code: string;
+  status: "passed" | "blocked" | "unavailable";
+  actual?: string;
+  required?: string;
 }
 
 /**
@@ -245,6 +259,10 @@ export interface ManualCommandRequest {
 /** `catalog.TradeRules` */
 export interface TradeRules {
   [rule: string]: unknown;
+  priceIncrement?: string;
+  quantityIncrement?: string;
+  minQuantity?: string;
+  minNotional?: string;
 }
 
 /**

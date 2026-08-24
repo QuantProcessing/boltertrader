@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decimalSign, formatDecimal, formatDuration, splitDecimal, splitInstrument } from "./format";
+import { compactIdentifier, decimalSign, formatDecimal, formatDuration, splitDecimal, splitInstrument } from "./format";
 
 /**
  * The separator `formatDecimal` actually used, recovered from its own output
@@ -71,6 +71,13 @@ describe("formatDecimal", () => {
     expect(formatDecimal(null)).toBe("—");
     expect(formatDecimal("")).toBe("—");
     expect(formatDecimal("not-a-number")).toBe("not-a-number");
+  });
+});
+
+describe("compactIdentifier", () => {
+  it("preserves short IDs and bounds long command IDs", () => {
+    expect(compactIdentifier("command-1")).toBe("command-1");
+    expect(compactIdentifier("command_8ae2449c8d91a057f1797ea2602abcdef")).toBe("command_8ae2449c8d91a…abcdef");
   });
 });
 

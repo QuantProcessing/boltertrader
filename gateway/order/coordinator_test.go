@@ -92,6 +92,30 @@ func TestCoordinatorAppliesDurablePerpLeverageBeforePlacement(t *testing.T) {
 	}
 }
 
+func TestCoordinatorReturnsSafeVenueRejectionDetails(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.mu.Lock()
+	fixture.driver.placeAck.State = exchange.AckRejected
+	fixture.driver.placeAck.OrderID = ""
+	fixture.driver.placeAck.VenueCode = "-2019"
+	fixture.driver.placeAck.VenueMessage = "venue rejected order command"
+	fixture.driver.placeErr = exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{
+		Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Operation: "place", Code: "-2019", SafeMessage: "venue rejected order command",
+	})
+	fixture.driver.recordAccepted = false
+	fixture.driver.mu.Unlock()
+
+	request := fixture.placeRequest()
+	request.WriteFence.RuntimeID = "runtime-1"
+	result, err := fixture.coordinator.Place(context.Background(), request)
+	if err != nil || result.State != domain.StateRejected || result.VenueCode != "-2019" || result.VenueMessage != "venue rejected order command" {
+		t.Fatalf("Place result=%+v err=%v", result, err)
+	}
+}
+
 func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) {
 	for _, race := range []string{"rotation", "drain"} {
 		t.Run(race, func(t *testing.T) {

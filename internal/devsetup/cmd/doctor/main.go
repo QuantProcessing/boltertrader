@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -18,6 +19,17 @@ import (
 )
 
 func main() {
+	waitTrading := flag.Duration("wait-trading", 0, "wait up to this duration for Trading readiness during stack startup")
+	flag.Parse()
+	if *waitTrading < 0 {
+		fmt.Fprintln(os.Stderr, "doctor: -wait-trading must not be negative")
+		os.Exit(2)
+	}
+	if flag.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "doctor: unexpected positional arguments")
+		os.Exit(2)
+	}
+
 	// SIGINT-aware, because the postgres and HTTP probes each wait out a
 	// timeout and an operator who has seen enough should not have to wait for
 	// the rest.
@@ -33,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	checks, err := devsetup.Diagnose(ctx, root)
+	checks, err := devsetup.DiagnoseWithOptions(ctx, root, devsetup.DiagnoseOptions{TradingReadyWait: *waitTrading})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "doctor: %v\n", err)
 		os.Exit(1)

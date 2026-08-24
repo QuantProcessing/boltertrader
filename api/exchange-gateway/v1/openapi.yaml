@@ -360,6 +360,8 @@ components:
         client_order_id: {type: string}
         state: {type: string}
         resource_version: {type: integer, minimum: 0}
+        venue_code: {type: string, description: Normalized venue rejection code when state is rejected.}
+        venue_message: {type: string, description: Safe normalized rejection reason when state is rejected.}
     ErrorEnvelope:
       type: object
       required: [error]

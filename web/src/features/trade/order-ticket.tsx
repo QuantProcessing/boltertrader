@@ -1,21 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
+import { X } from "lucide-react";
 
 import { describeError } from "@/api/errors";
-import type { Account, Instrument, OrderSide, OrderType } from "@/api/types";
+import type { Account, AccountPosition, Command, Instrument, ManualPreviewCheck, OrderSide, OrderType } from "@/api/types";
 import { MANUAL_PREVIEW_TTL_MS } from "@/api/types";
+import { preferencesStore, usePreferences } from "@/app/preferences";
 import { Button } from "@/components/ui/button";
+import { DialogClose, DialogContent, DialogRoot } from "@/components/ui/dialog";
 import { Field, Input, inputClass } from "@/components/ui/field";
 import { Segmented } from "@/components/ui/segmented";
+import { StateBadge } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
 import {
   useAccountBalances,
-  useAccountPositions,
   usePlaceOrder,
   usePreviewOrder,
   type SealedPreview,
 } from "@/features/trade/queries";
+import { describeCommandFailure } from "@/features/trade/order-status";
 import { decimalsOf } from "@/features/market/precision";
-import { formatDecimal, formatDuration, splitDecimal } from "@/lib/format";
+import { compactIdentifier, formatDecimal, formatDuration, splitDecimal } from "@/lib/format";
 import { useT, type Key } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
@@ -28,8 +32,8 @@ import { useT, type Key } from "@/lib/i18n";
  * early is the safe direction: the worst case is asking for a fresh preview
  * that was still technically valid.
  *
- * Blockers are the server's refusals and are absolute — the confirm button does
- * not exist while there is one. Warnings are advisory and confirm stays live.
+ * Blockers are the server's refusals and are absolute — the confirm button is
+ * disabled while there is one. Warnings are advisory and confirm stays live.
  * ------------------------------------------------------------------------- */
 
 /**
@@ -48,52 +52,86 @@ const ORDER_TYPES: { value: OrderType; labelKey: Key }[] = [
 ];
 
 const LEVERAGES = ["1", "2", "3", "5", "10", "20"] as const;
-const POSITION_PERCENTAGES = [25, 50, 75, 100] as const;
+type QuantityUnit = "base" | "quote";
 
 /** The confirm button and the success toast, which spell the side differently. */
 const CONFIRM: Record<OrderSide, Key> = { buy: "ticket.confirm.buy", sell: "ticket.confirm.sell" };
+const PLACE: Record<OrderSide, Key> = { buy: "ticket.place.buy", sell: "ticket.place.sell" };
 const PLACED: Record<OrderSide, Key> = { buy: "ticket.placed.buy", sell: "ticket.placed.sell" };
+
+type TicketSeal = SealedPreview & {
+  referencePrice?: string;
+  venue: string;
+  accountLabel: string;
+};
+
+/** A failed preview is always shown, even when successful confirmations are disabled. */
+export function orderConfirmationRequired(confirmOrders: boolean, blockers: readonly string[]): boolean {
+  return confirmOrders || blockers.length > 0;
+}
 
 export function OrderTicket({
   instrument,
   accounts,
+  accountId,
+  onAccountIdChange,
+  positions,
   limitPrice,
   onLimitPriceChange,
+  bestBid,
+  bestAsk,
 }: {
   instrument: Instrument | null;
   /** Already filtered to the ones that can trade this instrument. */
   accounts: Account[];
+  /** Shared with the blotter and chart so every private surface names one account. */
+  accountId: string;
+  onAccountIdChange: (next: string) => void;
+  positions: AccountPosition[];
   /** Lifted so a click in the order book can fill it. */
   limitPrice: string;
   onLimitPriceChange: (next: string) => void;
+  /** Live public prices used only for market-size conversion and estimates. */
+  bestBid?: string;
+  bestAsk?: string;
 }) {
   const toast = useToast();
   const t = useT();
-  const [accountId, setAccountId] = useState("");
+  const preferences = usePreferences();
   const [side, setSide] = useState<OrderSide>("buy");
   const [orderType, setOrderType] = useState<OrderType>("limit");
-  const [quantity, setQuantity] = useState("");
+  const [amount, setAmount] = useState("");
+  const [quantityUnit, setQuantityUnit] = useState<QuantityUnit>("base");
+  const [sizePercent, setSizePercent] = useState(0);
   const [timeInForce, setTimeInForce] = useState("GTC");
   const [reduceOnly, setReduceOnly] = useState(false);
   const [leverage, setLeverage] = useState<(typeof LEVERAGES)[number]>("1");
-  const [sealed, setSealed] = useState<SealedPreview | null>(null);
+  const [sealed, setSealed] = useState<TicketSeal | null>(null);
 
   const preview = usePreviewOrder();
   const place = usePlaceOrder();
-  const positions = useAccountPositions(accountId, instrument?.instrumentId ?? "");
   const balances = useAccountBalances(accountId);
 
   const positionQuantity = sumDecimals(
-    (positions.data ?? []).map((position) => position.quantity),
+    positions.map((position) => position.quantity),
   );
-  const sellablePositionQuantity = sumDecimals(
-    (positions.data ?? [])
+  const longPositionQuantity = sumDecimals(
+    positions
       .filter(
         (position) =>
           position.side === "buy" ||
           (position.side === undefined && !position.quantity.trimStart().startsWith("-")),
       )
       .map((position) => position.quantity),
+  );
+  const shortPositionQuantity = sumDecimals(
+    positions
+      .filter(
+        (position) =>
+          position.side === "sell" ||
+          (position.side === undefined && position.quantity.trimStart().startsWith("-")),
+      )
+      .map((position) => absoluteDecimal(position.quantity)),
   );
   const settlementAsset = instrument?.settlement ?? instrument?.quoteAsset;
   const availableBalance = balances.data?.find(
@@ -102,70 +140,87 @@ export function OrderTicket({
       (balance.settlementAsset?.toUpperCase() === settlementAsset?.toUpperCase() ||
         balance.asset.toUpperCase() === settlementAsset?.toUpperCase()),
   );
+  const selectedAccount = accounts.find((account) => account.accountId === accountId);
   const quantityDecimals = decimalsOf(instrument?.rules.quantityIncrement);
+  // Quote-sized market orders require the executable side of the book. Falling
+  // back to mark or midpoint can overstate the quantity affordable at the ask.
+  const marketReferencePrice = side === "buy"
+    ? isPositiveDecimal(bestAsk ?? "") ? bestAsk ?? "" : ""
+    : isPositiveDecimal(bestBid ?? "") ? bestBid ?? "" : "";
+  const sizingPrice = orderType === "limit" ? limitPrice : marketReferencePrice;
+  const baseQuantity = quantityUnit === "base"
+    ? amount
+    : quoteAmountToBaseQuantity(amount, sizingPrice, instrument?.rules.quantityIncrement) ?? "";
+  const estimatedNotional = isPositiveDecimal(baseQuantity) && isPositiveDecimal(sizingPrice)
+    ? multiplyPositiveDecimals(baseQuantity, sizingPrice)
+    : null;
+  const estimatedMargin = instrument?.product === "perp" && !reduceOnly && estimatedNotional
+    ? dividePositiveDecimal(estimatedNotional, Number(leverage), 2)
+    : null;
+  const availableMargin = availableBalance?.availableMargin ?? availableBalance?.available;
+  const closeablePositionQuantity = side === "sell" ? longPositionQuantity : shortPositionQuantity;
+  const sliderAvailable = reduceOnly
+    ? isPositiveDecimal(closeablePositionQuantity)
+    : isPositiveDecimal(availableMargin ?? "") && isPositiveDecimal(sizingPrice);
 
   // Pick the only account, or the first, rather than making the operator choose
   // between one option. Re-runs when the instrument changes the candidate set.
   useEffect(() => {
     if (accounts.some((account) => account.accountId === accountId)) return;
-    setAccountId(accounts[0]?.accountId ?? "");
-  }, [accounts, accountId]);
+    onAccountIdChange(accounts[0]?.accountId ?? "");
+  }, [accounts, accountId, onAccountIdChange]);
+
+  useEffect(() => {
+    setAmount("");
+    setSizePercent(0);
+  }, [instrument?.instrumentId]);
 
   // Any edit invalidates the seal: it was priced against the previous values,
   // and confirming it afterwards would send something the operator never saw.
   useEffect(() => {
     setSealed(null);
-  }, [instrument?.instrumentId, accountId, side, orderType, quantity, limitPrice, timeInForce, reduceOnly, leverage]);
+  }, [instrument?.instrumentId, accountId, side, orderType, amount, quantityUnit, limitPrice, timeInForce, reduceOnly, leverage]);
 
   const remaining = useSealCountdown(sealed);
   const expired = sealed !== null && remaining <= 0;
 
-  const quantityError = quantity !== "" && !isPositiveDecimal(quantity) ? t("ticket.positive") : null;
+  const quantityError = amount !== "" && !isPositiveDecimal(amount)
+    ? t("ticket.positive")
+    : quantityUnit === "quote" && isPositiveDecimal(amount) && !isPositiveDecimal(sizingPrice)
+      ? t("ticket.quantity.priceUnavailable")
+      : quantityUnit === "quote" && isPositiveDecimal(amount) && !isPositiveDecimal(baseQuantity)
+        ? t("ticket.quantity.tooSmall")
+        : null;
   const priceError =
     orderType === "limit" && limitPrice !== "" && !isPositiveDecimal(limitPrice) ? t("ticket.positive") : null;
 
   const ready =
     instrument !== null &&
     accountId !== "" &&
-    isPositiveDecimal(quantity) &&
+    isPositiveDecimal(baseQuantity) &&
     (orderType === "market" || isPositiveDecimal(limitPrice));
+  const interactionLocked = preview.isPending || place.isPending || sealed !== null;
 
-  const onReview = () => {
-    if (!instrument || !ready) return;
-    preview.mutate(
-      {
-        accountId,
-        instrumentId: instrument.instrumentId,
-        side,
-        orderType,
-        quantity,
-        // A market order must carry no price at all; the server rejects one
-        // that does, rather than ignoring it.
-        limitPrice: orderType === "limit" ? limitPrice : "",
-        timeInForce,
-        reduceOnly,
-        leverage: instrument.product === "perp" ? Number(leverage) : 0,
-      },
-      {
-        onSuccess: setSealed,
-        onError: (error) =>
-          toast.push({ tone: "danger", title: t("ticket.previewRejected"), detail: describeError(error, t) }),
-      },
-    );
-  };
-
-  const onConfirm = () => {
-    if (!sealed || expired) return;
-    place.mutate(sealed.preview.previewId, {
+  const submitSealed = (nextSeal: TicketSeal) => {
+    place.mutate(nextSeal.preview.previewId, {
       onSuccess: (command) => {
         setSealed(null);
-        setQuantity("");
+        if (command.state === "failed") {
+          toast.push({
+            tone: "danger",
+            title: t("ticket.orderRejected"),
+            detail: describeCommandFailure(command, nextSeal.venue, t),
+          });
+          return;
+        }
+        setAmount("");
+        setSizePercent(0);
         toast.push({
-          tone: "ok",
+          tone: command.state === "uncertain" ? "warn" : "ok",
           // `command.state` is the server's own word and is not translated: it is
           // what the blotter row and the audit log call the same thing.
-          title: t(PLACED[side], { state: command.state }),
-          detail: command.commandId,
+          title: t(PLACED[nextSeal.request.side], { state: command.state }),
+          detail: compactIdentifier(command.commandId),
         });
       },
       onError: (error) => {
@@ -176,6 +231,89 @@ export function OrderTicket({
         toast.push({ tone: "danger", title: t("ticket.orderRejected"), detail: describeError(error, t) });
       },
     });
+  };
+
+  const onPrepareOrder = () => {
+    if (!instrument || !ready) return;
+    preview.mutate(
+      {
+        accountId,
+        instrumentId: instrument.instrumentId,
+        side,
+        orderType,
+        quantity: baseQuantity,
+        // A market order must carry no price at all; the server rejects one
+        // that does, rather than ignoring it.
+        limitPrice: orderType === "limit" ? limitPrice : "",
+        timeInForce,
+        reduceOnly,
+        leverage: instrument.product === "perp" ? Number(leverage) : 0,
+      },
+      {
+        onSuccess: (next) => {
+          const nextSeal: TicketSeal = {
+            ...next,
+            referencePrice: orderType === "market" ? sizingPrice : undefined,
+            venue: instrument.venue,
+            accountLabel: selectedAccount ? `${selectedAccount.displayName} · ${selectedAccount.venue}` : accountId,
+          };
+          if (orderConfirmationRequired(preferences.confirmOrders, next.preview.blockers)) {
+            setSealed(nextSeal);
+          } else {
+            submitSealed(nextSeal);
+          }
+        },
+        onError: (error) =>
+          toast.push({ tone: "danger", title: t("ticket.previewRejected"), detail: describeError(error, t) }),
+      },
+    );
+  };
+
+  const onConfirm = () => {
+    if (!sealed || expired) return;
+    submitSealed(sealed);
+  };
+
+  const changeQuantityUnit = (next: QuantityUnit) => {
+    if (next === quantityUnit) return;
+    const currentBaseQuantity = baseQuantity;
+    setQuantityUnit(next);
+    setSizePercent(0);
+    if (!isPositiveDecimal(currentBaseQuantity)) {
+      setAmount("");
+      return;
+    }
+    setAmount(
+      next === "base"
+        ? currentBaseQuantity
+        : multiplyPositiveDecimals(currentBaseQuantity, sizingPrice) ?? "",
+    );
+  };
+
+  const changeSizePercent = (next: number) => {
+    setSizePercent(next);
+    if (next === 0) {
+      setAmount("");
+      return;
+    }
+    const nextBaseQuantity = reduceOnly
+      ? positionPercentQuantity(closeablePositionQuantity, next, instrument?.rules.quantityIncrement)
+      : marginPercentQuantity(
+          availableMargin ?? "",
+          sizingPrice,
+          instrument?.product === "perp" ? Number(leverage) : 1,
+          next,
+          instrument?.rules.quantityIncrement,
+        );
+    if (!nextBaseQuantity) {
+      setAmount("");
+      return;
+    }
+    setAmount(
+      quantityUnit === "base"
+        ? nextBaseQuantity
+        : multiplyPositiveDecimals(nextBaseQuantity, sizingPrice) ?? "",
+    );
   };
 
   return (
@@ -194,8 +332,16 @@ export function OrderTicket({
           name="side"
           label={t("ticket.side")}
           value={side}
-          options={SIDES.map((entry) => ({ value: entry.value, label: t(entry.labelKey), tone: entry.tone }))}
-          onChange={setSide}
+          options={SIDES.map((entry) => ({
+            value: entry.value,
+            label: t(entry.labelKey),
+            tone: entry.tone,
+            disabled: interactionLocked,
+          }))}
+          onChange={(next) => {
+            setSide(next);
+            setSizePercent(0);
+          }}
         />
 
         <div className="grid grid-cols-2 gap-x-4 border-b border-line pb-2">
@@ -203,17 +349,13 @@ export function OrderTicket({
             label={t("ticket.availableMargin")}
             value={
               availableBalance
-                ? `${formatDecimal(availableBalance.availableMargin ?? availableBalance.available)} ${settlementAsset ?? availableBalance.asset}`
+                ? `${formatDecimal(availableBalance.availableMargin ?? availableBalance.available, { decimals: 2 })} ${settlementAsset ?? availableBalance.asset}`
                 : "—"
             }
           />
           <TicketStat
             label={t("ticket.position")}
-            value={
-              positions.data
-                ? `${formatDecimal(positionQuantity, { decimals: quantityDecimals })} ${instrument?.baseAsset ?? ""}`
-                : "—"
-            }
+            value={`${formatDecimal(positionQuantity, { decimals: quantityDecimals })} ${instrument?.baseAsset ?? ""}`}
           />
         </div>
 
@@ -223,8 +365,8 @@ export function OrderTicket({
               {...field}
               className={`${inputClass} h-10`}
               value={accountId}
-              onChange={(event) => setAccountId(event.target.value)}
-              disabled={accounts.length === 0}
+              onChange={(event) => onAccountIdChange(event.target.value)}
+              disabled={accounts.length === 0 || interactionLocked}
             >
               {accounts.length === 0 ? <option value="">{t("ticket.noAccount")}</option> : null}
               {accounts.map((account) => (
@@ -240,9 +382,14 @@ export function OrderTicket({
           name="order-type"
           label={t("ticket.orderType")}
           value={orderType}
-          options={ORDER_TYPES.map((entry) => ({ value: entry.value, label: t(entry.labelKey) }))}
+          options={ORDER_TYPES.map((entry) => ({
+            value: entry.value,
+            label: t(entry.labelKey),
+            disabled: interactionLocked,
+          }))}
           onChange={(next) => {
             setOrderType(next);
+            setSizePercent(0);
             // A resting market order is not a thing. Immediate-or-cancel is the
             // only honest time-in-force for one, so it is set and locked.
             setTimeInForce(next === "market" ? "IOC" : "GTC");
@@ -254,79 +401,88 @@ export function OrderTicket({
             name="leverage"
             label={t("ticket.leverage")}
             value={leverage}
-            options={LEVERAGES.map((value) => ({ value, label: `${value}×` }))}
-            onChange={setLeverage}
+            options={LEVERAGES.map((value) => ({ value, label: `${value}×`, disabled: interactionLocked }))}
+            onChange={(next) => {
+              setLeverage(next);
+              setSizePercent(0);
+            }}
           />
         ) : null}
 
-        <Field
-          label={`${t("ticket.price")}${instrument?.quoteAsset ? ` (${instrument.quoteAsset})` : ""}`}
-          error={priceError}
-          hint={orderType === "market" ? t("ticket.price.market") : t("ticket.price.hint")}
-          required={orderType === "limit"}
-        >
-          {(field) => (
-            <Input
-              {...field}
-              className="h-10 text-right font-mono"
-              inputMode="decimal"
-              autoComplete="off"
-              value={orderType === "market" ? "" : limitPrice}
-              placeholder={orderType === "market" ? "—" : "0.00"}
-              disabled={orderType === "market"}
-              onChange={(event) => onLimitPriceChange(event.target.value)}
-            />
-          )}
-        </Field>
-
-        {side === "sell" ? (
-          <div className="flex flex-col gap-1">
-            <span className="th">{t("ticket.positionPercent")}</span>
-            <div className="grid grid-cols-4 gap-1 rounded-card bg-fill p-0.5" role="group" aria-label={t("ticket.positionPercent")}>
-              {POSITION_PERCENTAGES.map((percent) => {
-                const nextQuantity = positionPercentQuantity(
-                  sellablePositionQuantity,
-                  percent,
-                  instrument?.rules.quantityIncrement,
-                );
-                return (
-                  <button
-                    key={percent}
-                    type="button"
-                    disabled={nextQuantity === null}
-                    title={nextQuantity === null ? t("ticket.noLongPosition") : undefined}
-                    onClick={() => {
-                      if (nextQuantity === null) return;
-                      setQuantity(nextQuantity);
-                      setReduceOnly(true);
-                    }}
-                    className="h-[30px] rounded-control text-meta text-muted hover:bg-raised hover:text-text disabled:cursor-not-allowed disabled:text-faint"
-                  >
-                    {percent}%
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+        {orderType === "limit" ? (
+          <Field
+            label={`${t("ticket.price")}${instrument?.quoteAsset ? ` (${instrument.quoteAsset})` : ""}`}
+            error={priceError}
+            hint={t("ticket.price.hint")}
+            required
+          >
+            {(field) => (
+              <Input
+                {...field}
+                className="h-10 text-right font-mono"
+                inputMode="decimal"
+                autoComplete="off"
+                disabled={interactionLocked}
+                value={limitPrice}
+                placeholder="0.00"
+                onChange={(event) => {
+                  onLimitPriceChange(event.target.value);
+                  setSizePercent(0);
+                }}
+              />
+            )}
+          </Field>
         ) : null}
 
         <Field
-          label={`${t("ticket.quantity")}${instrument?.baseAsset ? ` (${instrument.baseAsset})` : ""}`}
+          label={t("ticket.quantity")}
           error={quantityError}
+          hint={quantityHint({
+            amount,
+            unit: quantityUnit,
+            baseQuantity,
+            baseAsset: instrument?.baseAsset ?? "BTC",
+            quoteAsset: instrument?.quoteAsset ?? "USD",
+            quantityDecimals,
+            priceAvailable: isPositiveDecimal(sizingPrice),
+            t,
+          })}
           required
         >
           {(field) => (
-            <Input
-              {...field}
-              className="h-10 text-right font-mono"
-              inputMode="decimal"
-              autoComplete="off"
-              value={quantity}
-              placeholder="0.00"
-              onChange={(event) => setQuantity(event.target.value)}
-            />
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              <Input
+                {...field}
+                className="h-10 text-right font-mono"
+                inputMode="decimal"
+                autoComplete="off"
+                disabled={interactionLocked}
+                value={amount}
+                placeholder="0.00"
+                onChange={(event) => {
+                  setAmount(event.target.value);
+                  setSizePercent(0);
+                }}
+              />
+              <QuantityUnitToggle
+                value={quantityUnit}
+                baseAsset={instrument?.baseAsset ?? "BTC"}
+                quoteAsset={instrument?.quoteAsset ?? "USD"}
+                disabled={interactionLocked}
+                onChange={changeQuantityUnit}
+              />
+            </div>
           )}
         </Field>
+
+        <PositionSlider
+          value={sizePercent}
+          side={side}
+          disabled={!sliderAvailable || interactionLocked}
+          unavailable={!sliderAvailable}
+          reduceOnly={reduceOnly}
+          onChange={changeSizePercent}
+        />
 
         <div className="flex items-end gap-3">
           <Field label={t("ticket.tif")} className="flex-1">
@@ -336,7 +492,7 @@ export function OrderTicket({
                 className={`${inputClass} h-10`}
                 value={timeInForce}
                 onChange={(event) => setTimeInForce(event.target.value)}
-                disabled={orderType === "market"}
+                disabled={orderType === "market" || interactionLocked}
               >
                 <option value="GTC">GTC</option>
                 <option value="IOC">IOC</option>
@@ -348,55 +504,229 @@ export function OrderTicket({
           <label className="flex h-[30px] items-center gap-2 text-base text-muted">
             <input
               type="checkbox"
+              disabled={interactionLocked}
               checked={reduceOnly}
-              onChange={(event) => setReduceOnly(event.target.checked)}
+              onChange={(event) => {
+                setReduceOnly(event.target.checked);
+                setSizePercent(0);
+              }}
               className="size-3.5 accent-[var(--bt-accent)]"
             />
             {t("ticket.reduceOnly")}
           </label>
         </div>
 
-        <div className="flex flex-col gap-1 border-t border-line pt-2">
-          <Notional quantity={quantity} price={limitPrice} asset={instrument?.quoteAsset} active={orderType === "limit"} />
-          <TicketStat label={t("ticket.estimatedLiquidation")} value="—" />
-          <TicketStat label={t("ticket.positionMargin")} value="—" />
-          <TicketStat label={t("ticket.fee")} value="—" />
+        <div className="flex flex-col gap-1 border-t border-line pt-2" aria-label={t("ticket.preview.live")}>
+          <div className="mb-1 flex items-center justify-between">
+            <span className="th">{t("ticket.preview.live")}</span>
+            <span className="text-meta text-dim">{t("ticket.preview.estimate")}</span>
+          </div>
+          <TicketStat
+            label={t("ticket.preview.orderQuantity")}
+            value={
+              isPositiveDecimal(baseQuantity)
+                ? `${formatDecimal(baseQuantity, { decimals: quantityDecimals })} ${instrument?.baseAsset ?? ""}`
+                : "—"
+            }
+          />
+          <TicketStat
+            label={orderType === "market" ? t("ticket.preview.referencePrice") : t("ticket.price")}
+            value={
+              isPositiveDecimal(sizingPrice)
+                ? `${orderType === "market" ? "≈ " : ""}${formatDecimal(sizingPrice, { decimals: decimalsOf(instrument?.rules.priceIncrement) })} ${instrument?.quoteAsset ?? ""}`
+                : orderType === "market" ? t("ticket.preview.waitingMarket") : "—"
+            }
+          />
+          <TicketStat
+            label={t("ticket.notional")}
+            value={
+              estimatedNotional
+                ? `${orderType === "market" ? "≈ " : ""}${formatDecimal(estimatedNotional, { decimals: 2 })} ${instrument?.quoteAsset ?? ""}`
+                : "—"
+            }
+          />
+          <TicketStat
+            label={t("ticket.estimatedLiquidation")}
+            value={estimatedNotional && instrument?.product === "perp" ? t("ticket.preview.afterFill") : "—"}
+          />
+          <TicketStat
+            label={t("ticket.positionMargin")}
+            value={
+              instrument?.product !== "perp" || reduceOnly
+                ? t("ticket.preview.notApplicable")
+                : estimatedMargin
+                  ? `≈ ${formatDecimal(estimatedMargin, { decimals: 2 })} ${settlementAsset ?? instrument?.quoteAsset ?? ""}`
+                  : "—"
+            }
+          />
+          <TicketStat label={t("ticket.fee")} value={estimatedNotional ? t("ticket.preview.venueConfirm") : "—"} />
         </div>
 
-        {sealed === null ? (
-          <Button
-            variant={side}
-            size="lg"
-            onClick={onReview}
-            disabled={!ready || preview.isPending}
-            className="w-full"
-          >
-            {preview.isPending ? t("ticket.pricing") : t("ticket.review")}
-          </Button>
-        ) : (
-          <SealedConfirmation
+        <Button
+          variant={side}
+          size="lg"
+          onClick={onPrepareOrder}
+          disabled={!ready || preview.isPending || place.isPending || sealed !== null}
+          className="w-full"
+        >
+          {place.isPending ? t("ticket.placing") : preview.isPending ? t("ticket.pricing") : t(PLACE[side])}
+        </Button>
+      </div>
+
+      {sealed ? (
+          <OrderConfirmationDialog
             sealed={sealed}
-            side={side}
+            side={sealed.request.side}
             remaining={remaining}
             expired={expired}
             placing={place.isPending}
+            instrument={instrument}
+            referencePrice={sealed.referencePrice}
+            accountLabel={sealed.accountLabel}
             onConfirm={onConfirm}
             onDiscard={() => setSealed(null)}
           />
-        )}
-      </div>
+        ) : null}
     </section>
   );
 }
 
+function QuantityUnitToggle({
+  value,
+  baseAsset,
+  quoteAsset,
+  disabled,
+  onChange,
+}: {
+  value: QuantityUnit;
+  baseAsset: string;
+  quoteAsset: string;
+  disabled: boolean;
+  onChange: (next: QuantityUnit) => void;
+}) {
+  const t = useT();
+  const options: { value: QuantityUnit; label: string }[] = [
+    { value: "base", label: baseAsset },
+    { value: "quote", label: quoteAsset },
+  ];
+  return (
+    <div
+      className="flex h-10 items-center rounded-control bg-fill p-0.5"
+      role="group"
+      aria-label={t("ticket.quantity.unit")}
+    >
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          disabled={disabled}
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={
+            value === option.value
+              ? "h-full rounded-control bg-raised px-2 font-mono text-meta text-text disabled:opacity-50"
+              : "h-full rounded-control px-2 font-mono text-meta text-dim hover:text-text disabled:opacity-50"
+          }
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function PositionSlider({
+  value,
+  side,
+  disabled,
+  unavailable,
+  reduceOnly,
+  onChange,
+}: {
+  value: number;
+  side: OrderSide;
+  disabled: boolean;
+  unavailable: boolean;
+  reduceOnly: boolean;
+  onChange: (next: number) => void;
+}) {
+  const t = useT();
+  const style = {
+    "--slider-fill": `${value}%`,
+    "--slider-color": side === "buy" ? "var(--bt-buy)" : "var(--bt-sell)",
+  } as CSSProperties;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-3">
+        <span className="th">{t("ticket.positionPercent")}</span>
+        <span className="text-meta text-dim">
+          {t(reduceOnly ? "ticket.positionPercent.reduce" : "ticket.positionPercent.margin")}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          value={value}
+          disabled={disabled}
+          aria-label={t("ticket.positionPercent")}
+          aria-valuetext={`${value}%`}
+          onChange={(event) => onChange(Number(event.target.value))}
+          className="position-slider min-w-0 flex-1"
+          style={style}
+        />
+        <output className="flex h-[30px] min-w-14 items-center justify-end rounded-control border border-line-strong bg-raised px-2 font-mono text-base text-text">
+          {value}%
+        </output>
+      </div>
+      {unavailable ? <p className="text-meta text-dim">{t("ticket.positionPercent.unavailable")}</p> : null}
+    </div>
+  );
+}
+
+function quantityHint({
+  amount,
+  unit,
+  baseQuantity,
+  baseAsset,
+  quoteAsset,
+  quantityDecimals,
+  priceAvailable,
+  t,
+}: {
+  amount: string;
+  unit: QuantityUnit;
+  baseQuantity: string;
+  baseAsset: string;
+  quoteAsset: string;
+  quantityDecimals?: number;
+  priceAvailable: boolean;
+  t: (key: Key, values?: Record<string, string | number>) => string;
+}): string | undefined {
+  if (unit === "base") return undefined;
+  if (isPositiveDecimal(amount) && isPositiveDecimal(baseQuantity)) {
+    return t("ticket.quantity.converted", {
+      quantity: formatDecimal(baseQuantity, { decimals: quantityDecimals }),
+      base: baseAsset,
+    });
+  }
+  if (!priceAvailable) return t("ticket.quantity.awaitPrice", { quote: quoteAsset });
+  return t("ticket.quantity.quoteHint", { quote: quoteAsset, base: baseAsset });
+}
+
 /* --- The sealed half ----------------------------------------------------- */
 
-function SealedConfirmation({
+function OrderConfirmationDialog({
   sealed,
   side,
   remaining,
   expired,
   placing,
+  instrument,
+  referencePrice,
+  accountLabel,
   onConfirm,
   onDiscard,
 }: {
@@ -405,57 +735,205 @@ function SealedConfirmation({
   remaining: number;
   expired: boolean;
   placing: boolean;
+  instrument: Instrument | null;
+  referencePrice?: string;
+  accountLabel: string;
   onConfirm: () => void;
   onDiscard: () => void;
 }) {
-  const { blockers, warnings } = sealed.preview;
-  const blocked = blockers.length > 0;
   const t = useT();
+  const preferences = usePreferences();
+  const checks = sealed.preview.checks ?? [];
+  const checkedCodes = new Set(checks.map((check) => check.code));
+  const blockers = sealed.preview.blockers.filter((blocker) => !checkedCodes.has(blocker));
+  const warnings = sealed.preview.warnings.filter((warning) => !checkedCodes.has(warning));
+  const request = sealed.request;
+  const quantityDecimals = decimalsOf(instrument?.rules.quantityIncrement);
+  const priceDecimals = decimalsOf(instrument?.rules.priceIncrement);
+  const quantityAsset = instrument?.baseAsset ?? "";
+  const quoteAsset = instrument?.quoteAsset ?? "";
+  const marketNotional = request.orderType === "market" && referencePrice
+    ? multiplyPositiveDecimals(request.quantity, referencePrice)
+    : null;
+  const orderParts = [
+    t(request.side === "buy" ? "ticket.side.buy" : "ticket.side.sell"),
+    t(request.orderType === "limit" ? "ticket.type.limit" : "ticket.type.market"),
+  ];
+  if (request.leverage > 0) orderParts.push(`${request.leverage}×`);
+  if (request.reduceOnly) orderParts.push(t("ticket.reduceOnly"));
+  const blocked = sealed.preview.blockers.length > 0;
 
   return (
-    // A well, not a card: §5 gives inner containers no border, so the seal
-    // separates from the form by fill and space. It still has to read as the
-    // one thing on the ticket that is now live, which is what the `Confirm`
-    // header and the countdown beside it are for.
-    <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
-      <div className="flex items-center justify-between">
-        <span className="th">{t("ticket.confirm")}</span>
-        <span className={expired ? "text-meta text-danger" : "text-meta text-dim"} role="timer" aria-live="off">
-          {expired ? t("ticket.expired") : t("ticket.left", { duration: formatDuration(remaining) })}
-        </span>
-      </div>
+    <DialogRoot open onOpenChange={(open) => {
+      if (!open && !placing) onDiscard();
+    }}>
+      <DialogContent
+        title={t("ticket.preview.summary")}
+        description={t(blocked ? "ticket.confirm.blockedDescription" : "ticket.confirm.description")}
+        className="max-w-lg"
+        onEscapeKeyDown={(event) => {
+          if (placing) event.preventDefault();
+        }}
+        onPointerDownOutside={(event) => {
+          if (placing) event.preventDefault();
+        }}
+      >
+        <DialogClose asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="absolute top-2.5 right-2.5"
+            aria-label={t("common.close")}
+            disabled={placing}
+          >
+            <X aria-hidden className="size-4" />
+          </Button>
+        </DialogClose>
 
-      {blocked ? (
-        <ul className="flex flex-col gap-1 text-meta text-danger">
-          {blockers.map((blocker) => (
-            <li key={blocker}>{blocker}</li>
-          ))}
-        </ul>
-      ) : null}
+        <div className="overflow-y-auto px-4 py-3">
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-card bg-fill px-3 py-2">
+            <span className={side === "buy" ? "font-medium text-buy" : "font-medium text-sell"}>
+              {orderParts.join(" · ")}
+            </span>
+            <span className={expired ? "text-meta text-danger" : "text-meta text-dim"} role="timer" aria-live="off">
+              {expired ? t("ticket.expired") : t("ticket.left", { duration: formatDuration(remaining) })}
+            </span>
+          </div>
 
-      {warnings.length > 0 ? (
-        <ul className="flex flex-col gap-1 text-meta text-warn">
-          {warnings.map((warning) => (
-            <li key={warning}>{warning}</li>
-          ))}
-        </ul>
-      ) : null}
+          <dl className="flex flex-col gap-1.5 text-base">
+            <PreviewStat label={t("ticket.account")} value={accountLabel} />
+            <PreviewStat label={t("ticket.preview.order")} value={orderParts.join(" · ")} />
+            <PreviewStat
+              label={t("ticket.quantity")}
+              value={`${formatDecimal(request.quantity, { decimals: quantityDecimals })} ${quantityAsset}`}
+              numeric
+            />
+            <PreviewStat
+              label={t("ticket.price")}
+              value={request.orderType === "market" && referencePrice
+                ? `≈ ${formatDecimal(referencePrice, { decimals: priceDecimals })} ${quoteAsset}`
+                : request.orderType === "market"
+                  ? t("ticket.preview.marketPrice")
+                  : `${formatDecimal(request.limitPrice, { decimals: priceDecimals })} ${quoteAsset}`}
+              numeric={request.orderType === "limit" || Boolean(referencePrice)}
+            />
+            <PreviewStat
+              label={t("ticket.notional")}
+              value={sealed.preview.notional
+                ? `${formatDecimal(sealed.preview.notional, { decimals: 2 })} ${quoteAsset}`
+                : marketNotional
+                  ? `≈ ${formatDecimal(marketNotional, { decimals: 2 })} ${quoteAsset}`
+                  : t("ticket.preview.marketPrice")}
+              numeric={Boolean(sealed.preview.notional || marketNotional)}
+            />
+          </dl>
 
-      <div className="flex gap-2">
-        <Button variant="ghost" size="lg" onClick={onDiscard} className="shrink-0">
-          {t("ticket.discard")}
-        </Button>
-        <Button
-          variant={side}
-          size="lg"
-          onClick={onConfirm}
-          disabled={blocked || expired || placing}
-          className="flex-1"
-        >
-          {placing ? t("ticket.placing") : expired ? t("ticket.expiredButton") : t(CONFIRM[side])}
-        </Button>
-      </div>
+          {checks.length > 0 ? (
+            <div className="mt-3 flex flex-col gap-1.5 border-t border-line pt-3">
+              <span className="th">{t("ticket.preview.rules")}</span>
+              <ul className="flex flex-col gap-1.5 text-meta">
+                {checks.map((check) => (
+                  <PreviewCheckRow key={check.code} check={check} instrument={instrument} />
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {blockers.length > 0 ? (
+            <ul className="mt-3 flex flex-col gap-1 rounded-card bg-danger/10 p-2.5 text-meta text-danger">
+              {blockers.map((blocker) => (
+                <li key={blocker}>{blocker}</li>
+              ))}
+            </ul>
+          ) : null}
+
+          {warnings.length > 0 ? (
+            <ul className="mt-3 flex flex-col gap-1 rounded-card bg-warn/10 p-2.5 text-meta text-warn">
+              {warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          ) : null}
+
+          <p className="mt-3 text-meta leading-relaxed text-dim">{t("ticket.preview.scope")}</p>
+        </div>
+
+        <div className="border-t border-line bg-panel px-4 py-3">
+          <label className="mb-3 flex w-fit cursor-pointer items-center gap-2 text-meta text-muted">
+            <input
+              type="checkbox"
+              checked={!preferences.confirmOrders}
+              onChange={(event) => preferencesStore.setConfirmOrders(!event.target.checked)}
+              className="size-3.5 accent-[var(--bt-accent)]"
+            />
+            {t("ticket.confirm.dontShowAgain")}
+          </label>
+          <div className="flex gap-2">
+            <DialogClose asChild>
+              <Button variant="ghost" size="lg" disabled={placing} className="shrink-0">
+                {t("ticket.discard")}
+              </Button>
+            </DialogClose>
+            <Button
+              variant={side}
+              size="lg"
+              onClick={onConfirm}
+              disabled={blocked || expired || placing}
+              className="flex-1"
+            >
+              {placing ? t("ticket.placing") : expired ? t("ticket.expiredButton") : t(CONFIRM[side])}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </DialogRoot>
+  );
+}
+
+function PreviewStat({ label, value, numeric = false }: { label: string; value: string; numeric?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <dt className="text-dim">{label}</dt>
+      <dd className="max-w-52 text-right text-muted" data-numeric={numeric ? "" : undefined}>{value}</dd>
     </div>
+  );
+}
+
+const PREVIEW_CHECK_LABELS: Record<string, Key> = {
+  quantity_minimum: "ticket.preview.check.quantityMinimum",
+  quantity_increment: "ticket.preview.check.quantityIncrement",
+  price_increment: "ticket.preview.check.priceIncrement",
+  minimum_notional: "ticket.preview.check.minimumNotional",
+  market_notional: "ticket.preview.check.marketNotional",
+};
+
+function PreviewCheckRow({ check, instrument }: { check: ManualPreviewCheck; instrument: Instrument | null }) {
+  const t = useT();
+  const statusKey: Record<ManualPreviewCheck["status"], Key> = {
+    passed: "ticket.preview.check.passed",
+    blocked: "ticket.preview.check.blocked",
+    unavailable: "ticket.preview.check.unavailable",
+  };
+  const tone = check.status === "passed" ? "ok" : check.status === "blocked" ? "danger" : "warn";
+  const unit = check.code.startsWith("quantity_")
+    ? instrument?.baseAsset
+    : instrument?.quoteAsset;
+  const required = check.required
+    ? t(check.code.endsWith("increment") ? "ticket.preview.check.increment" : "ticket.preview.check.minimum", {
+        value: `${formatDecimal(check.required)}${unit ? ` ${unit}` : ""}`,
+      })
+    : "";
+  const actual = check.status === "blocked" && check.actual
+    ? `${formatDecimal(check.actual)}${unit ? ` ${unit}` : ""} · `
+    : "";
+
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <StateBadge tone={tone} label={t(PREVIEW_CHECK_LABELS[check.code] ?? "ticket.preview.rules")} />
+      <span className={check.status === "blocked" ? "text-danger" : check.status === "unavailable" ? "text-warn" : "text-dim"} data-numeric="">
+        {actual}{t(statusKey[check.status])}{required ? ` · ${required}` : ""}
+      </span>
+    </li>
   );
 }
 
@@ -503,7 +981,7 @@ export function sumDecimals(values: string[]): string {
   return unitsToDecimal(total, scale);
 }
 
-/** A long-position percentage, floored onto the venue quantity increment. */
+/** A position percentage, floored onto the venue quantity increment. */
 export function positionPercentQuantity(position: string, percent: number, increment: unknown): string | null {
   const value = splitDecimal(position);
   const step = typeof increment === "string" ? splitDecimal(increment) : null;
@@ -517,42 +995,73 @@ export function positionPercentQuantity(position: string, percent: number, incre
   return rounded > 0n ? unitsToDecimal(rounded, scale) : null;
 }
 
+/** Quote-currency amount converted to base quantity on the venue lot grid. */
+export function quoteAmountToBaseQuantity(quoteAmount: string, price: string, increment: unknown): string | null {
+  const quote = positiveDecimalUnits(quoteAmount);
+  const executionPrice = positiveDecimalUnits(price);
+  const step = typeof increment === "string" ? positiveDecimalUnits(increment) : null;
+  if (!quote || !executionPrice || !step) return null;
+
+  const numerator = quote.units * 10n ** BigInt(executionPrice.scale + step.scale);
+  const denominator = executionPrice.units * step.units * 10n ** BigInt(quote.scale);
+  const steps = numerator / denominator;
+  return steps > 0n ? unitsToDecimal(steps * step.units, step.scale) : null;
+}
+
+/** Available margin × leverage × percentage, converted to a safe base quantity. */
+export function marginPercentQuantity(
+  availableMargin: string,
+  price: string,
+  leverage: number,
+  percent: number,
+  increment: unknown,
+): string | null {
+  const margin = positiveDecimalUnits(availableMargin);
+  if (!margin || !Number.isInteger(leverage) || leverage <= 0 || !Number.isInteger(percent) || percent <= 0 || percent > 100) {
+    return null;
+  }
+  const notionalUnits = (margin.units * BigInt(leverage) * BigInt(percent)) / 100n;
+  return quoteAmountToBaseQuantity(unitsToDecimal(notionalUnits, margin.scale), price, increment);
+}
+
+function positiveDecimalUnits(value: string): { units: bigint; scale: number } | null {
+  const parts = splitDecimal(value);
+  if (!parts || parts.sign === "-" || !isPositiveDecimal(value)) return null;
+  return {
+    units: BigInt(parts.integer + parts.fraction),
+    scale: parts.fraction.length,
+  };
+}
+
+function multiplyPositiveDecimals(left: string, right: string): string | null {
+  const a = positiveDecimalUnits(left);
+  const b = positiveDecimalUnits(right);
+  if (!a || !b) return null;
+  return unitsToDecimal(a.units * b.units, a.scale + b.scale);
+}
+
+function dividePositiveDecimal(value: string, divisor: number, places: number): string | null {
+  const parsed = positiveDecimalUnits(value);
+  if (!parsed || !Number.isInteger(divisor) || divisor <= 0 || places < 0) return null;
+  const scaleDelta = places - parsed.scale;
+  const numerator = scaleDelta >= 0 ? parsed.units * 10n ** BigInt(scaleDelta) : parsed.units;
+  const denominator = BigInt(divisor) * (scaleDelta < 0 ? 10n ** BigInt(-scaleDelta) : 1n);
+  const rounded = (numerator + denominator / 2n) / denominator;
+  return unitsToDecimal(rounded, places);
+}
+
+function absoluteDecimal(value: string): string {
+  const parts = splitDecimal(value);
+  if (!parts) return "0";
+  return unitsToDecimal(BigInt(parts.integer + parts.fraction), parts.fraction.length);
+}
+
 function unitsToDecimal(value: bigint, scale: number): string {
   const sign = value < 0n ? "-" : "";
   const digits = (value < 0n ? -value : value).toString().padStart(scale + 1, "0");
   if (scale === 0) return sign + digits;
   const fraction = digits.slice(-scale).replace(/0+$/, "");
   return sign + digits.slice(0, -scale) + (fraction === "" ? "" : `.${fraction}`);
-}
-
-/**
- * Quantity × price, for eyeballing the size before confirming.
- *
- * Float again, and display-only again — the strings above are what get sent.
- * It used to earn its place by showing a notional cap coming before it landed as
- * a blocker. There is no cap now, and no test venue underneath it either, so it
- * earns its place for the opposite reason: this is the only line on the ticket
- * that says how much real money the two fields above it add up to.
- */
-function Notional({
-  quantity,
-  price,
-  asset,
-  active,
-}: {
-  quantity: string;
-  price: string;
-  asset?: string;
-  active: boolean;
-}) {
-  // Before the early returns, because a hook cannot sit behind a branch.
-  const t = useT();
-  if (!active || !isPositiveDecimal(quantity) || !isPositiveDecimal(price)) {
-    return <TicketStat label={t("ticket.notional")} value="—" />;
-  }
-  const value = Number.parseFloat(quantity) * Number.parseFloat(price);
-  if (!Number.isFinite(value)) return <TicketStat label={t("ticket.notional")} value="—" />;
-  return <TicketStat label={t("ticket.notional")} value={`${formatDecimal(value.toFixed(2))} ${asset ?? ""}`} />;
 }
 
 function TicketStat({ label, value }: { label: string; value: string }) {

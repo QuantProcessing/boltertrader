@@ -122,7 +122,7 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		},
 		"OrderResponse": {
 			required:   []string{"client_order_id", "command_id", "gateway_order_id", "resource_version", "state"},
-			properties: []string{"client_order_id", "command_id", "gateway_order_id", "resource_version", "state"},
+			properties: []string{"client_order_id", "command_id", "gateway_order_id", "resource_version", "state", "venue_code", "venue_message"},
 		},
 		"ErrorEnvelope": {
 			required:   []string{"error"},

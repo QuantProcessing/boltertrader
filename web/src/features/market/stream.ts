@@ -9,24 +9,32 @@ export interface LiveOrderBook {
   observedAt: string;
 }
 
+export interface LiveMarkPrice {
+  price: string;
+  observedAt: string;
+}
+
 interface StreamEvent {
-  kind: "order_book" | "candles";
+  kind: "order_book" | "candles" | "mark_price";
   eventType: "snapshot" | "delta" | "update" | "resync_required";
   instrumentId: string;
   observedAt: string;
   bids?: DepthLevel[];
   asks?: DepthLevel[];
   candle?: Candle;
+  price?: string;
 }
 
 /** One public venue stream per resource, both carried through the same origin. */
-export function usePublicMarketStreams(instrumentId: string | undefined, interval: CandleInterval) {
+export function usePublicMarketStreams(instrumentId: string | undefined, interval: CandleInterval, product?: string) {
   const [book, setBook] = useState<LiveOrderBook | null>(null);
   const [candle, setCandle] = useState<Candle | null>(null);
+  const [mark, setMark] = useState<LiveMarkPrice | null>(null);
 
   useEffect(() => {
     setBook(null);
     setCandle(null);
+    setMark(null);
     if (!instrumentId || typeof WebSocket === "undefined") return;
 
     let disposed = false;
@@ -51,8 +59,10 @@ export function usePublicMarketStreams(instrumentId: string | undefined, interva
           }
           if (kind === "order_book") {
             setBook((current) => applyBookEvent(current, event));
-          } else if (event.candle) {
+          } else if (kind === "candles" && event.candle) {
             setCandle(event.candle);
+          } else if (kind === "mark_price" && typeof event.price === "string" && event.price !== "") {
+            setMark({ price: event.price, observedAt: event.observedAt });
           }
         });
         socket.addEventListener("close", () => {
@@ -75,14 +85,15 @@ export function usePublicMarketStreams(instrumentId: string | undefined, interva
 
     connect("order_book");
     connect("candles", interval);
+    if (product?.toLowerCase().includes("perp")) connect("mark_price");
     return () => {
       disposed = true;
       for (const timer of timers) window.clearTimeout(timer);
       for (const socket of sockets) socket.close();
     };
-  }, [instrumentId, interval]);
+  }, [instrumentId, interval, product]);
 
-  return { book, candle };
+  return { book, candle, mark };
 }
 
 export function mergeLiveCandle(candles: Candle[] | undefined, live: Candle | null, limit: number): Candle[] | undefined {
@@ -109,7 +120,7 @@ function parseStreamEvent(raw: unknown): StreamEvent | null {
   try {
     const value = JSON.parse(raw) as Partial<StreamEvent>;
     if (
-      (value.kind !== "order_book" && value.kind !== "candles") ||
+      (value.kind !== "order_book" && value.kind !== "candles" && value.kind !== "mark_price") ||
       typeof value.eventType !== "string" ||
       typeof value.instrumentId !== "string" ||
       typeof value.observedAt !== "string"

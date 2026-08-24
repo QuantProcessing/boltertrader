@@ -1,9 +1,10 @@
 import * as Tabs from "@radix-ui/react-tabs";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Inbox } from "lucide-react";
+import { useState } from "react";
 
 import { ApiError } from "@/api/errors";
-import type { Command, CommandState, Fill, ManualIntent, Position } from "@/api/types";
+import type { AccountPosition, Command, CommandState, Fill, ManualIntent } from "@/api/types";
 import { isResumable } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
@@ -12,8 +13,9 @@ import { InstrumentName } from "@/components/ui/instrument-name";
 import { Num, Side } from "@/components/ui/num";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
-import { useCancelOrder, useFills, useOrders, usePositions } from "@/features/trade/queries";
-import { formatTimestamp } from "@/lib/format";
+import { commandFailureReason, venueOfCommand } from "@/features/trade/order-status";
+import { useCancelOrder, useFills, useOrders } from "@/features/trade/queries";
+import { compactIdentifier, decimalSign, formatTimestamp } from "@/lib/format";
 import { instrumentSymbol } from "@/lib/instrument";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -27,19 +29,38 @@ import { cn } from "@/lib/utils";
  * screen can still say something changed.
  * ------------------------------------------------------------------------- */
 
-export function Blotter({ instrumentId }: { instrumentId: string | null }) {
+export function Blotter({
+  instrumentId,
+  positions,
+  positionsLoading,
+  positionsFetching,
+  positionsError,
+  positionsUpdatedAt,
+  liveMarkPrice,
+}: {
+  instrumentId: string | null;
+  positions: AccountPosition[];
+  positionsLoading: boolean;
+  positionsFetching: boolean;
+  positionsError: boolean;
+  positionsUpdatedAt: number;
+  liveMarkPrice?: string;
+}) {
   const orders = useOrders();
-  const positions = usePositions();
   const fills = useFills();
 
   return (
     <BlotterContent
       instrumentId={instrumentId}
       orders={orders.data ?? []}
-      positions={positions.data ?? []}
+      positions={positions}
       fills={fills.data ?? []}
       ordersLoading={orders.isFetching && orders.data === undefined}
-      positionsLoading={positions.isFetching && positions.data === undefined}
+      positionsLoading={positionsLoading}
+      positionsFetching={positionsFetching}
+      positionsError={positionsError}
+      positionsUpdatedAt={positionsUpdatedAt}
+      liveMarkPrice={liveMarkPrice}
       fillsLoading={fills.isFetching && fills.data === undefined}
     />
   );
@@ -59,6 +80,9 @@ export function ReadOnlyBlotter({ instrumentId }: { instrumentId: string | null 
       fills={[]}
       ordersLoading={false}
       positionsLoading={false}
+      positionsFetching={false}
+      positionsError={false}
+      positionsUpdatedAt={0}
       fillsLoading={false}
     />
   );
@@ -71,24 +95,29 @@ function BlotterContent({
   fills,
   ordersLoading,
   positionsLoading,
+  positionsFetching,
+  positionsError,
+  positionsUpdatedAt,
+  liveMarkPrice,
   fillsLoading,
 }: {
   instrumentId: string | null;
   orders: Command[];
-  positions: Position[];
+  positions: AccountPosition[];
   fills: Fill[];
   ordersLoading: boolean;
   positionsLoading: boolean;
+  positionsFetching: boolean;
+  positionsError: boolean;
+  positionsUpdatedAt: number;
+  liveMarkPrice?: string;
   fillsLoading: boolean;
 }) {
   const t = useT();
-
-  // Working orders are the reason to look down here, so the count that decides
-  // the default tab is the actionable one, not the total.
-  const working = orders.filter((order) => isResumable(order.state));
+  const [activeTab, setActiveTab] = useState("positions");
 
   return (
-    <Tabs.Root defaultValue="positions" className="flex min-h-0 flex-1 flex-col">
+    <Tabs.Root value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
       {/* `px-0.5` plus the trigger's own `px-2.5` puts the first label on the
           same 12px gutter as the column headers directly beneath it. At `px-2`
           it sat six pixels right of them, which on a deck this short reads as
@@ -98,20 +127,56 @@ function BlotterContent({
         aria-label={t("blotter.label")}
       >
         <Trigger value="positions" label={t("blotter.positions")} count={positions.length} />
-        <Trigger value="orders" label={t("blotter.orders")} count={working.length} />
+        <Trigger value="orders" label={t("blotter.orders")} count={orders.length} />
         <Trigger value="fills" label={t("blotter.fills")} count={fills.length} />
+        {activeTab === "positions" ? (
+          <PositionSyncStatus
+            loading={positionsLoading}
+            fetching={positionsFetching}
+            error={positionsError}
+            updatedAt={positionsUpdatedAt}
+          />
+        ) : null}
       </Tabs.List>
 
       <Content value="orders">
         <OrdersTable orders={orders} loading={ordersLoading} />
       </Content>
       <Content value="positions">
-        <PositionsTable positions={positions} loading={positionsLoading} />
+        <PositionsTable positions={positions} loading={positionsLoading} liveMarkPrice={liveMarkPrice} />
       </Content>
       <Content value="fills">
         <FillsTable fills={fills} loading={fillsLoading} instrumentId={instrumentId} />
       </Content>
     </Tabs.Root>
+  );
+}
+
+function PositionSyncStatus({
+  loading,
+  fetching,
+  error,
+  updatedAt,
+}: {
+  loading: boolean;
+  fetching: boolean;
+  error: boolean;
+  updatedAt: number;
+}) {
+  const t = useT();
+  const tone = error ? "bg-danger" : loading || fetching ? "bg-pending" : "bg-ok";
+  const label = error
+    ? t("blotter.positions.syncError")
+    : loading
+      ? t("blotter.positions.syncing")
+      : t("blotter.positions.snapshot", {
+          time: updatedAt > 0 ? formatTimestamp(new Date(updatedAt).toISOString()) : "—",
+        });
+  return (
+    <span className="ml-auto flex items-center gap-1.5 px-3 text-meta text-dim">
+      <span className={cn("size-1.5 rounded-full", tone)} aria-hidden="true" />
+      {label}
+    </span>
   );
 }
 
@@ -160,6 +225,46 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
       cell: (context) => <InstrumentName instrumentId={String(context.getValue() ?? "")} />,
     },
     {
+      id: "state",
+      header: t("col.state"),
+      accessorFn: (order) => order.state,
+      cell: (context) => {
+        const order = context.row.original;
+        const blockers = order.blockers.map((blocker) => blocker.code).join(", ");
+        return (
+          // `order.state` and the blocker codes are the server's own words, and
+          // stay in them: the audit log and the operator's support ticket both
+          // say `uncertain` and `risk.notional_cap` whatever the interface says.
+          <StateBadge
+            tone={stateTone(order.state)}
+            label={order.state}
+            detail={blockers === "" ? undefined : t("blotter.blocked", { codes: blockers })}
+          />
+        );
+      },
+      meta: { width: "112px" },
+    },
+    {
+      id: "reason",
+      header: t("col.reason"),
+      accessorFn: (order) => order.state === "failed" ? commandFailureReason(order, venueOfCommand(order), t) : "",
+      cell: (context) => {
+        const reason = String(context.getValue() ?? "");
+        return reason ? <span className="block max-w-72 truncate text-danger" title={reason}>{reason}</span> : <span className="text-dim">—</span>;
+      },
+      meta: { width: "288px" },
+    },
+    {
+      id: "orderId",
+      header: t("col.orderId"),
+      accessorFn: (order) => order.commandId,
+      cell: (context) => {
+        const value = String(context.getValue() ?? "");
+        return <span className="text-dim" data-numeric="" title={value}>{compactIdentifier(value, 22)}</span>;
+      },
+      meta: { width: "156px" },
+    },
+    {
       id: "side",
       header: t("col.side"),
       accessorFn: (order) => intentOf(order)?.side ?? "",
@@ -194,26 +299,6 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
       meta: { width: "64px" },
     },
     {
-      id: "state",
-      header: t("col.state"),
-      accessorFn: (order) => order.state,
-      cell: (context) => {
-        const order = context.row.original;
-        const blockers = order.blockers.map((blocker) => blocker.code).join(", ");
-        return (
-          // `order.state` and the blocker codes are the server's own words, and
-          // stay in them: the audit log and the operator's support ticket both
-          // say `uncertain` and `risk.notional_cap` whatever the interface says.
-          <StateBadge
-            tone={stateTone(order.state)}
-            label={order.state}
-            detail={blockers === "" ? undefined : t("blotter.blocked", { codes: blockers })}
-          />
-        );
-      },
-      meta: { width: "112px" },
-    },
-    {
       id: "updated",
       header: t("col.updated"),
       accessorFn: (order) => order.updatedAt,
@@ -238,7 +323,7 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
             onClick={() =>
               cancel.mutate(order, {
                 onSuccess: () =>
-                  toast.push({ tone: "info", title: t("blotter.cancelSubmitted"), detail: order.commandId }),
+                  toast.push({ tone: "info", title: t("blotter.cancelSubmitted"), detail: compactIdentifier(order.commandId) }),
                 onError: (error) =>
                   toast.push({ tone: "danger", title: t("blotter.cancelRejected"), detail: describe(error, t) }),
               })
@@ -266,21 +351,37 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
           detail={t("blotter.empty.orders.detail")}
         />
       }
+      initialSorting={[{ id: "updated", desc: true }]}
     />
   );
 }
 
 /* --- Positions ----------------------------------------------------------- */
 
-function PositionsTable({ positions, loading }: { positions: Position[]; loading: boolean }) {
+function PositionsTable({
+  positions,
+  loading,
+  liveMarkPrice,
+}: {
+  positions: AccountPosition[];
+  loading: boolean;
+  liveMarkPrice?: string;
+}) {
   const t = useT();
 
-  const columns: ColumnDef<Position, unknown>[] = [
+  const columns: ColumnDef<AccountPosition, unknown>[] = [
     {
       id: "instrument",
       header: t("col.instrument"),
       accessorFn: (position) => position.instrumentId,
       cell: (context) => <InstrumentName instrumentId={String(context.getValue() ?? "")} />,
+    },
+    {
+      id: "side",
+      header: t("col.side"),
+      accessorFn: (position) => position.side ?? (decimalSign(position.quantity) < 0 ? "sell" : "buy"),
+      cell: (context) => <Side side={String(context.getValue() ?? "")} />,
+      meta: { width: "72px" },
     },
     {
       id: "quantity",
@@ -292,14 +393,14 @@ function PositionsTable({ positions, loading }: { positions: Position[]; loading
     {
       id: "entry",
       header: t("col.entry"),
-      accessorFn: (position) => position.averageEntryPrice,
+      accessorFn: (position) => position.entryPrice,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
     {
       id: "mark",
       header: t("col.mark"),
-      accessorFn: (position) => position.markPrice,
+      accessorFn: (position) => decimalSign(liveMarkPrice) !== 0 ? liveMarkPrice : position.markPrice,
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
@@ -310,26 +411,6 @@ function PositionsTable({ positions, loading }: { positions: Position[]; loading
       cell: (context) => <Num value={String(context.getValue() ?? "")} directional signed />,
       meta: { numeric: true },
     },
-    {
-      id: "realized",
-      header: t("col.realized"),
-      accessorFn: (position) => position.realizedPnl,
-      cell: (context) => <Num value={String(context.getValue() ?? "")} directional signed />,
-      meta: { numeric: true },
-    },
-    {
-      id: "currency",
-      header: t("col.settles"),
-      accessorFn: (position) => position.settlementCurrency,
-      meta: { width: "80px" },
-    },
-    {
-      id: "updated",
-      header: t("col.updated"),
-      accessorFn: (position) => position.updatedAt,
-      cell: (context) => <span className="text-dim">{formatTimestamp(String(context.getValue() ?? ""))}</span>,
-      meta: { align: "right", width: "104px" },
-    },
   ];
 
   return (
@@ -337,7 +418,7 @@ function PositionsTable({ positions, loading }: { positions: Position[]; loading
       columns={columns}
       data={positions}
       loading={loading}
-      getRowId={(position) => `${position.lineageId}:${position.instrumentId}`}
+      getRowId={(position) => `${position.accountId}:${position.instrumentId}:${position.side ?? "net"}`}
       caption={t("blotter.caption.positions")}
       empty={
         <EmptyState

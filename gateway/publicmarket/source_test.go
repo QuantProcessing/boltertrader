@@ -201,6 +201,45 @@ func TestSourceKeepsDepthWhenOptionalMarketFacetsFail(t *testing.T) {
 	}
 }
 
+func TestSourceJoinsMarkPriceSnapshotToPublicPerpStream(t *testing.T) {
+	instrument := exchange.Instrument{Identity: exchange.InstrumentIdentity{
+		Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT",
+		BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT", NativeSymbol: "BTCUSDT",
+	}, Rules: exchange.InstrumentRules{
+		PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"),
+		MinQuantity: decimal.RequireFromString("0.001"),
+	}}
+	subscription := newInertSubscription[exchange.MarkPriceEvent]()
+	socket := &fakeMarkSocket{subscription: subscription}
+	connector := &fakeConnector{
+		instrument: instrument,
+		mark: exchange.MarkPriceEvent{
+			Instrument: instrument, Price: decimal.RequireFromString("77103.2"), Time: time.Now().UTC(),
+		},
+		socket: socket,
+	}
+	source, err := NewSource(fakeFactory{connector: connector}, routeprofile.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	snapshot, err := source.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := source.WatchMarkPrice(context.Background(), snapshot.Instruments[0].Catalog.ID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.Snapshot.Price.String() != "77103.2" || stream.Subscription != subscription {
+		t.Fatalf("stream=%+v", stream)
+	}
+	if socket.request.Instrument.Identity.NativeSymbol != "BTCUSDT" {
+		t.Fatalf("watch request=%+v", socket.request)
+	}
+}
+
 type fakeFactory struct {
 	connector Connector
 }
@@ -223,6 +262,7 @@ type fakeConnector struct {
 	fundingErr error
 	historyErr error
 	refreshes  int
+	socket     exchange.SpotWebSocket
 }
 
 type signalingConnector struct {
@@ -263,6 +303,35 @@ func (connector *fakeConnector) MarkPrice(context.Context, exchange.Instrument) 
 	return connector.mark, true, connector.markErr
 }
 
-func (*fakeConnector) WebSocket() exchange.SpotWebSocket { return nil }
+func (connector *fakeConnector) WebSocket() exchange.SpotWebSocket { return connector.socket }
 
 func (*fakeConnector) Close() error { return nil }
+
+type fakeMarkSocket struct {
+	exchange.PerpWebSocket
+	subscription exchange.Subscription[exchange.MarkPriceEvent]
+	request      exchange.WatchRequest
+}
+
+func (socket *fakeMarkSocket) WatchMarkPrice(_ context.Context, request exchange.WatchRequest) (exchange.Subscription[exchange.MarkPriceEvent], error) {
+	socket.request = request
+	return socket.subscription, nil
+}
+
+type inertSubscription[T any] struct {
+	events   chan T
+	statuses chan exchange.StreamStatusEvent
+	errors   chan error
+}
+
+func newInertSubscription[T any]() *inertSubscription[T] {
+	return &inertSubscription[T]{events: make(chan T), statuses: make(chan exchange.StreamStatusEvent), errors: make(chan error)}
+}
+
+func (*inertSubscription[T]) ID() string                    { return "public-mark" }
+func (subscription *inertSubscription[T]) Events() <-chan T { return subscription.events }
+func (subscription *inertSubscription[T]) Status() <-chan exchange.StreamStatusEvent {
+	return subscription.statuses
+}
+func (subscription *inertSubscription[T]) Errors() <-chan error { return subscription.errors }
+func (*inertSubscription[T]) Close() error                      { return nil }

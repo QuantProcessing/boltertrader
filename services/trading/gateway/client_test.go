@@ -553,6 +553,28 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 	}
 }
 
+func TestConfiguredGatewayAdapterPreservesSafeVenueRejectionEvidence(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"command_id":"018f0000-0000-7000-8000-000000000001","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"rejected","resource_version":1,"venue_code":"-2019","venue_message":"venue rejected order command"}`))
+	}))
+	defer server.Close()
+	adapter, err := NewClient(server.URL, false, []byte(token), true, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := adapter.Execute(context.Background(), manual.GatewayRequest{
+		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:live:perp:USDT:BTC-USDT",
+		RouteID: "perp-usdt", Side: "buy", Quantity: "0.001", OrderType: "market", RuntimeID: "runtime-a",
+	})
+	evidence := result.Handoff.Evidence
+	if err != nil || result.State != manual.GatewayStateDenied || evidence.VenueCode != "-2019" || evidence.VenueMessage != "venue rejected order command" {
+		t.Fatalf("Execute result=%+v err=%v", result, err)
+	}
+}
+
 func TestConfiguredGatewayAdapterCancelsManualOrderByGatewayIdentity(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

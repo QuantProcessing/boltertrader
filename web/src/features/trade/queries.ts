@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 
 import { accountData, manual, trading } from "@/api/endpoints";
 import type { AccountBalance, AccountPosition, Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
+import { isResumable } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 
@@ -50,9 +51,11 @@ export function useOrders(): UseQueryResult<Command[]> {
     queryFn: ({ signal }) => manual.orders(signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    // Working orders change when the venue says so, and the reconciler is what
-    // hears it. Five seconds is how long a fill can sit unseen.
-    refetchInterval: 5_000,
+    // SSE is the prompt path. Polling is the continuity fallback, and only
+    // tightens while an order is still capable of changing state.
+    refetchInterval: (query) =>
+      query.state.data?.some((order) => isResumable(order.state)) ? 2_000 : 15_000,
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -64,6 +67,7 @@ export function usePositions(): UseQueryResult<Position[]> {
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
     refetchInterval: 5_000,
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -75,6 +79,7 @@ export function useAccountBalances(accountId: string): UseQueryResult<AccountBal
     enabled: !readOnly && accountId !== "",
     meta: PRIVATE_QUERY_META,
     refetchInterval: 5_000,
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -86,6 +91,7 @@ export function useAccountPositions(accountId: string, instrumentId: string): Us
     enabled: !readOnly && accountId !== "" && instrumentId !== "",
     meta: PRIVATE_QUERY_META,
     refetchInterval: 5_000,
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -96,7 +102,8 @@ export function useFills(): UseQueryResult<Fill[]> {
     queryFn: ({ signal }) => trading.fills({}, signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 10_000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -133,7 +140,7 @@ export function usePlaceOrder() {
         orderId: "",
         idempotencyKey: freshId(),
       }),
-    onSuccess: () => invalidateLedgers(queryClient),
+    onSuccess: () => invalidateTradeLedgers(queryClient),
   });
 }
 
@@ -153,11 +160,11 @@ export function useCancelOrder() {
         orderId: order.commandId,
         idempotencyKey: freshId(),
       }),
-    onSuccess: () => invalidateLedgers(queryClient),
+    onSuccess: () => invalidateTradeLedgers(queryClient),
   });
 }
 
-function invalidateLedgers(queryClient: ReturnType<typeof useQueryClient>): void {
+export function invalidateTradeLedgers(queryClient: ReturnType<typeof useQueryClient>): void {
   void queryClient.invalidateQueries({ queryKey: tradeKeys.orders() });
   void queryClient.invalidateQueries({ queryKey: tradeKeys.positions() });
   void queryClient.invalidateQueries({ queryKey: ["trading", "account-positions"] });

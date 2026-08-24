@@ -8,11 +8,14 @@ import {
   type IPriceLine,
   type ISeriesApi,
   LineStyle,
+  MismatchDirection,
+  type MouseEventHandler,
+  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 
-import { CANDLE_INTERVALS, type Candle, type CandleInterval, type Instrument } from "@/api/types";
+import { CANDLE_INTERVALS, type AccountPosition, type Candle, type CandleInterval, type Instrument } from "@/api/types";
 import { Num } from "@/components/ui/num";
 import { readChartPalette } from "@/lib/chart-palette";
 import { useT } from "@/lib/i18n";
@@ -41,6 +44,7 @@ export function PriceChart({
   liveCandle,
   instrument,
   livePrice,
+  positions = [],
   interval,
   onIntervalChange,
 }: {
@@ -50,6 +54,8 @@ export function PriceChart({
   instrument: Instrument | null;
   /** The same book midpoint rendered in the order-book centre row. */
   livePrice?: string;
+  /** Current selected-account positions; only their entry prices are drawn. */
+  positions?: AccountPosition[];
   interval: CandleInterval;
   onIntervalChange: (next: CandleInterval) => void;
 }) {
@@ -58,6 +64,7 @@ export function PriceChart({
   const priceRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const liveLineRef = useRef<IPriceLine | null>(null);
+  const positionLinesRef = useRef(new Map<string, IPriceLine>());
   const fittedRef = useRef("");
   const t = useT();
   const latestHistory = candles?.at(-1);
@@ -121,16 +128,35 @@ export function PriceChart({
     });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
 
+    // The built-in Magnet mode snaps the horizontal price to candle data, but
+    // it still lets the vertical line sit in the empty logical range after the
+    // latest bar. That makes the crosshair look like it names a future candle.
+    // Pull whitespace positions back onto the nearest real candle instead.
+    const snapCrosshairToCandle: MouseEventHandler<Time> = (param) => {
+      const direction = crosshairWhitespaceDirection(
+        param.time !== undefined,
+        param.logical,
+        param.point !== undefined,
+      );
+      if (direction === null || param.logical === undefined) return;
+      const candle = price.dataByIndex(param.logical, direction);
+      if (!candle || !("close" in candle)) return;
+      chart.setCrosshairPosition(candle.close, candle.time, price);
+    };
+    chart.subscribeCrosshairMove(snapCrosshairToCandle);
+
     chartRef.current = chart;
     priceRef.current = price;
     volumeRef.current = volume;
 
     return () => {
+      chart.unsubscribeCrosshairMove(snapCrosshairToCandle);
       chart.remove();
       chartRef.current = null;
       priceRef.current = null;
       volumeRef.current = null;
       liveLineRef.current = null;
+      positionLinesRef.current.clear();
     };
   }, []);
 
@@ -223,6 +249,34 @@ export function PriceChart({
 
   useEffect(() => {
     const series = priceRef.current;
+    if (!series) return;
+    const palette = readChartPalette();
+    const next = positionLineDescriptors(positions);
+    const keys = new Set(next.map((line) => line.key));
+
+    for (const [key, line] of positionLinesRef.current) {
+      if (keys.has(key)) continue;
+      series.removePriceLine(line);
+      positionLinesRef.current.delete(key);
+    }
+
+    for (const descriptor of next) {
+      const options = {
+        price: descriptor.price,
+        color: descriptor.side === "sell" ? palette.down : palette.up,
+        lineWidth: 1 as const,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `${t(descriptor.side === "sell" ? "chart.position.short" : "chart.position.long")} ${descriptor.quantity}`,
+      };
+      const existing = positionLinesRef.current.get(descriptor.key);
+      if (existing) existing.applyOptions(options);
+      else positionLinesRef.current.set(descriptor.key, series.createPriceLine(options));
+    }
+  }, [positions, t]);
+
+  useEffect(() => {
+    const series = priceRef.current;
     const increment = instrument?.rules.priceIncrement;
     const minMove = typeof increment === "string" ? Number.parseFloat(increment) : Number.NaN;
     if (!series || price === undefined || !Number.isFinite(minMove) || minMove <= 0) return;
@@ -278,12 +332,47 @@ export function PriceChart({
   );
 }
 
+export interface PositionLineDescriptor {
+  key: string;
+  price: number;
+  side: "buy" | "sell";
+  quantity: string;
+}
+
+/** Position overlays exclude flat rows and all order history by construction. */
+export function positionLineDescriptors(positions: AccountPosition[]): PositionLineDescriptor[] {
+  const descriptors: PositionLineDescriptor[] = [];
+  for (const position of positions) {
+    const price = Number.parseFloat(position.entryPrice);
+    const quantity = Number.parseFloat(position.quantity);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity === 0) continue;
+    const side = position.side ?? (quantity < 0 ? "sell" : "buy");
+    descriptors.push({
+      key: `${position.accountId}:${position.instrumentId}:${side}`,
+      price,
+      side,
+      quantity: position.quantity.replace(/^-/, ""),
+    });
+  }
+  return descriptors;
+}
+
 function isSameOrNewerCandle(candidate: Candle | null | undefined, reference: Candle | undefined): candidate is Candle {
   if (!candidate) return false;
   if (!reference) return true;
   const candidateTime = Date.parse(candidate.openTime);
   const referenceTime = Date.parse(reference.openTime);
   return Number.isFinite(candidateTime) && Number.isFinite(referenceTime) && candidateTime >= referenceTime;
+}
+
+/** Which edge candle should own a crosshair currently sitting in whitespace. */
+export function crosshairWhitespaceDirection(
+  hasTime: boolean,
+  logical: number | undefined,
+  hasPoint: boolean,
+): MismatchDirection | null {
+  if (hasTime || !hasPoint || logical === undefined || !Number.isFinite(logical)) return null;
+  return logical < 0 ? MismatchDirection.NearestRight : MismatchDirection.NearestLeft;
 }
 
 function LegendValue({ label, value, decimals }: { label: string; value: string | undefined; decimals: number | undefined }) {

@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { CandleInterval, Instrument } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { Blotter, ReadOnlyBlotter } from "@/features/trade/blotter";
 import { OrderTicket } from "@/features/trade/order-ticket";
+import { useAccountPositions } from "@/features/trade/queries";
+import { useTradeRealtime } from "@/features/trade/realtime";
 import { InstrumentStrip } from "@/features/market/instrument-strip";
 import { OrderBook } from "@/features/market/order-book";
 import { PriceChart } from "@/features/market/price-chart";
@@ -44,6 +46,7 @@ export function TradePage() {
   const [interval, setInterval] = useState<CandleInterval>(DEFAULT_INTERVAL);
   // Lifted out of the ticket so a click in the book can write into it.
   const [limitPrice, setLimitPrice] = useState("");
+  const [accountId, setAccountId] = useState("");
 
   const catalog = useMemo(() => instruments.data?.items ?? [], [instruments.data]);
 
@@ -57,12 +60,22 @@ export function TradePage() {
   const fact = useMarketFact(query);
   const candles = useCandles(query ? { ...query, interval, limit: CHART_BARS } : null);
   const today = useCandles(query ? { ...query, interval: "1d", limit: 1 } : null);
-  const stream = usePublicMarketStreams(instrument?.instrumentId, interval);
+  const stream = usePublicMarketStreams(instrument?.instrumentId, interval, instrument?.product);
 
   // Disabling a private query does not erase a previously cached response.
   // Filter at the write surface as well so signing out cannot retain an account
   // (or a sealed preview) from the authenticated session.
-  const eligible = readOnly ? [] : tradableAccounts(accounts.data ?? [], instrument);
+  const eligible = useMemo(
+    () => readOnly ? [] : tradableAccounts(accounts.data ?? [], instrument),
+    [accounts.data, instrument, readOnly],
+  );
+  useEffect(() => {
+    if (eligible.some((account) => account.accountId === accountId)) return;
+    setAccountId(eligible[0]?.accountId ?? "");
+  }, [accountId, eligible]);
+
+  const accountPositions = useAccountPositions(accountId, instrument?.instrumentId ?? "");
+  useTradeRealtime(!readOnly);
   const restFact = fact.data?.value;
   const marketFact = useMemo(() => {
     if (!stream.book) return restFact;
@@ -77,15 +90,15 @@ export function TradePage() {
       bestAskSize: stream.book.asks[0]?.quantity ?? restFact?.bestAskSize ?? "",
       bids: stream.book.bids,
       asks: stream.book.asks,
-      markPrice: restFact?.markPrice,
+      markPrice: stream.mark?.price ?? restFact?.markPrice,
       fundingRate: restFact?.fundingRate,
       openInterest: restFact?.openInterest,
       fundingObservedAt: restFact?.fundingObservedAt,
       fundingTime: restFact?.fundingTime,
       nextFundingTime: restFact?.nextFundingTime,
-      observedAt: stream.book.observedAt,
+      observedAt: stream.mark?.observedAt ?? stream.book.observedAt,
     };
-  }, [instrument, restFact, stream.book]);
+  }, [instrument, restFact, stream.book, stream.mark]);
   const midPrice = midpointPrice(
     marketFact?.bestBid,
     marketFact?.bestAsk,
@@ -103,7 +116,7 @@ export function TradePage() {
           // leaving it in the ticket is how a fat-finger order gets placed.
           setLimitPrice("");
         }}
-        fact={fact.data?.value}
+        fact={marketFact}
         today={today.data?.value}
         budget={fact.data?.rateLimit}
         loading={instruments.isPending}
@@ -116,6 +129,7 @@ export function TradePage() {
             liveCandle={stream.candle}
             instrument={instrument}
             livePrice={midPrice}
+            positions={accountPositions.data ?? []}
             interval={interval}
             onIntervalChange={setInterval}
           />
@@ -123,7 +137,15 @@ export function TradePage() {
             {readOnly ? (
               <ReadOnlyBlotter instrumentId={instrument?.instrumentId ?? null} />
             ) : (
-              <Blotter instrumentId={instrument?.instrumentId ?? null} />
+              <Blotter
+                instrumentId={instrument?.instrumentId ?? null}
+                positions={accountPositions.data ?? []}
+                positionsLoading={accountPositions.isFetching && accountPositions.data === undefined}
+                positionsFetching={accountPositions.isFetching}
+                positionsError={accountPositions.isError}
+                positionsUpdatedAt={accountPositions.dataUpdatedAt}
+                liveMarkPrice={marketFact?.markPrice}
+              />
             )}
           </div>
         </div>
@@ -144,8 +166,13 @@ export function TradePage() {
           <OrderTicket
             instrument={instrument}
             accounts={eligible}
+            accountId={accountId}
+            onAccountIdChange={setAccountId}
+            positions={accountPositions.data ?? []}
             limitPrice={limitPrice}
             onLimitPriceChange={setLimitPrice}
+            bestBid={marketFact?.bestBid}
+            bestAsk={marketFact?.bestAsk}
           />
         </div>
       </div>

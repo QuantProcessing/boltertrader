@@ -192,3 +192,16 @@ export function formatDuration(milliseconds: number): string {
   const seconds = total % 60;
   return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
 }
+
+/**
+ * Keeps opaque identifiers recognisable without letting them determine layout.
+ *
+ * The prefix and tail are the useful parts when matching a toast to logs. The
+ * complete value still belongs in a title/copy surface at the call site.
+ */
+export function compactIdentifier(value: string, maxLength = 28): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength || maxLength < 12) return trimmed;
+  const tailLength = 6;
+  return `${trimmed.slice(0, maxLength - tailLength - 1)}…${trimmed.slice(-tailLength)}`;
+}

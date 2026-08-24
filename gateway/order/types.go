@@ -84,10 +84,14 @@ type Result struct {
 	ClientOrderID   string                 `json:"client_order_id"`
 	State           domain.OrderState      `json:"state"`
 	ResourceVersion domain.ResourceVersion `json:"resource_version"`
-	AccountID       domain.AccountID       `json:"-"`
-	InstrumentID    domain.InstrumentID    `json:"-"`
-	VenueOrderID    string                 `json:"-"`
-	Replayed        bool                   `json:"-"`
+	// VenueCode and VenueMessage are already-normalized, non-secret rejection
+	// details. They are present only when the venue gave a definitive refusal.
+	VenueCode    string              `json:"venue_code,omitempty"`
+	VenueMessage string              `json:"venue_message,omitempty"`
+	AccountID    domain.AccountID    `json:"-"`
+	InstrumentID domain.InstrumentID `json:"-"`
+	VenueOrderID string              `json:"-"`
+	Replayed     bool                `json:"-"`
 }
 
 type Route struct {

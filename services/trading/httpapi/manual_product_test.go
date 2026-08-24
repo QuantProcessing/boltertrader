@@ -132,6 +132,40 @@ func TestManualPreviewAndOrderReconstructAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestManualOrderChecksExposeExecutableRuleFailures(t *testing.T) {
+	instrument := catalog.Instrument{Rules: catalog.TradeRules{
+		PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001", MinNotional: "5",
+	}}
+	checks, blockers, warnings, notional := manualOrderChecks(instrument, manualPreviewRequest{
+		OrderType: "limit", Quantity: "0.0005", LimitPrice: "100.03",
+	})
+	if notional != "0.050015" || len(warnings) != 0 {
+		t.Fatalf("notional=%q warnings=%v", notional, warnings)
+	}
+	wantBlockers := map[string]bool{
+		"quantity_minimum": true, "quantity_increment": true, "price_increment": true, "minimum_notional": true,
+	}
+	for _, blocker := range blockers {
+		delete(wantBlockers, blocker)
+	}
+	if len(wantBlockers) != 0 || len(checks) != 4 {
+		t.Fatalf("checks=%+v blockers=%v missing=%v", checks, blockers, wantBlockers)
+	}
+}
+
+func TestManualOrderChecksSayWhenMarketNotionalNeedsVenuePrice(t *testing.T) {
+	instrument := catalog.Instrument{Rules: catalog.TradeRules{
+		PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001", MinNotional: "5",
+	}}
+	checks, blockers, warnings, notional := manualOrderChecks(instrument, manualPreviewRequest{
+		OrderType: "market", Quantity: "0.01",
+	})
+	last := checks[len(checks)-1]
+	if len(blockers) != 0 || len(warnings) != 1 || warnings[0] != "market_notional" || notional != "" || last.Code != "market_notional" || last.Status != "unavailable" || last.Required != "5" {
+		t.Fatalf("checks=%+v blockers=%v warnings=%v notional=%q", checks, blockers, warnings, notional)
+	}
+}
+
 type manualReservationGate struct{ service *reservations.Service }
 
 func (gate manualReservationGate) Consume(ctx context.Context, claim orders.ReservationClaim) error {

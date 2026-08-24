@@ -132,7 +132,14 @@ function ToastRegion({
           />
           <div className="min-w-0 flex-1">
             <p className="text-base text-text">{toast.title}</p>
-            {toast.detail ? <p className="mt-0.5 text-meta text-dim">{toast.detail}</p> : null}
+            {toast.detail ? (
+              <p
+                className="mt-0.5 break-words text-meta text-dim [overflow-wrap:anywhere]"
+                title={toast.detail}
+              >
+                {toast.detail}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"

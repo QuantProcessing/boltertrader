@@ -69,7 +69,7 @@ COMPOSE = docker compose --env-file .env.stack -f compose.yaml
 up:
 	go run ./internal/devsetup/cmd/bootstrap
 	$(COMPOSE) up -d --build --wait --wait-timeout 180
-	@$(MAKE) --no-print-directory doctor
+	@go run ./internal/devsetup/cmd/doctor -wait-trading 60s
 
 down:
 	@test -f .env.stack || (echo "no .env.stack; nothing to bring down" >&2; exit 0)

@@ -126,6 +126,15 @@ type CandleStream struct {
 	Subscription exchange.Subscription[exchange.CandleEvent]
 }
 
+// MarkPriceStream joins an immediate REST mark to the venue's public perpetual
+// stream. It is credential-free: the account-specific position remains on the
+// private plane while every viewer may share the same mark.
+type MarkPriceStream struct {
+	Instrument   exchange.Instrument
+	Snapshot     exchange.MarkPriceEvent
+	Subscription exchange.Subscription[exchange.MarkPriceEvent]
+}
+
 type Source struct {
 	columns      []*column
 	interval     time.Duration
@@ -494,6 +503,33 @@ func (source *Source) WatchCandles(ctx context.Context, instrumentID, interval s
 		return CandleStream{}, fmt.Errorf("watch public candles: %w", errors.Join(ErrUnavailable, err))
 	}
 	return CandleStream{Instrument: instrument, Subscription: subscription}, nil
+}
+
+// WatchMarkPrice starts the perpetual mark stream before taking its REST
+// snapshot, so a price move cannot disappear between the two operations.
+func (source *Source) WatchMarkPrice(ctx context.Context, instrumentID string) (MarkPriceStream, error) {
+	current, instrument, err := source.resolvePublicID(ctx, instrumentID)
+	if err != nil {
+		return MarkPriceStream{}, err
+	}
+	socket := current.connector.WebSocket()
+	perpSocket, ok := socket.(exchange.PerpWebSocket)
+	if !ok || perpSocket == nil {
+		return MarkPriceStream{}, ErrUnavailable
+	}
+	subscription, err := perpSocket.WatchMarkPrice(ctx, exchange.WatchRequest{
+		Instrument: instrument,
+		Options:    exchange.WatchOptions{Buffer: 64},
+	})
+	if err != nil || subscription == nil {
+		return MarkPriceStream{}, fmt.Errorf("watch public mark price: %w", errors.Join(ErrUnavailable, err))
+	}
+	mark, supported, err := current.connector.MarkPrice(ctx, instrument)
+	if err != nil || !supported {
+		_ = subscription.Close()
+		return MarkPriceStream{}, fmt.Errorf("snapshot public mark price: %w", errors.Join(ErrUnavailable, err))
+	}
+	return MarkPriceStream{Instrument: instrument, Snapshot: mark, Subscription: subscription}, nil
 }
 
 func (source *Source) resolvePublicID(ctx context.Context, instrumentID string) (*column, exchange.Instrument, error) {
