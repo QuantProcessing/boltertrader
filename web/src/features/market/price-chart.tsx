@@ -43,7 +43,6 @@ export function PriceChart({
   candles,
   liveCandle,
   instrument,
-  livePrice,
   positions = [],
   interval,
   onIntervalChange,
@@ -52,8 +51,6 @@ export function PriceChart({
   /** The venue's forming bar, delivered by the public WebSocket. */
   liveCandle?: Candle | null;
   instrument: Instrument | null;
-  /** The same book midpoint rendered in the order-book centre row. */
-  livePrice?: string;
   /** Current selected-account positions; entry and venue liquidation prices are drawn. */
   positions?: AccountPosition[];
   interval: CandleInterval;
@@ -69,6 +66,7 @@ export function PriceChart({
   const t = useT();
   const latestHistory = candles?.at(-1);
   const latest = isSameOrNewerCandle(liveCandle, latestHistory) ? liveCandle : latestHistory;
+  const currentLine = currentCandlePriceLine(latest);
   const { price, quantity } = precisionOf(instrument);
 
   // Built once. The library takes resolved colours rather than CSS variables,
@@ -229,15 +227,18 @@ export function PriceChart({
   useEffect(() => {
     const series = priceRef.current;
     if (!series) return;
-    const value = Number.parseFloat(livePrice ?? "");
-    if (!Number.isFinite(value)) {
+    if (!currentLine) {
       if (liveLineRef.current) series.removePriceLine(liveLineRef.current);
       liveLineRef.current = null;
       return;
     }
+    const palette = readChartPalette();
     const options = {
-      price: value,
-      color: readChartPalette().up,
+      // The close is always one edge of the candle body: the top for an up
+      // candle and the bottom for a down candle. Using the book midpoint here
+      // detached the line from the bar it was visually describing.
+      price: currentLine.price,
+      color: currentLine.direction === "down" ? palette.down : palette.up,
       lineWidth: 1 as const,
       lineStyle: LineStyle.Dotted,
       axisLabelVisible: true,
@@ -245,7 +246,7 @@ export function PriceChart({
     };
     if (liveLineRef.current) liveLineRef.current.applyOptions(options);
     else liveLineRef.current = series.createPriceLine(options);
-  }, [livePrice]);
+  }, [currentLine?.direction, currentLine?.price]);
 
   useEffect(() => {
     const series = priceRef.current;
@@ -346,6 +347,20 @@ export interface PositionLineDescriptor {
   kind: "entry" | "liquidation";
   accountLabel: string;
   stale: boolean;
+}
+
+export interface CurrentCandlePriceLine {
+  price: number;
+  direction: "up" | "down";
+}
+
+/** The current-price line belongs to the forming candle's closing body edge. */
+export function currentCandlePriceLine(candle: Candle | null | undefined): CurrentCandlePriceLine | null {
+  if (!candle) return null;
+  const open = Number.parseFloat(candle.open);
+  const close = Number.parseFloat(candle.close);
+  if (!Number.isFinite(open) || !Number.isFinite(close)) return null;
+  return { price: close, direction: close < open ? "down" : "up" };
 }
 
 /** Position overlays exclude flat, unavailable rows and all order history by construction. */

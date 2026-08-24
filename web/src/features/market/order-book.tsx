@@ -61,7 +61,7 @@ export function OrderBook({
   onPickPrice,
 }: {
   fact: MarketFact | undefined;
-  /** Shared with the chart's live line so the terminal has one current price. */
+  /** Executable centre reference derived from the best bid and ask. */
   midPrice?: string;
   /** Carries the venue's tick and lot sizes; null before a market is chosen. */
   instrument: Instrument | null;

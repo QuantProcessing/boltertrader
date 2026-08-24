@@ -129,7 +129,6 @@ export function TradePage() {
             candles={candles.data?.value.candles}
             liveCandle={stream.candle}
             instrument={instrument}
-            livePrice={midPrice}
             positions={positionItems}
             interval={interval}
             onIntervalChange={setInterval}

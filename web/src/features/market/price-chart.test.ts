@@ -1,7 +1,32 @@
 import { MismatchDirection } from "lightweight-charts";
 import { describe, expect, it } from "vitest";
 
-import { crosshairWhitespaceDirection, positionLineDescriptors } from "@/features/market/price-chart";
+import { crosshairWhitespaceDirection, currentCandlePriceLine, positionLineDescriptors } from "@/features/market/price-chart";
+
+describe("current candle price line", () => {
+  const candle = (open: string, close: string) => ({
+    openTime: "2026-08-24T12:00:00Z",
+    closeTime: "2026-08-24T12:15:00Z",
+    open,
+    high: "110",
+    low: "90",
+    close,
+    volume: "1",
+    complete: false,
+  });
+
+  it("uses the upper body edge and up color direction for a rising candle", () => {
+    expect(currentCandlePriceLine(candle("100", "108"))).toEqual({ price: 108, direction: "up" });
+  });
+
+  it("uses the lower body edge and down color direction for a falling candle", () => {
+    expect(currentCandlePriceLine(candle("108", "97"))).toEqual({ price: 97, direction: "down" });
+  });
+
+  it("rejects invalid candle values", () => {
+    expect(currentCandlePriceLine(candle("bad", "97"))).toBeNull();
+  });
+});
 
 describe("price chart crosshair", () => {
   it("snaps right-side whitespace to the latest candle", () => {
