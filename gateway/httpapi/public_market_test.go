@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,8 +18,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 	"github.com/shopspring/decimal"
 )
 
@@ -243,285 +239,16 @@ func TestPublicMarketMarkPriceFallsBackToWebSocketWhenRESTUnsupported(t *testing
 	}
 }
 
-func TestPublicMarketWebSocketSendsSnapshotUpdateThenResnapshotOnGap(t *testing.T) {
-	instrumentID, _, client, handler := newPublicMarketFixture(t)
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewUnstartedServer(handler)
-	server.Listener = listener
-	server.Start()
-	t.Cleanup(server.Close)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	header := http.Header{"Authorization": []string{"Bearer test-token"}}
-	target := websocketURL(server.URL) + "/v1/public/ws?account_id=acct-p&instrument_id=" +
-		url.QueryEscape(string(instrumentID)) + "&kind=funding_rate"
-	connection, response, err := websocket.Dial(ctx, target, &websocket.DialOptions{HTTPHeader: header})
-	if err != nil {
-		t.Fatalf("dial response=%v err=%v", response, err)
-	}
-	t.Cleanup(func() { _ = connection.CloseNow() })
-
-	snapshot := readPublicMarketEvent(t, ctx, connection)
-	if snapshot.EventType != "snapshot" || snapshot.Kind != "funding_rate" || snapshot.Sequence != 1 ||
-		snapshot.BootID == "" || snapshot.EventID == "" || snapshot.AccountID != "acct-p" ||
-		snapshot.InstrumentID != string(instrumentID) {
-		t.Fatalf("snapshot=%+v", snapshot)
-	}
-	assertPublicPayloadRedacted(t, snapshot.Payload)
-	if calls := client.publicCallOrder(); len(calls) != 2 ||
-		calls[0] != "watch_funding" || calls[1] != "funding_snapshot" {
-		t.Fatalf("public stream initialization order=%v, want subscription before snapshot", calls)
-	}
-
-	client.subscription.events <- exchange.FundingRateEvent{
-		Instrument: client.instrument, Rate: decimal.RequireFromString("0.0002"),
-		EffectiveAt: time.Date(2026, 7, 2, 8, 0, 0, 0, time.UTC),
-		NextAt:      time.Date(2026, 7, 2, 16, 0, 0, 0, time.UTC),
-	}
-	update := readPublicMarketEvent(t, ctx, connection)
-	if update.EventType != "update" || update.Sequence != 2 || update.BootID != snapshot.BootID {
-		t.Fatalf("update=%+v", update)
-	}
-	assertPublicPayloadRedacted(t, update.Payload)
-
-	client.subscription.status <- exchange.StreamStatusEvent{
-		State: exchange.SubscriptionGap, Phase: exchange.GapStarted, Reason: "raw venue details must not escape",
-	}
-	resync := readPublicMarketEvent(t, ctx, connection)
-	if resync.EventType != "resync_required" || resync.Sequence != 3 || resync.BootID != snapshot.BootID {
-		t.Fatalf("resync=%+v", resync)
-	}
-	rawPayload, _ := json.Marshal(resync.Payload)
-	if strings.Contains(string(rawPayload), "raw venue") || !strings.Contains(string(rawPayload), "stream-gap") {
-		t.Fatalf("unsafe resync payload=%s", rawPayload)
-	}
-	var trailing publicMarketEventFixture
-	err = wsjson.Read(ctx, connection, &trailing)
-	if websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
-		t.Fatalf("post-resync read err=%v status=%d", err, websocket.CloseStatus(err))
-	}
-	select {
-	case <-client.subscription.closed:
-	case <-ctx.Done():
-		t.Fatal("public subscription was not closed")
-	}
-}
-
-func TestPublicMarketWebSocketRejectsUnsupportedKindBeforeUpgrade(t *testing.T) {
-	instrumentID, _, _, handler := newPublicMarketFixture(t)
-	request := httptest.NewRequest(http.MethodGet,
-		"/v1/public/ws?account_id=acct-p&instrument_id="+url.QueryEscape(string(instrumentID))+"&kind=orders", nil)
+func TestLegacyPublicMarketWebSocketIsRemoved(t *testing.T) {
+	_, _, _, handler := newPublicMarketFixture(t)
+	request := httptest.NewRequest(http.MethodGet, "/v1/public/ws", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	recorder := httptest.NewRecorder()
+
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
+
+	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestPublicMarketWebSocketSupportsEveryDeclaredKind(t *testing.T) {
-	tests := []struct {
-		kind      string
-		callOrder []string
-		publish   func(*fakePublicPerpClient)
-	}{
-		{
-			kind: "order_book", callOrder: []string{"watch_order_book", "order_book_snapshot"},
-			publish: func(client *fakePublicPerpClient) {
-				client.bookSubscription.events <- exchange.BookEvent{
-					Kind: exchange.EventDelta, Instrument: client.instrument,
-					Sequence: "2", Previous: "1",
-					Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(4)}},
-					Asks: []exchange.BookLevel{{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(5)}},
-					Time: time.Date(2026, 7, 2, 2, 0, 0, 0, time.UTC),
-				}
-			},
-		},
-		{
-			kind: "bbo", callOrder: []string{"watch_bbo", "order_book_snapshot"},
-			publish: func(client *fakePublicPerpClient) {
-				client.bboSubscription.events <- exchange.BBOEvent{
-					Instrument: client.instrument,
-					Bid:        exchange.BookLevel{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(4)},
-					Ask:        exchange.BookLevel{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(5)},
-					Time:       time.Date(2026, 7, 2, 2, 0, 0, 0, time.UTC),
-				}
-			},
-		},
-		{
-			kind: "mark_price", callOrder: []string{"watch_mark_price"},
-			publish: func(client *fakePublicPerpClient) {
-				client.markSubscription.events <- exchange.MarkPriceEvent{
-					Instrument: client.instrument, Price: decimal.RequireFromString("100.75"),
-					Time: time.Date(2026, 7, 2, 2, 0, 0, 0, time.UTC),
-				}
-			},
-		},
-		{
-			kind: "funding_rate", callOrder: []string{"watch_funding", "funding_snapshot"},
-			publish: func(client *fakePublicPerpClient) {
-				client.subscription.events <- exchange.FundingRateEvent{
-					Instrument: client.instrument, Rate: decimal.RequireFromString("0.0002"),
-					EffectiveAt: time.Date(2026, 7, 2, 8, 0, 0, 0, time.UTC),
-					NextAt:      time.Date(2026, 7, 2, 16, 0, 0, 0, time.UTC),
-				}
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.kind, func(t *testing.T) {
-			instrumentID, _, client, handler := newPublicMarketFixture(t)
-			listener, err := net.Listen("tcp4", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			server := httptest.NewUnstartedServer(handler)
-			server.Listener = listener
-			server.Start()
-			t.Cleanup(server.Close)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			target := websocketURL(server.URL) + "/v1/public/ws?account_id=acct-p&instrument_id=" +
-				url.QueryEscape(string(instrumentID)) + "&kind=" + test.kind
-			connection, response, err := websocket.Dial(ctx, target, &websocket.DialOptions{
-				HTTPHeader: http.Header{"Authorization": []string{"Bearer test-token"}},
-			})
-			if err != nil {
-				t.Fatalf("dial response=%v err=%v", response, err)
-			}
-
-			snapshot := readPublicMarketEvent(t, ctx, connection)
-			if snapshot.EventType != "snapshot" || snapshot.Kind != test.kind || snapshot.Sequence != 1 {
-				t.Fatalf("snapshot=%+v", snapshot)
-			}
-			assertPublicPayloadRedacted(t, snapshot.Payload)
-			if calls := client.publicCallOrder(); !equalStrings(calls, test.callOrder) {
-				t.Fatalf("public stream initialization order=%v want=%v", calls, test.callOrder)
-			}
-
-			test.publish(client)
-			update := readPublicMarketEvent(t, ctx, connection)
-			if update.EventType != "update" || update.Kind != test.kind || update.Sequence != 2 ||
-				update.BootID != snapshot.BootID {
-				t.Fatalf("update=%+v", update)
-			}
-			assertPublicPayloadRedacted(t, update.Payload)
-			_ = connection.CloseNow()
-			select {
-			case <-client.closedFor(test.kind):
-			case <-ctx.Done():
-				t.Fatal("public subscription was not closed")
-			}
-		})
-	}
-}
-
-func TestPublicMarketWebSocketRejectsMislabeledInstrumentForEveryKind(t *testing.T) {
-	kinds := []string{"order_book", "bbo", "mark_price", "funding_rate"}
-	for _, kind := range kinds {
-		t.Run(kind, func(t *testing.T) {
-			instrumentID, _, client, handler := newPublicMarketFixture(t)
-			listener, err := net.Listen("tcp4", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			server := httptest.NewUnstartedServer(handler)
-			server.Listener = listener
-			server.Start()
-			t.Cleanup(server.Close)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			target := websocketURL(server.URL) + "/v1/public/ws?account_id=acct-p&instrument_id=" +
-				url.QueryEscape(string(instrumentID)) + "&kind=" + kind
-			connection, response, err := websocket.Dial(ctx, target, &websocket.DialOptions{
-				HTTPHeader: http.Header{"Authorization": []string{"Bearer test-token"}},
-			})
-			if err != nil {
-				t.Fatalf("dial response=%v err=%v", response, err)
-			}
-			t.Cleanup(func() { _ = connection.CloseNow() })
-			_ = readPublicMarketEvent(t, ctx, connection)
-
-			mismatch := client.instrument
-			mismatch.Identity.Symbol = "ETH-USDT"
-			mismatch.Identity.NativeSymbol = "ETHUSDT"
-			switch kind {
-			case "order_book":
-				client.bookSubscription.events <- exchange.BookEvent{
-					Instrument: mismatch,
-					Bids:       []exchange.BookLevel{{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(1)}},
-					Asks:       []exchange.BookLevel{{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(1)}},
-				}
-			case "bbo":
-				client.bboSubscription.events <- exchange.BBOEvent{
-					Instrument: mismatch,
-					Bid:        exchange.BookLevel{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(1)},
-					Ask:        exchange.BookLevel{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(1)},
-				}
-			case "mark_price":
-				client.markSubscription.events <- exchange.MarkPriceEvent{
-					Instrument: mismatch, Price: decimal.NewFromInt(100),
-				}
-			case "funding_rate":
-				client.subscription.events <- exchange.FundingRateEvent{
-					Instrument: mismatch, Rate: decimal.RequireFromString("0.0002"),
-				}
-			}
-
-			resync := readPublicMarketEvent(t, ctx, connection)
-			if resync.EventType != "resync_required" || resync.Sequence != 2 {
-				t.Fatalf("resync=%+v", resync)
-			}
-			raw, _ := json.Marshal(resync.Payload)
-			if strings.Contains(string(raw), "ETH") || !strings.Contains(string(raw), "malformed-update") {
-				t.Fatalf("unsafe mismatch payload=%s", raw)
-			}
-			var trailing publicMarketEventFixture
-			err = wsjson.Read(ctx, connection, &trailing)
-			if websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
-				t.Fatalf("post-resync read err=%v status=%d", err, websocket.CloseStatus(err))
-			}
-		})
-	}
-}
-
-type publicMarketEventFixture struct {
-	BootID       string         `json:"boot_id"`
-	Sequence     uint64         `json:"sequence"`
-	EventID      string         `json:"event_id"`
-	AccountID    string         `json:"account_id"`
-	InstrumentID string         `json:"instrument_id"`
-	Kind         string         `json:"kind"`
-	EventType    string         `json:"event_type"`
-	OccurredAt   time.Time      `json:"occurred_at"`
-	Payload      map[string]any `json:"payload"`
-}
-
-func readPublicMarketEvent(t *testing.T, ctx context.Context, connection *websocket.Conn) publicMarketEventFixture {
-	t.Helper()
-	var event publicMarketEventFixture
-	if err := wsjson.Read(ctx, connection, &event); err != nil {
-		t.Fatal(err)
-	}
-	return event
-}
-
-func assertPublicPayloadRedacted(t *testing.T, payload map[string]any) {
-	t.Helper()
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"native_symbol", "native_id", "BTCUSDT", `"identity"`, `"encoding"`} {
-		if strings.Contains(string(raw), forbidden) {
-			t.Fatalf("public payload leaked %q: %s", forbidden, raw)
-		}
 	}
 }
 

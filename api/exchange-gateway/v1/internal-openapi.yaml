@@ -56,33 +56,28 @@ paths:
     get: {operationId: getInternalMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/candles:
     get: {operationId: getInternalCandles, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/public/ws:
+  /internal/v1/market/ws:
     get:
-      operationId: streamInternalPublicMarket
-      parameters:
-        - {name: instrumentId, in: query, required: true, schema: {type: string}}
-        - {name: kind, in: query, required: true, schema: {type: string, enum: [order_book, candles]}}
-        - {name: interval, in: query, schema: {type: string, enum: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d]}}
+      operationId: streamInternalMarket
       responses:
         '101':
-          description: Credential-free live market stream. Order-book connections begin with a snapshot; candle connections update the forming bar. Gaps emit resync_required before closing.
+          description: Multiplexed Gateway-to-Trading market stream. Every topic starts with a complete snapshot; gaps emit resync_required and continue with a new generation snapshot. Control frames use subscribe, unsubscribe, and ping.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RealtimeMessage'}
         default: {$ref: '#/components/responses/Error'}
+  /internal/v1/market-facts:
+    get: {operationId: getInternalMarketFacts, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/fresh-bbo:
+    get: {operationId: getInternalFreshBBO, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/private-events:
     get: {operationId: listInternalPrivateEvents, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/funding-board:
     get: {operationId: getInternalFundingBoard, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/funding-board/ws:
-    get:
-      operationId: streamInternalFundingBoard
-      responses:
-        '101':
-          description: Credential-free resident funding-market stream. The first frame is a complete snapshot; later frames are upsert or venue_status. Slow consumers and gaps receive resync_required and are closed.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/FundingBoardStreamEvent'}
-        default: {$ref: '#/components/responses/Error'}
   /internal/v1/funding-history:
     get: {operationId: getInternalFundingHistory, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/venues/connectivity:
+    get: {operationId: getInternalVenueConnectivity, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
 components:
   securitySchemes:
     gatewayAdapterAuth: {type: http, scheme: bearer}
@@ -125,15 +120,21 @@ components:
     RuntimeFacts: {description: redacted product-agnostic authority facts, content: {application/json: {schema: {type: object}}}}
     Error: {description: stable redacted error, content: {application/json: {schema: {$ref: '#/components/schemas/InternalErrorEnvelope'}}}}
   schemas:
-    FundingBoardStreamEvent:
+    RealtimeMessage:
       type: object
       additionalProperties: false
-      required: [eventType, sequence, observedAt]
+      required: [type]
       properties:
-        eventType: {type: string, enum: [snapshot, upsert, venue_status, resync_required]}
+        type: {type: string, enum: [ack, snapshot, delta, checkpoint, resync_required, error, pong]}
+        requestId: {type: string}
+        subscriptionId: {type: string}
+        topic: {type: string, enum: [market.order_book, market.bbo, market.candles, market.mark_price, funding.board, system.venue_connectivity]}
+        generation: {type: integer, minimum: 0}
         sequence: {type: integer, minimum: 0}
+        sourceSequence: {type: string}
         observedAt: {type: string, format: date-time}
         data: {type: object}
+        code: {type: string}
         reason: {type: string}
     RuntimeStatus:
       type: object

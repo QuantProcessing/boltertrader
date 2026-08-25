@@ -44,15 +44,15 @@ session had expired. The distinction is not the caller's business.
 Everything else is a table lookup. The table is explicit — one entry per method
 and path — rather than a prefix rule, and that is deliberate.
 
-Thirty-four routes are declared. Twenty-five go to the trading service and nine
-to the gateway:
+Forty routes are declared. Thirty-five go to the trading service and five to
+the gateway:
 
 | Prefix | Upstream | Notes |
 | --- | --- | --- |
 | `/api/v1/accounts`, `/api/v1/accounts/{accountId}` and its actions | Gateway | Rewritten onto the internal plane |
 | `/api/v1/accounts/{accountId}/runtimes` | Trading | A projection, not the account itself |
 | `/api/v1/catalog/*`, `/api/v1/market-data`, `/api/v1/candles` | Trading | |
-| `/api/v1/realtime/stream` | Trading | Streaming |
+| `/api/v1/realtime/ws`, `/api/v1/venues/connectivity` | Trading | One multiplexed WebSocket plus a REST snapshot |
 | `/api/v1/commands`, `/api/v1/reservations`, `/api/v1/products/manual/*` | Trading | |
 | `/api/v1/positions`, `/api/v1/ledger`, `/api/v1/pnl`, `/api/v1/fills`, `/api/v1/activity` | Trading | |
 | `/api/v1/system/status`, `/api/v1/system/readiness`, `/api/v1/audit` | Trading | |
@@ -97,14 +97,13 @@ On the way back, hop-by-hop headers are removed, and so is `Set-Cookie`. No
 upstream is allowed to set a cookie in the browser. Only the edge does that, and
 only for the session.
 
-## Streaming
+## Realtime WebSocket
 
-One route is marked as streaming: `GET /api/v1/realtime/stream`. It is exempt
-from the request timeout that bounds every other forward — a deadline on the
-shared client would kill event streams — and its response is flushed as it
-arrives rather than buffered. That is what makes live order and fill updates
-show up in the interface without polling. Caddy passes it through without
-buffering too; see [the web app](web-app.md).
+`GET /api/v1/realtime/ws` is the only browser realtime connection. The edge
+relays its WebSocket upgrade bidirectionally to Trading and does not apply the
+ordinary request deadline to the upgraded connection. Public market topics may
+be anonymous; Trading rejects only an unauthenticated `account.events`
+subscription with `AUTH_REQUIRED`.
 
 ## What it does not do
 

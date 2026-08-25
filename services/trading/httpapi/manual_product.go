@@ -3,12 +3,14 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
@@ -28,11 +30,15 @@ type manualPreviewRequest struct {
 type manualPreview struct {
 	PreviewID string `json:"previewId"`
 	manualPreviewRequest
-	PrincipalID string               `json:"-"`
-	Blockers    []string             `json:"blockers"`
-	Warnings    []string             `json:"warnings"`
-	Checks      []manualPreviewCheck `json:"checks"`
-	Notional    string               `json:"notional,omitempty"`
+	PrincipalID     string               `json:"-"`
+	Blockers        []string             `json:"blockers"`
+	Warnings        []string             `json:"warnings"`
+	Checks          []manualPreviewCheck `json:"checks"`
+	Notional        string               `json:"notional,omitempty"`
+	BestBid         string               `json:"bestBid,omitempty"`
+	BestAsk         string               `json:"bestAsk,omitempty"`
+	ReferencePrice  string               `json:"referencePrice,omitempty"`
+	QuoteObservedAt time.Time            `json:"quoteObservedAt,omitzero"`
 }
 
 type manualPreviewCheck struct {
@@ -214,15 +220,39 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	checks, blockers, warnings, notional := manualOrderChecks(instrument, request)
+	var bestBid, bestAsk, referencePrice string
+	var quoteObservedAt time.Time
+	if handler.trading.options.FreshBBO != nil {
+		quote, quoteErr := handler.trading.options.FreshBBO.GetFreshBBO(r.Context(), request.InstrumentID)
+		if quoteErr != nil {
+			code := "QUOTE_UNAVAILABLE"
+			if errors.Is(quoteErr, marketdata.ErrQuoteStale) {
+				code = "QUOTE_STALE"
+			}
+			tradingError(w, http.StatusServiceUnavailable, code)
+			return
+		}
+		bestBid, bestAsk, quoteObservedAt = quote.BestBid, quote.BestAsk, quote.ObservedAt
+		if request.Side == "buy" {
+			referencePrice = bestAsk
+		} else {
+			referencePrice = bestBid
+		}
+	}
+	checks, blockers, warnings, notional := manualOrderChecksAtPrice(instrument, request, referencePrice)
 	preview := manualPreview{
 		PreviewID: previewID, manualPreviewRequest: request, PrincipalID: principal,
 		Blockers: blockers, Warnings: warnings, Checks: checks, Notional: notional,
+		BestBid: bestBid, BestAsk: bestAsk, ReferencePrice: referencePrice, QuoteObservedAt: quoteObservedAt,
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"meta": httpx.Meta(r), "data": preview})
 }
 
 func manualOrderChecks(instrument catalog.Instrument, request manualPreviewRequest) ([]manualPreviewCheck, []string, []string, string) {
+	return manualOrderChecksAtPrice(instrument, request, "")
+}
+
+func manualOrderChecksAtPrice(instrument catalog.Instrument, request manualPreviewRequest, marketPrice string) ([]manualPreviewCheck, []string, []string, string) {
 	quantity, _ := decimal.NewFromString(request.Quantity)
 	quantityStep, _ := decimal.NewFromString(instrument.Rules.QuantityIncrement)
 	minimumQuantity, _ := decimal.NewFromString(instrument.Rules.MinQuantity)
@@ -248,6 +278,12 @@ func manualOrderChecks(instrument catalog.Instrument, request manualPreviewReque
 
 	if strings.EqualFold(request.OrderType, "market") {
 		if minimumNotional, err := decimal.NewFromString(instrument.Rules.MinNotional); err == nil && minimumNotional.IsPositive() {
+			price, priceErr := decimal.NewFromString(marketPrice)
+			if priceErr == nil && price.IsPositive() {
+				notional := quantity.Mul(price)
+				appendCheck("minimum_notional", !notional.LessThan(minimumNotional), notional, minimumNotional)
+				return checks, blockers, warnings, notional.String()
+			}
 			checks = append(checks, manualPreviewCheck{Code: "market_notional", Status: "unavailable", Required: minimumNotional.String()})
 			warnings = append(warnings, "market_notional")
 		}

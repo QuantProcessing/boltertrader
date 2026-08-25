@@ -147,6 +147,14 @@ func (c *Client) GetMarkPrice(ctx context.Context, instType, instId string) (*Ma
 	return &resp[0], nil
 }
 
+// GetMarkPrices returns the full derivative mark-price surface for one native
+// market family. It intentionally omits instId instead of looping symbols.
+func (c *Client) GetMarkPrices(ctx context.Context, instType string) ([]MarkPrice, error) {
+	params := url.Values{}
+	params.Add("instType", instType)
+	return Request[MarkPrice](c, ctx, MethodGet, "/api/v5/public/mark-price?"+params.Encode(), nil, false)
+}
+
 // GetIndexTicker retrieves the current OKX index ticker for an index instrument.
 func (c *Client) GetIndexTicker(ctx context.Context, instId string) (*IndexTicker, error) {
 	params := url.Values{}
@@ -161,6 +169,13 @@ func (c *Client) GetIndexTicker(ctx context.Context, instId string) (*IndexTicke
 		return nil, fmt.Errorf("no index ticker data found for %s", instId)
 	}
 	return &resp[0], nil
+}
+
+// GetIndexTickers returns every index quoted in quoteCcy in one request.
+func (c *Client) GetIndexTickers(ctx context.Context, quoteCcy string) ([]IndexTicker, error) {
+	params := url.Values{}
+	params.Add("quoteCcy", quoteCcy)
+	return Request[IndexTicker](c, ctx, MethodGet, "/api/v5/market/index-tickers?"+params.Encode(), nil, false)
 }
 
 // GetOptionSummary retrieves OKX option summary rows for an instrument family.
@@ -214,6 +229,13 @@ func (c *Client) GetOpenInterest(ctx context.Context, instId string) (*OpenInter
 		return nil, fmt.Errorf("okx: empty open-interest response for %s", instId)
 	}
 	return &resp[0], nil
+}
+
+// GetOpenInterests returns one native product family's complete OI surface.
+func (c *Client) GetOpenInterests(ctx context.Context, instType string) ([]OpenInterest, error) {
+	params := url.Values{}
+	params.Add("instType", instType)
+	return Request[OpenInterest](c, ctx, MethodGet, "/api/v5/public/open-interest?"+params.Encode(), nil, false)
 }
 
 // FundingRateHistoryEntry matches one element of /api/v5/public/funding-rate-history.

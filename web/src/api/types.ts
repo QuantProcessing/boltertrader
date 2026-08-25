@@ -487,8 +487,12 @@ export interface FundingBoardRow {
   /** Venue-native base units or contracts; never use for cross-venue sorting. */
   openInterest?: string;
   fundingObservedAt?: string;
+  markObservedAt?: string;
+  indexObservedAt?: string;
   priceObservedAt?: string;
   openInterestObservedAt?: string;
+  staleFields?: Array<"funding" | "mark" | "index" | "open_interest">;
+  missingFields?: Array<"funding" | "mark" | "index" | "open_interest">;
 }
 
 /**
@@ -496,8 +500,8 @@ export interface FundingBoardRow {
  *
  * `stale` and `unavailable` answer different questions. Stale means these are
  * the venue's last known rates and older than the rest of the table; unavailable
- * means there is nothing recent enough to put beside another venue's number, and
- * the server guarantees such a column carries no rows at all. Neither may be
+ * means the feed itself is unavailable. Rows may retain their last known values
+ * with staleFields so the outage does not erase diagnostic context. Neither may be
  * rendered as an ordinary empty column: a spread computed against a column that
  * silently vanished is a spread against a venue the operator never chose.
  */

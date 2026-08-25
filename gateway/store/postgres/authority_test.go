@@ -8,7 +8,7 @@ import (
 )
 
 func TestGatewayAuthorityRestoresMigratorRuntimeAndMaintenanceConnect(t *testing.T) {
-	matrix := authority.GatewayV10()
+	matrix := authority.GatewayV11()
 	statements := strings.Join(databaseAuthorityStatements(matrix, "bolter_gateway"), "\n")
 	for _, want := range []string{
 		`ALTER SCHEMA public OWNER TO "bolter_gateway_migrator"`,
@@ -23,7 +23,7 @@ func TestGatewayAuthorityRestoresMigratorRuntimeAndMaintenanceConnect(t *testing
 }
 
 func TestGatewayAuthorityMatrixIsValid(t *testing.T) {
-	matrix := authority.GatewayV10()
+	matrix := authority.GatewayV11()
 	if err := matrix.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestEmbeddedGatewayLedgerDigestMatchesAuthorityMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if matrix := authority.GatewayV10(); digest != matrix.MigrationDigest || len(entries) != matrix.SchemaVersion {
+	if matrix := authority.GatewayV11(); digest != matrix.MigrationDigest || len(entries) != matrix.SchemaVersion {
 		t.Fatalf("embedded Gateway ledger digest=%q entries=%d matrix=%+v", digest, len(entries), matrix)
 	}
 }

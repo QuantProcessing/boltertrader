@@ -6,6 +6,7 @@ package accountpositions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -117,21 +118,27 @@ type SourceEvent struct {
 	InstrumentID    string
 	PositionSlot    string
 	Position        SourcePosition
+	Payload         json.RawMessage
 	Reason          string
 }
 
 const (
-	SourceEventConnected = "connected"
-	SourceEventPosition  = "position"
-	SourceEventResync    = "resync_required"
+	SourceEventConnected     = "connected"
+	SourceEventOrder         = "order"
+	SourceEventFill          = "fill"
+	SourceEventBalance       = "balance"
+	SourceEventPosition      = "position"
+	SourceEventAccountHealth = "account_health"
+	SourceEventResync        = "resync_required"
 )
 
-// Source is the narrow Gateway contract this projection consumes. Watch starts
-// after the supplied account cursor and invokes apply serially.
+// Source is the narrow Gateway contract this projection consumes. The watch is
+// account-scoped rather than instrument-scoped: position events update this
+// projection while the other event kinds become realtime change notifications.
 type Source interface {
 	ListAccounts(context.Context, string) ([]Account, error)
 	PositionSnapshot(context.Context, string, string) (SourceSnapshot, error)
-	WatchPositionEvents(context.Context, string, string, string, func(SourceEvent) error) error
+	WatchAccountEvents(context.Context, string, string, string, func(SourceEvent) error) error
 }
 
 type Key struct {

@@ -87,16 +87,14 @@ export function useAccounts(options: { watchLifecycle?: boolean } = {}): UseQuer
 /**
  * Top of book, depth, mark price and funding for one instrument.
  *
- * The public WebSocket owns tick-level depth. This slower read supplies mark,
- * funding and a periodic full-book calibration, and is also the fallback for a
- * venue that temporarily cannot open its stream.
+ * REST supplies the first snapshot. The unified WebSocket owns later depth and
+ * mark changes and performs its own generation-based resnapshot after a gap.
  */
 export function useMarketFact(query: MarketDataQuery | null): UseQueryResult<Metered<MarketFact>> {
   return useQuery({
     queryKey: marketKeys.fact(query),
     queryFn: ({ signal }) => market.data(query as MarketDataQuery, signal),
     enabled: query !== null,
-    refetchInterval: 15_000,
     // Keep the previous instrument's book on screen while the new one loads
     // rather than blanking the panel: an empty book reads as "no liquidity".
     placeholderData: (previous) => previous,
@@ -104,29 +102,11 @@ export function useMarketFact(query: MarketDataQuery | null): UseQueryResult<Met
   });
 }
 
-/**
- * How often a series is worth re-reading, given how often it can change.
- *
- * Only the newest bar moves between requests, so anything faster than a
- * fraction of the bar width redraws the same candles.
- */
-const CANDLE_POLL_MS: Record<CandleInterval, number> = {
-  "1m": 60_000,
-  "5m": 60_000,
-  "15m": 60_000,
-  "30m": 60_000,
-  "1h": 60_000,
-  "4h": 60_000,
-  "12h": 60_000,
-  "1d": 60_000,
-};
-
 export function useCandles(query: CandleQuery | null): UseQueryResult<Metered<CandlePage>> {
   return useQuery({
     queryKey: marketKeys.candles(query),
     queryFn: ({ signal }) => market.candles(query as CandleQuery, signal),
     enabled: query !== null,
-    refetchInterval: query ? CANDLE_POLL_MS[query.interval] : false,
     placeholderData: (previous) => previous,
   });
 }

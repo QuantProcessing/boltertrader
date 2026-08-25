@@ -87,10 +87,11 @@ type BookEvent struct {
 }
 
 type BBOEvent struct {
-	Instrument Instrument `json:"instrument"`
-	Bid        BookLevel  `json:"bid"`
-	Ask        BookLevel  `json:"ask"`
-	Time       time.Time  `json:"time,omitempty"`
+	Instrument     Instrument `json:"instrument"`
+	Bid            BookLevel  `json:"bid"`
+	Ask            BookLevel  `json:"ask"`
+	SourceSequence string     `json:"source_sequence,omitempty"`
+	Time           time.Time  `json:"time,omitempty"`
 }
 
 type PublicTradeEvent struct {

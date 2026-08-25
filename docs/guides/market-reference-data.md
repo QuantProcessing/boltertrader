@@ -142,12 +142,12 @@ third surface again, resolving on four product rows only; see
 
 ## Live updates
 
-Neither of the above is polled by the interface. One server-sent stream,
-`/api/v1/realtime/stream`, carries updates for whatever is subscribed. The
-gateway's own `/v1/public/ws` is what feeds it underneath, and that stream has
-no cursor replay by design: every connection starts from a fresh authoritative
-snapshot, and a venue gap emits `resync_required` and closes rather than
-silently skipping.
+Neither of the above is polled by the interface. One multiplexed WebSocket,
+`/api/v1/realtime/ws`, carries all subscribed public and private topics.
+Trading itself holds one `/internal/v1/market/ws` connection to Gateway.
+Public topics start with an authoritative snapshot; a venue gap changes the
+generation and emits `resync_required` before the replacement snapshot.
+`account.events` alone supports bounded cursor replay.
 
 ## What is available where
 

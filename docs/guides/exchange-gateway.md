@@ -42,7 +42,6 @@ REST + public/private WebSocket + /metrics
 The process exposes:
 
 - authenticated versioned REST under `/v1`;
-- authenticated account-scoped public market events at `/v1/public/ws`;
 - authenticated private events at `/v1/ws`;
 - authenticated Prometheus metrics at `/metrics`;
 - health at `/v1/health/live` and readiness at `/v1/health/ready`.
@@ -146,26 +145,22 @@ Gateway-owned venue client and binds the request to its configured
 product/environment; callers never provide or receive venue credentials,
 native symbols, native IDs, instrument encodings, or raw venue errors.
 
-`/v1/public/ws` accepts one of `order_book`, `bbo`, `mark_price`, or
-`funding_rate`. The Gateway subscribes to the venue stream before establishing
-the authoritative snapshot, then sends that snapshot as sequence 1. Order book,
-BBO, and funding use normalized REST snapshots; mark price uses the first
-bounded mark stream event because the exchange contract exposes mark as an
-independent stream capability rather than coupling it to funding. This stream
-deliberately has no cursor replay: every connection has a boot ID and starts
-from a fresh snapshot. A venue gap, malformed update, oversized payload, or
-upstream error emits a bounded `resync_required` event and closes with
-WebSocket policy violation; the client reconnects and receives a new snapshot.
+`/internal/v1/market/ws` is Gateway's multiplexed service-to-service market
+protocol. Its public topics include order book, BBO, candles, mark, funding
+board, and venue connectivity. Market Hub owns one native feed per venue,
+environment, native family, and dataset, materializes a current snapshot, and
+fans it out to every consumer. A gap increments generation, emits
+`resync_required`, and rebuilds the snapshot.
 
-Three operations on the internal listener are the exception to the account
-rule: `GET /internal/v1/funding-board`,
-`GET /internal/v1/funding-board/ws`, and
-`GET /internal/v1/funding-history`. They take no `account_id`, because Gateway
+The public market operations on the internal listener are the exception to the
+account rule: `/internal/v1/market/ws`, `/internal/v1/market-facts`,
+`/internal/v1/funding-board`, `/internal/v1/funding-history`, and
+`/internal/v1/venues/connectivity`. They take no `account_id`, because Gateway
 answers them with credential-free venue clients. They remain authenticated by
 the internal bearer token and never expose credential material or raw venue
 errors.
 
-The funding board is a resident public-market projection. At startup Gateway
+The funding board is a pure projection of resident `DerivativeFact` data. At startup Gateway
 bootstraps every supported perpetual route once and then maintains funding,
 mark, index, and open-interest facts from venue WebSockets. Binance and Aster
 open interest is enriched asynchronously on a rolling one-minute cycle; Nado's

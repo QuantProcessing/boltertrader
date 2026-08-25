@@ -62,8 +62,12 @@ type FundingMarketFact struct {
 	OpenInterestNotional      OptionalDecimal    `json:"open_interest_notional"`
 	OpenInterestNotionalAsset string             `json:"open_interest_notional_asset,omitempty"`
 	FundingObservedAt         time.Time          `json:"funding_observed_at,omitempty"`
-	PriceObservedAt           time.Time          `json:"price_observed_at,omitempty"`
-	OpenInterestObservedAt    time.Time          `json:"open_interest_observed_at,omitempty"`
+	MarkObservedAt            time.Time          `json:"mark_observed_at,omitempty"`
+	IndexObservedAt           time.Time          `json:"index_observed_at,omitempty"`
+	// PriceObservedAt is retained as a compatibility aggregate for older
+	// projections. New freshness decisions use the two field clocks above.
+	PriceObservedAt        time.Time `json:"price_observed_at,omitempty"`
+	OpenInterestObservedAt time.Time `json:"open_interest_observed_at,omitempty"`
 }
 
 func (fact FundingMarketFact) Key() string {

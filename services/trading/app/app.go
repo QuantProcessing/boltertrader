@@ -81,9 +81,13 @@ type Dependencies struct {
 	CatalogSource         catalog.Source
 	MarketDataSource      marketdata.Source
 	FreshMarketData       httpapi.MarketDataAuthority
+	FreshBBO              marketdata.FreshBBOSource
 	CandleSource          marketdata.CandleSource
 	FundingBoardStream    marketdata.BoardStream
 	FundingHistorySource  marketdata.FundingHistorySource
+	MarketTopics          httpapi.MarketTopicProjection
+	VenueConnectivity     httpapi.VenueConnectivityProjection
+	RealtimeObserver      httpapi.RealtimeObserver
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
@@ -249,6 +253,8 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		Catalog: catalogProjection, MarketData: marketService, Candles: candleService,
 		FundingBoard: boardService, FundingHistory: historyService,
 		Readiness: readiness, Realtime: hub, Principal: dependencies.Principal,
+		MarketTopics: dependencies.MarketTopics, Connectivity: dependencies.VenueConnectivity,
+		RealtimeObserver: dependencies.RealtimeObserver,
 	})
 	if err != nil {
 		return nil, err
@@ -297,6 +303,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				ManualAccounts: manualAccounts,
 				Arbitrage:      arbitrageService, FundingBoard: boardService, MarketData: marketService,
 				FreshMarketData: dependencies.FreshMarketData,
+				FreshBBO:        dependencies.FreshBBO,
 				Principal:       dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
 				Activity: activityLog,
 			},

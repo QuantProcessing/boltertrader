@@ -38,4 +38,9 @@ describe("live position values", () => {
     expect(liquidationPrice({ ...position, liquidationPrice: "0" })).toBeUndefined();
     expect(liquidationPrice({ ...position, liquidationPrice: "65000" })).toBe("65000");
   });
+
+  it("retains a stale mark for display but stops calculating pseudo-live PnL", () => {
+    expect(positionMarkPrice(position, "78338.9", true)).toEqual({ value: "78338.9", estimated: true, stale: true });
+    expect(positionUnrealizedPnl(position, "78338.9", true)).toEqual({ value: "", estimated: true, stale: true });
+  });
 });

@@ -96,6 +96,22 @@ func TestMigrationsAreEmbedded(t *testing.T) {
 	var _ embed.FS = Migrations
 }
 
+func TestMarketCatalogAllowsARevisionToReturnToAnOlderFingerprint(t *testing.T) {
+	sql := strings.ToLower(MarketDataStateMigrationSQL())
+	if strings.Contains(sql, "unique (scope_key, fingerprint)") {
+		t.Fatal("catalog fingerprint is globally unique; an A -> B -> A catalog transition cannot be recorded")
+	}
+	for _, required := range []string{
+		"primary key (scope_key, revision)",
+		"market_catalog_heads",
+		"current_revision",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("market data migration missing %q", required)
+		}
+	}
+}
+
 func TestDesiredAccountMigrationFreezesRecoveryAndCredentialFences(t *testing.T) {
 	sql := strings.ToLower(DesiredAccountsMigrationSQL())
 	required := []string{

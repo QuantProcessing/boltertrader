@@ -1,0 +1,138 @@
+package marketowner
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
+	"github.com/QuantProcessing/boltertrader/gateway/markethub"
+	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
+)
+
+// BoardMarks projects marks from the resident broad derivative feed. Venues
+// whose native feed already carries every market must not open a second
+// per-symbol mark subscription when Trader, PnL, funding and arbitrage ask for
+// the same value.
+type BoardMarks struct {
+	Board   *fundingboard.Source
+	Markets *publicmarket.Source
+}
+
+func (source BoardMarks) PublishMark(ctx context.Context, instrumentID string, price exchange.OptionalDecimal, observedAt time.Time) {
+	if source.Board == nil || source.Markets == nil || !price.Valid {
+		return
+	}
+	instrument, ok, err := source.instrument(ctx, instrumentID)
+	if err != nil || !ok {
+		return
+	}
+	identity := instrument.Canonical.Identity
+	_ = source.Board.UpdateMark(instrument.RouteProfileID, identity.NativeID, identity.NativeSymbol, price.Value, observedAt)
+}
+
+func (source BoardMarks) Open(ctx context.Context, key markethub.SubscriptionKey) (markethub.NativeStream, bool, error) {
+	if source.Board == nil || source.Markets == nil {
+		return markethub.NativeStream{}, false, nil
+	}
+	instrument, ok, err := source.instrument(ctx, key.InstrumentID)
+	if err != nil || !ok || !broadMarkVenue(instrument.Canonical.Identity.Venue) {
+		return markethub.NativeStream{}, false, err
+	}
+	changes, cancel, err := source.Board.Subscribe(ctx)
+	if err != nil {
+		return markethub.NativeStream{}, true, err
+	}
+	price, at, err := source.snapshot(ctx, instrument)
+	if err != nil {
+		cancel()
+		return markethub.NativeStream{}, true, err
+	}
+	events := make(chan markethub.Message, 64)
+	failures := make(chan error, 1)
+	streamCtx, stop := context.WithCancel(ctx)
+	go source.forward(streamCtx, instrument, price, at, changes, events, failures)
+	return markethub.NativeStream{
+		Snapshot: message(key, markethub.MessageSnapshot, at, "", map[string]any{"price": price}),
+		Events:   events, Errors: failures,
+		Close: func() error {
+			stop()
+			cancel()
+			return nil
+		},
+	}, true, nil
+}
+
+func (source BoardMarks) instrument(ctx context.Context, instrumentID string) (publicmarket.Instrument, bool, error) {
+	snapshot, err := source.Markets.Snapshot(ctx)
+	if err != nil {
+		return publicmarket.Instrument{}, false, err
+	}
+	instrument, ok := snapshot.Find(instrumentID)
+	return instrument, ok, nil
+}
+
+func broadMarkVenue(venue exchange.Venue) bool {
+	switch venue {
+	case exchange.VenueBinance, exchange.VenueAster, exchange.VenueLighter, exchange.VenueHyperliquid, exchange.VenueGate:
+		return true
+	default:
+		return false
+	}
+}
+
+func (source BoardMarks) snapshot(ctx context.Context, instrument publicmarket.Instrument) (string, time.Time, error) {
+	snapshot, err := source.Board.Snapshot(ctx)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	identity := instrument.Canonical.Identity
+	for _, column := range snapshot.Venues {
+		if column.RouteProfileID != instrument.RouteProfileID {
+			continue
+		}
+		for _, entry := range column.Entries {
+			matches := identity.NativeID != "" && entry.NativeID == identity.NativeID
+			if !matches {
+				matches = strings.EqualFold(strings.TrimSpace(entry.NativeSymbol), strings.TrimSpace(identity.NativeSymbol))
+			}
+			observedAt := entry.MarkObservedAt
+			if observedAt.IsZero() {
+				observedAt = entry.PriceObservedAt
+			}
+			if matches && entry.MarkPrice.Valid && !observedAt.IsZero() {
+				return entry.MarkPrice.Value.String(), observedAt.UTC(), nil
+			}
+		}
+	}
+	return "", time.Time{}, fmt.Errorf("%w: broad mark is absent", markethub.ErrUnavailable)
+}
+
+func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.Instrument, lastPrice string, lastAt time.Time, changes <-chan fundingboard.Change, events chan<- markethub.Message, failures chan<- error) {
+	defer close(events)
+	defer close(failures)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, open := <-changes:
+			if !open {
+				select {
+				case failures <- markethub.ErrResyncRequired:
+				case <-ctx.Done():
+				}
+				return
+			}
+			price, at, err := source.snapshot(ctx, instrument)
+			if err != nil || (price == lastPrice && at.Equal(lastAt)) {
+				continue
+			}
+			lastPrice, lastAt = price, at
+			if !emit(ctx, events, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: at, Data: markethub.Encode(map[string]any{"price": price})}) {
+				return
+			}
+		}
+	}
+}

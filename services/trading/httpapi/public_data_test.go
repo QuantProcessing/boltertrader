@@ -151,80 +151,12 @@ func TestPublicDataRoutesUseStrictGatewayBackedDTOs(t *testing.T) {
 	}
 }
 
-func TestRealtimeStreamResumesFromCursorAndRejectsExpiredCursor(t *testing.T) {
-	handler, hub := newPublicDataHandler(t)
-	first, _ := hub.Publish("catalog.updated", map[string]string{"revision": "one"})
-	second, _ := hub.Publish("market_data.updated", map[string]string{"instrumentId": "btc-usdt"})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+first.Cursor, nil).WithContext(ctx)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), first.EventID) || !strings.Contains(response.Body.String(), second.EventID) {
-		t.Fatalf("resume response = %d %s", response.Code, response.Body.String())
-	}
-
-	small, _ := realtime.NewHub(1, time.Now)
-	expired, _ := small.Publish("one", map[string]bool{"ready": true})
-	_, _ = small.Publish("two", map[string]bool{"ready": true})
-	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Candles: &candleStub{}, FundingBoard: &fundingBoardStub{}, FundingHistory: &fundingHistoryStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, error) { return "principal-a", nil }})
-	expiredRequest := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+expired.Cursor, nil)
-	expiredResponse := httptest.NewRecorder()
-	api.Handle(expiredResponse, expiredRequest, "GET /api/v1/realtime/stream")
-	if expiredResponse.Code != http.StatusConflict || !strings.Contains(expiredResponse.Body.String(), "RESNAPSHOT_REQUIRED") {
-		t.Fatalf("expired response = %d %s", expiredResponse.Code, expiredResponse.Body.String())
-	}
-}
-
-func TestRealtimeStreamAllowsInitialSubscriptionWithoutCursor(t *testing.T) {
+func TestLegacyRealtimeStreamIsRemoved(t *testing.T) {
 	handler, _ := newPublicDataHandler(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream", nil).WithContext(ctx)
 	response := httptest.NewRecorder()
-
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" || !strings.HasPrefix(response.Body.String(), ": connected\n\n") {
-		t.Fatalf("initial realtime response = %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestRealtimeStreamResumesFromLastEventID(t *testing.T) {
-	handler, hub := newPublicDataHandler(t)
-	first, _ := hub.Publish("catalog.updated", map[string]string{"revision": "one"})
-	second, _ := hub.Publish("market_data.updated", map[string]string{"instrumentId": "btc-usdt"})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream", nil).WithContext(ctx)
-	request.Header.Set("Last-Event-ID", first.Cursor)
-	response := httptest.NewRecorder()
-
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), first.EventID) || !strings.Contains(response.Body.String(), second.EventID) {
-		t.Fatalf("Last-Event-ID resume response = %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestRealtimeStreamScopesPrivateReplayToPrincipal(t *testing.T) {
-	handler, hub := newPublicDataHandler(t)
-	activity, err := NewActivityLog(8, time.Now, hub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, _ := hub.Publish("catalog.updated", map[string]string{"revision": "before-private-events"})
-	_, _ = activity.Publish(ActivityRecord{PrincipalID: "principal-a", Kind: "command.accepted", ResourceID: "command-a"})
-	_, _ = activity.Publish(ActivityRecord{PrincipalID: "principal-b", Kind: "command.accepted", ResourceID: "command-b"})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+before.Cursor, nil).WithContext(ctx)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "command-a") || strings.Contains(response.Body.String(), "command-b") {
-		t.Fatalf("scoped realtime response=%d %s", response.Code, response.Body.String())
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("legacy realtime response=%d %s", response.Code, response.Body.String())
 	}
 }
 

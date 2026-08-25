@@ -12,6 +12,8 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
+	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
+	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
@@ -225,6 +227,12 @@ type InternalOptions struct {
 	// only change sequences; the handler obtains each canonical wire snapshot
 	// through Authority so HTTP and WebSocket cannot drift in shape.
 	FundingBoardChanges InternalFundingBoardChanges
+	MarketFacts         InternalMarketFacts
+	VenueConnectivity   InternalVenueConnectivity
+	FreshBBO            InternalFreshBBO
+	MarketHub           InternalMarketHub
+	MarketKeys          InternalMarketKeys
+	FundingSettlements  InternalFundingSettlements
 	// Lifecycle is optional. A gateway without a durable account store can
 	// still serve the runtime and catalog surfaces, so the account lifecycle
 	// routes are only mounted when something can answer them.
@@ -243,6 +251,12 @@ type InternalHandler struct {
 	blockers            AccountBlockers
 	publicMarkets       InternalPublicMarketStreams
 	fundingBoardChanges InternalFundingBoardChanges
+	marketFacts         InternalMarketFacts
+	venueConnectivity   InternalVenueConnectivity
+	freshBBO            InternalFreshBBO
+	marketHub           InternalMarketHub
+	marketKeys          InternalMarketKeys
+	fundingSettlements  InternalFundingSettlements
 	mux                 *http.ServeMux
 }
 
@@ -263,11 +277,13 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/catalog/instruments"},
 	{http.MethodGet, "/internal/v1/market-data"},
 	{http.MethodGet, "/internal/v1/candles"},
-	{http.MethodGet, "/internal/v1/public/ws"},
+	{http.MethodGet, "/internal/v1/market/ws"},
+	{http.MethodGet, "/internal/v1/market-facts"},
+	{http.MethodGet, "/internal/v1/fresh-bbo"},
 	{http.MethodGet, "/internal/v1/private-events"},
 	{http.MethodGet, "/internal/v1/funding-board"},
-	{http.MethodGet, "/internal/v1/funding-board/ws"},
 	{http.MethodGet, "/internal/v1/funding-history"},
+	{http.MethodGet, "/internal/v1/venues/connectivity"},
 }
 
 func InternalRoutes() []Route { return append([]Route(nil), internalRoutes...) }
@@ -277,7 +293,7 @@ func InternalRoutes() []Route { return append([]Route(nil), internalRoutes...) }
 // order capabilities remain absent from the auth edge's Gateway forwarding
 // table.
 func InternalPublicMarketRoutes() []Route {
-	return []Route{{http.MethodGet, "/internal/v1/public/ws"}}
+	return nil
 }
 
 func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
@@ -290,7 +306,7 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, marketFacts: options.MarketFacts, venueConnectivity: options.VenueConnectivity, freshBBO: options.FreshBBO, marketHub: options.MarketHub, marketKeys: options.MarketKeys, fundingSettlements: options.FundingSettlements, mux: http.NewServeMux()}
 	handler.register()
 	if handler.lifecycle != nil {
 		handler.registerAccountLifecycle()
@@ -327,11 +343,109 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/catalog/instruments", handler.read(AuthorityCatalogInstruments))
 	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.read(AuthorityMarketData))
 	handler.mux.HandleFunc("GET /internal/v1/candles", handler.read(AuthorityCandles))
-	handler.mux.HandleFunc("GET /internal/v1/public/ws", handler.publicMarketStream)
+	handler.mux.HandleFunc("GET /internal/v1/market/ws", handler.unifiedMarketStream)
+	handler.mux.HandleFunc("GET /internal/v1/market-facts", handler.marketFactsSnapshot)
+	handler.mux.HandleFunc("GET /internal/v1/fresh-bbo", handler.freshBBOSnapshot)
 	handler.mux.HandleFunc("GET /internal/v1/private-events", handler.read(AuthorityPrivateEvents))
 	handler.mux.HandleFunc("GET /internal/v1/funding-board", handler.read(AuthorityFundingBoard))
-	handler.mux.HandleFunc("GET /internal/v1/funding-board/ws", handler.fundingBoardStream)
-	handler.mux.HandleFunc("GET /internal/v1/funding-history", handler.read(AuthorityFundingHistory))
+	handler.mux.HandleFunc("GET /internal/v1/funding-history", handler.fundingHistoryRead)
+	handler.mux.HandleFunc("GET /internal/v1/venues/connectivity", handler.venueConnectivitySnapshot)
+}
+
+type InternalFundingSettlements interface {
+	TrackNextSettlement(context.Context, string) error
+	TrackActive(context.Context, string, string) (func(), error)
+}
+
+func (handler *InternalHandler) fundingHistoryRead(w http.ResponseWriter, r *http.Request) {
+	if handler.fundingSettlements != nil {
+		instrumentID := strings.TrimSpace(r.URL.Query().Get("instrumentId"))
+		if instrumentID != "" {
+			_ = handler.fundingSettlements.TrackNextSettlement(r.Context(), instrumentID)
+		}
+	}
+	handler.execute(w, r, http.StatusOK, AuthorityRequest{Operation: AuthorityFundingHistory, Query: r.URL.Query()})
+}
+
+func (handler *InternalHandler) marketFactsSnapshot(w http.ResponseWriter, r *http.Request) {
+	if len(r.URL.Query()) != 0 {
+		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
+		return
+	}
+	if handler.marketFacts == nil {
+		handler.writeError(w, r, http.StatusServiceUnavailable, "MARKET_FACTS_UNAVAILABLE", true)
+		return
+	}
+	facts, err := handler.marketFacts.Snapshot(r.Context())
+	if err != nil {
+		handler.writeError(w, r, http.StatusServiceUnavailable, "MARKET_FACTS_UNAVAILABLE", true)
+		return
+	}
+	data := map[string]any{"derivativeFacts": facts}
+	if handler.venueConnectivity != nil {
+		data["venueConnectivity"] = connectivityWireSnapshot(handler.venueConnectivity.Snapshot())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": data})
+}
+
+type InternalMarketFacts interface {
+	Snapshot(context.Context) ([]exchange.DerivativeFact, error)
+}
+
+type InternalVenueConnectivity interface {
+	Snapshot() []connectivity.Snapshot
+}
+
+type InternalFreshBBO interface {
+	GetFreshBBO(context.Context, string, time.Duration) (markethub.BBOQuote, error)
+}
+
+type InternalMarketHub interface {
+	Subscribe(context.Context, markethub.SubscriptionKey, int) (*markethub.Subscription, error)
+	Latest(markethub.SubscriptionKey) (markethub.Message, bool)
+}
+
+type InternalMarketKeys interface {
+	SubscriptionKey(context.Context, string, exchange.MarketDataset, string, int) (markethub.SubscriptionKey, error)
+}
+
+func (handler *InternalHandler) freshBBOSnapshot(w http.ResponseWriter, r *http.Request) {
+	if handler.freshBBO == nil || len(r.URL.Query()) != 1 || strings.TrimSpace(r.URL.Query().Get("instrumentId")) == "" {
+		if handler.freshBBO == nil {
+			handler.writeError(w, r, http.StatusServiceUnavailable, "QUOTE_UNAVAILABLE", true)
+		} else {
+			handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
+		}
+		return
+	}
+	instrumentID := r.URL.Query().Get("instrumentId")
+	if handler.fundingSettlements != nil {
+		if stop, trackErr := handler.fundingSettlements.TrackActive(r.Context(), instrumentID, "fresh_bbo"); trackErr == nil {
+			defer stop()
+		}
+	}
+	quote, err := handler.freshBBO.GetFreshBBO(r.Context(), instrumentID, 2*time.Second)
+	if err != nil {
+		code := "QUOTE_UNAVAILABLE"
+		if errors.Is(err, markethub.ErrQuoteStale) {
+			code = "QUOTE_STALE"
+		}
+		handler.writeError(w, r, http.StatusServiceUnavailable, code, true)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": quote})
+}
+
+func (handler *InternalHandler) venueConnectivitySnapshot(w http.ResponseWriter, r *http.Request) {
+	if len(r.URL.Query()) != 0 {
+		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
+		return
+	}
+	if handler.venueConnectivity == nil {
+		handler.writeError(w, r, http.StatusServiceUnavailable, "VENUE_CONNECTIVITY_UNAVAILABLE", true)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": connectivityWireSnapshot(handler.venueConnectivity.Snapshot())})
 }
 
 func (handler *InternalHandler) applyDesired(w http.ResponseWriter, r *http.Request) {

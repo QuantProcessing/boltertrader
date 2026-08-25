@@ -76,3 +76,11 @@ func SimpleAccountsMigrationSQL() string {
 	}
 	return string(data)
 }
+
+func MarketDataStateMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/011_market_data_state.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

@@ -58,6 +58,40 @@ func TestServicePublishesStablePublicIdentityAndResolvesCanonicalInstrument(t *t
 	}
 }
 
+func TestRestoredCatalogIsLastKnownButNeverCommandReady(t *testing.T) {
+	now := time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)
+	service, err := NewService(time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountID := domain.AccountID("binance-perp")
+	scope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"}
+	if err := service.RegisterAccount(accountID, scope); err != nil {
+		t.Fatal(err)
+	}
+	instrument := testInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "BTCUSDT", "USDT")
+	snapshot, err := service.Restore(accountID, []exchange.Instrument{instrument}, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := snapshot.Instruments[0].ID
+	if _, err := service.ResolveLastKnown(t.Context(), accountID, id); err != nil {
+		t.Fatalf("last-known resolve: %v", err)
+	}
+	if _, err := service.Resolve(t.Context(), accountID, id); !errors.Is(err, ErrCatalogStale) {
+		t.Fatalf("command resolve=%v, want stale", err)
+	}
+	if status := service.Status(accountID); !status.Stale || status.ReadReady || status.Reason != ReasonCatalogStale {
+		t.Fatalf("restored status=%+v", status)
+	}
+	if _, err := service.Publish(accountID, []exchange.Instrument{instrument}); err != nil {
+		t.Fatal(err)
+	}
+	if status := service.Status(accountID); status.Stale || !status.ReadReady {
+		t.Fatalf("live status=%+v", status)
+	}
+}
+
 func TestServiceUsesSettlementForNadoSpotStableIdentity(t *testing.T) {
 	service, _ := NewService(time.Minute, time.Now)
 	accountID := domain.AccountID("nado-spot")

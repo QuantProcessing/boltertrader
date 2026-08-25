@@ -55,8 +55,12 @@ type FundingBoardEntry struct {
 	// The three observation clocks are independent. A fresh mark update must
 	// never make an old funding rate or open-interest value appear current.
 	FundingObservedAt      time.Time `json:"funding_observed_at,omitempty"`
+	MarkObservedAt         time.Time `json:"mark_observed_at,omitempty"`
+	IndexObservedAt        time.Time `json:"index_observed_at,omitempty"`
 	PriceObservedAt        time.Time `json:"price_observed_at,omitempty"`
 	OpenInterestObservedAt time.Time `json:"open_interest_observed_at,omitempty"`
+	StaleFields            []string  `json:"stale_fields,omitempty"`
+	MissingFields          []string  `json:"missing_fields,omitempty"`
 }
 
 type FundingBoardSnapshot struct {

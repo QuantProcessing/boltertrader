@@ -148,7 +148,6 @@ var routes = []Route{
 	{http.MethodGet, "/v1/bbo"},
 	{http.MethodGet, "/v1/mark-price"},
 	{http.MethodGet, "/v1/candles"},
-	{http.MethodGet, "/v1/public/ws"},
 	{http.MethodPut, "/v1/accounts/{account_id}/instruments/{instrument_id}/leverage"},
 	{http.MethodGet, "/v1/ws"},
 }
@@ -230,7 +229,6 @@ func (handler *Handler) register() {
 	handler.mux.HandleFunc("GET /v1/bbo", handler.getBBO)
 	handler.mux.HandleFunc("GET /v1/mark-price", handler.getMarkPrice)
 	handler.mux.HandleFunc("GET /v1/candles", handler.getCandles)
-	handler.mux.HandleFunc("GET /v1/public/ws", handler.publicMarketEvents)
 	handler.mux.HandleFunc("PUT /v1/accounts/{account_id}/instruments/{instrument_id}/leverage", handler.setLeverage)
 	handler.mux.HandleFunc("GET /v1/ws", handler.privateEvents)
 

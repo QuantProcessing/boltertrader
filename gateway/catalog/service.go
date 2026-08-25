@@ -121,6 +121,7 @@ type scopeState struct {
 	snapshot  Snapshot
 	canonical map[domain.InstrumentID]exchange.Instrument
 	lastError string
+	restored  bool
 }
 
 func NewService(maxAge time.Duration, now func() time.Time) (*Service, error) {
@@ -192,6 +193,33 @@ func (service *Service) Publish(accountID domain.AccountID, instruments []exchan
 	}
 	state.canonical = canonical
 	state.lastError = ""
+	state.restored = false
+	return cloneSnapshot(state.snapshot), nil
+}
+
+// Restore installs a durable last-known catalog only when no live refresh has
+// published yet. It is resolvable for identity recovery but remains explicitly
+// stale and therefore cannot authorize a command.
+func (service *Service) Restore(accountID domain.AccountID, instruments []exchange.Instrument, observedAt time.Time) (Snapshot, error) {
+	if observedAt.IsZero() {
+		return Snapshot{}, fmt.Errorf("%w: restored observation time is required", ErrInvalidSnapshot)
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	scope, ok := service.accounts[accountID]
+	if !ok {
+		return Snapshot{}, fmt.Errorf("%w: account is not registered", ErrCatalogUnavailable)
+	}
+	state := service.scopes[scope]
+	if state.snapshot.Generation != 0 {
+		return cloneSnapshot(state.snapshot), nil
+	}
+	public, canonical, revision, err := projectSnapshot(scope, instruments)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	state.snapshot = Snapshot{Scope: scope, Revision: revision, Generation: 1, LoadedAt: observedAt.UTC(), Instruments: public}
+	state.canonical, state.lastError, state.restored = canonical, ReasonCatalogStale, true
 	return cloneSnapshot(state.snapshot), nil
 }
 
@@ -233,7 +261,7 @@ func (service *Service) resolve(ctx context.Context, accountID domain.AccountID,
 	if !ok || state.snapshot.Generation == 0 {
 		return exchange.Instrument{}, fmt.Errorf("%w: no snapshot for account", ErrCatalogUnavailable)
 	}
-	if requireFresh && service.isStale(state.snapshot) {
+	if requireFresh && (state.restored || service.isStale(state.snapshot)) {
 		return exchange.Instrument{}, ErrCatalogStale
 	}
 	instrument, ok := state.canonical[instrumentID]
@@ -261,7 +289,7 @@ func (service *Service) Status(accountID domain.AccountID) Status {
 	if !ok || state.snapshot.Generation == 0 {
 		return Status{Scope: scope, Reason: ReasonCatalogUnavailable, LastError: ReasonCatalogUnavailable}
 	}
-	stale := service.isStale(state.snapshot)
+	stale := state.restored || service.isStale(state.snapshot)
 	age := service.now().UTC().Sub(state.snapshot.LoadedAt)
 	if age < 0 {
 		age = 0

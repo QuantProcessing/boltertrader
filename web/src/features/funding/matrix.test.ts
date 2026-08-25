@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { FundingBoardRow, FundingBoardSnapshot, FundingBoardVenue } from "@/api/types";
-import { pivotRows } from "@/features/funding/matrix";
+import { actionableFundingPercent, pivotRows } from "@/features/funding/matrix";
 
 /* ---------------------------------------------------------------------------
  * What makes two venues' rows the same instrument.
@@ -136,5 +136,23 @@ describe("pivotRows", () => {
     expect(rows[0]?.openInterest).toBe("9000");
     expect(rows[0]?.openInterestVenue).toBe("okx");
     expect(rows[0]?.openInterestAsset).toBe("USD");
+  });
+});
+
+describe("actionableFundingPercent", () => {
+  it("keeps a stale rate displayable but excludes it from opportunity math", () => {
+    const stale = row("BTC-USDT", "BTC", "USDT", {
+      rate: "0.0001",
+      intervalHours: 8,
+      staleFields: ["funding"],
+    });
+
+    expect(stale.rate).toBe("0.0001");
+    expect(actionableFundingPercent(stale, "24h")).toBeNull();
+  });
+
+  it("normalizes a fresh rate", () => {
+    expect(actionableFundingPercent(row("BTC-USDT", "BTC", "USDT", { intervalHours: 8 }), "24h"))
+      .toBeCloseTo(0.03);
   });
 });

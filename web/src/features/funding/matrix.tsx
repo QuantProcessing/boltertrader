@@ -79,7 +79,7 @@ const UNIT_DECIMALS: Record<FundingUnit, number> = {
  * be shown per-period but cannot be shown per-year.
  */
 function normalizedPercent(row: FundingBoardRow, unit: FundingUnit): number | null {
-	if (row.rate === undefined) return null;
+  if (row.rate === undefined) return null;
   const rate = Number.parseFloat(row.rate);
   if (!Number.isFinite(rate)) return null;
   if (unit === "period") return rate * 100;
@@ -87,6 +87,16 @@ function normalizedPercent(row: FundingBoardRow, unit: FundingUnit): number | nu
   if (days === null) return null;
   if (row.intervalHours === undefined || row.intervalHours <= 0) return null;
   return rate * (24 / row.intervalHours) * days * 100;
+}
+
+/**
+ * A last-known value remains useful for diagnosis, but it is not an executable
+ * input. Keep this gate separate from formatting so a stale cell can still be
+ * rendered while every ranking and spread calculation rejects it.
+ */
+export function actionableFundingPercent(row: FundingBoardRow, unit: FundingUnit): number | null {
+  if (row.staleFields?.includes("funding") || row.missingFields?.includes("funding")) return null;
+  return normalizedPercent(row, unit);
 }
 
 /** Sorting and threshold comparison only; the displayed string stays the server's. */
@@ -288,7 +298,7 @@ function spreadOf(row: MatrixRow, columns: BoardColumn[], unit: FundingUnit): Sp
   for (const column of columns) {
     const cell = row.cells[column.key];
     if (cell === undefined) continue;
-    const value = normalizedPercent(cell, unit);
+    const value = actionableFundingPercent(cell, unit);
     if (value === null) continue;
     if (high === null || value > high.value) high = { column, value };
     if (low === null || value < low.value) low = { column, value };
@@ -302,7 +312,7 @@ function extremeRateOf(row: MatrixRow, columns: BoardColumn[], unit: FundingUnit
   for (const column of columns) {
     const cell = row.cells[column.key];
     if (cell === undefined) continue;
-    const value = normalizedPercent(cell, unit);
+    const value = actionableFundingPercent(cell, unit);
     if (value === null) continue;
     const absolute = Math.abs(value);
     if (extreme === null || absolute > extreme.absolute) extreme = { value, absolute, column };
@@ -791,7 +801,7 @@ function buildColumns(
     accessorFn: (entry) => {
       const cell = entry.row.cells[column.key];
       if (cell === undefined) return Number.NEGATIVE_INFINITY;
-      return normalizedPercent(cell, unit) ?? Number.NEGATIVE_INFINITY;
+      return actionableFundingPercent(cell, unit) ?? Number.NEGATIVE_INFINITY;
     },
     cell: (context) => {
       const cell = context.row.original.row.cells[column.key];
@@ -799,6 +809,11 @@ function buildColumns(
         return <span className="text-dim">—</span>;
       }
       const percent = normalizedPercent(cell, unit);
+      const stale = cell.staleFields?.includes("funding") ?? false;
+      const missing = cell.missingFields?.includes("funding") ?? false;
+      if (missing) {
+        return <span className="text-dim" title={t("funding.missingValue")}>—</span>;
+      }
       if (percent === null) {
         return (
           <span className="text-dim" title={t("funding.noInterval")}>
@@ -806,7 +821,11 @@ function buildColumns(
           </span>
         );
       }
-      return <Num value={percent.toFixed(decimals)} decimals={decimals} signed directional suffix="%" />;
+      return (
+        <span className={cn(stale && "opacity-60")} title={stale ? t("funding.staleValue") : undefined}>
+          <Num value={percent.toFixed(decimals)} decimals={decimals} signed directional suffix="%" />
+        </span>
+      );
     },
     meta: { numeric: true, width: "96px" },
   }));

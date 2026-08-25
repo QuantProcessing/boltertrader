@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -184,6 +185,33 @@ func TestStreamManagerPublishesPerpPositionsWithMonotonicVersions(t *testing.T) 
 	if payload.AccountID != "acct-p" || payload.InstrumentID != instrumentID ||
 		payload.Position.NativeSymbol != "BTCUSDT" {
 		t.Fatalf("position payload=%+v", payload)
+	}
+}
+
+func TestStreamManagerOpensOneAccountRouteStreamForLargeCatalog(t *testing.T) {
+	hub := newTestHub(t, 16, 8)
+	socket := &fakeAccountRouteSocket{subscription: newFakeSubscription[exchange.AccountEvent]()}
+	client := &fakeAccountRoutePerpClient{socket: socket}
+	instrument := streamTestInstrument(exchange.ProductPerp)
+	instruments := make([]catalog.Instrument, 1000)
+	for index := range instruments {
+		instruments[index] = catalog.Instrument{ID: domain.InstrumentID(fmt.Sprintf("binance:live:perp:USDT:TEST-%04d-USDT", index))}
+	}
+	accounts := &fakeStreamAccounts{
+		status:   account.Status{Resource: account.Resource{AccountID: "acct-large", Product: exchange.ProductPerp, ReadReady: true}},
+		snapshot: catalog.Snapshot{Instruments: instruments}, instrument: instrument, perp: client,
+	}
+	manager, err := NewStreamManager(StreamOptions{Accounts: accounts, Reconciler: &fakeStreamReconciler{}, Hub: hub, PrincipalID: "principal-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams, err := manager.openAccountStreams(t.Context(), "acct-large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer streams.close()
+	if socket.calls != 1 || socket.catalogSize != len(instruments) {
+		t.Fatalf("account route calls=%d catalog=%d", socket.calls, socket.catalogSize)
 	}
 }
 
@@ -1354,6 +1382,26 @@ type fakeStreamPerpClient struct {
 }
 
 func (client *fakeStreamPerpClient) WebSocket() exchange.PerpWebSocket { return client.socket }
+
+type fakeAccountRouteSocket struct {
+	exchange.PerpWebSocket
+	calls        int
+	catalogSize  int
+	subscription exchange.Subscription[exchange.AccountEvent]
+}
+
+func (socket *fakeAccountRouteSocket) WatchAccountEvents(_ context.Context, request exchange.WatchAccountEventsRequest) (exchange.Subscription[exchange.AccountEvent], error) {
+	socket.calls++
+	socket.catalogSize = len(request.Catalog)
+	return socket.subscription, nil
+}
+
+type fakeAccountRoutePerpClient struct {
+	exchange.PerpClient
+	socket *fakeAccountRouteSocket
+}
+
+func (client *fakeAccountRoutePerpClient) WebSocket() exchange.PerpWebSocket { return client.socket }
 
 type fakeSubscription[T any] struct {
 	events chan T

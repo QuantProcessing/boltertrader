@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -448,13 +447,13 @@ func TestPublicRoutesAnswerWithoutASession(t *testing.T) {
 	}
 }
 
-func TestPublicWebSocketRelaysGatewayUpgrade(t *testing.T) {
+func TestRealtimeWebSocketRelaysTradingUpgrade(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/v1/public/ws" || r.URL.Query().Get("kind") != "order_book" {
+		if r.URL.Path != "/api/v1/realtime/ws" || r.URL.RawQuery != "" {
 			t.Errorf("gateway websocket request=%s?%s", r.URL.Path, r.URL.RawQuery)
 		}
-		if got := r.Header.Get(authorizationHeader); got != "Bearer "+testToken+"-gateway" {
-			t.Errorf("gateway authorization=%q", got)
+		if got := r.Header.Get(authorizationHeader); got != "Bearer "+testToken {
+			t.Errorf("trading authorization=%q", got)
 		}
 		connection, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -484,7 +483,7 @@ func TestPublicWebSocketRelaysGatewayUpgrade(t *testing.T) {
 	edge := httptest.NewServer(mux)
 	defer edge.Close()
 
-	target := "ws" + strings.TrimPrefix(edge.URL, "http") + "/api/v1/public/ws?instrumentId=binance%3Alive%3Aperp%3AUSDT%3ABTC-USDT&kind=order_book"
+	target := "ws" + strings.TrimPrefix(edge.URL, "http") + "/api/v1/realtime/ws"
 	connection, response, err := websocket.Dial(context.Background(), target, nil)
 	if response != nil && response.Body != nil {
 		defer response.Body.Close()
@@ -640,52 +639,11 @@ func TestUpstreamUnavailableIsRetryableBadGateway(t *testing.T) {
 	}
 }
 
-// TestStreamRouteOutlivesTheRequestTimeout is the whole reason Stream exists: a
-// deadline sized for a request would cut a healthy event stream off mid-session.
-func TestStreamRouteOutlivesTheRequestTimeout(t *testing.T) {
-	released := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher := w.(http.Flusher)
-		_, _ = io.WriteString(w, "data: first\n\n")
-		flusher.Flush()
-		<-released
-		_, _ = io.WriteString(w, "data: second\n\n")
-		flusher.Flush()
-	}))
-	defer upstream.Close()
-	defer close(released)
-
-	h := newHarness(t, func(options *Options) {
-		options.Trading.BaseURL = mustURL(t, upstream.URL)
-		options.RequestTimeout = 50 * time.Millisecond
-	})
+func TestLegacyRealtimeStreamIsNotForwarded(t *testing.T) {
+	h := newHarness(t, nil)
 	response := h.do(t, http.MethodGet, "/api/v1/realtime/stream", nil, "")
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", response.StatusCode)
-	}
-
-	// The first event must arrive before the second is written, which is only
-	// true if the proxy flushes as bytes arrive rather than buffering the body.
-	reader := bufio.NewReader(response.Body)
-	first, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatalf("read first event: %v", err)
-	}
-	if strings.TrimSpace(first) != "data: first" {
-		t.Fatalf("first event = %q", first)
-	}
-
-	// Well past the request timeout, and the stream is still open.
-	time.Sleep(150 * time.Millisecond)
-	released <- struct{}{}
-	rest, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("read rest: %v", err)
-	}
-	if !strings.Contains(string(rest), "data: second") {
-		t.Fatalf("second event missing from %q", rest)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.StatusCode)
 	}
 }
 

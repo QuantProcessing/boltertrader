@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/shopspring/decimal"
 )
 
 type nadoFundingBoardLoader struct {
@@ -28,8 +29,11 @@ func NewNadoFundingBoardLoader(settings Settings) exchange.FundingBoardLoader {
 // TWENTY-FOUR hour period rather than the eight-hour convention the other
 // venues use — so the interval is stated as 24 and the number is left as Nado
 // quoted it, letting the board's own per-period normalisation do the comparing.
-// `update_time` is epoch seconds, not the milliseconds every other venue on
-// this board sends.
+// `update_time` is only the observation clock for the bulk funding response;
+// it is not a settlement timestamp. The next settlement, mark, index and open
+// interest are enriched from Nado's all-contracts endpoint when that endpoint
+// is available. A failed enrichment never turns valid funding data into an
+// unavailable board.
 func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
 	base := newNadoBase(exchange.ProductPerp, "", "", Settings{
 		Endpoint:          loader.settings.Endpoint,
@@ -49,6 +53,17 @@ func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 	rates, err := base.sdk.GetAllFundingRates(ctx)
 	if err != nil {
 		return exchange.FundingBoardSnapshot{}, base.normalize(fundingBoardOperation, err)
+	}
+	contracts, _ := base.sdk.GetContracts(ctx, nil)
+	contractsByProductID := make(map[int64]nadoContractFields, len(contracts))
+	for _, row := range contracts {
+		contractsByProductID[int64(row.ProductID)] = nadoContractFields{
+			markPrice:                row.MarkPrice,
+			indexPrice:               row.IndexPrice,
+			openInterest:             row.OpenInterest,
+			openInterestNotional:     row.OpenInterestUsd,
+			nextFundingRateTimestamp: row.NextFundingRateTimestamp,
+		}
 	}
 
 	entries := make([]exchange.FundingBoardEntry, 0, len(rates))
@@ -70,10 +85,49 @@ func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 			Rate:          rate,
 			IntervalHours: exchange.OptionalInt{Value: 24, Valid: true},
 		}
-		if seconds, err := strconv.ParseInt(row.UpdateTime, 10, 64); err == nil && seconds > 0 {
-			entry.NextFundingTime = time.Unix(seconds, 0).UTC()
+		if contract, ok := contractsByProductID[product.productID]; ok {
+			entry.MarkPrice = nadoOptionalPositive(contract.markPrice)
+			entry.IndexPrice = nadoOptionalPositive(contract.indexPrice)
+			entry.OpenInterest = nadoOptionalNonNegative(contract.openInterest)
+			entry.OpenInterestNotional = nadoOptionalNonNegative(contract.openInterestNotional)
+			if entry.OpenInterestNotional.Valid {
+				entry.OpenInterestNotionalAsset = "USD"
+			}
+			entry.NextFundingTime = nadoFundingTimestamp(contract.nextFundingRateTimestamp)
 		}
 		entries = append(entries, entry)
 	}
 	return fundingBoardSnapshot(scope, entries), nil
+}
+
+type nadoContractFields struct {
+	markPrice                *float64
+	indexPrice               *float64
+	openInterest             *float64
+	openInterestNotional     *float64
+	nextFundingRateTimestamp *int64
+}
+
+func nadoOptionalPositive(value *float64) exchange.OptionalDecimal {
+	if value == nil || *value <= 0 {
+		return exchange.OptionalDecimal{}
+	}
+	return exchange.OptionalDecimal{Value: decimal.NewFromFloat(*value), Valid: true}
+}
+
+func nadoOptionalNonNegative(value *float64) exchange.OptionalDecimal {
+	if value == nil || *value < 0 {
+		return exchange.OptionalDecimal{}
+	}
+	return exchange.OptionalDecimal{Value: decimal.NewFromFloat(*value), Valid: true}
+}
+
+func nadoFundingTimestamp(value *int64) time.Time {
+	if value == nil || *value <= 0 {
+		return time.Time{}
+	}
+	if *value >= 1_000_000_000_000 {
+		return time.UnixMilli(*value).UTC()
+	}
+	return time.Unix(*value, 0).UTC()
 }

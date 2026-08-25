@@ -143,7 +143,7 @@ export function TradePage() {
                 positionsLoading={accountPositions.isFetching && accountPositions.data === undefined}
                 positionsError={accountPositions.isError}
                 positionAccounts={accountPositions.data?.accounts ?? []}
-                liveMarkPrice={marketFact?.markPrice}
+                liveMark={stream.mark}
               />
             )}
           </div>

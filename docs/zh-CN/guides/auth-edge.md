@@ -34,14 +34,14 @@ Auth edge 是浏览器唯一会直接对话的服务。它只终结会话，别�
 
 其余全是查表。这张表是显式的——每个方法加路径一条——而不是前缀规则，这是刻意的。
 
-一共声明了三十四条路由。二十五条去 trading 服务，九条去 gateway：
+一共声明了四十条路由。三十五条去 trading 服务，五条去 gateway：
 
 | 前缀 | 上游 | 说明 |
 | --- | --- | --- |
 | `/api/v1/accounts`、`/api/v1/accounts/{accountId}` 及其动作 | Gateway | 被重写到内部面 |
 | `/api/v1/accounts/{accountId}/runtimes` | Trading | 这是投影，不是 account 本身 |
 | `/api/v1/catalog/*`、`/api/v1/market-data`、`/api/v1/candles` | Trading | |
-| `/api/v1/realtime/stream` | Trading | 流式 |
+| `/api/v1/realtime/ws`、`/api/v1/venues/connectivity` | Trading | 单条多路复用 WebSocket 与 REST 快照 |
 | `/api/v1/commands`、`/api/v1/reservations`、`/api/v1/products/manual/*` | Trading | |
 | `/api/v1/positions`、`/api/v1/ledger`、`/api/v1/pnl`、`/api/v1/fills`、`/api/v1/activity` | Trading | |
 | `/api/v1/system/status`、`/api/v1/system/readiness`、`/api/v1/audit` | Trading | |
@@ -77,12 +77,11 @@ Gateway 的这些路由也是唯一会改变路径的：`/api/v1/accounts` 在�
 返回方向上，逐跳头会被移除，`Set-Cookie` 也会。任何上游都不允许在浏览器里设置 cookie。
 只有 edge 会，而且只为会话。
 
-## 流式
+## 实时 WebSocket
 
-有一条路由被标记为流式：`GET /api/v1/realtime/stream`。它不受约束其他所有转发的请求超时
-限制——共享 client 上的 deadline 会杀掉事件流——并且它的响应是边到达边 flush，而不是先
-缓冲。这正是订单和成交的实时更新无需轮询就能出现在界面上的原因。Caddy 同样不做缓冲地
-透传它，见 [Web 应用](web-app.md)。
+`GET /api/v1/realtime/ws` 是浏览器唯一的实时连接。Edge 将 WebSocket upgrade 双向转发给
+Trading，升级后的连接不使用普通请求超时。公共行情 topic 可以匿名订阅；未认证连接订阅
+`account.events` 时，Trading 只拒绝该 topic，并返回 `AUTH_REQUIRED`。
 
 ## 它不做的事
 

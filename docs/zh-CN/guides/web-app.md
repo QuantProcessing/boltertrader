@@ -29,9 +29,8 @@ Caddy 提供构建产物，并把 `/api/*` 反向代理到 `authedge:18091` 的 
 CORS 面需要配置。Caddy 保留浏览器的 `Host` 头，所以 edge 看到的正是 cookie 被设置时的那个
 origin。见 [auth edge](auth-edge.md)。
 
-流式在这里不需要任何配置：Caddy 会立即 flush `text/event-stream` 响应，而
-`/api/v1/realtime/stream` 依赖的正是这一点。一个会缓冲的代理会把事件一直攥到连接关闭，
-看起来跟数据流死掉一模一样。
+实时连接不需要特殊的 Caddy 缓冲配置：`/api/v1/realtime/ws` 是标准 WebSocket upgrade，
+Caddy 会双向转发。
 
 ## 路由
 
@@ -56,9 +55,9 @@ account 之间给对儿排名，一个都没选中时它就没有什么可排的
 
 ## 数据流
 
-读取经由 `react-query` 打到 `src/api/endpoints.ts` 里的那些端点。实时更新走一条
-server-sent 流——`/api/v1/realtime/stream`——由外壳持有并分发给已挂载的组件，而不是每个组件
-各订阅一次。
+读取经由 `react-query` 打到 `src/api/endpoints.ts` 里的那些端点。实时更新走一条多路复用
+WebSocket——`/api/v1/realtime/ws`——由单例 topic manager 持有并分发。行情、资费、套利、
+连接状态和账户事件只是这一条连接上的逻辑 topic，不再由组件各自建立连接或轮询。
 
 下单是那个两步的票据：**Review order** 请求一份封签预览并开始它的有效期倒计时，
 **Confirm** 提交这个封签对象。封签过期时按钮会直接这么说。理由见

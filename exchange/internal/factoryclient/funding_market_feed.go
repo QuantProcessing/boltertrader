@@ -42,8 +42,9 @@ func NewFundingMarketFeed(scope exchange.CatalogScope, loader exchange.FundingBo
 // watchers replace it below; keeping the fallback here lets a route remain
 // degraded and observable rather than disappear from the board altogether.
 type restFundingMarketWatcher struct {
-	scope  exchange.CatalogScope
-	loader exchange.FundingBoardLoader
+	scope    exchange.CatalogScope
+	loader   exchange.FundingBoardLoader
+	interval time.Duration
 }
 
 func fundingMarketWatcherFor(scope exchange.CatalogScope, loader exchange.FundingBoardLoader, settings Settings) fundingMarketWatcher {
@@ -57,13 +58,13 @@ func fundingMarketWatcherFor(scope exchange.CatalogScope, loader exchange.Fundin
 	case exchange.VenueLighter:
 		return &lighterFundingMarketWatcher{settings: settings}
 	case exchange.VenueBybit:
-		return &bybitFundingMarketWatcher{settings: settings}
+		return &restFundingMarketWatcher{scope: scope, loader: loader, interval: 15 * time.Second}
 	case exchange.VenueBitget:
-		return &bitgetFundingMarketWatcher{settings: settings}
+		return &restFundingMarketWatcher{scope: scope, loader: loader, interval: 15 * time.Second}
 	case exchange.VenueGate:
 		return &gateFundingMarketWatcher{settings: settings}
 	case exchange.VenueOKX:
-		return &okxFundingMarketWatcher{settings: settings}
+		return &restFundingMarketWatcher{scope: scope, loader: loader, interval: 15 * time.Second}
 	case exchange.VenueNado:
 		return &nadoFundingMarketWatcher{settings: settings}
 	default:
@@ -72,7 +73,11 @@ func fundingMarketWatcherFor(scope exchange.CatalogScope, loader exchange.Fundin
 }
 
 func (watcher *restFundingMarketWatcher) stream(ctx context.Context, _ exchange.FundingMarketPatch, emit func(exchange.FundingMarketPatch)) error {
-	ticker := time.NewTicker(30 * time.Second)
+	interval := watcher.interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -207,6 +212,8 @@ func fundingMarketPatchFromBoard(snapshot exchange.FundingBoardSnapshot) exchang
 			OpenInterestNotional:      entry.OpenInterestNotional,
 			OpenInterestNotionalAsset: entry.OpenInterestNotionalAsset,
 			FundingObservedAt:         entry.FundingObservedAt,
+			MarkObservedAt:            entry.MarkObservedAt,
+			IndexObservedAt:           entry.IndexObservedAt,
 			PriceObservedAt:           entry.PriceObservedAt,
 			OpenInterestObservedAt:    entry.OpenInterestObservedAt,
 		}
@@ -216,9 +223,13 @@ func fundingMarketPatchFromBoard(snapshot exchange.FundingBoardSnapshot) exchang
 		if fact.OpenInterestNotional.Valid && fact.OpenInterestNotionalAsset == "" {
 			fact.OpenInterestNotionalAsset = settlement
 		}
-		if (fact.MarkPrice.Valid || fact.IndexPrice.Valid) && fact.PriceObservedAt.IsZero() {
-			fact.PriceObservedAt = snapshot.ObservedAt
+		if fact.MarkPrice.Valid && fact.MarkObservedAt.IsZero() {
+			fact.MarkObservedAt = firstObservedAt(fact.PriceObservedAt, snapshot.ObservedAt)
 		}
+		if fact.IndexPrice.Valid && fact.IndexObservedAt.IsZero() {
+			fact.IndexObservedAt = firstObservedAt(fact.PriceObservedAt, snapshot.ObservedAt)
+		}
+		fact.PriceObservedAt = latestFundingObservation(fact.MarkObservedAt, fact.IndexObservedAt)
 		if (fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid) && fact.OpenInterestObservedAt.IsZero() {
 			fact.OpenInterestObservedAt = snapshot.ObservedAt
 		}
@@ -228,4 +239,21 @@ func fundingMarketPatchFromBoard(snapshot exchange.FundingBoardSnapshot) exchang
 		Kind: exchange.FundingMarketPatchSnapshot, Scope: snapshot.Scope,
 		ObservedAt: snapshot.ObservedAt, Fields: exchange.FundingMarketFieldAll, Facts: facts,
 	}
+}
+
+func firstObservedAt(candidate, fallback time.Time) time.Time {
+	if !candidate.IsZero() {
+		return candidate.UTC()
+	}
+	return fallback.UTC()
+}
+
+func latestFundingObservation(left, right time.Time) time.Time {
+	if right.After(left) {
+		return right.UTC()
+	}
+	if left.IsZero() {
+		return time.Time{}
+	}
+	return left.UTC()
 }

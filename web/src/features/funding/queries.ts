@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import {
   arbitrage,
@@ -20,7 +21,8 @@ import type {
 } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
-import { tradeKeys } from "@/features/trade/queries";
+import { privateFallbackInterval, tradeKeys } from "@/features/trade/queries";
+import { realtimeTopics } from "@/features/realtime/topic-manager";
 
 /* ---------------------------------------------------------------------------
  * The funding board's read, and the hedge built on top of it.
@@ -42,22 +44,35 @@ export const fundingKeys = {
 };
 
 /**
- * The cross-venue matrix, re-read from Trading's resident projection every five
- * seconds. This never reaches a venue: Gateway collects once, Trading consumes
- * its internal stream, and browser requests only copy local state. Countdowns
- * tick locally off `nextFundingTime` rather than off the poll.
+ * REST supplies the first matrix; the unified realtime socket replaces it with
+ * coalesced projection snapshots and deltas. Countdowns tick locally off
+ * `nextFundingTime`.
  */
 export function useFundingBoard(): UseQueryResult<FundingBoardSnapshot> {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const query = useQuery({
     queryKey: fundingKeys.board(),
     queryFn: ({ signal }) => funding.board(signal),
-    refetchInterval: 5_000,
     // Keep the matrix on screen through a refetch. Blanking a table this wide
     // reads as "the venues went away", which is the one thing the stale and
     // unavailable markers exist to say precisely instead of by implication.
     placeholderData: (previous) => previous,
     staleTime: 0,
   });
+  useEffect(() => realtimeTopics.subscribe({ topic: "funding.board" }, (message) => {
+    if ((message.type === "snapshot" || message.type === "delta") && validFundingBoard(message.data)) {
+      queryClient.setQueryData(fundingKeys.board(), message.data);
+    } else if (message.type === "resync_required") {
+      void queryClient.invalidateQueries({ queryKey: fundingKeys.board() });
+    }
+  }), [queryClient]);
+  return query;
+}
+
+function validFundingBoard(value: unknown): value is FundingBoardSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<FundingBoardSnapshot>;
+  return typeof candidate.observedAt === "string" && Array.isArray(candidate.venues);
 }
 
 /**
@@ -97,29 +112,47 @@ export function useFundingHistory(
  * than closed over, so adding an account re-ranks rather than serving the
  * account-less list from cache.
  *
- * Five seconds matches the product read cadence. Both this route and the board
- * route are local Trading reads, so polling does not multiply venue traffic.
+ * The public topic carries the account-independent ranking at most once per
+ * second. An account-scoped list is refreshed only when that projection
+ * changes, preserving route reachability without a fixed polling timer.
  */
 export function useArbitrageOpportunities(
   accountIds: string[],
 ): UseQueryResult<{ items: ArbitrageOpportunity[]; observedAt: string }> {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const accountKey = accountIds.join("\u0000");
+  const query = useQuery({
     queryKey: fundingKeys.opportunities(accountIds),
     queryFn: ({ signal }) => arbitrage.opportunities(accountIds, signal),
-    refetchInterval: 5_000,
     placeholderData: (previous) => previous,
     staleTime: 0,
   });
+  useEffect(() => realtimeTopics.subscribe({ topic: "arbitrage.opportunities" }, (message) => {
+    const scopedAccountIds = accountKey === "" ? [] : accountKey.split("\u0000");
+    if ((message.type === "snapshot" || message.type === "delta") && validOpportunities(message.data)) {
+      if (scopedAccountIds.length === 0) {
+        queryClient.setQueryData(fundingKeys.opportunities(scopedAccountIds), message.data);
+      } else {
+        void queryClient.invalidateQueries({ queryKey: fundingKeys.opportunities(scopedAccountIds), exact: true });
+      }
+    } else if (message.type === "resync_required") {
+      void queryClient.invalidateQueries({ queryKey: fundingKeys.opportunities(scopedAccountIds), exact: true });
+    }
+  }), [accountKey, queryClient]);
+  return query;
+}
+
+function validOpportunities(value: unknown): value is { items: ArbitrageOpportunity[]; observedAt: string } {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { items?: unknown; observedAt?: unknown };
+  return Array.isArray(candidate.items) && typeof candidate.observedAt === "string";
 }
 
 /**
  * Open pairs, both legs each.
  *
- * Five seconds, the same beat as the manual order ledger, because these are the
- * same commands moved by the same reconciler — a leg that fills is a leg this
- * poll is the only thing watching. It matters more here than there: a pair that
- * lands in `partially_open` is carrying directional exposure nobody chose, and
- * the sooner it is on screen the sooner it can be undone.
+ * Account events invalidate the authoritative pair snapshot. Five-second
+ * polling is retained only as a continuity fallback while realtime is down.
  */
 export function useArbitragePositions(): UseQueryResult<ArbitragePair[]> {
   const readOnly = useReadOnly();
@@ -128,7 +161,7 @@ export function useArbitragePositions(): UseQueryResult<ArbitragePair[]> {
     queryFn: ({ signal }) => arbitrage.positions(signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 5_000,
+    refetchInterval: privateFallbackInterval,
   });
 }
 

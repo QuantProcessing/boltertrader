@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
-import { paths } from "@/api/endpoints";
 import type { Candle, CandleInterval, DepthLevel } from "@/api/types";
+import { realtimeTopics, type RealtimeMessage } from "@/features/realtime/topic-manager";
 
 export interface LiveOrderBook {
   bids: DepthLevel[];
@@ -12,12 +12,14 @@ export interface LiveOrderBook {
 export interface LiveMarkPrice {
   price: string;
   observedAt: string;
+  stale: boolean;
 }
 
 interface StreamEvent {
-  kind: "order_book" | "candles" | "mark_price";
+  /** Kept optional for the pure book reducer's legacy fixtures. */
+  kind?: "order_book" | "candles" | "mark_price";
+  instrumentId?: string;
   eventType: "snapshot" | "delta" | "update" | "resync_required";
-  instrumentId: string;
   observedAt: string;
   bids?: DepthLevel[];
   asks?: DepthLevel[];
@@ -37,59 +39,34 @@ export function usePublicMarketStreams(instrumentId: string | undefined, interva
     setMark(null);
     if (!instrumentId || typeof WebSocket === "undefined") return;
 
-    let disposed = false;
-    const sockets = new Set<WebSocket>();
-    const timers = new Set<number>();
-
-    const connect = (kind: StreamEvent["kind"], streamInterval?: CandleInterval) => {
-      let attempts = 0;
-      const open = () => {
-        if (disposed) return;
-        const socket = new WebSocket(streamURL(instrumentId, kind, streamInterval));
-        sockets.add(socket);
-        socket.addEventListener("open", () => {
-          attempts = 0;
-        });
-        socket.addEventListener("message", (message) => {
-          const event = parseStreamEvent(message.data);
-          if (!event || event.instrumentId !== instrumentId || event.kind !== kind) return;
-          if (event.eventType === "resync_required") {
-            socket.close();
-            return;
-          }
-          if (kind === "order_book") {
-            setBook((current) => applyBookEvent(current, event));
-          } else if (kind === "candles" && event.candle) {
-            setCandle(event.candle);
-          } else if (kind === "mark_price" && typeof event.price === "string" && event.price !== "") {
-            setMark({ price: event.price, observedAt: event.observedAt });
-          }
-        });
-        socket.addEventListener("close", () => {
-          sockets.delete(socket);
-          if (disposed) return;
-          const delay = Math.min(10_000, 500 * 2 ** Math.min(attempts, 5));
-          attempts += 1;
-          const timer = window.setTimeout(() => {
-            timers.delete(timer);
-            open();
-          }, delay);
-          timers.add(timer);
-        });
-        // `error` is followed by `close`; closing here makes every browser use
-        // the same bounded reconnect path instead of leaving a half-open socket.
-        socket.addEventListener("error", () => socket.close());
-      };
-      open();
-    };
-
-    connect("order_book");
-    connect("candles", interval);
-    if (product?.toLowerCase().includes("perp")) connect("mark_price");
+    let markTimer: ReturnType<typeof setTimeout> | undefined;
+    const subscriptions = [
+      realtimeTopics.subscribe({ topic: "market.order_book", instrumentId, depth: 100 }, (message) => {
+        const event = bookEvent(message);
+        if (event) setBook((current) => applyBookEvent(current, event));
+        else if (message.type === "resync_required") setBook(null);
+      }),
+      realtimeTopics.subscribe({ topic: "market.candles", instrumentId, interval }, (message) => {
+        const next = candleEvent(message);
+        if (next) setCandle(next);
+        else if (message.type === "resync_required") setCandle(null);
+      }),
+    ];
+    if (product?.toLowerCase().includes("perp")) {
+      subscriptions.push(realtimeTopics.subscribe({ topic: "market.mark_price", instrumentId }, (message) => {
+        const data = objectData(message);
+        if ((message.type === "snapshot" || message.type === "delta") && typeof data?.price === "string" && data.price !== "") {
+          const observedAt = message.observedAt ?? new Date().toISOString();
+          setMark({ price: data.price, observedAt, stale: false });
+          if (markTimer) clearTimeout(markTimer);
+          const delay = Math.max(0, Date.parse(observedAt) + 2_000 - Date.now());
+          markTimer = setTimeout(() => setMark((current) => current?.observedAt === observedAt ? { ...current, stale: true } : current), delay);
+        } else if (message.type === "resync_required") setMark((current) => current ? { ...current, stale: true } : null);
+      }));
+    }
     return () => {
-      disposed = true;
-      for (const timer of timers) window.clearTimeout(timer);
-      for (const socket of sockets) socket.close();
+      if (markTimer) clearTimeout(markTimer);
+      for (const unsubscribe of subscriptions) unsubscribe();
     };
   }, [instrumentId, interval, product]);
 
@@ -106,29 +83,29 @@ export function mergeLiveCandle(candles: Candle[] | undefined, live: Candle | nu
   return next.slice(-limit);
 }
 
-function streamURL(instrumentId: string, kind: StreamEvent["kind"], interval?: CandleInterval): string {
-  const url = new URL(paths.publicMarketSocket, window.location.href);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("instrumentId", instrumentId);
-  url.searchParams.set("kind", kind);
-  if (interval) url.searchParams.set("interval", interval);
-  return url.toString();
+function objectData(message: RealtimeMessage): Record<string, unknown> | null {
+  return typeof message.data === "object" && message.data !== null ? message.data as Record<string, unknown> : null;
 }
 
-function parseStreamEvent(raw: unknown): StreamEvent | null {
-  if (typeof raw !== "string") return null;
-  try {
-    const value = JSON.parse(raw) as Partial<StreamEvent>;
-    if (
-      (value.kind !== "order_book" && value.kind !== "candles" && value.kind !== "mark_price") ||
-      typeof value.eventType !== "string" ||
-      typeof value.instrumentId !== "string" ||
-      typeof value.observedAt !== "string"
-    ) return null;
-    return value as StreamEvent;
-  } catch {
-    return null;
+function bookEvent(message: RealtimeMessage): StreamEvent | null {
+  if (message.type !== "snapshot" && message.type !== "delta") return null;
+  const data = objectData(message);
+  if (!data || !Array.isArray(data.bids) || !Array.isArray(data.asks)) return null;
+  return {
+    eventType: message.type,
+    observedAt: message.observedAt ?? new Date().toISOString(),
+    bids: data.bids as DepthLevel[],
+    asks: data.asks as DepthLevel[],
+  };
+}
+
+function candleEvent(message: RealtimeMessage): Candle | null {
+  if (message.type !== "snapshot" && message.type !== "delta") return null;
+  const data = objectData(message);
+  if (message.type === "snapshot" && Array.isArray(data?.candles)) {
+    return (data.candles as Candle[]).at(-1) ?? null;
   }
+  return data?.candle && typeof data.candle === "object" ? data.candle as Candle : null;
 }
 
 export function applyBookEvent(current: LiveOrderBook | null, event: StreamEvent): LiveOrderBook | null {

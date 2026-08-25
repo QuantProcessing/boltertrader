@@ -39,7 +39,6 @@ REST + 公共/私有 WebSocket + /metrics
 进程提供：
 
 - `/v1` 下带 Bearer 认证的版本化 REST；
-- `/v1/public/ws` 带认证、按账户限定的公共行情事件；
 - `/v1/ws` 私有事件流；
 - `/metrics` Prometheus 指标；
 - `/v1/health/live` 存活检查和 `/v1/health/ready` 就绪检查。
@@ -135,33 +134,26 @@ idempotency 和重启 reconciliation 模型后才会开放。底层
 绑定到已配置的 product/environment。调用方既不提交也不会收到交易所凭证、
 native symbol、native ID、instrument encoding 或原始交易所错误。
 
-`/v1/public/ws` 支持 `order_book`、`bbo`、`mark_price` 和
-`funding_rate`。Gateway 先建立交易所订阅，再取得权威 snapshot，并以
-sequence 1 发送。Order book、BBO 和 funding 使用规范化 REST snapshot；
-mark price 使用有界等待得到的首个 mark stream 事件，因为统一 exchange
-契约将 mark 定义为独立 stream 能力，而不是 funding 的附属能力。此流明确
-不提供 cursor replay：每个连接都有 boot ID，并从新的 snapshot 开始。遇到
-交易所 gap、畸形 update、过大 payload 或上游错误时，服务发送有界
-`resync_required`，随后以 WebSocket policy violation 关闭；客户端重连后会
-获得新 snapshot。
+`/internal/v1/market/ws` 是 Gateway 的多路复用服务间行情协议，公开 topic 包括订单簿、
+BBO、K 线、标记价、资费看板和交易所连接状态。Market Hub 按 venue、environment、原生
+market family 和 dataset 唯一持有上游 feed，维护可重建的最新 snapshot，并扇出给所有
+消费者。出现 gap 时 generation 增加，发送 `resync_required` 并重建 snapshot。
 
-内部监听器上有三个操作是这条「必须带账户」规则的例外：
-`GET /internal/v1/funding-board`、`GET /internal/v1/funding-board/ws` 与
-`GET /internal/v1/funding-history`。它们不收 `account_id`，因为 Gateway 使用
+内部监听器上的公共行情操作是这条「必须带账户」规则的例外：`/internal/v1/market/ws`、
+`/internal/v1/market-facts`、`/internal/v1/funding-board`、
+`/internal/v1/funding-history` 与 `/internal/v1/venues/connectivity`。它们不收 `account_id`，因为 Gateway 使用
 免凭证的交易所 client 回答。它们仍由内部 bearer token 保护，也不会暴露凭证、
 原生交易所错误等内部细节。
 
-资金费看板是 Gateway 的常驻公共行情投影。Gateway 启动时对所有支持的永续 route
+资金费看板是常驻 `DerivativeFact` 的纯业务投影。Gateway 启动时对所有支持的永续 route
 做一次 bootstrap，随后通过交易所 WebSocket 持续合并资金费、mark、index 与 OI。
 Binance 和 Aster 的 OI 以一分钟滚动周期异步补齐；Nado 未流式提供的价格和 OI 由
 一次有界的全产品查询补齐。HTTP 看板接口只复制内存，所以前端数量不会放大交易所
 请求。完整订单簿不进入这份投影。
 
-内部看板 WebSocket 首帧发送完整 `snapshot`，后续发送合并过的 `upsert`，每帧带
-单调递增 sequence。慢消费者或流缺口会收到 `resync_required` 并断开；重连后总是
-重新获得完整快照。每一列报告 `live`、`degraded` 或 `unavailable`，以及最后成功
-时间和重连次数。资金费超过 60 秒、价格超过 15 秒会标为延迟；任何字段超过两分钟
-就从输出中移除，而不是伪装成实时值。OI 缺失不会让看板或套利策略不可用。
+资费 topic 首帧发送完整 `snapshot`，后续最多每秒发送一次合并更新。慢消费者或流缺口会
+收到 `resync_required`。资金费、mark、index 与 OI 分别计算 freshness；过期值保留用于诊断，
+并通过 `staleFields` 明确标注，但不会进入套利计算。缺失值保持 absent，禁止写成零。
 
 历史读取仍是按需调用。它收 venue、environment、symbol，以及一对明确的
 `since`/`until`，返回

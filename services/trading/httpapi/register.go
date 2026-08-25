@@ -33,7 +33,7 @@ var (
 		"GET /api/v1/system/status", "GET /api/v1/system/readiness",
 		"GET /api/v1/catalog/venues", "GET /api/v1/catalog/instruments",
 		"GET /api/v1/market-data", "GET /api/v1/candles", "GET /api/v1/funding-board",
-		"GET /api/v1/funding-history", "GET /api/v1/realtime/stream",
+		"GET /api/v1/funding-history", "GET /api/v1/venues/connectivity", "GET /api/v1/realtime/ws",
 	}
 
 	tradingRoutes = []string{

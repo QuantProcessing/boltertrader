@@ -61,6 +61,7 @@ type TradingOptions struct {
 	FundingBoard      FundingBoardAuthority
 	MarketData        MarketDataAuthority
 	FreshMarketData   MarketDataAuthority
+	FreshBBO          marketdata.FreshBBOSource
 	Principal         func(*http.Request) (principalID string, err error)
 	AuthorizeMutation func(*http.Request) error
 	Activity          ActivityPublisher

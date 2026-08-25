@@ -13,6 +13,11 @@ import (
 
 var ErrRateLimited = errors.New("shared venue rate limit exhausted")
 
+var (
+	ErrQuoteUnavailable = errors.New("QUOTE_UNAVAILABLE")
+	ErrQuoteStale       = errors.New("QUOTE_STALE")
+)
+
 const (
 	MaxDepthLevels    = 20
 	MaxFundingHistory = 20
@@ -67,6 +72,20 @@ type FundingPoint struct {
 
 type Source interface {
 	Fetch(context.Context, Query) (Fact, error)
+}
+
+type BBO struct {
+	InstrumentID   string    `json:"instrumentId"`
+	BestBid        string    `json:"bestBid"`
+	BestBidSize    string    `json:"bestBidSize"`
+	BestAsk        string    `json:"bestAsk"`
+	BestAskSize    string    `json:"bestAskSize"`
+	ObservedAt     time.Time `json:"observedAt"`
+	SourceSequence string    `json:"sourceSequence,omitempty"`
+}
+
+type FreshBBOSource interface {
+	GetFreshBBO(context.Context, string) (BBO, error)
 }
 
 type BudgetStatus struct {

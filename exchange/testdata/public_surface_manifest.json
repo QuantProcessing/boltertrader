@@ -7152,6 +7152,318 @@
       "tests": [
         "TestFundingHistoryRejectsUnsupportedVenue"
       ]
+    },
+    {
+      "id": "exchange.AccountEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEvent.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventKind",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventOrder",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventFill",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventBalance",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventPosition",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventStreamStatus",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventResyncRequired",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountRoute",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountRoute.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountInstrument",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.WatchAccountEventsRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountWebSocket",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountWebSocket.WatchAccountEvents",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.MarketDataset",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetCatalog",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetBBO",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetDepth",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetCandle",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetMark",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetIndex",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetFunding",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DatasetOpenInterest",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.MarketTransport",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.TransportWebSocket",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.TransportREST",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.MarketGranularity",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.GranularityAllMarket",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.GranularityMultiSymbol",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.GranularitySingleInstrument",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.GranularityPollOnly",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.GranularityUnsupported",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.MarketCapability",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.MarketCapability.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestMarketCapabilityContract"]
+    },
+    {
+      "id": "exchange.DerivativeFact",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFact.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFact.Freshness",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestDerivativeFactFreshnessUsesIndependentClocks"]
+    },
+    {
+      "id": "exchange.DerivativeField",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldIdentity",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldFunding",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldFundingInterval",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldNextFundingTime",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldMark",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldIndex",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldOpenInterest",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldOpenInterestNotional",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeFieldAll",
+      "kind": "const",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeField.Has",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativePatch",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.ApplyDerivativePatch",
+      "kind": "func",
+      "coverage": "unit",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.FieldFreshness",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestDerivativeFactFreshnessUsesIndependentClocks"]
     }
   ]
 }

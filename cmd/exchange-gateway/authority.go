@@ -308,8 +308,12 @@ type authorityFundingRow struct {
 	OpenInterestNotional      string    `json:"openInterestNotional,omitempty"`
 	OpenInterestNotionalAsset string    `json:"openInterestNotionalAsset,omitempty"`
 	FundingObservedAt         time.Time `json:"fundingObservedAt,omitzero"`
+	MarkObservedAt            time.Time `json:"markObservedAt,omitzero"`
+	IndexObservedAt           time.Time `json:"indexObservedAt,omitzero"`
 	PriceObservedAt           time.Time `json:"priceObservedAt,omitzero"`
 	OpenInterestObservedAt    time.Time `json:"openInterestObservedAt,omitzero"`
+	StaleFields               []string  `json:"staleFields,omitempty"`
+	MissingFields             []string  `json:"missingFields,omitempty"`
 }
 
 // authorityFundingHistoryQuery is a struct for the same reason
@@ -1371,7 +1375,7 @@ func (reads managerAuthorityReads) Instruments(ctx context.Context) (authorityCa
 				MarketFamily: string(instrument.MarketFamily), AssetClass: string(instrument.AssetClass), ClassificationSource: instrument.ClassificationSource,
 				RawAssetType: instrument.RawAssetType, RawCategories: append([]string(nil), instrument.RawCategories...),
 				Rules: authorityTradeRules{PriceIncrement: instrument.Rules.PriceIncrement.String(), QuantityIncrement: instrument.Rules.QuantityIncrement.String(), MinQuantity: instrument.Rules.MinQuantity.String(), MinNotional: minNotional},
-				Ready: true,
+				Ready: row.Ready,
 			})
 		}
 		return authorityCatalogInstruments{Revision: snapshot.Revision, ObservedAt: snapshot.ObservedAt.UTC(), Instruments: instruments}, nil
@@ -1484,8 +1488,10 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 				AssetClass:                string(exchange.AssetClassUnknown),
 				NextFundingTime:           entry.NextFundingTime,
 				OpenInterestNotionalAsset: entry.OpenInterestNotionalAsset,
-				FundingObservedAt:         entry.FundingObservedAt, PriceObservedAt: entry.PriceObservedAt,
+				FundingObservedAt:         entry.FundingObservedAt, MarkObservedAt: entry.MarkObservedAt,
+				IndexObservedAt: entry.IndexObservedAt, PriceObservedAt: entry.PriceObservedAt,
 				OpenInterestObservedAt: entry.OpenInterestObservedAt,
+				StaleFields:            append([]string(nil), entry.StaleFields...), MissingFields: append([]string(nil), entry.MissingFields...),
 			}
 			if entry.RateValid {
 				row.Rate = entry.Rate.String()
@@ -1743,6 +1749,37 @@ func (reads managerAuthorityReads) publicMarketData(ctx context.Context, query p
 			}
 		}
 	}
+	// Production MarketData reads depth and mark from Market Hub. Funding and
+	// OI are independent resident derivative facts; joining their current
+	// values here is memory-only and deliberately excludes settled history.
+	if query.Product == string(exchange.ProductPerp) && (!fact.HasFunding || result.OpenInterest == "") {
+		if board, boardErr := reads.FundingBoard(ctx); boardErr == nil {
+			for _, venue := range board.Venues {
+				if venue.Venue != query.Venue || venue.Product != query.Product {
+					continue
+				}
+				for _, row := range venue.Rows {
+					if row.InstrumentID != query.InstrumentID {
+						continue
+					}
+					if !containsField(row.StaleFields, "funding") && !containsField(row.MissingFields, "funding") && row.Rate != "" {
+						result.FundingRate, result.FundingObservedAt = row.Rate, row.FundingObservedAt.UTC()
+						result.NextFundingTime = row.NextFundingTime.UTC()
+					}
+					if result.MarkPrice == "" && !containsField(row.StaleFields, "mark") && !containsField(row.MissingFields, "mark") {
+						result.MarkPrice = row.MarkPrice
+						if row.MarkObservedAt.After(result.ObservedAt) {
+							result.ObservedAt = row.MarkObservedAt.UTC()
+						}
+					}
+					if !containsField(row.StaleFields, "open_interest") && !containsField(row.MissingFields, "open_interest") {
+						result.OpenInterest = row.OpenInterest
+					}
+					break
+				}
+			}
+		}
+	}
 	book := fact.Book
 	if len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
 		return authorityMarketData{}, errors.New("bounded two-sided order book is unavailable")
@@ -1768,6 +1805,15 @@ func (reads managerAuthorityReads) publicMarketData(ctx context.Context, query p
 		return authorityMarketData{}, errors.New("market-data observation time is unavailable")
 	}
 	return result, nil
+}
+
+func containsField(fields []string, target string) bool {
+	for _, field := range fields {
+		if field == target {
+			return true
+		}
+	}
+	return false
 }
 
 // Candles answers the chart's credential-free public read. Production resolves

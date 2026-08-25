@@ -670,7 +670,7 @@ func TestArbitragePreviewRejectsStaleExecutableBBO(t *testing.T) {
 	_, err := handler.freshHedgePrices(context.Background(), snapshot, arbitragePreviewAuthority{
 		Long: arbitrageLegAuthority{InstrumentID: "spot"}, Short: arbitrageLegAuthority{InstrumentID: "perp"},
 	}, &preview)
-	if !errors.Is(err, orders.ErrNotFound) {
-		t.Fatalf("stale BBO error=%v, want not found", err)
+	if !errors.Is(err, marketdata.ErrQuoteStale) {
+		t.Fatalf("stale BBO error=%v, want quote stale", err)
 	}
 }

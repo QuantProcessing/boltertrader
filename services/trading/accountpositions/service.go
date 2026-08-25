@@ -374,6 +374,32 @@ func (service *Service) applySourceEvent(ctx context.Context, principal, account
 		_, err := service.hub.PublishScoped(principal, "portfolio.account.state", accountStatePayload(view.revision, state))
 		return err
 	}
+	if isAccountNotification(event.Kind) {
+		if event.AccountID != accountID || event.BootID != state.SourceBootID || event.Sequence < state.SourceSequence {
+			return ErrResyncRequired
+		}
+		if event.Sequence == state.SourceSequence {
+			return nil
+		}
+		state.SourceSequence, state.SourceCursor = event.Sequence, event.Cursor
+		state.RouteHealth, state.Freshness, state.Reason = RouteLive, FreshnessLive, ""
+		state.WriteReady, state.VerifiedAt, state.ReceivedAt = accountWriteReady(state.Account, FreshnessLive), now, now
+		items := accountItems(view, accountID)
+		for index := range items {
+			items[index] = decorate(items[index], state.Account, state)
+			view.items[items[index].Key.String()] = items[index]
+		}
+		if err := service.store.ReplaceAccount(ctx, principal, state, items); err != nil {
+			return err
+		}
+		view.accounts[accountID] = state
+		view.revision++
+		_, err := service.hub.PublishScoped(principal, "account."+event.Kind, map[string]any{
+			"accountId": accountID, "kind": event.Kind, "resourceVersion": event.ResourceVersion,
+			"occurredAt": event.OccurredAt, "payload": event.Payload,
+		})
+		return err
+	}
 	if event.Kind != SourceEventPosition || event.AccountID != accountID || event.BootID != state.SourceBootID || event.Sequence <= state.SourceSequence {
 		if event.Kind == SourceEventPosition && event.BootID == state.SourceBootID && event.Sequence == state.SourceSequence {
 			return nil
@@ -430,6 +456,15 @@ func (service *Service) applySourceEvent(ctx context.Context, principal, account
 	return err
 }
 
+func isAccountNotification(kind string) bool {
+	switch kind {
+	case SourceEventOrder, SourceEventFill, SourceEventBalance, SourceEventAccountHealth:
+		return true
+	default:
+		return false
+	}
+}
+
 func (service *Service) startSupervisor(principal, accountID string) {
 	service.lifecycleMu.Lock()
 	defer service.lifecycleMu.Unlock()
@@ -460,7 +495,7 @@ func (service *Service) supervise(ctx context.Context, principal, accountID, wat
 			return
 		}
 		watchCtx, cancel := context.WithTimeout(ctx, integrityInterval)
-		err := service.source.WatchPositionEvents(watchCtx, principal, accountID, state.SourceCursor, func(event SourceEvent) error {
+		err := service.source.WatchAccountEvents(watchCtx, principal, accountID, state.SourceCursor, func(event SourceEvent) error {
 			return service.applySourceEvent(watchCtx, principal, accountID, event)
 		})
 		periodic := errors.Is(watchCtx.Err(), context.DeadlineExceeded)

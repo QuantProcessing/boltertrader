@@ -65,7 +65,6 @@ func TestOpenAPIInventoryAndSecurityAreStructurallyFrozen(t *testing.T) {
 		"/v1/bbo":                         {"get": "getBBO"},
 		"/v1/mark-price":                  {"get": "getMarkPrice"},
 		"/v1/candles":                     {"get": "getCandles"},
-		"/v1/public/ws":                   {"get": "streamPublicMarket"},
 		"/v1/accounts/{account_id}/instruments/{instrument_id}/leverage": {"put": "setLeverage"},
 		"/v1/ws": {"get": "streamPrivateEvents"},
 	}
@@ -136,10 +135,6 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		"PrivateEvent": {
 			required:   []string{"account_id", "boot_id", "event_id", "kind", "occurred_at", "payload", "resource_version", "sequence"},
 			properties: []string{"account_id", "boot_id", "event_id", "kind", "occurred_at", "payload", "resource_version", "sequence"},
-		},
-		"PublicMarketEvent": {
-			required:   []string{"account_id", "boot_id", "event_id", "event_type", "instrument_id", "kind", "occurred_at", "payload", "sequence"},
-			properties: []string{"account_id", "boot_id", "event_id", "event_type", "instrument_id", "kind", "occurred_at", "payload", "sequence"},
 		},
 		"BookLevel": {
 			required:   []string{"price", "quantity"},

@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import { paths } from "@/api/endpoints";
+import { realtimeTopics } from "@/features/realtime/topic-manager";
 
 import { invalidateTradeLedgers, setTradeRealtimeConnected, tradeKeys } from "./queries";
 
@@ -17,14 +17,18 @@ export const TRADE_REALTIME_EVENTS = [
   "portfolio.position.upsert",
   "portfolio.position.remove",
   "portfolio.account.state",
+	"account.order",
+	"account.fill",
+	"account.balance",
+	"account.account_health",
 ] as const;
 
 export function realtimeEventMovesPositions(kind: string): boolean {
-  return kind === "fill.recorded" || kind === "command.filled" || kind.startsWith("portfolio.position.") || kind === "portfolio.account.state";
+  return kind === "fill.recorded" || kind === "command.filled" || kind === "account.fill" || kind.startsWith("portfolio.position.") || kind === "portfolio.account.state";
 }
 
 /**
- * SSE is a change notification, not a second client-side source of truth.
+ * Account events are change notifications, not a second client-side source of truth.
  * Every event causes a fresh authoritative read; polling remains a fallback if
  * a proxy or browser temporarily drops the stream.
  */
@@ -32,40 +36,53 @@ export function useTradeRealtime(enabled: boolean, cursor?: string): void {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    if (!enabled || typeof EventSource === "undefined") return;
-    const url = cursor ? `${paths.realtimeStream}?cursor=${encodeURIComponent(cursor)}` : paths.realtimeStream;
-    const source = new EventSource(url);
-    const listeners = new Map<string, EventListener>();
-
-    for (const kind of TRADE_REALTIME_EVENTS) {
-      const listener = () => {
-        void queryClient.invalidateQueries({ queryKey: tradeKeys.orders() });
-        // Reservations and venue margin can move before a fill exists.
-        void queryClient.invalidateQueries({ queryKey: ["trading", "balances"] });
-        if (realtimeEventMovesPositions(kind)) invalidateTradeLedgers(queryClient);
-      };
-      listeners.set(kind, listener);
-      source.addEventListener(kind, listener);
-    }
-
-    // Opening includes reconnecting after sleep. Resnapshot immediately so an
-    // expired replay cursor cannot leave the tab showing yesterday's rows.
-    const onOpen = () => {
-      setTradeRealtimeConnected(true);
-      invalidateTradeLedgers(queryClient);
-    };
-    const onError = () => {
+    if (!enabled) return;
+    let alive = true;
+    let snapshotReady = false;
+    let queuedEvent = false;
+    let snapshotGeneration = 0;
+    const resnapshot = async () => {
+      const generation = ++snapshotGeneration;
+      snapshotReady = false;
       setTradeRealtimeConnected(false);
-      invalidateTradeLedgers(queryClient);
+      await invalidateTradeLedgers(queryClient);
+      if (!alive || generation !== snapshotGeneration) return;
+      snapshotReady = true;
+      setTradeRealtimeConnected(true);
+      if (queuedEvent) {
+        queuedEvent = false;
+        await invalidateTradeLedgers(queryClient);
+      }
     };
-    source.addEventListener("open", onOpen);
-    source.addEventListener("error", onError);
+    const unsubscribe = realtimeTopics.subscribe({ topic: "account.events", cursor }, (message) => {
+      if (message.type === "checkpoint") {
+		void resnapshot();
+        return;
+      }
+      if (message.type === "resync_required" || message.type === "error") {
+		++snapshotGeneration;
+		snapshotReady = false;
+		queuedEvent = false;
+        setTradeRealtimeConnected(false);
+		void invalidateTradeLedgers(queryClient);
+        return;
+      }
+      if (message.type !== "delta" || typeof message.data !== "object" || message.data === null) return;
+      const kind = (message.data as { kind?: unknown }).kind;
+      if (typeof kind !== "string" || !TRADE_REALTIME_EVENTS.includes(kind as (typeof TRADE_REALTIME_EVENTS)[number])) return;
+		if (!snapshotReady) {
+			queuedEvent = true;
+			return;
+		}
+		void queryClient.invalidateQueries({ queryKey: tradeKeys.orders() });
+      void queryClient.invalidateQueries({ queryKey: ["trading", "balances"] });
+		if (realtimeEventMovesPositions(kind)) void invalidateTradeLedgers(queryClient);
+    });
 
     return () => {
-      source.removeEventListener("open", onOpen);
-      source.removeEventListener("error", onError);
-      for (const [kind, listener] of listeners) source.removeEventListener(kind, listener);
-      source.close();
+		alive = false;
+		++snapshotGeneration;
+      unsubscribe();
       setTradeRealtimeConnected(false);
     };
   }, [cursor, enabled, queryClient]);

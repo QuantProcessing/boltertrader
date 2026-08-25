@@ -10,9 +10,8 @@ const (
 	// positions, the accounting ledger, the projections, and the public
 	// catalog / market-data / realtime reads it fronts for the gateway.
 	Trading UpstreamName = "trading"
-	// Gateway is the shared capability layer. Only the account lifecycle is
-	// writable through the browser; the other direct route is a credential-free
-	// public market WebSocket. Both live on the Gateway's internal listener.
+	// Gateway is the shared capability layer. Only account lifecycle routes are
+	// browser-facing; Trading owns the single multiplexed realtime connection.
 	Gateway UpstreamName = "gateway"
 )
 
@@ -27,9 +26,8 @@ type Route struct {
 	Path     string
 	Upstream UpstreamName
 	Target   string
-	// Stream marks a response that arrives over time rather than all at once.
-	// Such a route gets no response deadline — a deadline is what would cut a
-	// healthy event stream off mid-session.
+	// Stream marks a streaming HTTP response. The unified realtime route uses
+	// WebSocket instead, but this remains explicit for future HTTP streams.
 	Stream bool
 	// WebSocket marks a bidirectional upgrade. It is separate from Stream:
 	// streaming HTTP copies one response body, while a WebSocket must relay
@@ -80,13 +78,10 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/catalog/instruments", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/market-data", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/candles", Upstream: Trading, Public: true},
-	{Method: http.MethodGet, Path: "/api/v1/public/ws", Upstream: Gateway, Target: "/internal/v1/public/ws", Public: true, WebSocket: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-board", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-history", Upstream: Trading, Public: true},
-	// Realtime is the one public-data route that is not Public here: it replays a principal-scoped
-	// buffer and answers 401 on an empty identity itself, so marking it would
-	// widen the unauthenticated surface to a route that would only refuse.
-	{Method: http.MethodGet, Path: "/api/v1/realtime/stream", Upstream: Trading, Stream: true},
+	{Method: http.MethodGet, Path: "/api/v1/venues/connectivity", Upstream: Trading, Public: true},
+	{Method: http.MethodGet, Path: "/api/v1/realtime/ws", Upstream: Trading, Public: true, WebSocket: true},
 	{Method: http.MethodPost, Path: "/api/v1/reservations", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/reservations", Upstream: Trading},
 	{Method: http.MethodDelete, Path: "/api/v1/reservations/{reservationId}", Upstream: Trading},

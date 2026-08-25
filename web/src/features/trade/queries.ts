@@ -43,7 +43,8 @@ export function privateFallbackInterval(): number | false {
 }
 
 /**
- * All three ledgers below belong to a principal, and all three poll.
+ * All three ledgers below belong to a principal. Account events invalidate
+ * their REST snapshots; polling is enabled only while realtime is unavailable.
  *
  * `enabled` is what keeps a read-only visitor from asking for them. Not because
  * the answer would leak anything — the server refuses an anonymous read of
@@ -62,10 +63,10 @@ export function useOrders(): UseQueryResult<Command[]> {
     queryFn: ({ signal }) => manual.orders(signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    // SSE is the prompt path. Polling is the continuity fallback, and only
-    // tightens while an order is still capable of changing state.
+    // The multiplexed account topic is the prompt path. Polling is only the
+    // continuity fallback, and tightens while an order can still change state.
     refetchInterval: (query) =>
-      query.state.data?.some((order) => isResumable(order.state)) ? 2_000 : 15_000,
+      realtimeConnected ? false : query.state.data?.some((order) => isResumable(order.state)) ? 2_000 : 15_000,
     refetchOnWindowFocus: "always",
   });
 }
@@ -77,7 +78,7 @@ export function usePositions(): UseQueryResult<Position[]> {
     queryFn: ({ signal }) => trading.positions({}, signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 5_000,
+    refetchInterval: privateFallbackInterval,
     refetchOnWindowFocus: "always",
   });
 }
@@ -89,7 +90,7 @@ export function useAccountBalances(accountId: string): UseQueryResult<AccountBal
     queryFn: ({ signal }) => accountData.balances(accountId, signal),
     enabled: !readOnly && accountId !== "",
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 5_000,
+    refetchInterval: privateFallbackInterval,
     refetchOnWindowFocus: "always",
   });
 }
@@ -113,7 +114,7 @@ export function useFills(): UseQueryResult<Fill[]> {
     queryFn: ({ signal }) => trading.fills({}, signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 15_000,
+    refetchInterval: privateFallbackInterval,
     refetchOnWindowFocus: "always",
   });
 }
@@ -175,11 +176,16 @@ export function useCancelOrder() {
   });
 }
 
-export function invalidateTradeLedgers(queryClient: ReturnType<typeof useQueryClient>): void {
-  void queryClient.invalidateQueries({ queryKey: tradeKeys.orders() });
-  void queryClient.invalidateQueries({ queryKey: tradeKeys.positions() });
-  void queryClient.invalidateQueries({ queryKey: ["trading", "account-positions"] });
-  void queryClient.invalidateQueries({ queryKey: tradeKeys.portfolioPositions() });
-  void queryClient.invalidateQueries({ queryKey: ["trading", "balances"] });
-  void queryClient.invalidateQueries({ queryKey: tradeKeys.fills() });
+export async function invalidateTradeLedgers(queryClient: ReturnType<typeof useQueryClient>): Promise<void> {
+	await Promise.all([
+		queryClient.invalidateQueries({ queryKey: tradeKeys.orders() }),
+		queryClient.invalidateQueries({ queryKey: tradeKeys.positions() }),
+		queryClient.invalidateQueries({ queryKey: ["trading", "account-positions"] }),
+		queryClient.invalidateQueries({ queryKey: tradeKeys.portfolioPositions() }),
+		queryClient.invalidateQueries({ queryKey: ["trading", "balances"] }),
+		queryClient.invalidateQueries({ queryKey: tradeKeys.fills() }),
+		queryClient.invalidateQueries({ queryKey: ["trading", "ledger"] }),
+		queryClient.invalidateQueries({ queryKey: ["trading", "pnl"] }),
+		queryClient.invalidateQueries({ queryKey: ["arbitrage", "positions"] }),
+	]);
 }

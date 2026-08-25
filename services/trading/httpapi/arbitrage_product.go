@@ -152,6 +152,8 @@ type arbitrageOpportunityLeg struct {
 	OpenInterestNotional      string    `json:"openInterestNotional,omitempty"`
 	OpenInterestNotionalAsset string    `json:"openInterestNotionalAsset,omitempty"`
 	FundingObservedAt         time.Time `json:"fundingObservedAt,omitzero"`
+	MarkObservedAt            time.Time `json:"markObservedAt,omitzero"`
+	IndexObservedAt           time.Time `json:"indexObservedAt,omitzero"`
 	PriceObservedAt           time.Time `json:"priceObservedAt,omitzero"`
 	OpenInterestObservedAt    time.Time `json:"openInterestObservedAt,omitzero"`
 	VenueStatus               string    `json:"venueStatus,omitempty"`
@@ -284,7 +286,14 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 		return
 	}
 	reachable := handler.reachableProfiles(r, principal)
+	items := scanArbitrageOpportunities(snapshot, board, reachable)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"meta": httpx.Meta(r),
+		"data": map[string]any{"items": items, "observedAt": board.ObservedAt},
+	})
+}
 
+func scanArbitrageOpportunities(snapshot catalog.Snapshot, board marketdata.BoardSnapshot, reachable map[string]string) []arbitrageOpportunity {
 	// Group the board by underlying, then pick the extremes: the venue paying
 	// the most is the one to be short on, the venue paying the least is the one
 	// to be long on. Any other pairing on the same underlying earns strictly
@@ -321,7 +330,8 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 				OpenInterest:              row.OpenInterest,
 				OpenInterestNotional:      row.OpenInterestNotional,
 				OpenInterestNotionalAsset: row.OpenInterestNotionalAsset,
-				FundingObservedAt:         row.FundingObservedAt, PriceObservedAt: row.PriceObservedAt,
+				FundingObservedAt:         row.FundingObservedAt, MarkObservedAt: row.MarkObservedAt,
+				IndexObservedAt: row.IndexObservedAt, PriceObservedAt: row.PriceObservedAt,
 				OpenInterestObservedAt: row.OpenInterestObservedAt, VenueStatus: venue.Status,
 				Stale: observationStale(board.ObservedAt, row.FundingObservedAt, time.Minute),
 			}
@@ -364,10 +374,7 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 			return strings.Compare(left.Symbol, right.Symbol)
 		}
 	})
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"meta": httpx.Meta(r),
-		"data": map[string]any{"items": items, "observedAt": board.ObservedAt},
-	})
+	return items
 }
 
 func buildOpportunity(key boardKey, legs []arbitrageOpportunityLeg) (arbitrageOpportunity, bool) {
@@ -469,7 +476,7 @@ func buildTradFiPerpetualSpreads(grouped map[boardKey][]arbitrageOpportunityLeg,
 			if strings.TrimSpace(leg.InstrumentID) == "" || !tradFiAssetClass(leg.AssetClass) {
 				continue
 			}
-			leg.Stale = observationStale(observedAt, leg.PriceObservedAt, 15*time.Second)
+			leg.Stale = observationStale(observedAt, firstTime(leg.MarkObservedAt, leg.PriceObservedAt), 15*time.Second)
 			mark, err := decimal.NewFromString(leg.MarkPrice)
 			if err != nil || !mark.IsPositive() {
 				continue
@@ -575,10 +582,12 @@ func buildCryptoSpotPerpBasis(snapshot catalog.Snapshot, board marketdata.BoardS
 				MarkPrice: row.MarkPrice, IndexPrice: row.IndexPrice, ReferencePrice: row.MarkPrice,
 				OpenInterest: row.OpenInterest, OpenInterestNotional: row.OpenInterestNotional,
 				OpenInterestNotionalAsset: row.OpenInterestNotionalAsset,
-				FundingObservedAt:         row.FundingObservedAt, PriceObservedAt: row.PriceObservedAt,
+				FundingObservedAt:         row.FundingObservedAt, MarkObservedAt: row.MarkObservedAt,
+				IndexObservedAt: row.IndexObservedAt, PriceObservedAt: row.PriceObservedAt,
 				OpenInterestObservedAt: row.OpenInterestObservedAt, VenueStatus: venue.Status,
 			}
-			perp.Stale = observationStale(board.ObservedAt, row.PriceObservedAt, 15*time.Second)
+			perp.Stale = observationStale(board.ObservedAt, firstTime(row.MarkObservedAt, row.PriceObservedAt), 15*time.Second) ||
+				observationStale(board.ObservedAt, firstTime(row.IndexObservedAt, row.PriceObservedAt), 15*time.Second)
 			if daily, ok := dailyFundingRate(row.Rate, row.IntervalHours); ok {
 				perp.DailyRate = daily.String()
 			}
@@ -648,7 +657,15 @@ func appendOpportunityBlockers(blockers []string, long, short arbitrageOpportuni
 }
 
 func observationStale(now, observedAt time.Time, freshness time.Duration) bool {
-	return observedAt.IsZero() || now.Sub(observedAt) > freshness
+	age := now.UTC().Sub(observedAt.UTC())
+	return observedAt.IsZero() || age < 0 || age > freshness
+}
+
+func firstTime(preferred, fallback time.Time) time.Time {
+	if !preferred.IsZero() {
+		return preferred
+	}
+	return fallback
 }
 
 func routeProfileForInstrument(snapshot catalog.Snapshot, instrument catalog.Instrument) string {
@@ -1117,14 +1134,20 @@ func (handler *arbitrageProductHandler) priceQuotedHedge(r *http.Request, previe
 }
 
 func (handler *arbitrageProductHandler) freshHedgePrices(ctx context.Context, snapshot catalog.Snapshot, authority arbitragePreviewAuthority, preview *arbitragePreview) (map[arbitrage.Leg]decimal.Decimal, error) {
-	if handler.trading.options.FreshMarketData == nil {
+	if handler.trading.options.FreshBBO == nil && handler.trading.options.FreshMarketData == nil {
 		return nil, marketdata.ErrRateLimited
 	}
 	now := time.Now().UTC()
 	if codec, ok := handler.trading.options.Arbitrage.(arbitragePreviewCodec); ok {
 		now = codec.PreviewNow().UTC()
 	}
-	prices := map[arbitrage.Leg]decimal.Decimal{}
+	type quoteJob struct {
+		leg        arbitrage.Leg
+		authority  arbitrageLegAuthority
+		target     *arbitragePreviewLeg
+		instrument catalog.Instrument
+	}
+	jobs := make([]quoteJob, 0, 2)
 	for _, side := range []struct {
 		leg       arbitrage.Leg
 		authority arbitrageLegAuthority
@@ -1137,30 +1160,50 @@ func (handler *arbitrageProductHandler) freshHedgePrices(ctx context.Context, sn
 		if !found {
 			return nil, orders.ErrNotFound
 		}
-		fact, err := handler.trading.options.FreshMarketData.Get(ctx, marketdata.Query{
-			Venue: instrument.Venue, Environment: instrument.Environment,
-			Product: instrument.Product, InstrumentID: instrument.InstrumentID,
-		})
-		if err != nil {
-			return nil, err
+		jobs = append(jobs, quoteJob{leg: side.leg, authority: side.authority, target: side.target, instrument: instrument})
+	}
+	type quoteResult struct {
+		job   quoteJob
+		quote marketdata.BBO
+		err   error
+	}
+	quoteCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	results := make(chan quoteResult, len(jobs))
+	for _, job := range jobs {
+		go func(job quoteJob) {
+			if handler.trading.options.FreshBBO != nil {
+				quote, err := handler.trading.options.FreshBBO.GetFreshBBO(quoteCtx, job.instrument.InstrumentID)
+				results <- quoteResult{job: job, quote: quote, err: err}
+				return
+			}
+			fact, err := handler.trading.options.FreshMarketData.Get(quoteCtx, marketdata.Query{Venue: job.instrument.Venue, Environment: job.instrument.Environment, Product: job.instrument.Product, InstrumentID: job.instrument.InstrumentID})
+			results <- quoteResult{job: job, quote: marketdata.BBO{InstrumentID: fact.InstrumentID, BestBid: fact.BestBid, BestBidSize: fact.BestBidSize, BestAsk: fact.BestAsk, BestAskSize: fact.BestAskSize, ObservedAt: fact.ObservedAt}, err: err}
+		}(job)
+	}
+	prices := map[arbitrage.Leg]decimal.Decimal{}
+	for range jobs {
+		result := <-results
+		if result.err != nil || result.quote.ObservedAt.IsZero() || now.Sub(result.quote.ObservedAt.UTC()) > 2*time.Second || result.quote.ObservedAt.UTC().After(now.Add(time.Second)) {
+			if result.err != nil {
+				return nil, result.err
+			}
+			return nil, marketdata.ErrQuoteStale
 		}
-		if fact.ObservedAt.IsZero() || now.Sub(fact.ObservedAt.UTC()) > 2*time.Second || fact.ObservedAt.UTC().After(now.Add(time.Second)) {
-			return nil, orders.ErrNotFound
-		}
-		priceText := fact.BestAsk
-		if side.leg == arbitrage.LegShort {
-			priceText = fact.BestBid
+		priceText := result.quote.BestAsk
+		if result.job.leg == arbitrage.LegShort {
+			priceText = result.quote.BestBid
 		}
 		price, err := decimal.NewFromString(priceText)
 		if err != nil || !price.IsPositive() {
-			return nil, orders.ErrNotFound
+			return nil, marketdata.ErrQuoteUnavailable
 		}
-		prices[side.leg] = price
-		target := side.target
-		target.AccountID, target.InstrumentID = side.authority.AccountID, side.authority.InstrumentID
-		target.Venue, target.Environment, target.Product = side.authority.Venue, side.authority.VenueEnvironment, side.authority.Product
-		target.Symbol, target.Side, target.LimitPrice = instrument.Symbol, arbitrage.OpenSide(side.leg), side.authority.LimitPrice
-		target.BestBid, target.BestAsk, target.ExecutionPrice, target.MarkPrice = fact.BestBid, fact.BestAsk, priceText, fact.MarkPrice
+		prices[result.job.leg] = price
+		target := result.job.target
+		target.AccountID, target.InstrumentID = result.job.authority.AccountID, result.job.authority.InstrumentID
+		target.Venue, target.Environment, target.Product = result.job.authority.Venue, result.job.authority.VenueEnvironment, result.job.authority.Product
+		target.Symbol, target.Side, target.LimitPrice = result.job.instrument.Symbol, arbitrage.OpenSide(result.job.leg), result.job.authority.LimitPrice
+		target.BestBid, target.BestAsk, target.ExecutionPrice = result.quote.BestBid, result.quote.BestAsk, priceText
 	}
 	return prices, nil
 }

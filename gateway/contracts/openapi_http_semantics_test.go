@@ -70,7 +70,6 @@ func TestOpenAPIDocumentsImplementedFiltersPaginationBodiesAndStatuses(t *testin
 		"get /v1/order-book":                   {"query:account_id!", "query:instrument_id!", "query:limit"},
 		"get /v1/bbo":                          {"query:account_id!", "query:instrument_id!"},
 		"get /v1/mark-price":                   {"query:account_id!", "query:instrument_id!"},
-		"get /v1/public/ws":                    {"query:account_id!", "query:instrument_id!", "query:kind!"},
 		"put /v1/accounts/{account_id}/instruments/{instrument_id}/leverage": {"path:account_id!", "path:instrument_id!"},
 		"get /v1/ws": {"query:account_id!", "query:cursor", "query:kind"},
 	}
@@ -193,7 +192,7 @@ func TestOpenAPIPrivateEventDocumentsEnvelopeAndClosedKinds(t *testing.T) {
 	}
 }
 
-func TestOpenAPIPublicMarketContractIsClosedAndResnapshotBased(t *testing.T) {
+func TestOpenAPIPublicMarketRESTContractIsClosed(t *testing.T) {
 	data, err := os.ReadFile("../../api/exchange-gateway/v1/openapi.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -223,41 +222,8 @@ func TestOpenAPIPublicMarketContractIsClosedAndResnapshotBased(t *testing.T) {
 		}
 	}
 
-	publicWS := paths["/v1/public/ws"].(map[string]any)["get"].(map[string]any)
-	responses := publicWS["responses"].(map[string]any)
-	switching := responses["101"].(map[string]any)
-	messageSchema := switching["x-websocket-message-schema"].(map[string]any)
-	if messageSchema["$ref"] != "#/components/schemas/PublicMarketEvent" {
-		t.Fatalf("public ws message schema=%v", messageSchema)
-	}
-	description := strings.ToLower(switching["description"].(string))
-	for _, phrase := range []string{"snapshot", "no cursor replay", "resync_required", "policy violation"} {
-		if !strings.Contains(description, phrase) {
-			t.Errorf("public ws description must contain %q: %s", phrase, description)
-		}
-	}
-
-	components := document["components"].(map[string]any)
-	schemas := components["schemas"].(map[string]any)
-	publicEvent := schemas["PublicMarketEvent"].(map[string]any)
-	properties := publicEvent["properties"].(map[string]any)
-	kind := properties["kind"].(map[string]any)
-	gotKinds := stringSlice(kind["enum"])
-	wantKinds := []string{"bbo", "funding_rate", "mark_price", "order_book"}
-	sort.Strings(wantKinds)
-	if !reflect.DeepEqual(gotKinds, wantKinds) {
-		t.Fatalf("PublicMarketEvent kinds=%v want=%v", gotKinds, wantKinds)
-	}
-	eventType := properties["event_type"].(map[string]any)
-	gotEventTypes := stringSlice(eventType["enum"])
-	wantEventTypes := []string{"resync_required", "snapshot", "update"}
-	sort.Strings(wantEventTypes)
-	if !reflect.DeepEqual(gotEventTypes, wantEventTypes) {
-		t.Fatalf("PublicMarketEvent event types=%v want=%v", gotEventTypes, wantEventTypes)
-	}
-	payload := properties["payload"].(map[string]any)
-	if payload["type"] != "object" {
-		t.Fatalf("PublicMarketEvent payload=%v", payload)
+	if _, exists := paths["/v1/public/ws"]; exists {
+		t.Fatal("legacy public market WebSocket must not be documented")
 	}
 }
 

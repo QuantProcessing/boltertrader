@@ -322,7 +322,7 @@ flowchart LR
     G -->|account-scoped /v1/ws| T
     G -->|atomic position snapshot| T
     T -->|/api/v1/portfolio/positions| A
-    T -->|/api/v1/realtime/stream| A
+    T -->|/api/v1/realtime/ws| A
     A --> B
 ```
 

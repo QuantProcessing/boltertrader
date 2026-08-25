@@ -2,6 +2,7 @@ package accountpositions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -98,6 +99,40 @@ func TestServiceAppliesGatewayPositionEventWithStableSlotAndRevision(t *testing.
 	}
 	if second.ProjectionRevision <= first.ProjectionRevision || second.Cursor == first.Cursor || second.Items[0].Quantity != "0.2" {
 		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+}
+
+func TestServicePublishesAccountNotificationAndAdvancesSharedCursor(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	source := &fakeSource{accounts: []Account{testAccount("acct-a", "Binance")}, snapshots: map[string]SourceSnapshot{
+		"acct-a": testSourceSnapshot("acct-a", "boot-a", "0.1", "long", now),
+	}}
+	hub, _ := realtime.NewHub(32, func() time.Time { return now })
+	service, _ := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
+	if _, err := service.Snapshot(context.Background(), "principal-a", Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if err := service.applySourceEvent(context.Background(), "principal-a", "acct-a", SourceEvent{
+		Kind: SourceEventBalance, BootID: "boot-a", Sequence: 2, Cursor: "boot-a:2", ResourceVersion: 3,
+		AccountID: "acct-a", OccurredAt: now, Payload: json.RawMessage(`{"asset":"USDT"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Snapshot(context.Background(), "principal-a", Filter{})
+	if err != nil || len(snapshot.Accounts) != 1 || snapshot.Accounts[0].SourceCursor != "boot-a:2" {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	events, err := hub.ReplayScoped("", "principal-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		found = found || event.Kind == "account.balance"
+	}
+	if !found {
+		t.Fatalf("account balance notification missing from realtime events: %+v", events)
 	}
 }
 
@@ -204,7 +239,7 @@ func (source *fakeSource) PositionSnapshot(_ context.Context, _ string, accountI
 	return source.snapshots[accountID], nil
 }
 
-func (*fakeSource) WatchPositionEvents(ctx context.Context, _, _, _ string, _ func(SourceEvent) error) error {
+func (*fakeSource) WatchAccountEvents(ctx context.Context, _, _, _ string, _ func(SourceEvent) error) error {
 	<-ctx.Done()
 	return ctx.Err()
 }

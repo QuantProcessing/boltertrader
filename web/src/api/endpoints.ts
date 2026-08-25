@@ -154,15 +154,15 @@ export const paths = {
 
   systemStatus: "/api/v1/system/status",
   systemReadiness: "/api/v1/system/readiness",
+  venueConnectivity: "/api/v1/venues/connectivity",
 
   catalogVenues: "/api/v1/catalog/venues",
   catalogInstruments: "/api/v1/catalog/instruments",
   marketData: "/api/v1/market-data",
   candles: "/api/v1/candles",
-  publicMarketSocket: "/api/v1/public/ws",
+  realtimeSocket: "/api/v1/realtime/ws",
   fundingBoard: "/api/v1/funding-board",
   fundingHistory: "/api/v1/funding-history",
-  realtimeStream: "/api/v1/realtime/stream",
 
   reservations: "/api/v1/reservations",
   reservation: (reservationId: string) => `/api/v1/reservations/${encodeURIComponent(reservationId)}`,
@@ -259,7 +259,20 @@ export const system = {
    */
   readiness: async (signal?: AbortSignal): Promise<SystemSnapshot> =>
     (await apiRequest<DataEnvelope<SystemSnapshot>>(paths.systemReadiness, { signal })).data,
+
+  venueConnectivity: async (signal?: AbortSignal): Promise<VenueConnectivity[]> =>
+    (await apiRequest<DataEnvelope<VenueConnectivity[]>>(paths.venueConnectivity, { signal })).data,
 };
+
+export interface VenueConnectivity {
+  venue: string;
+  state: "connecting" | "online" | "delayed" | "offline";
+  latencyMs: number;
+  ewmaLatencyMs: number;
+  consecutiveFailures: number;
+  lastSuccessAt?: string;
+  lastErrorAt?: string;
+}
 
 /* --- Catalog and market data --------------------------------------------- */
 

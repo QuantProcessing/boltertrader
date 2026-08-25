@@ -150,24 +150,20 @@ func TestPublicRoutesAreReads(t *testing.T) {
 	}
 }
 
-// The realtime stream is the one public-data route that is not Public.
-//
-// It replays a principal-scoped buffer and answers 401 on an empty identity by
-// itself, so marking it would widen the unauthenticated surface to a route
-// that could only refuse. Pinned by name because the reason lives in a
-// different service: someone reconciling the two lists could otherwise
-// reasonably "fix" it.
-func TestRealtimeStreamIsNotPublic(t *testing.T) {
+// The one socket is public at connection level. Authentication is evaluated
+// per topic so anonymous market viewers can connect while account.events is
+// rejected with AUTH_REQUIRED.
+func TestRealtimeWebSocketIsPublicAndOwnedByTrading(t *testing.T) {
 	t.Parallel()
-	const pattern = "GET /api/v1/realtime/stream"
+	const pattern = "GET /api/v1/realtime/ws"
 	found := false
 	for _, route := range Routes() {
 		if route.Pattern() != pattern {
 			continue
 		}
 		found = true
-		if route.Public {
-			t.Errorf("%s is Public; it answers 401 on an empty principal upstream", pattern)
+		if !route.Public || !route.WebSocket || route.Upstream != Trading {
+			t.Errorf("%s must be a public Trading websocket: %+v", pattern, route)
 		}
 	}
 	if !found {
@@ -177,7 +173,7 @@ func TestRealtimeStreamIsNotPublic(t *testing.T) {
 
 // Nothing outside the trading service's public-data group is Public. Stated as a count so that a
 // Public flag landing on a route this file has never heard of still fails.
-func TestPublicRoutesAreExactlyTheTenExpected(t *testing.T) {
+func TestPublicRoutesAreExactlyTheElevenExpected(t *testing.T) {
 	t.Parallel()
 	want := []string{
 		"GET /api/v1/candles",
@@ -186,10 +182,11 @@ func TestPublicRoutesAreExactlyTheTenExpected(t *testing.T) {
 		"GET /api/v1/funding-board",
 		"GET /api/v1/funding-history",
 		"GET /api/v1/market-data",
-		"GET /api/v1/public/ws",
 		"GET /api/v1/products/arbitrage/opportunities",
+		"GET /api/v1/realtime/ws",
 		"GET /api/v1/system/readiness",
 		"GET /api/v1/system/status",
+		"GET /api/v1/venues/connectivity",
 	}
 	var got []string
 	for _, route := range Routes() {

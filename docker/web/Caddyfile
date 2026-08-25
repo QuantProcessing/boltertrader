@@ -24,10 +24,8 @@
 		# The container name on the compose bridge. Caddy keeps the browser's Host
 		# header, so the edge sees the origin the cookie was set for.
 		#
-		# Streaming is not configured here because it does not need to be: Caddy
-		# flushes text/event-stream responses immediately, which is what
-		# /api/v1/realtime/stream depends on. A buffering proxy would hold events
-		# until the connection closed and look exactly like a dead feed.
+		# /api/v1/realtime/ws uses a standard WebSocket upgrade, which Caddy
+		# relays bidirectionally without a separate buffering rule.
 		reverse_proxy authedge:18091
 	}
 

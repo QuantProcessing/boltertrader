@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,13 +111,23 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 			}},
 		},
 		{
-			name: "okx keeps the native instId and derives its interval from two settlement stamps",
+			name:                  "okx keeps the native instId and derives its interval from two settlement stamps",
+			publishesOpenInterest: true,
 			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/api/v5/public/funding-rate": `{"code":"0","msg":"","data":[
 						{"instType":"SWAP","instId":"BTC-USDT-SWAP","fundingRate":"0.00012","fundingTime":"1720000000000","nextFundingTime":"1720028800000"},
 						{"instType":"SWAP","instId":"ETH-USDT-SWAP","fundingRate":"","fundingTime":"1720000000000","nextFundingTime":"1720028800000"},
 						{"instType":"FUTURES","instId":"BTC-USDT-240628","fundingRate":"0.00001","fundingTime":"1720000000000","nextFundingTime":"1720028800000"}
+					]}`,
+					"/api/v5/public/mark-price": `{"code":"0","msg":"","data":[
+						{"instType":"SWAP","instId":"BTC-USDT-SWAP","markPx":"64000.1","ts":"1719999999000"}
+					]}`,
+					"/api/v5/public/open-interest": `{"code":"0","msg":"","data":[
+						{"instType":"SWAP","instId":"BTC-USDT-SWAP","oi":"20","oiCcy":"12.5","oiUsd":"800001.25","ts":"1719999998000"}
+					]}`,
+					"/api/v5/market/index-tickers": `{"code":"0","msg":"","data":[
+						{"instId":"BTC-USDT","idxPx":"63999.9","ts":"1719999997000"}
 					]}`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
@@ -126,6 +139,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 			want: []wantEntry{{
 				symbol: "BTC-USDT-SWAP", nativeSymbol: "BTC-USDT-SWAP", base: "BTC", quote: "USDT",
 				rate: "0.00012", intervalHours: 8, nextFunding: 1720000000,
+				markPrice: "64000.1", indexPrice: "63999.9", openInterest: "12.5",
+				openInterestNotional: "800001.25",
 			}},
 		},
 		{
@@ -286,7 +301,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 			}},
 		},
 		{
-			name: "nado unscales an x18 rate quoted over twenty-four hours",
+			name:                  "nado unscales an x18 rate quoted over twenty-four hours",
+			publishesOpenInterest: true,
 			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
 				settings := nadoCatalogTestSettings(nadoFundingBoardRouter(t), exchange.ProductPerp)
 				return NewNadoFundingBoardLoader(settings), settings.CatalogScope
@@ -294,12 +310,13 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 			// 10^14 unscaled by 10^18 is 0.0001, over a 24-hour period rather
 			// than the eight hours most venues quote. Both conversions are
 			// invisible in the reply and both are pure multiplication error if
-			// missed. UpdateTime is epoch seconds here, not the milliseconds
-			// every other venue sends.
+			// missed. update_time is the funding observation clock and must not
+			// be mistaken for the next settlement timestamp.
 			want: []wantEntry{{
 				symbol: "ETH-PERP-USDT0", nativeSymbol: "ETH-PERP_USDT0", nativeID: "2",
 				base: "ETH", quote: "USDT0",
-				rate: "0.0001", intervalHours: 24, nextFunding: 1720000000,
+				rate: "0.0001", intervalHours: 24, nextFunding: 1720003600,
+				markPrice: "100", indexPrice: "100", openInterest: "1", openInterestNotional: "100",
 			}},
 		},
 	}
@@ -345,6 +362,66 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBybitLinearFundingBoardSharesOneBulkTickerAcrossSettlements(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v5/market/tickers" || request.URL.Query().Get("category") != "linear" {
+			t.Errorf("unexpected request %s?%s", request.URL.Path, request.URL.RawQuery)
+			http.Error(writer, "unexpected request", http.StatusNotFound)
+			return
+		}
+		requests.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"retCode":0,"retMsg":"OK","time":1719999999000,"result":{"category":"linear","list":[
+			{"symbol":"BTCUSDT","markPrice":"64000","indexPrice":"63999","openInterest":"10","fundingRate":"0.0001","nextFundingTime":"1720000000000","fundingIntervalHour":"8"},
+			{"symbol":"ETHUSDC","markPrice":"3400","indexPrice":"3399","openInterest":"20","fundingRate":"-0.0002","nextFundingTime":"1720000000000","fundingIntervalHour":"8"}
+		]}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := server.Client()
+	settings := Settings{Endpoint: server.URL, HTTPClient: client}
+	cacheKey := fmt.Sprintf("%p|%s", client, server.URL)
+	t.Cleanup(func() {
+		bybitLinearTickerCache.Lock()
+		delete(bybitLinearTickerCache.values, cacheKey)
+		bybitLinearTickerCache.Unlock()
+	})
+
+	settlements := []string{"USDT", "USDC"}
+	snapshots := make([]exchange.FundingBoardSnapshot, len(settlements))
+	errors := make([]error, len(settlements))
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for index, settlement := range settlements {
+		workers.Add(1)
+		go func(index int, settlement string) {
+			defer workers.Done()
+			<-start
+			snapshots[index], errors[index] = NewBybitFundingBoardLoader(settlement, settings).LoadFundingBoard(
+				t.Context(), fundingBoardScope(exchange.VenueBybit, settlement),
+			)
+		}(index, settlement)
+	}
+	close(start)
+	workers.Wait()
+
+	for index, err := range errors {
+		if err != nil {
+			t.Fatalf("%s board: %v", settlements[index], err)
+		}
+		if got := len(snapshots[index].Entries); got != 1 {
+			t.Fatalf("%s entries = %d, want 1", settlements[index], got)
+		}
+		if got := snapshots[index].Entries[0].QuoteAsset; got != settlements[index] {
+			t.Fatalf("%s quote = %q", settlements[index], got)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("Bybit linear ticker requests = %d, want 1 shared request", got)
 	}
 }
 

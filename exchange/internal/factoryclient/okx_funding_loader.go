@@ -2,8 +2,10 @@ package factoryclient
 
 import (
 	"context"
+	"strings"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/sdk/okx"
 )
 
 type okxFundingBoardLoader struct {
@@ -33,6 +35,21 @@ func (loader okxFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope 
 	if err != nil {
 		return exchange.FundingBoardSnapshot{}, okxNormalizeErr(exchange.ProductPerp, fundingBoardOperation, err)
 	}
+	marks, _ := sdk.GetMarkPrices(ctx, okxSwapType)
+	openInterests, _ := sdk.GetOpenInterests(ctx, okxSwapType)
+	indexes, _ := sdk.GetIndexTickers(ctx, loader.settlement)
+	markByInstrument := make(map[string]okx.MarkPrice, len(marks))
+	for _, row := range marks {
+		markByInstrument[row.InstId] = row
+	}
+	oiByInstrument := make(map[string]okx.OpenInterest, len(openInterests))
+	for _, row := range openInterests {
+		oiByInstrument[row.InstId] = row
+	}
+	indexByInstrument := make(map[string]okx.IndexTicker, len(indexes))
+	for _, row := range indexes {
+		indexByInstrument[row.InstId] = row
+	}
 
 	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
 	for _, row := range rows {
@@ -57,6 +74,29 @@ func (loader okxFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope 
 			BaseAsset:    base,
 			QuoteAsset:   loader.settlement,
 			Rate:         rate,
+		}
+		entry.FundingObservedAt = fundingStringMillisOrNow(row.Ts)
+		if mark, ok := markByInstrument[row.InstrumentID]; ok {
+			entry.MarkPrice = fundingOptionalDecimal(mark.MarkPx)
+			entry.MarkObservedAt = fundingStringMillisOrNow(mark.Ts)
+			entry.PriceObservedAt = entry.MarkObservedAt
+		}
+		indexID := strings.TrimSuffix(row.InstrumentID, "-SWAP")
+		if index, ok := indexByInstrument[indexID]; ok {
+			entry.IndexPrice = fundingOptionalDecimal(index.IdxPx)
+			at := fundingStringMillisOrNow(index.Ts)
+			entry.IndexObservedAt = at
+			if at.After(entry.PriceObservedAt) {
+				entry.PriceObservedAt = at
+			}
+		}
+		if oi, ok := oiByInstrument[row.InstrumentID]; ok {
+			entry.OpenInterest = fundingOptionalNonNegative(firstNonEmpty(oi.OICcy, oi.OI))
+			entry.OpenInterestObservedAt = fundingStringMillisOrNow(oi.Ts)
+			if notional := fundingOptionalNonNegative(oi.OIUsd); notional.Valid {
+				entry.OpenInterestNotional = notional
+				entry.OpenInterestNotionalAsset = "USD"
+			}
 		}
 		settles, err := okxOptionalMillis(row.FundingTime)
 		if err == nil {

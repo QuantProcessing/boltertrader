@@ -33,10 +33,8 @@ The single origin is what lets the session cookie stay `HttpOnly` and
 keeps the browser's `Host` header so the edge sees the origin the cookie was set
 for. See [the auth edge](auth-edge.md).
 
-Streaming needs no configuration here: Caddy flushes `text/event-stream`
-responses immediately, which is what `/api/v1/realtime/stream` depends on. A
-buffering proxy would hold events until the connection closed and look exactly
-like a dead feed.
+Realtime needs no special Caddy buffering rule: `/api/v1/realtime/ws` is a
+standard WebSocket upgrade and Caddy relays it bidirectionally.
 
 ## Routes
 
@@ -64,9 +62,10 @@ instruments and routes.
 ## Data flow
 
 Reads go through `react-query` against the endpoints in `src/api/endpoints.ts`.
-Live updates arrive on one server-sent stream — `/api/v1/realtime/stream` — held
-open by the shell and fanned out to whatever is mounted, rather than one
-subscription per component.
+Live updates arrive on one multiplexed WebSocket — `/api/v1/realtime/ws` — held
+open by a singleton topic manager and fanned out to mounted consumers. Market,
+funding, arbitrage, connectivity, and account events are logical topics on that
+one connection rather than component-owned sockets or polling loops.
 
 Placement is the two-step ticket: **Review order** requests a sealed preview and
 starts its expiry countdown, **Confirm** submits that sealed object. The button

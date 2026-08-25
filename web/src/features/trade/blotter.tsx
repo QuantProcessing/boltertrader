@@ -15,6 +15,7 @@ import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
 import { commandFailureReason, venueOfCommand } from "@/features/trade/order-status";
 import { liquidationPrice, positionMarkPrice, positionUnrealizedPnl } from "@/features/trade/live-position";
+import type { LiveMarkPrice } from "@/features/market/stream";
 import { useCancelOrder, useFills, useOrders } from "@/features/trade/queries";
 import { compactIdentifier, decimalSign, formatTimestamp } from "@/lib/format";
 import { instrumentSymbol } from "@/lib/instrument";
@@ -36,14 +37,14 @@ export function Blotter({
   positionsLoading,
   positionsError,
   positionAccounts,
-  liveMarkPrice,
+  liveMark,
 }: {
   instrumentId: string | null;
   positions: AccountPosition[];
   positionsLoading: boolean;
   positionsError: boolean;
   positionAccounts: AccountPositionState[];
-  liveMarkPrice?: string;
+  liveMark?: LiveMarkPrice | null;
 }) {
   const orders = useOrders();
   const fills = useFills();
@@ -58,7 +59,7 @@ export function Blotter({
       positionsLoading={positionsLoading}
       positionsError={positionsError}
       positionAccounts={positionAccounts}
-      liveMarkPrice={liveMarkPrice}
+      liveMark={liveMark}
       fillsLoading={fills.isFetching && fills.data === undefined}
     />
   );
@@ -94,7 +95,7 @@ function BlotterContent({
   positionsLoading,
   positionsError,
   positionAccounts,
-  liveMarkPrice,
+  liveMark,
   fillsLoading,
 }: {
   instrumentId: string | null;
@@ -105,7 +106,7 @@ function BlotterContent({
   positionsLoading: boolean;
   positionsError: boolean;
   positionAccounts: AccountPositionState[];
-  liveMarkPrice?: string;
+  liveMark?: LiveMarkPrice | null;
   fillsLoading: boolean;
 }) {
   const t = useT();
@@ -137,7 +138,7 @@ function BlotterContent({
         <OrdersTable orders={orders} loading={ordersLoading} />
       </Content>
       <Content value="positions">
-        <PositionsTable positions={positions} loading={positionsLoading} liveMarkPrice={liveMarkPrice} />
+        <PositionsTable positions={positions} loading={positionsLoading} liveMark={liveMark} />
       </Content>
       <Content value="fills">
         <FillsTable fills={fills} loading={fillsLoading} instrumentId={instrumentId} />
@@ -353,11 +354,11 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
 function PositionsTable({
   positions,
   loading,
-  liveMarkPrice,
+  liveMark,
 }: {
   positions: AccountPosition[];
   loading: boolean;
-  liveMarkPrice?: string;
+  liveMark?: LiveMarkPrice | null;
 }) {
   const t = useT();
 
@@ -392,16 +393,16 @@ function PositionsTable({
     {
       id: "mark",
       header: t("col.mark"),
-      accessorFn: (position) => positionMarkPrice(position, liveMarkPrice).value,
-      cell: (context) => <Num value={String(context.getValue() ?? "")} />,
+      accessorFn: (position) => positionMarkPrice(position, liveMark?.price, liveMark?.stale).value,
+      cell: (context) => <span className={liveMark?.stale ? "text-dim" : undefined}><Num value={String(context.getValue() ?? "")} /></span>,
       meta: { numeric: true },
     },
     {
       id: "unrealized",
       header: t("col.unrealized"),
-      accessorFn: (position) => positionUnrealizedPnl(position, liveMarkPrice).value,
+      accessorFn: (position) => positionUnrealizedPnl(position, liveMark?.price, liveMark?.stale).value,
       cell: ({ row }) => {
-        const pnl = positionUnrealizedPnl(row.original, liveMarkPrice);
+        const pnl = positionUnrealizedPnl(row.original, liveMark?.price, liveMark?.stale);
         return <span title={pnl.estimated ? t("portfolio.source.estimated") : undefined}>{pnl.estimated ? "≈ " : ""}<Num value={pnl.value} directional signed /></span>;
       },
       meta: { numeric: true },

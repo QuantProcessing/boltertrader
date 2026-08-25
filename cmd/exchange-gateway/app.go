@@ -23,11 +23,15 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/config"
+	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
 	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
+	"github.com/QuantProcessing/boltertrader/gateway/fundingsettlement"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/gateway/markethub"
+	"github.com/QuantProcessing/boltertrader/gateway/marketowner"
 	"github.com/QuantProcessing/boltertrader/gateway/observability"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/process"
@@ -123,10 +127,23 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		runtimeLifecycle = productionLifecycle
 	}
 	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
+	var venueConnectivity *connectivity.Manager
+	if !validationProfile {
+		venueConnectivity, err = connectivity.New(connectivity.Options{
+			Checkers: connectivity.DefaultHTTPCheckers(&http.Client{Timeout: 3 * time.Second}),
+			Interval: 10 * time.Second, Timeout: 3 * time.Second, Observer: metrics,
+		})
+		if err != nil {
+			return fmt.Errorf("venue connectivity setup failed")
+		}
+		go func() { _ = venueConnectivity.Run(ctx) }()
+	}
 	// publicMarkets backs the catalog, order-book and candle authority without
 	// borrowing an account runtime. Construction is local; one background loop
 	// owns venue I/O and one failed venue only removes its own catalog column.
 	var publicMarkets *publicmarket.Source
+	var freshBBO *markethub.BBOCache
+	var marketHub *markethub.Hub
 	if !validationProfile {
 		marketFactory, marketErr := publicmarket.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
 		if marketErr != nil {
@@ -137,9 +154,16 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("public market source setup failed")
 		}
 		go func() { _ = publicMarkets.Run(ctx) }()
+		freshBBO, marketErr = markethub.NewBBOCache(publicMarkets, time.Now)
+		if marketErr != nil {
+			return fmt.Errorf("fresh BBO cache setup failed")
+		}
+		freshBBO.SetObserver(metrics)
 		defer publicMarkets.Close()
 	}
-	// fundingBoard backs /internal/v1/funding-board. It is built here, beside
+	// fundingBoard is the resident DerivativeFact projection consumed by the
+	// unified internal market socket and the retained REST snapshot/history
+	// reads. It is built here, beside
 	// the process wiring, rather than inside defaultBuildAccountManager because
 	// that constructor early-returns a test-injected manager: assembling the
 	// board there would make the matrix vanish under exactly the harnesses that
@@ -168,6 +192,23 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			}
 		}()
 	}
+	if !validationProfile {
+		marketHub, err = markethub.New(markethub.Options{
+			Owner: marketowner.Owner{
+				Source: publicMarkets,
+				BoardMarks: marketowner.BoardMarks{
+					Board: fundingBoard, Markets: publicMarkets,
+				},
+			},
+			IdleGrace: 30 * time.Second,
+			Observer:  metrics,
+		})
+		if err != nil {
+			return fmt.Errorf("market Hub setup failed")
+		}
+		publicMarkets.SetMarketHub(marketHub)
+		defer marketHub.Close()
+	}
 	var internalHandler http.Handler
 	var restoredAuthority *gatewayAuthority
 	var gatewayMonitor *health.Monitor
@@ -182,7 +223,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard)
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, venueConnectivity, freshBBO, marketHub)
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
@@ -199,6 +240,13 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			realManager, managerOK := manager.(*account.Manager)
 			if !poolOK || !managerOK {
 				return fmt.Errorf("runtime restore dependency type")
+			}
+			if publicMarkets != nil {
+				revisions := postgresCatalogRevisionStore{pool: realPool}
+				if restoreCatalogErr := publicMarkets.RestoreCatalogRevisions(restoreCtx, revisions); restoreCatalogErr != nil {
+					return fmt.Errorf("restore public market catalog revisions: %w", restoreCatalogErr)
+				}
+				publicMarkets.SetRevisionStore(revisions)
 			}
 			if productionLifecycle != nil {
 				if attachErr := productionLifecycle.attach(realPool, realManager); attachErr != nil {
@@ -308,6 +356,24 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	return wait(ctx, service)
 }
 
+type postgresCatalogRevisionStore struct{ pool *pgxpool.Pool }
+
+func (store postgresCatalogRevisionStore) SaveCatalogRevision(ctx context.Context, revision publicmarket.CatalogRevision) error {
+	_, _, err := postgres.SaveCatalogRevision(ctx, store.pool, postgres.CatalogRevision{
+		ScopeKey: revision.ScopeKey, Fingerprint: revision.Fingerprint,
+		ObservedAt: revision.ObservedAt, Instruments: revision.Instruments,
+	})
+	return err
+}
+
+func (store postgresCatalogRevisionStore) LoadCatalogRevision(ctx context.Context, scopeKey string) (publicmarket.CatalogRevision, bool, error) {
+	revision, found, err := postgres.LoadCatalogHead(ctx, store.pool, scopeKey)
+	return publicmarket.CatalogRevision{
+		ScopeKey: revision.ScopeKey, Fingerprint: revision.Fingerprint,
+		ObservedAt: revision.ObservedAt, Instruments: revision.Instruments,
+	}, found, err
+}
+
 func defaultInternalHandlerFactory(
 	override func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error),
 	authMiddleware auth.BearerMiddleware,
@@ -316,6 +382,9 @@ func defaultInternalHandlerFactory(
 	accountDeps accountLifecycleDeps,
 	publicMarkets httpapi.InternalPublicMarketStreams,
 	fundingBoardChanges httpapi.InternalFundingBoardChanges,
+	venueConnectivity httpapi.InternalVenueConnectivity,
+	freshBBO httpapi.InternalFreshBBO,
+	marketHub httpapi.InternalMarketHub,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
 		var handler http.Handler
@@ -327,17 +396,41 @@ func defaultInternalHandlerFactory(
 			if authority == nil {
 				return nil, fmt.Errorf("internal authority is unavailable")
 			}
+			var settlements httpapi.InternalFundingSettlements
+			boardSource, _ := fundingBoardChanges.(*fundingboard.Source)
+			marketSource, _ := publicMarkets.(*publicmarket.Source)
+			if realPool, ok := pool.(*pgxpool.Pool); ok {
+				if boardSource != nil && marketSource != nil {
+					history := fundingsettlement.VenueHistory{Board: boardSource, Markets: marketSource}
+					tracker, trackerErr := fundingsettlement.New(fundingsettlement.Options{
+						Store: postgres.NewFundingSettlementStore(realPool), History: history,
+					})
+					if trackerErr != nil {
+						return nil, fmt.Errorf("funding settlement tracker setup failed")
+					}
+					settlements = settlementHistoryTracker{tracker: tracker, history: history}
+					go func() { _ = tracker.Run(ctx) }()
+				}
+			}
 			options := httpapi.InternalOptions{
 				Authority:           authority,
 				WriteReady:          writeReady,
 				PublicMarkets:       publicMarkets,
 				FundingBoardChanges: fundingBoardChanges,
+				MarketFacts:         marketowner.Facts{Board: boardSource, Markets: marketSource},
+				VenueConnectivity:   venueConnectivity,
+				FreshBBO:            freshBBO,
+				MarketHub:           marketHub,
+				FundingSettlements:  settlements,
 				Authenticate: func(request *http.Request) error {
 					if _, ok := auth.Principal(request.Context()); !ok {
 						return errors.New("internal authentication required")
 					}
 					return nil
 				},
+			}
+			if marketKeys, ok := publicMarkets.(httpapi.InternalMarketKeys); ok {
+				options.MarketKeys = marketKeys
 			}
 			if accountDeps.available() {
 				realPool, ok := pool.(*pgxpool.Pool)
@@ -359,6 +452,19 @@ func defaultInternalHandlerFactory(
 		}
 		return authMiddleware.Wrap(httpapi.NewWriteGate(writeReady).Wrap(handler)), nil
 	}
+}
+
+type settlementHistoryTracker struct {
+	tracker *fundingsettlement.Tracker
+	history fundingsettlement.VenueHistory
+}
+
+func (tracking settlementHistoryTracker) TrackNextSettlement(ctx context.Context, instrumentID string) error {
+	return tracking.history.TrackNextSettlement(ctx, tracking.tracker, instrumentID)
+}
+
+func (tracking settlementHistoryTracker) TrackActive(ctx context.Context, instrumentID, reason string) (func(), error) {
+	return tracking.history.TrackActive(ctx, tracking.tracker, instrumentID, reason)
 }
 
 // accountLifecycleDeps carries what the durable account lifecycle needs but the
@@ -865,7 +971,7 @@ func defaultVerifyDatabaseAuthority(override func(context.Context, process.Postg
 		if !ok {
 			return postgres.AuthorityResult{}, fmt.Errorf("postgres pool type")
 		}
-		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV10())
+		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV11())
 	}
 }
 

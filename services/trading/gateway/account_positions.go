@@ -68,7 +68,7 @@ func (client *Client) PositionSnapshot(ctx context.Context, principal, accountID
 	return envelope.Data, nil
 }
 
-func (client *Client) WatchPositionEvents(
+func (client *Client) WatchAccountEvents(
 	ctx context.Context,
 	principal string,
 	accountID string,
@@ -76,12 +76,12 @@ func (client *Client) WatchPositionEvents(
 	apply func(accountpositions.SourceEvent) error,
 ) error {
 	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || apply == nil {
-		return fmt.Errorf("Gateway position stream scope is invalid")
+		return fmt.Errorf("Gateway account stream scope is invalid")
 	}
 	origin, token := client.originFor("/v1/ws")
 	parsed, err := url.Parse(origin)
 	if err != nil {
-		return fmt.Errorf("Gateway position stream origin is invalid")
+		return fmt.Errorf("Gateway account stream origin is invalid")
 	}
 	switch parsed.Scheme {
 	case "http":
@@ -89,12 +89,11 @@ func (client *Client) WatchPositionEvents(
 	case "https":
 		parsed.Scheme = "wss"
 	default:
-		return fmt.Errorf("Gateway position stream origin is invalid")
+		return fmt.Errorf("Gateway account stream origin is invalid")
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/v1/ws"
 	query := parsed.Query()
 	query.Set("account_id", accountID)
-	query.Set("kind", "position")
 	if cursor != "" {
 		query.Set("cursor", cursor)
 	}
@@ -106,9 +105,9 @@ func (client *Client) WatchPositionEvents(
 	connection, response, err := websocket.Dial(ctx, parsed.String(), &websocket.DialOptions{HTTPClient: client.httpClient, HTTPHeader: headers})
 	if err != nil {
 		if response != nil {
-			return fmt.Errorf("Gateway position stream rejected with status %d", response.StatusCode)
+			return fmt.Errorf("Gateway account stream rejected with status %d", response.StatusCode)
 		}
-		return fmt.Errorf("Gateway position stream connection failed")
+		return fmt.Errorf("Gateway account stream connection failed")
 	}
 	defer connection.CloseNow()
 	if err := apply(accountpositions.SourceEvent{Kind: accountpositions.SourceEventConnected}); err != nil {
@@ -119,7 +118,7 @@ func (client *Client) WatchPositionEvents(
 		if err := wsjson.Read(ctx, connection, &event); err != nil {
 			return err
 		}
-		projected, err := projectGatewayPositionEvent(event)
+		projected, err := projectGatewayAccountEvent(event)
 		if err != nil {
 			return err
 		}
@@ -141,6 +140,10 @@ type gatewayPrivateEvent struct {
 }
 
 func projectGatewayPositionEvent(event gatewayPrivateEvent) (accountpositions.SourceEvent, error) {
+	return projectGatewayAccountEvent(event)
+}
+
+func projectGatewayAccountEvent(event gatewayPrivateEvent) (accountpositions.SourceEvent, error) {
 	if strings.TrimSpace(event.BootID) == "" || event.Sequence == 0 || strings.TrimSpace(event.AccountID) == "" {
 		return accountpositions.SourceEvent{}, fmt.Errorf("Gateway private event identity is invalid")
 	}
@@ -176,6 +179,13 @@ func projectGatewayPositionEvent(event gatewayPrivateEvent) (accountpositions.So
 		projected.Kind, projected.Operation = accountpositions.SourceEventPosition, payload.Operation
 		projected.RouteID, projected.InstrumentID, projected.PositionSlot = payload.RouteID, payload.InstrumentID, payload.PositionSlot
 		projected.Position, projected.Reason = payload.Position, payload.Reason
+		return projected, nil
+	case "order", "fill", "balance", "account_health":
+		if len(event.Payload) == 0 || !json.Valid(event.Payload) {
+			return accountpositions.SourceEvent{}, fmt.Errorf("Gateway account event payload is invalid")
+		}
+		projected.Kind = event.Kind
+		projected.Payload = append(json.RawMessage(nil), event.Payload...)
 		return projected, nil
 	default:
 		return accountpositions.SourceEvent{}, fmt.Errorf("Gateway private event kind is invalid")

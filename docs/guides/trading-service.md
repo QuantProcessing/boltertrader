@@ -184,14 +184,14 @@ calls:
 - `/api/v1/market-data`, `/api/v1/candles` — the ticker strip and the chart.
 - `/api/v1/products/arbitrage/opportunities`,
   `/api/v1/products/arbitrage/positions` — the ranked spreads and the open pairs.
-- `/api/v1/realtime/stream` — the single server-sent stream the interface holds
+- `/api/v1/realtime/ws` — the single multiplexed WebSocket the interface holds
   open.
 
 The funding board and opportunities are resident projections. Trading consumes
-Gateway's internal funding-board WebSocket: the first snapshot replaces local
-state, later upserts are applied in sequence, and reconnect always replaces the
-projection from a new full snapshot. Browser reads every five seconds only run
-local calculations and never trigger a venue request.
+Gateway's single internal market WebSocket: the first message for every topic
+is a snapshot, later deltas are applied by generation and sequence, and a gap
+requires a new snapshot. Browser subscribers receive merged board and
+opportunity updates at most once per second and never trigger a venue request.
 
 `/api/v1/funding-history` is intentionally different: it is an on-demand read
 from Gateway's credential-free public plane for one instrument and a bounded

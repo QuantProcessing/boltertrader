@@ -57,3 +57,18 @@ func TestProjectGatewayPositionEventRequiresResnapshotOnGap(t *testing.T) {
 		t.Fatalf("projected event = %+v", projected)
 	}
 }
+
+func TestProjectGatewayAccountEventPreservesNonPositionNotification(t *testing.T) {
+	payload := json.RawMessage(`{"account_id":"account-a","balance":{"asset":"USDT","available":"10"}}`)
+	projected, err := projectGatewayAccountEvent(gatewayPrivateEvent{
+		BootID: "boot-a", Sequence: 44, AccountID: "account-a", ResourceVersion: 7,
+		Kind: "balance", OccurredAt: time.Date(2026, 8, 24, 8, 32, 0, 0, time.UTC), Payload: payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.Kind != accountpositions.SourceEventBalance || projected.Cursor != "boot-a:44" ||
+		projected.ResourceVersion != 7 || string(projected.Payload) != string(payload) {
+		t.Fatalf("projected account event = %+v", projected)
+	}
+}

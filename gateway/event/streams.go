@@ -974,16 +974,15 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 			return closeOnError(clientErr)
 		}
 		socket := client.WebSocket()
+		catalogItems := make([]exchange.AccountInstrument, 0, len(snapshot.Instruments))
 		for _, public := range snapshot.Instruments {
 			instrument, resolveErr := manager.accounts.Resolve(streamContext, accountID, public.ID)
 			if resolveErr != nil {
 				return closeOnError(resolveErr)
 			}
-			if err := manager.openSpotInstrument(streamContext, streams, socket, accountID, public.ID, instrument); err != nil {
-				return closeOnError(err)
-			}
+			catalogItems = append(catalogItems, exchange.AccountInstrument{InstrumentID: string(public.ID), Instrument: instrument})
 		}
-		if err := manager.openBalances(streamContext, streams, socket, accountID, staticRoute); err != nil {
+		if err := manager.openAccountEventStream(streamContext, streams, socket, accountID, staticRoute, status.Product, catalogItems); err != nil {
 			return closeOnError(err)
 		}
 	case exchange.ProductPerp:
@@ -992,16 +991,15 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 			return closeOnError(clientErr)
 		}
 		socket := client.WebSocket()
+		catalogItems := make([]exchange.AccountInstrument, 0, len(snapshot.Instruments))
 		for _, public := range snapshot.Instruments {
 			instrument, resolveErr := manager.accounts.Resolve(streamContext, accountID, public.ID)
 			if resolveErr != nil {
 				return closeOnError(resolveErr)
 			}
-			if err := manager.openPerpInstrument(streamContext, streams, socket, accountID, staticRoute, public.ID, instrument); err != nil {
-				return closeOnError(err)
-			}
+			catalogItems = append(catalogItems, exchange.AccountInstrument{InstrumentID: string(public.ID), Instrument: instrument})
 		}
-		if err := manager.openBalances(streamContext, streams, socket, accountID, staticRoute); err != nil {
+		if err := manager.openAccountEventStream(streamContext, streams, socket, accountID, staticRoute, status.Product, catalogItems); err != nil {
 			return closeOnError(err)
 		}
 	default:
@@ -1078,50 +1076,14 @@ func (manager *StreamManager) openDynamicAccountStreams(
 	if err != nil || !dynamic {
 		return fmt.Errorf("private stream route selection failed")
 	}
-	selected := make([]selectedStreamRoute, 0, len(snapshot.Instruments))
-	for _, routeSelections := range plan.routes {
-		selected = append(selected, routeSelections...)
-	}
-
-	balanceRoutes := make(map[domain.RouteID]struct{})
-	for _, streamRoute := range selected {
-		balanceRoutes[streamRoute.selection.RouteID] = struct{}{}
+	balanceRoutes := make(map[domain.RouteID]struct{}, len(plan.routes))
+	for routeID := range plan.routes {
+		balanceRoutes[routeID] = struct{}{}
 	}
 	streams.expectActivations(balanceRoutes)
-	openedBalanceRoutes := make(map[domain.RouteID]struct{}, len(balanceRoutes))
-	for _, streamRoute := range selected {
-		route := streamRoute.selection
-		switch route.Instrument.Identity.Product {
-		case exchange.ProductSpot:
-			client := route.Orders.(interface{ WebSocket() exchange.SpotWebSocket })
-			socket := client.WebSocket()
-			if socket == nil {
-				return fmt.Errorf("private stream spot socket unavailable")
-			}
-			if err := manager.openSpotInstrument(ctx, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
-				return err
-			}
-			if _, opened := openedBalanceRoutes[route.RouteID]; !opened {
-				if err := manager.openBalances(ctx, streams, socket, accountID, route.RouteID); err != nil {
-					return err
-				}
-				openedBalanceRoutes[route.RouteID] = struct{}{}
-			}
-		case exchange.ProductPerp:
-			client := route.Orders.(interface{ WebSocket() exchange.PerpWebSocket })
-			socket := client.WebSocket()
-			if socket == nil {
-				return fmt.Errorf("private stream perp socket unavailable")
-			}
-			if err := manager.openPerpInstrument(ctx, streams, socket, accountID, route.RouteID, streamRoute.instrumentID, route.Instrument); err != nil {
-				return err
-			}
-			if _, opened := openedBalanceRoutes[route.RouteID]; !opened {
-				if err := manager.openBalances(ctx, streams, socket, accountID, route.RouteID); err != nil {
-					return err
-				}
-				openedBalanceRoutes[route.RouteID] = struct{}{}
-			}
+	for routeID, selections := range plan.routes {
+		if err := manager.openSelectedAccountRoute(ctx, streams, accountID, routeID, selections); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1153,49 +1115,127 @@ func (manager *StreamManager) openDynamicRouteStreams(
 	if len(selected) == 0 {
 		return closeOnError(fmt.Errorf("private stream route selection failed"))
 	}
-	balanceOpened := false
-	for _, streamRoute := range selected {
-		route := streamRoute.selection
-		if route.RouteID != routeID {
-			return closeOnError(fmt.Errorf("private stream route selection failed"))
-		}
-		switch route.Instrument.Identity.Product {
-		case exchange.ProductSpot:
-			client := route.Orders.(interface{ WebSocket() exchange.SpotWebSocket })
-			socket := client.WebSocket()
-			if socket == nil {
-				return closeOnError(fmt.Errorf("private stream spot socket unavailable"))
-			}
-			if err := manager.openSpotInstrument(streamContext, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
-				return closeOnError(err)
-			}
-			if !balanceOpened {
-				if err := manager.openBalances(streamContext, streams, socket, accountID, routeID); err != nil {
-					return closeOnError(err)
-				}
-				balanceOpened = true
-			}
-		case exchange.ProductPerp:
-			client := route.Orders.(interface{ WebSocket() exchange.PerpWebSocket })
-			socket := client.WebSocket()
-			if socket == nil {
-				return closeOnError(fmt.Errorf("private stream perp socket unavailable"))
-			}
-			if err := manager.openPerpInstrument(streamContext, streams, socket, accountID, route.RouteID, streamRoute.instrumentID, route.Instrument); err != nil {
-				return closeOnError(err)
-			}
-			if !balanceOpened {
-				if err := manager.openBalances(streamContext, streams, socket, accountID, routeID); err != nil {
-					return closeOnError(err)
-				}
-				balanceOpened = true
-			}
-		}
-	}
-	if !balanceOpened {
-		return closeOnError(fmt.Errorf("private stream route selection failed"))
+	if err := manager.openSelectedAccountRoute(streamContext, streams, accountID, routeID, selected); err != nil {
+		return closeOnError(err)
 	}
 	return streams, nil
+}
+
+func (manager *StreamManager) openSelectedAccountRoute(ctx context.Context, streams *accountStreams, accountID domain.AccountID, routeID domain.RouteID, selected []selectedStreamRoute) error {
+	if len(selected) == 0 {
+		return fmt.Errorf("private stream route selection failed")
+	}
+	first := selected[0].selection
+	catalogItems := make([]exchange.AccountInstrument, 0, len(selected))
+	for _, item := range selected {
+		if item.selection.RouteID != routeID || item.selection.Instrument.Identity.Product != first.Instrument.Identity.Product {
+			return fmt.Errorf("private stream route selection failed")
+		}
+		catalogItems = append(catalogItems, exchange.AccountInstrument{InstrumentID: string(item.instrumentID), Instrument: item.selection.Instrument})
+	}
+	var socket any
+	switch first.Instrument.Identity.Product {
+	case exchange.ProductSpot:
+		socket = first.Orders.(interface{ WebSocket() exchange.SpotWebSocket }).WebSocket()
+	case exchange.ProductPerp:
+		socket = first.Orders.(interface{ WebSocket() exchange.PerpWebSocket }).WebSocket()
+	default:
+		return fmt.Errorf("private stream product unsupported")
+	}
+	return manager.openAccountEventStream(ctx, streams, socket, accountID, routeID, first.Instrument.Identity.Product, catalogItems)
+}
+
+func (manager *StreamManager) openAccountEventStream(ctx context.Context, streams *accountStreams, socket any, accountID domain.AccountID, routeID domain.RouteID, product exchange.Product, catalogItems []exchange.AccountInstrument) error {
+	accountSocket, ok := socket.(exchange.AccountWebSocket)
+	if len(catalogItems) == 0 {
+		return fmt.Errorf("private account event stream unavailable")
+	}
+	if !ok {
+		// Compatibility for injected/third-party sockets that have not adopted
+		// AccountWebSocket. Built-in adapters all take the route-level path above.
+		spot, spotOK := socket.(exchange.SpotWebSocket)
+		if !spotOK {
+			return fmt.Errorf("private account event stream unavailable")
+		}
+		for _, item := range catalogItems {
+			instrumentID := domain.InstrumentID(item.InstrumentID)
+			if product == exchange.ProductPerp {
+				perp, perpOK := socket.(exchange.PerpWebSocket)
+				if !perpOK {
+					return fmt.Errorf("private account event stream unavailable")
+				}
+				if err := manager.openPerpInstrument(ctx, streams, perp, accountID, routeID, instrumentID, item.Instrument); err != nil {
+					return err
+				}
+			} else if err := manager.openSpotInstrument(ctx, streams, spot, accountID, instrumentID, item.Instrument); err != nil {
+				return err
+			}
+		}
+		return manager.openBalances(ctx, streams, spot, accountID, routeID)
+	}
+	identity := catalogItems[0].Instrument.Identity
+	stream, err := accountSocket.WatchAccountEvents(ctx, exchange.WatchAccountEventsRequest{
+		Route: exchange.AccountRoute{
+			AccountID: string(accountID), RouteID: string(routeID), Venue: identity.Venue,
+			Environment: exchange.EnvironmentLive, Product: product, Settlement: identity.SettleAsset,
+			NativeFamily: accountNativeFamily(identity),
+		},
+		Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer}, Catalog: catalogItems,
+	})
+	if err != nil {
+		return err
+	}
+	monitorSubscription(ctx, streams, stream, func(event exchange.AccountEvent) error {
+		instrumentID := domain.InstrumentID(event.InstrumentID)
+		switch event.Kind {
+		case exchange.AccountEventOrder:
+			if event.Order == nil || instrumentID.Validate() != nil {
+				return fmt.Errorf("private account order event is invalid")
+			}
+			_, observeErr := manager.reconciler.ObserveVenueOrder(ctx, order.VenueOrderObservation{AccountID: accountID, InstrumentID: instrumentID, Product: product, Order: event.Order.Order})
+			if errors.Is(observeErr, store.ErrNotFound) {
+				return nil
+			}
+			return observeErr
+		case exchange.AccountEventFill:
+			if event.Fill == nil || instrumentID.Validate() != nil {
+				return fmt.Errorf("private account fill event is invalid")
+			}
+			return manager.publishFill(accountID, instrumentID, *event.Fill)
+		case exchange.AccountEventBalance:
+			if event.Balance == nil {
+				return fmt.Errorf("private account balance event is invalid")
+			}
+			return manager.publishBalances(accountID, *event.Balance)
+		case exchange.AccountEventPosition:
+			if event.Position == nil || instrumentID.Validate() != nil {
+				return fmt.Errorf("private account position event is invalid")
+			}
+			return manager.publishPositions(accountID, routeID, instrumentID, *event.Position)
+		case exchange.AccountEventResyncRequired:
+			return fmt.Errorf("private account stream requires resync")
+		case exchange.AccountEventStreamStatus:
+			if event.Status != nil && event.Status.State == exchange.SubscriptionGap {
+				return fmt.Errorf("private account stream gap")
+			}
+		}
+		return nil
+	}, func() { streams.observeActivation(routeID) }, "account.events", accountID)
+	return nil
+}
+
+func accountNativeFamily(identity exchange.InstrumentIdentity) string {
+	if identity.Venue == exchange.VenueBybit && identity.Product == exchange.ProductPerp {
+		return "linear"
+	}
+	if identity.Venue == exchange.VenueOKX && identity.Product == exchange.ProductPerp {
+		return "SWAP"
+	}
+	family := string(identity.Product)
+	if identity.SettleAsset != "" {
+		family += ":" + identity.SettleAsset
+	}
+	return family
 }
 
 func (manager *StreamManager) openSpotInstrument(

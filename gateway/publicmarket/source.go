@@ -20,7 +20,9 @@ import (
 	exchangefactory "github.com/QuantProcessing/boltertrader/exchange/factory"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
+	"github.com/shopspring/decimal"
 )
 
 var ErrUnavailable = errors.New("public market unavailable")
@@ -78,6 +80,7 @@ type Instrument struct {
 	RouteProfileID string
 	Catalog        catalog.Instrument
 	Canonical      exchange.Instrument
+	Ready          bool
 }
 
 type Snapshot struct {
@@ -123,7 +126,80 @@ type OrderBookStream struct {
 // remain a bounded REST read; only the newest bar belongs on this stream.
 type CandleStream struct {
 	Instrument   exchange.Instrument
+	Snapshot     exchange.CandlePage
 	Subscription exchange.Subscription[exchange.CandleEvent]
+}
+
+type BBOStream struct {
+	Instrument   exchange.Instrument
+	Snapshot     exchange.BBOEvent
+	Subscription exchange.Subscription[exchange.BBOEvent]
+}
+
+// SnapshotBBO is the REST bootstrap used by the shared execution quote cache.
+// It deliberately reads only one level and never joins mark, funding, history,
+// or depth data onto a preview quote.
+func (source *Source) SnapshotBBO(ctx context.Context, instrumentID string) (markethub.BBOQuote, error) {
+	current, instrument, err := source.resolvePublicID(ctx, instrumentID)
+	if err != nil {
+		return markethub.BBOQuote{}, err
+	}
+	book, err := current.connector.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 1})
+	if err != nil || len(book.Bids) == 0 || len(book.Asks) == 0 {
+		return markethub.BBOQuote{}, fmt.Errorf("snapshot public BBO: %w", errors.Join(ErrUnavailable, err))
+	}
+	return markethub.BBOQuote{
+		InstrumentID: instrumentID, Bid: book.Bids[0], Ask: book.Asks[0],
+		ObservedAt: observedTime(book.Time), SourceSequence: book.Sequence,
+	}, nil
+}
+
+// SubscriptionKey resolves a canonical instrument to the venue's native
+// connection boundary. Route profiles are projections; Bybit USDT and USDC,
+// for example, both resolve to the single native linear owner.
+func (source *Source) SubscriptionKey(ctx context.Context, instrumentID string, dataset exchange.MarketDataset, interval string, depth int) (markethub.SubscriptionKey, error) {
+	current, _, err := source.resolvePublicID(ctx, instrumentID)
+	if err != nil {
+		return markethub.SubscriptionKey{}, err
+	}
+	key := markethub.SubscriptionKey{
+		Owner:   markethub.OwnerKey{Venue: exchange.Venue(current.profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: nativeMarketFamily(current.profile)},
+		Dataset: dataset, InstrumentID: instrumentID, Interval: strings.TrimSpace(interval), Depth: depth,
+	}
+	if err := key.Validate(); err != nil {
+		return markethub.SubscriptionKey{}, ErrUnavailable
+	}
+	return key, nil
+}
+
+func nativeMarketFamily(profile routeprofile.Profile) string {
+	if profile.Product == routeprofile.ProductSpot {
+		return "spot"
+	}
+	switch exchange.Venue(profile.Venue) {
+	case exchange.VenueBybit:
+		// Both USDT and USDC are projections of Bybit's one native linear
+		// market family and therefore must resolve to the same owner.
+		return "linear"
+	case exchange.VenueBitget:
+		return strings.ToLower(profile.SettlementAsset) + "-futures"
+	case exchange.VenueOKX:
+		return "swap"
+	case exchange.VenueNado:
+		return "usdt0-perpetual"
+	default:
+		// Binance/Aster all-market mark feeds and the resident Lighter,
+		// Hyperliquid and Gate feeds are product-family owners, not route
+		// profile owners; settlement must not split them.
+		return "perpetual"
+	}
+}
+
+func observedTime(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Now().UTC()
+	}
+	return value.UTC()
 }
 
 // MarkPriceStream joins an immediate REST mark to the venue's public perpetual
@@ -142,10 +218,78 @@ type Source struct {
 	now          func() time.Time
 
 	mu        sync.Mutex
+	marketHub *markethub.Hub
 	closed    bool
 	running   bool
 	runCancel context.CancelFunc
 	runDone   chan struct{}
+}
+
+// SetMarketHub switches composite market-data snapshots to the same resident
+// feeds used by WebSocket consumers. Tests and migration-validation sources
+// may leave it unset and retain the bounded direct REST behavior.
+func (source *Source) SetMarketHub(hub *markethub.Hub) {
+	if source == nil {
+		return
+	}
+	source.mu.Lock()
+	source.marketHub = hub
+	source.mu.Unlock()
+}
+
+type CatalogRevision struct {
+	ScopeKey    string
+	Fingerprint string
+	ObservedAt  time.Time
+	Instruments json.RawMessage
+}
+
+type CatalogRevisionStore interface {
+	SaveCatalogRevision(context.Context, CatalogRevision) error
+}
+
+type CatalogRevisionLoader interface {
+	LoadCatalogRevision(context.Context, string) (CatalogRevision, bool, error)
+}
+
+// SetRevisionStore enables durable catalog revisions after PostgreSQL has
+// passed authority verification. Public collection starts before that point,
+// so the store is attached rather than required by NewSource.
+func (source *Source) SetRevisionStore(store CatalogRevisionStore) {
+	if source == nil {
+		return
+	}
+	for _, current := range source.columns {
+		current.mu.Lock()
+		current.revisions = store
+		current.mu.Unlock()
+	}
+}
+
+// RestoreCatalogRevisions hydrates last-known canonical identities before a
+// successful venue refresh. Restored rows remain stale/read-only until the
+// resident catalog producer confirms them against the exchange.
+func (source *Source) RestoreCatalogRevisions(ctx context.Context, loader CatalogRevisionLoader) error {
+	if source == nil || loader == nil || ctx == nil || ctx.Err() != nil {
+		return ErrUnavailable
+	}
+	for _, current := range source.columns {
+		revision, found, err := loader.LoadCatalogRevision(ctx, current.profile.ID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		var instruments []exchange.Instrument
+		if json.Unmarshal(revision.Instruments, &instruments) != nil || len(instruments) == 0 {
+			return fmt.Errorf("restore catalog %s: %w", current.profile.ID, ErrUnavailable)
+		}
+		if _, err := current.catalog.Restore(current.accountID, instruments, revision.ObservedAt); err != nil {
+			return fmt.Errorf("restore catalog %s: %w", current.profile.ID, err)
+		}
+	}
+	return nil
 }
 
 // Run owns the low-frequency catalog refresh loop. Public HTTP reads never
@@ -217,8 +361,9 @@ type column struct {
 	catalog   *catalog.Service
 	accountID domain.AccountID
 
-	mu       sync.Mutex
-	inFlight chan struct{}
+	mu        sync.Mutex
+	inFlight  chan struct{}
+	revisions CatalogRevisionStore
 }
 
 type sourceOptions struct {
@@ -327,6 +472,7 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 			continue
 		}
 		contributors = append(contributors, result.column.profile.ID+"\x00"+result.snapshot.Revision)
+		status := result.column.catalog.Status(result.column.accountID)
 		if combined.ObservedAt.IsZero() || result.snapshot.LoadedAt.Before(combined.ObservedAt) {
 			combined.ObservedAt = result.snapshot.LoadedAt.UTC()
 		}
@@ -339,6 +485,7 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 				RouteProfileID: result.column.profile.ID,
 				Catalog:        instrument,
 				Canonical:      canonical,
+				Ready:          !status.Stale,
 			})
 		}
 	}
@@ -410,6 +557,12 @@ func (source *Source) MarketData(ctx context.Context, query Query, depthLimit, f
 	if err != nil {
 		return Fact{}, err
 	}
+	source.mu.Lock()
+	hub := source.marketHub
+	source.mu.Unlock()
+	if hub != nil {
+		return source.marketDataFromHub(ctx, hub, current, instrument, query, depthLimit)
+	}
 	book, err := current.connector.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: depthLimit})
 	if err != nil {
 		return Fact{}, fmt.Errorf("read public order book: %w", err)
@@ -437,6 +590,61 @@ func (source *Source) MarketData(ctx context.Context, query Query, depthLimit, f
 		}
 	}
 	return fact, nil
+}
+
+func (source *Source) marketDataFromHub(ctx context.Context, hub *markethub.Hub, current *column, instrument exchange.Instrument, query Query, depthLimit int) (Fact, error) {
+	depthKey := markethub.SubscriptionKey{
+		Owner:   markethub.OwnerKey{Venue: exchange.Venue(current.profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: nativeMarketFamily(current.profile)},
+		Dataset: exchange.DatasetDepth, InstrumentID: query.InstrumentID, Depth: depthLimit,
+	}
+	depth, err := marketHubSnapshot(ctx, hub, depthKey)
+	if err != nil {
+		return Fact{}, fmt.Errorf("read shared public order book: %w", err)
+	}
+	var payload struct {
+		Bids []exchange.BookLevel `json:"bids"`
+		Asks []exchange.BookLevel `json:"asks"`
+	}
+	if json.Unmarshal(depth.Data, &payload) != nil || len(payload.Bids) == 0 || len(payload.Asks) == 0 {
+		return Fact{}, fmt.Errorf("read shared public order book: %w", ErrUnavailable)
+	}
+	fact := Fact{Query: query, Instrument: instrument, Book: exchange.OrderBook{
+		Instrument: instrument, Bids: payload.Bids, Asks: payload.Asks,
+		Time: depth.ObservedAt.UTC(), Sequence: depth.SourceSequence,
+	}}
+	if instrument.Product() == exchange.ProductPerp {
+		markKey := depthKey
+		markKey.Dataset, markKey.Depth = exchange.DatasetMark, 0
+		if mark, markErr := marketHubSnapshot(ctx, hub, markKey); markErr == nil {
+			var value struct {
+				Price string `json:"price"`
+			}
+			if json.Unmarshal(mark.Data, &value) == nil {
+				if price, parseErr := decimal.NewFromString(value.Price); parseErr == nil && price.IsPositive() {
+					fact.Mark = exchange.MarkPriceEvent{Instrument: instrument, Price: price, Time: mark.ObservedAt.UTC()}
+					fact.HasMark = true
+				}
+			}
+		}
+	}
+	return fact, nil
+}
+
+func marketHubSnapshot(ctx context.Context, hub *markethub.Hub, key markethub.SubscriptionKey) (markethub.Message, error) {
+	subscription, err := hub.Subscribe(ctx, key, 1)
+	if err != nil {
+		return markethub.Message{}, err
+	}
+	defer subscription.Close()
+	select {
+	case <-ctx.Done():
+		return markethub.Message{}, ctx.Err()
+	case message, open := <-subscription.Events():
+		if !open || message.Kind != markethub.MessageSnapshot {
+			return markethub.Message{}, markethub.ErrUnavailable
+		}
+		return message, nil
+	}
 }
 
 func (source *Source) Candles(ctx context.Context, query Query, interval string, limit int) (CandleResult, error) {
@@ -502,7 +710,33 @@ func (source *Source) WatchCandles(ctx context.Context, instrumentID, interval s
 	if err != nil || subscription == nil {
 		return CandleStream{}, fmt.Errorf("watch public candles: %w", errors.Join(ErrUnavailable, err))
 	}
-	return CandleStream{Instrument: instrument, Subscription: subscription}, nil
+	page, err := current.connector.Candles(ctx, exchange.CandlesRequest{Instrument: instrument, Interval: strings.TrimSpace(interval), Limit: 500})
+	if err != nil {
+		_ = subscription.Close()
+		return CandleStream{}, fmt.Errorf("snapshot public candles: %w", errors.Join(ErrUnavailable, err))
+	}
+	return CandleStream{Instrument: instrument, Snapshot: page, Subscription: subscription}, nil
+}
+
+func (source *Source) WatchBBO(ctx context.Context, instrumentID string) (BBOStream, error) {
+	current, instrument, err := source.resolvePublicID(ctx, instrumentID)
+	if err != nil {
+		return BBOStream{}, err
+	}
+	socket := current.connector.WebSocket()
+	if socket == nil {
+		return BBOStream{}, ErrUnavailable
+	}
+	subscription, err := socket.WatchBBO(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 256}})
+	if err != nil || subscription == nil {
+		return BBOStream{}, fmt.Errorf("watch public BBO: %w", errors.Join(ErrUnavailable, err))
+	}
+	book, err := current.connector.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 1})
+	if err != nil || len(book.Bids) == 0 || len(book.Asks) == 0 {
+		_ = subscription.Close()
+		return BBOStream{}, fmt.Errorf("snapshot public BBO: %w", errors.Join(ErrUnavailable, err))
+	}
+	return BBOStream{Instrument: instrument, Snapshot: exchange.BBOEvent{Instrument: instrument, Bid: book.Bids[0], Ask: book.Asks[0], SourceSequence: book.Sequence, Time: book.Time}, Subscription: subscription}, nil
 }
 
 // WatchMarkPrice starts the perpetual mark stream before taking its REST
@@ -605,9 +839,15 @@ func (current *column) refresh(ctx context.Context) error {
 				current.catalog.MarkRefreshError(current.accountID)
 			}
 			current.mu.Lock()
+			revisions := current.revisions
 			close(wait)
 			current.inFlight = nil
 			current.mu.Unlock()
+			if err == nil && revisions != nil {
+				if persistErr := persistCatalogRevision(ctx, revisions, current.profile, instruments); persistErr != nil {
+					slog.Warn("public market catalog revision persist failed", "venue", current.profile.Venue, "route_profile", current.profile.ID, "error", persistErr)
+				}
+			}
 			return err
 		}
 		wait := current.inFlight
@@ -621,6 +861,26 @@ func (current *column) refresh(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func persistCatalogRevision(ctx context.Context, store CatalogRevisionStore, profile routeprofile.Profile, instruments []exchange.Instrument) error {
+	immutable := append([]exchange.Instrument(nil), instruments...)
+	sort.Slice(immutable, func(i, j int) bool {
+		left, right := immutable[i].Identity, immutable[j].Identity
+		if left.NativeID != right.NativeID {
+			return left.NativeID < right.NativeID
+		}
+		return left.NativeSymbol < right.NativeSymbol
+	})
+	payload, err := json.Marshal(immutable)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(payload)
+	return store.SaveCatalogRevision(ctx, CatalogRevision{
+		ScopeKey: profile.ID, Fingerprint: hex.EncodeToString(digest[:]),
+		ObservedAt: time.Now().UTC(), Instruments: payload,
+	})
 }
 
 func (source *Source) Close() error {

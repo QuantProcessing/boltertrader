@@ -81,7 +81,7 @@ func loadInternalSchemas(t *testing.T) map[string]internalSchema {
 	return document.Components.Schemas
 }
 
-func TestInternalFundingBoardWebSocketDeclaresResnapshotProtocol(t *testing.T) {
+func TestInternalMarketWebSocketDeclaresMultiplexedResnapshotProtocol(t *testing.T) {
 	data, err := os.ReadFile("../../api/exchange-gateway/v1/internal-openapi.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -104,22 +104,22 @@ func TestInternalFundingBoardWebSocketDeclaresResnapshotProtocol(t *testing.T) {
 	if err := yaml.Unmarshal(data, &document); err != nil {
 		t.Fatal(err)
 	}
-	switching := document.Paths["/internal/v1/funding-board/ws"]["get"].Responses["101"]
+	switching := document.Paths["/internal/v1/market/ws"]["get"].Responses["101"]
 	description := strings.ToLower(switching.Description)
-	for _, phrase := range []string{"complete snapshot", "venue_status", "resync_required", "closed"} {
+	for _, phrase := range []string{"multiplexed", "complete snapshot", "resync_required", "new generation"} {
 		if !strings.Contains(description, phrase) {
-			t.Errorf("funding-board ws description must contain %q: %s", phrase, description)
+			t.Errorf("market ws description must contain %q: %s", phrase, description)
 		}
 	}
-	if ref := switching.Content["application/json"].Schema.Ref; ref != "#/components/schemas/FundingBoardStreamEvent" {
-		t.Fatalf("funding-board ws message schema=%q", ref)
+	if ref := switching.Content["application/json"].Schema.Ref; ref != "#/components/schemas/RealtimeMessage" {
+		t.Fatalf("market ws message schema=%q", ref)
 	}
-	event := document.Components.Schemas["FundingBoardStreamEvent"]
-	if !reflect.DeepEqual(event.Required, []string{"eventType", "sequence", "observedAt"}) {
-		t.Fatalf("FundingBoardStreamEvent required=%v", event.Required)
+	event := document.Components.Schemas["RealtimeMessage"]
+	if !reflect.DeepEqual(event.Required, []string{"type"}) {
+		t.Fatalf("RealtimeMessage required=%v", event.Required)
 	}
-	if got, want := event.Properties["eventType"].Enum, []string{"snapshot", "upsert", "venue_status", "resync_required"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("FundingBoardStreamEvent event types=%v want=%v", got, want)
+	if got, want := event.Properties["type"].Enum, []string{"ack", "snapshot", "delta", "checkpoint", "resync_required", "error", "pong"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("RealtimeMessage event types=%v want=%v", got, want)
 	}
 }
 
@@ -276,10 +276,13 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		"/internal/v1/accounts/runtime/{accountId}/events":                    {"get"},
 		"/internal/v1/catalog/venues":                                         {"get"}, "/internal/v1/catalog/instruments": {"get"},
 		"/internal/v1/market-data": {"get"}, "/internal/v1/candles": {"get"},
-		"/internal/v1/public/ws":      {"get"},
-		"/internal/v1/private-events": {"get"},
-		"/internal/v1/funding-board":  {"get"}, "/internal/v1/funding-board/ws": {"get"},
-		"/internal/v1/funding-history": {"get"},
+		"/internal/v1/market/ws":           {"get"},
+		"/internal/v1/market-facts":        {"get"},
+		"/internal/v1/fresh-bbo":           {"get"},
+		"/internal/v1/private-events":      {"get"},
+		"/internal/v1/funding-board":       {"get"},
+		"/internal/v1/funding-history":     {"get"},
+		"/internal/v1/venues/connectivity": {"get"},
 	}
 	if len(document.Paths) != len(want) {
 		t.Fatalf("internal paths=%d want=%d", len(document.Paths), len(want))

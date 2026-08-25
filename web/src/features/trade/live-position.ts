@@ -9,11 +9,16 @@ interface FixedDecimal {
 export interface PositionValue {
   value: string;
   estimated: boolean;
+  stale?: boolean;
 }
 
 /** Prefer the selected venue's streaming mark, but never treat zero as a price. */
-export function positionMarkPrice(position: AccountPosition, liveMarkPrice?: string): PositionValue {
-  if (positiveDecimal(liveMarkPrice)) return { value: liveMarkPrice!, estimated: true };
+export function positionMarkPrice(position: AccountPosition, liveMarkPrice?: string, liveMarkStale = false): PositionValue {
+  if (positiveDecimal(liveMarkPrice)) {
+    return liveMarkStale
+      ? { value: liveMarkPrice!, estimated: true, stale: true }
+      : { value: liveMarkPrice!, estimated: true };
+  }
   return { value: position.markPrice, estimated: false };
 }
 
@@ -24,7 +29,8 @@ export function positionMarkPrice(position: AccountPosition, liveMarkPrice?: str
  * before this reaches the browser. Coin-settled/inverse rows fail closed and
  * retain the venue P&L because their reciprocal formula is different.
  */
-export function positionUnrealizedPnl(position: AccountPosition, liveMarkPrice?: string): PositionValue {
+export function positionUnrealizedPnl(position: AccountPosition, liveMarkPrice?: string, liveMarkStale = false): PositionValue {
+  if (liveMarkStale && positiveDecimal(liveMarkPrice)) return { value: "", estimated: true, stale: true };
   const mark = parseFixed(liveMarkPrice);
   const entry = parseFixed(position.entryPrice);
   const quantity = parseFixed(position.quantity);

@@ -712,11 +712,15 @@ func binanceSpotWSBBOEvent(instrument exchange.Instrument, ticker *binancespot.B
 	if err != nil {
 		return exchange.BBOEvent{}, binanceSpotMalformed("WatchBBO", "invalid best ask size")
 	}
+	sequence := ""
+	if ticker.UpdateID > 0 {
+		sequence = strconv.FormatInt(ticker.UpdateID, 10)
+	}
 	return exchange.BBOEvent{
-		Instrument: instrument,
-		Bid:        exchange.BookLevel{Price: bidPrice, Quantity: bidQty},
-		Ask:        exchange.BookLevel{Price: askPrice, Quantity: askQty},
-		Time:       time.Now().UTC(),
+		Instrument: instrument, SourceSequence: sequence,
+		Bid:  exchange.BookLevel{Price: bidPrice, Quantity: bidQty},
+		Ask:  exchange.BookLevel{Price: askPrice, Quantity: askQty},
+		Time: time.Now().UTC(),
 	}, nil
 }
 
@@ -862,11 +866,15 @@ func binancePerpWSBBOEvent(instrument exchange.Instrument, ticker *binanceperp.W
 	if ticker.EventTime > 0 {
 		ts = time.UnixMilli(ticker.EventTime).UTC()
 	}
+	sequence := ""
+	if ticker.UpdateID > 0 {
+		sequence = strconv.FormatInt(ticker.UpdateID, 10)
+	}
 	return exchange.BBOEvent{
-		Instrument: instrument,
-		Bid:        exchange.BookLevel{Price: bidPrice, Quantity: bidQty},
-		Ask:        exchange.BookLevel{Price: askPrice, Quantity: askQty},
-		Time:       ts,
+		Instrument: instrument, SourceSequence: sequence,
+		Bid:  exchange.BookLevel{Price: bidPrice, Quantity: bidQty},
+		Ask:  exchange.BookLevel{Price: askPrice, Quantity: askQty},
+		Time: ts,
 	}, nil
 }
 

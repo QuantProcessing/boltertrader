@@ -66,7 +66,7 @@ func TestGatewayAuthorityCatalogAndMarketDataExistWithoutAccounts(t *testing.T) 
 	observedAt := time.Date(2026, 8, 19, 1, 2, 3, 0, time.UTC)
 	markets := staticPublicMarkets{snapshot: publicmarket.Snapshot{
 		Revision: "public-catalog", ObservedAt: observedAt,
-		Instruments: []publicmarket.Instrument{{Catalog: catalog.Instrument{
+		Instruments: []publicmarket.Instrument{{Ready: true, Catalog: catalog.Instrument{
 			ID: "binance:live:perp:USDT:BTC-USDT", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 			Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 			Rules: catalog.Rules{PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"), MinQuantity: decimal.RequireFromString("0.001")},

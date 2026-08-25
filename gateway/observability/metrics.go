@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -92,27 +93,36 @@ type SnapshotProvider func(time.Time) ([]AccountState, []CatalogState)
 type ReconciliationSnapshotProvider func(context.Context, time.Time) (int, time.Duration, error)
 
 type Metrics struct {
-	registry          *prometheus.Registry
-	accountReadReady  *prometheus.GaugeVec
-	accountWriteReady *prometheus.GaugeVec
-	commandTotal      *prometheus.CounterVec
-	uncertainCount    prometheus.Gauge
-	oldestReconcile   prometheus.Gauge
-	streamTotal       *prometheus.CounterVec
-	catalogAge        *prometheus.GaugeVec
-	catalogVersion    *prometheus.GaugeVec
-	fundingFeedState  *prometheus.GaugeVec
-	fundingLastUpdate *prometheus.GaugeVec
-	fundingReconnects *prometheus.GaugeVec
-	postgresDuration  *prometheus.HistogramVec
-	inFlight          prometheus.Gauge
-	shutdownTotal     *prometheus.CounterVec
-	handler           http.Handler
-	mu                sync.Mutex
-	providerMu        sync.RWMutex
-	provider          SnapshotProvider
-	reconciliation    ReconciliationSnapshotProvider
-	now               func() time.Time
+	registry            *prometheus.Registry
+	accountReadReady    *prometheus.GaugeVec
+	accountWriteReady   *prometheus.GaugeVec
+	commandTotal        *prometheus.CounterVec
+	uncertainCount      prometheus.Gauge
+	oldestReconcile     prometheus.Gauge
+	streamTotal         *prometheus.CounterVec
+	catalogAge          *prometheus.GaugeVec
+	catalogVersion      *prometheus.GaugeVec
+	venueProbeUp        *prometheus.GaugeVec
+	venueProbeLatency   *prometheus.GaugeVec
+	venueProbeFailures  *prometheus.GaugeVec
+	marketFeedState     *prometheus.GaugeVec
+	marketReconnects    *prometheus.CounterVec
+	marketReconnectLast map[[3]string]uint64
+	marketGaps          *prometheus.CounterVec
+	marketResnapshots   *prometheus.CounterVec
+	marketFactAge       *prometheus.GaugeVec
+	marketCoverage      *prometheus.GaugeVec
+	marketHot           *prometheus.GaugeVec
+	marketREST          *prometheus.CounterVec
+	postgresDuration    *prometheus.HistogramVec
+	inFlight            prometheus.Gauge
+	shutdownTotal       *prometheus.CounterVec
+	handler             http.Handler
+	mu                  sync.Mutex
+	providerMu          sync.RWMutex
+	provider            SnapshotProvider
+	reconciliation      ReconciliationSnapshotProvider
+	now                 func() time.Time
 }
 
 func NewMetrics() *Metrics {
@@ -152,18 +162,40 @@ func NewMetrics() *Metrics {
 			Name: "gateway_catalog_snapshot_version",
 			Help: "Monotonic generation of the current instrument Catalog snapshot.",
 		}, []string{"venue", "product", "environment"}),
-		fundingFeedState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "gateway_funding_market_feed_state",
-			Help: "Current funding-market feed state; exactly one bounded state label is 1 per route.",
-		}, []string{"venue", "route", "state"}),
-		fundingLastUpdate: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "gateway_funding_market_last_success_unixtime",
-			Help: "Unix timestamp of the last accepted funding-market patch by route.",
-		}, []string{"venue", "route"}),
-		fundingReconnects: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "gateway_funding_market_reconnect_total",
-			Help: "Funding-market reconnect attempts by route in the current process.",
-		}, []string{"venue", "route"}),
+		venueProbeUp: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_venue_probe_up", Help: "Whether the latest independent venue connectivity probe succeeded.",
+		}, []string{"venue"}),
+		venueProbeLatency: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_venue_probe_latency_seconds", Help: "EWMA latency of the independent venue connectivity probe.",
+		}, []string{"venue"}),
+		venueProbeFailures: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_venue_probe_consecutive_failures", Help: "Consecutive independent venue connectivity probe failures.",
+		}, []string{"venue"}),
+		marketFeedState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_market_feed_state", Help: "Current market feed lifecycle state by bounded native owner.",
+		}, []string{"venue", "market_family", "feed", "state"}),
+		marketReconnects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_market_feed_reconnects_total", Help: "Market feed reconnect attempts in the current process.",
+		}, []string{"venue", "market_family", "feed"}),
+		marketReconnectLast: make(map[[3]string]uint64),
+		marketGaps: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_market_feed_gaps_total", Help: "Detected market feed sequence gaps.",
+		}, []string{"venue", "market_family", "feed"}),
+		marketResnapshots: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_market_feed_resnapshots_total", Help: "Market feed snapshots rebuilt after gaps.",
+		}, []string{"venue", "market_family", "feed"}),
+		marketFactAge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_market_fact_age_seconds", Help: "Age of the newest accepted fact by bounded dataset.",
+		}, []string{"venue", "market_family", "dataset"}),
+		marketCoverage: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_market_fact_coverage_ratio", Help: "Catalog coverage ratio for a bounded market dataset.",
+		}, []string{"venue", "market_family", "dataset"}),
+		marketHot: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_market_hot_subscriptions", Help: "Active hot subscriptions by bounded market dataset.",
+		}, []string{"venue", "market_family", "dataset"}),
+		marketREST: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_market_rest_requests_total", Help: "Market REST requests by bounded operation and outcome.",
+		}, []string{"venue", "operation", "outcome"}),
 		postgresDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "gateway_postgres_operation_duration_seconds",
 			Help:    "PostgreSQL operation latency by bounded operation and safe error class.",
@@ -187,9 +219,17 @@ func NewMetrics() *Metrics {
 		metrics.streamTotal,
 		metrics.catalogAge,
 		metrics.catalogVersion,
-		metrics.fundingFeedState,
-		metrics.fundingLastUpdate,
-		metrics.fundingReconnects,
+		metrics.venueProbeUp,
+		metrics.venueProbeLatency,
+		metrics.venueProbeFailures,
+		metrics.marketFeedState,
+		metrics.marketReconnects,
+		metrics.marketGaps,
+		metrics.marketResnapshots,
+		metrics.marketFactAge,
+		metrics.marketCoverage,
+		metrics.marketHot,
+		metrics.marketREST,
 		metrics.postgresDuration,
 		metrics.inFlight,
 		metrics.shutdownTotal,
@@ -319,15 +359,16 @@ func (metrics *Metrics) SetCatalogSnapshot(states []CatalogState, now time.Time)
 	}
 }
 
-// ObserveFundingMarket implements fundingboard.Observer without importing the
-// collector package. Venue and route are drawn from the bounded route registry;
-// state is collapsed to the three public lifecycle values.
-func (metrics *Metrics) ObserveFundingMarket(venue, route, state string, lastSuccess time.Time, reconnects uint64) {
+// ObserveDerivativeFeed records the resident broad derivative-fact owner into
+// the shared market-feed metric family. Funding, mark, index and open interest
+// remain independently aged datasets; this lifecycle describes only the owner.
+func (metrics *Metrics) ObserveDerivativeFeed(venue, route, state string, lastSuccess time.Time, reconnects uint64) {
 	if metrics == nil {
 		return
 	}
 	venue = safeVenue(venue)
-	route = safeFundingRoute(route)
+	family := marketFamilyForRoute(route)
+	feed := "derivative_facts"
 	switch state {
 	case "live", "degraded", "unavailable":
 	default:
@@ -338,14 +379,102 @@ func (metrics *Metrics) ObserveFundingMarket(venue, route, state string, lastSuc
 		if candidate == state {
 			value = 1
 		}
-		metrics.fundingFeedState.WithLabelValues(venue, route, candidate).Set(value)
+		metrics.marketFeedState.WithLabelValues(venue, family, feed, candidate).Set(value)
 	}
-	last := float64(0)
+	age := float64(0)
 	if !lastSuccess.IsZero() {
-		last = float64(lastSuccess.UTC().Unix())
+		age = time.Since(lastSuccess.UTC()).Seconds()
+		if age < 0 {
+			age = 0
+		}
 	}
-	metrics.fundingLastUpdate.WithLabelValues(venue, route).Set(last)
-	metrics.fundingReconnects.WithLabelValues(venue, route).Set(float64(reconnects))
+	metrics.marketFactAge.WithLabelValues(venue, family, "funding").Set(age)
+	metrics.observeMarketReconnects(venue, family, feed, reconnects)
+}
+
+func (metrics *Metrics) ObserveVenueProbe(snapshot connectivity.Snapshot) {
+	if metrics == nil {
+		return
+	}
+	venue := safeVenue(string(snapshot.Venue))
+	up := float64(0)
+	if snapshot.State == connectivity.StateOnline || snapshot.State == connectivity.StateDelayed {
+		up = 1
+	}
+	metrics.venueProbeUp.WithLabelValues(venue).Set(up)
+	metrics.venueProbeLatency.WithLabelValues(venue).Set(snapshot.EWMALatency.Seconds())
+	metrics.venueProbeFailures.WithLabelValues(venue).Set(float64(snapshot.ConsecutiveFailures))
+}
+
+func (metrics *Metrics) ObserveMarketFeed(venue, family, feed, state string, reconnects uint64) {
+	if metrics == nil {
+		return
+	}
+	venue, family, feed = safeVenue(venue), safeMarketFamily(family), safeMarketFeed(feed)
+	state = safeFixed(state, []string{"connecting", "live", "degraded", "unavailable"})
+	for _, candidate := range []string{"connecting", "live", "degraded", "unavailable"} {
+		value := float64(0)
+		if candidate == state {
+			value = 1
+		}
+		metrics.marketFeedState.WithLabelValues(venue, family, feed, candidate).Set(value)
+	}
+	metrics.observeMarketReconnects(venue, family, feed, reconnects)
+}
+
+func (metrics *Metrics) observeMarketReconnects(venue, family, feed string, reconnects uint64) {
+	key := [3]string{venue, family, feed}
+	metrics.mu.Lock()
+	previous := metrics.marketReconnectLast[key]
+	metrics.marketReconnectLast[key] = reconnects
+	metrics.mu.Unlock()
+	delta := reconnects
+	if reconnects >= previous {
+		delta = reconnects - previous
+	}
+	if delta > 0 {
+		metrics.marketReconnects.WithLabelValues(venue, family, feed).Add(float64(delta))
+	}
+}
+
+func (metrics *Metrics) RecordMarketGap(venue, family, feed string, resnapshot bool) {
+	if metrics == nil {
+		return
+	}
+	labels := []string{safeVenue(venue), safeMarketFamily(family), safeMarketFeed(feed)}
+	metrics.marketGaps.WithLabelValues(labels...).Inc()
+	if resnapshot {
+		metrics.marketResnapshots.WithLabelValues(labels...).Inc()
+	}
+}
+
+func (metrics *Metrics) SetMarketFact(venue, family, dataset string, age time.Duration, coverage float64, hot int) {
+	if metrics == nil {
+		return
+	}
+	if age < 0 {
+		age = 0
+	}
+	if coverage < 0 {
+		coverage = 0
+	}
+	if coverage > 1 {
+		coverage = 1
+	}
+	if hot < 0 {
+		hot = 0
+	}
+	labels := []string{safeVenue(venue), safeMarketFamily(family), safeMarketDataset(dataset)}
+	metrics.marketFactAge.WithLabelValues(labels...).Set(age.Seconds())
+	metrics.marketCoverage.WithLabelValues(labels...).Set(coverage)
+	metrics.marketHot.WithLabelValues(labels...).Set(float64(hot))
+}
+
+func (metrics *Metrics) RecordMarketREST(venue, operation, outcome string) {
+	if metrics == nil {
+		return
+	}
+	metrics.marketREST.WithLabelValues(safeVenue(venue), safeMarketOperation(operation), safeFixed(outcome, []string{"success", "error", "rate_limited", "timeout"})).Inc()
 }
 
 func (metrics *Metrics) RecordCommand(operation CommandOperation, outcome CommandOutcome) {
@@ -503,14 +632,37 @@ func safeVenue(value string) string {
 	})
 }
 
-func safeFundingRoute(value string) string {
-	return safeFixed(value, []string{
-		"aster.perp.usdt.v1", "binance.perp.usdt.v1",
-		"bitget.perp.usdc.v1", "bitget.perp.usdt.v1",
-		"bybit.perp.usdc.v1", "bybit.perp.usdt.v1",
-		"gate.perp.usdt.v1", "hyperliquid.perp.usdc.v1",
-		"lighter.perp.usdc.v1", "nado.perp.usdt0.v1", "okx.perp.usdt.v1",
-	})
+func marketFamilyForRoute(route string) string {
+	switch {
+	case strings.HasPrefix(route, "bybit."):
+		return "linear"
+	case strings.HasPrefix(route, "bitget.") && strings.Contains(route, ".usdc."):
+		return "usdc-futures"
+	case strings.HasPrefix(route, "bitget."):
+		return "usdt-futures"
+	case strings.HasPrefix(route, "okx."):
+		return "swap"
+	case strings.HasPrefix(route, "nado."):
+		return "usdt0-perpetual"
+	default:
+		return "perpetual"
+	}
+}
+
+func safeMarketFamily(value string) string {
+	return safeFixed(strings.ToLower(value), []string{"spot", "linear", "usdt-futures", "usdc-futures", "swap", "perpetual", "usdt0-perpetual"})
+}
+
+func safeMarketFeed(value string) string {
+	return safeFixed(strings.ToLower(value), []string{"catalog", "derivative_facts", "bbo", "depth", "candle", "account"})
+}
+
+func safeMarketDataset(value string) string {
+	return safeFixed(strings.ToLower(value), []string{"catalog", "bbo", "depth", "candle", "mark", "index", "funding", "open_interest"})
+}
+
+func safeMarketOperation(value string) string {
+	return safeFixed(strings.ToLower(value), []string{"instruments", "linear_tickers", "all_tickers", "funding_rates", "mark_prices", "open_interest", "index_tickers", "contracts", "bbo_snapshot"})
 }
 
 func safeProduct(value string) string {

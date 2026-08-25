@@ -2,14 +2,15 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/QuantProcessing/boltertrader/gateway/realtimewire"
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
@@ -52,6 +53,20 @@ type FundingHistoryProjection interface {
 	BudgetStatus(string) marketdata.BudgetStatus
 }
 
+type VenueConnectivity struct {
+	Venue               string     `json:"venue"`
+	State               string     `json:"state"`
+	LatencyMS           float64    `json:"latencyMs"`
+	EWMALatencyMS       float64    `json:"ewmaLatencyMs"`
+	ConsecutiveFailures int        `json:"consecutiveFailures"`
+	LastSuccessAt       *time.Time `json:"lastSuccessAt,omitempty"`
+	LastErrorAt         *time.Time `json:"lastErrorAt,omitempty"`
+}
+
+type VenueConnectivityProjection interface {
+	VenueConnectivity(context.Context) ([]VenueConnectivity, error)
+}
+
 type ReadinessProjection interface {
 	Status() platformsystem.Snapshot
 	Readiness() platformsystem.Snapshot
@@ -64,14 +79,21 @@ type RealtimeProjection interface {
 }
 
 type PublicDataDependencies struct {
-	Catalog        CatalogProjection
-	MarketData     MarketDataProjection
-	Candles        CandlesProjection
-	FundingBoard   FundingBoardProjection
-	FundingHistory FundingHistoryProjection
-	Readiness      ReadinessProjection
-	Realtime       RealtimeProjection
-	Principal      func(*http.Request) (principalID string, err error)
+	Catalog          CatalogProjection
+	MarketData       MarketDataProjection
+	Candles          CandlesProjection
+	FundingBoard     FundingBoardProjection
+	FundingHistory   FundingHistoryProjection
+	Readiness        ReadinessProjection
+	Realtime         RealtimeProjection
+	MarketTopics     MarketTopicProjection
+	Connectivity     VenueConnectivityProjection
+	RealtimeObserver RealtimeObserver
+	Principal        func(*http.Request) (principalID string, err error)
+}
+
+type RealtimeObserver interface {
+	ObserveRealtimeResync(topic realtimewire.Topic)
 }
 
 type PublicDataAPI struct{ dependencies PublicDataDependencies }
@@ -98,7 +120,8 @@ func (api *PublicDataAPI) Register(mux *http.ServeMux) error {
 		"GET /api/v1/candles",
 		"GET /api/v1/funding-board",
 		"GET /api/v1/funding-history",
-		"GET /api/v1/realtime/stream",
+		"GET /api/v1/venues/connectivity",
+		"GET /api/v1/realtime/ws",
 	} {
 		route := route
 		mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) { api.Handle(w, r, route) })
@@ -125,12 +148,31 @@ func (api *PublicDataAPI) Handle(w http.ResponseWriter, r *http.Request, route s
 		api.fundingBoard(w, r)
 	case "GET /api/v1/funding-history":
 		api.fundingHistory(w, r)
-	case "GET /api/v1/realtime/stream":
-		api.realtime(w, r)
+	case "GET /api/v1/venues/connectivity":
+		api.venueConnectivity(w, r)
+	case "GET /api/v1/realtime/ws":
+		api.unifiedRealtime(w, r)
 	default:
 		return false
 	}
 	return true
+}
+
+func (api *PublicDataAPI) venueConnectivity(w http.ResponseWriter, r *http.Request) {
+	if err := validateQuery(r, nil); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
+		return
+	}
+	if api.dependencies.Connectivity == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "VENUE_CONNECTIVITY_UNAVAILABLE", "venue connectivity is unavailable", nil, true, httpx.RequestID(r))
+		return
+	}
+	items, err := api.dependencies.Connectivity.VenueConnectivity(r.Context())
+	if err != nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "VENUE_CONNECTIVITY_UNAVAILABLE", "venue connectivity is unavailable", nil, true, httpx.RequestID(r))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": items})
 }
 
 func (api *PublicDataAPI) system(w http.ResponseWriter, r *http.Request, readiness bool) {
@@ -379,61 +421,6 @@ func (api *PublicDataAPI) resolveInstrument(w http.ResponseWriter, r *http.Reque
 	return instrument, true
 }
 
-func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
-	if err := validateOptionalQuery(r, []string{"cursor"}); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
-		return
-	}
-	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	if header := strings.TrimSpace(r.Header.Get("Last-Event-ID")); cursor == "" && header != "" {
-		cursor = header
-	}
-	principal, err := api.dependencies.Principal(r)
-	if err != nil || strings.TrimSpace(principal) == "" {
-		httpx.WriteError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "authentication required", nil, false, httpx.RequestID(r))
-		return
-	}
-	events, updates, unsubscribe, err := api.dependencies.Realtime.ReplayAndSubscribeScoped(cursor, 16, principal)
-	if errors.Is(err, realtime.ErrResnapshotRequired) {
-		httpx.WriteError(w, http.StatusConflict, "RESNAPSHOT_REQUIRED", "realtime cursor cannot prove continuity", nil, true, httpx.RequestID(r))
-		return
-	}
-	if err != nil {
-		httpx.WriteError(w, http.StatusServiceUnavailable, "REALTIME_UNAVAILABLE", "realtime stream is unavailable", nil, true, httpx.RequestID(r))
-		return
-	}
-	defer unsubscribe()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return
-	}
-	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
-		return
-	}
-	flusher.Flush()
-	for _, event := range events {
-		if err := writeSSE(w, event); err != nil {
-			return
-		}
-	}
-	flusher.Flush()
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case event, open := <-updates:
-			if !open || writeSSE(w, event) != nil {
-				return
-			}
-			flusher.Flush()
-		}
-	}
-}
-
 func validateQuery(r *http.Request, required []string) error {
 	if err := validateOptionalQuery(r, required); err != nil {
 		return err
@@ -460,13 +447,4 @@ func validateOptionalQuery(r *http.Request, optional []string) error {
 		}
 	}
 	return nil
-}
-
-func writeSSE(w http.ResponseWriter, event realtime.Event) error {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", event.Cursor, event.Kind, data)
-	return err
 }

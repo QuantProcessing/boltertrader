@@ -28,6 +28,7 @@ import (
 
 	tradingapp "github.com/QuantProcessing/boltertrader/services/trading/app"
 	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
+	tradingobservability "github.com/QuantProcessing/boltertrader/services/trading/observability"
 	"github.com/QuantProcessing/boltertrader/services/trading/servicetoken"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -61,6 +62,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	marketTopics := gatewayClient.RealtimeMarket()
+	defer marketTopics.Close()
+	metrics := tradingobservability.New()
+	marketTopics.SetObserver(metrics)
 
 	service, err := tradingapp.New(tradingapp.Config{
 		LivePrivateWritesEnabled: cfg.LivePrivateWritesEnabled,
@@ -70,9 +75,13 @@ func run(ctx context.Context) error {
 		CatalogSource:         gatewayClient,
 		MarketDataSource:      gatewayClient.MarketData(),
 		FreshMarketData:       gatewayClient.FreshMarketData(),
+		FreshBBO:              gatewayClient.FreshBBO(),
 		CandleSource:          gatewayClient.Candles(),
-		FundingBoardStream:    gatewayClient.FundingBoard(),
+		FundingBoardStream:    marketTopics,
 		FundingHistorySource:  gatewayClient.FundingHistory(),
+		MarketTopics:          marketTopics,
+		VenueConnectivity:     gatewayClient,
+		RealtimeObserver:      metrics,
 		MarketDataProbe:       gatewayClient,
 		RuntimeProbe:          gatewayClient,
 		RuntimeProjection:     gatewayClient,
@@ -96,6 +105,7 @@ func run(ctx context.Context) error {
 	service.Readiness().Update("database", readyComponent())
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.Handler())
 	if _, err := service.Register(mux); err != nil {
 		return err
 	}

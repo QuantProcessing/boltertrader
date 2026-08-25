@@ -144,11 +144,11 @@ Gateway 在它自己那一层、对它自己的持久订单，也跑着自己的
 - `/api/v1/market-data`、`/api/v1/candles`——行情条与 K 线图。
 - `/api/v1/products/arbitrage/opportunities`、
   `/api/v1/products/arbitrage/positions`——排过名的价差，和已开的对儿。
-- `/api/v1/realtime/stream`——界面持有的那一条 server-sent 流。
+- `/api/v1/realtime/ws`——界面持有的那一条多路复用 WebSocket。
 
-资金费看板与套利机会现在都是常驻投影。Trading 消费 Gateway 的内部资金费看板
-WebSocket：首个完整 snapshot 整体替换本地状态，后续 upsert 按 sequence 应用；重连后
-再次用完整 snapshot 替换。浏览器每五秒读取一次时只会触发本地计算，不会请求交易所。
+资金费看板与套利机会都是常驻投影。Trading 消费 Gateway 的单条内部市场 WebSocket：
+每个 topic 首帧为完整 snapshot，后续 delta 按 generation 和 sequence 应用；出现 gap 后
+必须重新取得 snapshot。浏览器最多每秒接收一次合并后的看板与机会更新，不会请求交易所。
 
 `/api/v1/funding-history` 刻意保持按需读取：它通过 Gateway 免凭证的公共面读取一家
 交易所的一个标的，窗口只允许 `7d` 或 `30d`。历史 K 线和资金费不预热、不持久化。

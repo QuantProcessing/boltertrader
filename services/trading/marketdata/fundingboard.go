@@ -93,8 +93,12 @@ type BoardRow struct {
 	OpenInterestNotional      string    `json:"openInterestNotional,omitempty"`
 	OpenInterestNotionalAsset string    `json:"openInterestNotionalAsset,omitempty"`
 	FundingObservedAt         time.Time `json:"fundingObservedAt,omitzero"`
+	MarkObservedAt            time.Time `json:"markObservedAt,omitzero"`
+	IndexObservedAt           time.Time `json:"indexObservedAt,omitzero"`
 	PriceObservedAt           time.Time `json:"priceObservedAt,omitzero"`
 	OpenInterestObservedAt    time.Time `json:"openInterestObservedAt,omitzero"`
+	StaleFields               []string  `json:"staleFields,omitempty"`
+	MissingFields             []string  `json:"missingFields,omitempty"`
 }
 
 // BoardStream is the Gateway's resident funding projection. Run receives a
@@ -169,6 +173,8 @@ func cloneBoard(snapshot BoardSnapshot) BoardSnapshot {
 		result.Venues[index].Rows = append([]BoardRow{}, snapshot.Venues[index].Rows...)
 		for row := range result.Venues[index].Rows {
 			result.Venues[index].Rows[row].RawCategories = append([]string(nil), snapshot.Venues[index].Rows[row].RawCategories...)
+			result.Venues[index].Rows[row].StaleFields = append([]string(nil), snapshot.Venues[index].Rows[row].StaleFields...)
+			result.Venues[index].Rows[row].MissingFields = append([]string(nil), snapshot.Venues[index].Rows[row].MissingFields...)
 		}
 	}
 	return result
@@ -204,10 +210,7 @@ func validateBoard(snapshot BoardSnapshot, now time.Time) error {
 			return fmt.Errorf("Gateway funding-board repeats route profile %q", venue.RouteProfileID)
 		}
 		seen[venue.RouteProfileID] = struct{}{}
-		if venue.Unavailable && (len(venue.Rows) != 0 || !venue.ObservedAt.IsZero()) {
-			return fmt.Errorf("Gateway funding-board column %q is unavailable but carries rates", venue.RouteProfileID)
-		}
-		if !venue.Unavailable && venue.ObservedAt.IsZero() {
+		if len(venue.Rows) > 0 && venue.ObservedAt.IsZero() {
 			return fmt.Errorf("Gateway funding-board column %q has rates but no observation time", venue.RouteProfileID)
 		}
 		if len(venue.Rows) > MaxBoardRowsEach {
@@ -230,6 +233,11 @@ func validateBoard(snapshot BoardSnapshot, now time.Time) error {
 			}
 			if row.AssetClass != "" && !knownAssetClass(row.AssetClass) {
 				return fmt.Errorf("Gateway funding-board asset class for %q is invalid", row.Symbol)
+			}
+			for _, field := range append(append([]string(nil), row.StaleFields...), row.MissingFields...) {
+				if !knownDerivativeField(field) {
+					return fmt.Errorf("Gateway funding-board freshness field for %q is invalid", row.Symbol)
+				}
 			}
 			for label, value := range map[string]string{
 				"open interest":          row.OpenInterest,
@@ -266,6 +274,15 @@ func knownAssetClass(value string) bool {
 	}
 }
 
+func knownDerivativeField(value string) bool {
+	switch value {
+	case "funding", "mark", "index", "open_interest":
+		return true
+	default:
+		return false
+	}
+}
+
 // normalizeBoard puts every time on the board in UTC.
 //
 // The cells are compared against each other in the browser — a countdown to the
@@ -280,9 +297,17 @@ func normalizeBoard(snapshot BoardSnapshot) BoardSnapshot {
 			venue.ObservedAt = venue.ObservedAt.UTC()
 		}
 		for rowIndex := range venue.Rows {
-			if !venue.Rows[rowIndex].NextFundingTime.IsZero() {
-				venue.Rows[rowIndex].NextFundingTime = venue.Rows[rowIndex].NextFundingTime.UTC()
+			row := &venue.Rows[rowIndex]
+			if !row.NextFundingTime.IsZero() {
+				row.NextFundingTime = row.NextFundingTime.UTC()
 			}
+			for _, clock := range []*time.Time{&row.FundingObservedAt, &row.MarkObservedAt, &row.IndexObservedAt, &row.PriceObservedAt, &row.OpenInterestObservedAt} {
+				if !clock.IsZero() {
+					*clock = clock.UTC()
+				}
+			}
+			row.StaleFields = append([]string(nil), row.StaleFields...)
+			row.MissingFields = append([]string(nil), row.MissingFields...)
 		}
 	}
 	return snapshot

@@ -112,10 +112,10 @@ Instrument picker、行情、K 线、资金费历史、手工下单预览、套�
 
 ## 实时更新
 
-上面两者都不由界面轮询。一条 server-sent 流 `/api/v1/realtime/stream` 承载已订阅内容的更新。
-在它下面供给数据的是 gateway 自己的 `/v1/public/ws`，而那条流按设计没有 cursor replay：每个
-连接都从一份全新的权威 snapshot 开始，遇到 venue gap 时发出 `resync_required` 并关闭，而不是
-默默跳过。
+上面两者都不由界面轮询。一条多路复用 WebSocket `/api/v1/realtime/ws` 承载全部公共与私有
+topic；Trading 自身只保持一条到 Gateway `/internal/v1/market/ws` 的连接。公共 topic 首帧
+必须是权威 snapshot；venue gap 会切换 generation，先发送 `resync_required`，再发送替换
+snapshot。只有 `account.events` 支持有界 cursor replay。
 
 ## 什么在哪里可用
 

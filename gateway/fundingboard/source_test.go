@@ -3,6 +3,7 @@ package fundingboard
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -116,8 +117,8 @@ func TestBoardSourceSnapshotsNeverPollVenues(t *testing.T) {
 		if !venue.Unavailable {
 			t.Fatalf("%s: column older than maxAge is not marked unavailable", venue.Venue)
 		}
-		if len(venue.Entries) != 0 {
-			t.Fatalf("%s: aged-out column still carries %d entries", venue.Venue, len(venue.Entries))
+		if len(venue.Entries) == 0 || len(venue.Entries[0].StaleFields) == 0 {
+			t.Fatalf("%s: aged-out column did not retain explicitly stale facts", venue.Venue)
 		}
 	}
 }
@@ -206,6 +207,32 @@ func TestFundingFactMergePreservesPartialFieldsAndRejectsOlderUpdates(t *testing
 	}
 }
 
+func TestHotMarkUpdatesOnlyPriceClock(t *testing.T) {
+	fundingAt := time.Date(2026, time.August, 25, 0, 0, 0, 0, time.UTC)
+	markAt := fundingAt.Add(time.Minute)
+	source := &Source{
+		columns: []*column{{
+			profile: routeprofile.Profile{ID: "bybit.perp.usdt.v1"},
+			facts: map[string]exchange.FundingMarketFact{"btc": {
+				Instrument:        exchange.InstrumentIdentity{NativeSymbol: "BTCUSDT"},
+				FundingRate:       exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true},
+				FundingObservedAt: fundingAt,
+			}},
+		}},
+		updates: make(chan ChangeKind, 2), subs: map[uint64]chan Change{}, now: time.Now,
+	}
+	if err := source.UpdateMark("bybit.perp.usdt.v1", "", "BTCUSDT", decimal.NewFromInt(101), markAt); err != nil {
+		t.Fatal(err)
+	}
+	fact := source.columns[0].facts["btc"]
+	if !fact.MarkPrice.Valid || !fact.MarkPrice.Value.Equal(decimal.NewFromInt(101)) || !fact.PriceObservedAt.Equal(markAt) {
+		t.Fatalf("mark=%+v", fact)
+	}
+	if !fact.FundingObservedAt.Equal(fundingAt) || !fact.FundingRate.Valid {
+		t.Fatalf("hot mark changed funding clock: %+v", fact)
+	}
+}
+
 func TestBoardSourceExpiresFieldsIndependentlyAndReadinessNeedsOneFreshRoute(t *testing.T) {
 	now := time.Date(2026, time.August, 20, 2, 0, 0, 0, time.UTC)
 	clock := &testClock{now: now}
@@ -239,8 +266,9 @@ func TestBoardSourceExpiresFieldsIndependentlyAndReadinessNeedsOneFreshRoute(t *
 		t.Fatal(err)
 	}
 	row := snapshot.Venues[0].Entries[0]
-	if row.MarkPrice.Valid || row.OpenInterest.Valid || row.OpenInterestNotional.Valid || !row.Rate.Equal(decimal.RequireFromString("0.0001")) {
-		t.Fatalf("field expiry did not preserve only fresh funding: %+v", row)
+	if !row.MarkPrice.Valid || !row.OpenInterest.Valid || !row.OpenInterestNotional.Valid || !row.Rate.Equal(decimal.RequireFromString("0.0001")) ||
+		!slices.Contains(row.StaleFields, "mark") || !slices.Contains(row.StaleFields, "open_interest") {
+		t.Fatalf("field expiry did not retain stale values with field state: %+v", row)
 	}
 	clock.advance(121 * time.Second)
 	if source.Ready() {
@@ -357,8 +385,8 @@ func TestBoardSourceKeepsFreshPriceWhenFundingExpires(t *testing.T) {
 		t.Fatalf("fresh price row was dropped: %+v", snapshot.Venues[0])
 	}
 	row := snapshot.Venues[0].Entries[0]
-	if row.RateValid || !row.MarkPrice.Valid || !row.MarkPrice.Value.Equal(decimal.NewFromInt(100)) {
-		t.Fatalf("expired funding was presented beside fresh price: %+v", row)
+	if !row.RateValid || !row.MarkPrice.Valid || !row.MarkPrice.Value.Equal(decimal.NewFromInt(100)) || !slices.Contains(row.StaleFields, "funding") {
+		t.Fatalf("expired funding was not retained as explicitly stale beside fresh price: %+v", row)
 	}
 }
 

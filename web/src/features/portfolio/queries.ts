@@ -73,7 +73,7 @@ export function useLedger(query: LedgerQuery): UseQueryResult<LedgerEntry[]> {
     queryFn: ({ signal }) => trading.ledger(query, signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 15_000,
+    refetchInterval: privateFallbackInterval,
     placeholderData: (previous) => previous,
   });
 }
@@ -86,6 +86,6 @@ export function usePnL(key: PnLKey | null): UseQueryResult<PnLSnapshot> {
     queryFn: ({ signal }) => trading.pnl(key as PnLKey, signal),
     enabled: !readOnly && key !== null,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 15_000,
+    refetchInterval: privateFallbackInterval,
   });
 }

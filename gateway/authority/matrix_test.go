@@ -73,6 +73,20 @@ func TestGatewayV10IsExhaustiveAndStable(t *testing.T) {
 	assertInventory(t, matrix, 22, 0, 1)
 }
 
+func TestGatewayV11IsExhaustiveAndStable(t *testing.T) {
+	matrix := authority.GatewayV11()
+	if err := matrix.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if matrix.SchemaVersion != 11 || matrix.MigrationDigest != authority.GatewayV11MigrationDigest {
+		t.Fatalf("identity=%+v", matrix)
+	}
+	if got := matrix.Digest(); got != authority.GatewayV11Digest {
+		t.Fatalf("digest=%s", got)
+	}
+	assertInventory(t, matrix, 26, 0, 1)
+}
+
 func TestMatricesRejectUnknownDuplicateOrUnsafeObjects(t *testing.T) {
 	matrix := authority.PlatformV15()
 	matrix.Objects = append(matrix.Objects, authority.Object{Name: "platform_unknown", Kind: authority.Table})
@@ -86,7 +100,7 @@ func TestMatricesRejectUnknownDuplicateOrUnsafeObjects(t *testing.T) {
 		t.Fatalf("duplicate err=%v", err)
 	}
 
-	for _, matrix := range []authority.Matrix{authority.PlatformV15(), authority.GatewayV10()} {
+	for _, matrix := range []authority.Matrix{authority.PlatformV15(), authority.GatewayV11()} {
 		for _, object := range matrix.Objects {
 			probe := strings.ToLower(object.Probe)
 			for _, unsafe := range []string{"nextval", "setval", "insert ", "update ", "delete ", ";"} {
@@ -103,7 +117,7 @@ func TestMatricesFreezeExactRoleTopology(t *testing.T) {
 	if platform.Maintenance != "bolter_platform_admin" || platform.Migrator != "bolter_platform_migrator" || platform.Runtime != "bolter_platform" || platform.Writer != "bolter_platform_writer" {
 		t.Fatalf("platform roles=%+v", platform)
 	}
-	gateway := authority.GatewayV10().Roles
+	gateway := authority.GatewayV11().Roles
 	if gateway.Maintenance != "bolter_platform_admin" || gateway.Migrator != "bolter_gateway_migrator" || gateway.Runtime != "bolter_gateway" || gateway.Writer != "bolter_gateway_writer" {
 		t.Fatalf("gateway roles=%+v", gateway)
 	}

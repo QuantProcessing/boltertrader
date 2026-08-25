@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -30,8 +31,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 	"github.com/shopspring/decimal"
 )
 
@@ -54,6 +53,8 @@ type Client struct {
 	internalToken   []byte
 	httpClient      *http.Client
 	liveWrites      bool
+	realtimeMu      sync.Mutex
+	realtime        *RealtimeMarketSource
 }
 
 // authorityPathPrefix is the whole of the routing rule. It is a property of the
@@ -261,6 +262,55 @@ func (client *Client) FreshMarketData() FreshMarketDataSource {
 	return FreshMarketDataSource{client: client}
 }
 
+// FreshBBO is the execution-only quote surface. Unlike MarketData it never
+// requests depth, mark, funding, or history as a side effect of a preview.
+func (client *Client) FreshBBO() FreshBBOSource { return FreshBBOSource{client: client} }
+
+type FreshBBOSource struct{ client *Client }
+
+func (source FreshBBOSource) GetFreshBBO(ctx context.Context, instrumentID string) (marketdata.BBO, error) {
+	if source.client == nil || strings.TrimSpace(instrumentID) == "" {
+		return marketdata.BBO{}, marketdata.ErrQuoteUnavailable
+	}
+	var result readEnvelope[struct {
+		InstrumentID string `json:"instrumentId"`
+		Bid          struct {
+			Price    string `json:"price"`
+			Quantity string `json:"quantity"`
+		} `json:"bid"`
+		Ask struct {
+			Price    string `json:"price"`
+			Quantity string `json:"quantity"`
+		} `json:"ask"`
+		ObservedAt     time.Time `json:"observedAt"`
+		SourceSequence string    `json:"sourceSequence,omitempty"`
+	}]
+	err := source.client.read(ctx, "/internal/v1/fresh-bbo", url.Values{"instrumentId": {instrumentID}}, &result)
+	if err != nil {
+		var status readStatusError
+		if errors.As(err, &status) && status.code == "QUOTE_STALE" {
+			return marketdata.BBO{}, marketdata.ErrQuoteStale
+		}
+		return marketdata.BBO{}, marketdata.ErrQuoteUnavailable
+	}
+	quote := marketdata.BBO{
+		InstrumentID: result.Data.InstrumentID,
+		BestBid:      result.Data.Bid.Price, BestBidSize: result.Data.Bid.Quantity,
+		BestAsk: result.Data.Ask.Price, BestAskSize: result.Data.Ask.Quantity,
+		ObservedAt: result.Data.ObservedAt.UTC(), SourceSequence: result.Data.SourceSequence,
+	}
+	if quote.InstrumentID != instrumentID || quote.ObservedAt.IsZero() || !positiveQuote(quote.BestBid, quote.BestBidSize) || !positiveQuote(quote.BestAsk, quote.BestAskSize) {
+		return marketdata.BBO{}, marketdata.ErrQuoteUnavailable
+	}
+	return quote, nil
+}
+
+func positiveQuote(price, quantity string) bool {
+	p, priceErr := decimal.NewFromString(price)
+	q, quantityErr := decimal.NewFromString(quantity)
+	return priceErr == nil && quantityErr == nil && p.IsPositive() && q.IsPositive()
+}
+
 type FreshMarketDataSource struct{ client *Client }
 
 func (source FreshMarketDataSource) Get(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
@@ -370,97 +420,23 @@ func (source CandleSource) FetchCandles(ctx context.Context, query marketdata.Ca
 	return source.client.fetchCandles(ctx, query)
 }
 
-// FundingBoardSource adapts the client to Trading's one resident funding-board
-// stream. It intentionally has no HTTP fetch method: browser reads must never
-// make Trading ask Gateway for a refresh or a second copy.
-type FundingBoardSource struct{ client *Client }
+// FundingBoardSource is a compatibility view over the unified Gateway market
+// connection for hosts that still request a BoardStream from Client.
+type FundingBoardSource struct{ realtime *RealtimeMarketSource }
 
 // FundingBoard views the client as a funding-board source.
-func (client *Client) FundingBoard() FundingBoardSource { return FundingBoardSource{client: client} }
-
-type fundingBoardStreamEvent struct {
-	EventType string                   `json:"eventType"`
-	Sequence  uint64                   `json:"sequence"`
-	Data      marketdata.BoardSnapshot `json:"data"`
-	Reason    string                   `json:"reason,omitempty"`
+func (client *Client) FundingBoard() FundingBoardSource {
+	return FundingBoardSource{realtime: client.RealtimeMarket()}
 }
 
 // RunFundingBoard maintains Trading's single internal subscription. Each
 // reconnect begins with a complete snapshot, so the local projection is never
 // repaired by guessing across a gap.
 func (source FundingBoardSource) RunFundingBoard(ctx context.Context, replace func(marketdata.BoardSnapshot) error) error {
-	if source.client == nil || ctx == nil || replace == nil {
+	if source.realtime == nil || ctx == nil || replace == nil {
 		return fmt.Errorf("Gateway funding-board stream is unavailable")
 	}
-	backoff := time.Second
-	for ctx.Err() == nil {
-		err := source.streamOnce(ctx, replace)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		timer := time.NewTimer(backoff)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-		if err == nil {
-			backoff = time.Second
-		} else if backoff < 30*time.Second {
-			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
-		}
-	}
-	return ctx.Err()
-}
-
-func (source FundingBoardSource) streamOnce(ctx context.Context, replace func(marketdata.BoardSnapshot) error) error {
-	client := source.client
-	parsed, err := url.Parse(client.internalBaseURL)
-	if err != nil {
-		return fmt.Errorf("Gateway funding-board stream URL is invalid")
-	}
-	if parsed.Scheme == "https" {
-		parsed.Scheme = "wss"
-	} else {
-		parsed.Scheme = "ws"
-	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/internal/v1/funding-board/ws"
-	parsed.RawQuery = ""
-	headers := http.Header{"Authorization": {"Bearer " + string(client.internalToken)}}
-	connection, response, err := websocket.Dial(ctx, parsed.String(), &websocket.DialOptions{HTTPClient: client.httpClient, HTTPHeader: headers})
-	if err != nil {
-		if response != nil {
-			_ = response.Body.Close()
-		}
-		return fmt.Errorf("connect Gateway funding-board stream")
-	}
-	defer connection.CloseNow()
-	connection.SetReadLimit(fundingBoardResponseLimit)
-
-	var last uint64
-	first := true
-	for {
-		var event fundingBoardStreamEvent
-		if err := wsjson.Read(ctx, connection, &event); err != nil {
-			return fmt.Errorf("read Gateway funding-board stream")
-		}
-		if event.EventType == "resync_required" {
-			return fmt.Errorf("Gateway funding-board resnapshot required")
-		}
-		followup := event.EventType == "upsert" || event.EventType == "venue_status"
-		if (first && event.EventType != "snapshot") || (!first && !followup) || (!first && event.Sequence <= last) {
-			return fmt.Errorf("Gateway funding-board stream sequence is invalid")
-		}
-		if err := replace(event.Data); err != nil {
-			return fmt.Errorf("Gateway funding-board stream payload is invalid: %w", err)
-		}
-		first = false
-		last = event.Sequence
-	}
+	return source.realtime.RunFundingBoard(ctx, replace)
 }
 
 // FundingHistorySource adapts the client to marketdata.FundingHistorySource,
@@ -477,6 +453,14 @@ func (source FundingHistorySource) FetchFundingHistory(ctx context.Context, read
 		return marketdata.FundingHistorySeries{}, fmt.Errorf("Gateway funding-history source is unavailable")
 	}
 	return source.client.fetchFundingHistory(ctx, read)
+}
+
+func (client *Client) VenueConnectivity(ctx context.Context) ([]tradinghttp.VenueConnectivity, error) {
+	var result readEnvelope[[]tradinghttp.VenueConnectivity]
+	if err := client.read(ctx, "/internal/v1/venues/connectivity", nil, &result); err != nil {
+		return nil, fmt.Errorf("read Gateway venue connectivity: %w", err)
+	}
+	return result.Data, nil
 }
 
 type orderIntent struct {

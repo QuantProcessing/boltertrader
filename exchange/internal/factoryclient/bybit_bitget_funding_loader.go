@@ -2,14 +2,67 @@ package factoryclient
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	bitget "github.com/QuantProcessing/boltertrader/sdk/bitget"
+	bybit "github.com/QuantProcessing/boltertrader/sdk/bybit"
 	"github.com/shopspring/decimal"
 )
 
 type bybitFundingBoardLoader struct {
 	settlement string
 	settings   Settings
+}
+
+type bybitTickerCacheValue struct {
+	rows     []bybit.Ticker
+	loadedAt time.Time
+	wait     chan struct{}
+}
+
+var bybitLinearTickerCache = struct {
+	sync.Mutex
+	values map[string]*bybitTickerCacheValue
+}{values: make(map[string]*bybitTickerCacheValue)}
+
+func loadBybitLinearTickers(ctx context.Context, settings Settings) ([]bybit.Ticker, error) {
+	key := fmt.Sprintf("%p|%s", settings.HTTPClient, settings.Endpoint)
+	for {
+		bybitLinearTickerCache.Lock()
+		current := bybitLinearTickerCache.values[key]
+		if current != nil && current.wait == nil && time.Since(current.loadedAt) < 14*time.Second {
+			rows := append([]bybit.Ticker(nil), current.rows...)
+			bybitLinearTickerCache.Unlock()
+			return rows, nil
+		}
+		if current != nil && current.wait != nil {
+			wait := current.wait
+			bybitLinearTickerCache.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-wait:
+				continue
+			}
+		}
+		current = &bybitTickerCacheValue{wait: make(chan struct{})}
+		bybitLinearTickerCache.values[key] = current
+		bybitLinearTickerCache.Unlock()
+		rows, err := newBybitPublicSDK(settings).GetTickers(ctx, "linear")
+		bybitLinearTickerCache.Lock()
+		if err == nil {
+			current.rows, current.loadedAt = append([]bybit.Ticker(nil), rows...), time.Now()
+		} else {
+			delete(bybitLinearTickerCache.values, key)
+		}
+		close(current.wait)
+		current.wait = nil
+		bybitLinearTickerCache.Unlock()
+		return rows, err
+	}
 }
 
 func NewBybitFundingBoardLoader(settlement string, settings Settings) exchange.FundingBoardLoader {
@@ -28,9 +81,7 @@ func NewBybitFundingBoardLoader(settlement string, settings Settings) exchange.F
 // USDT- and USDC-margined contracts, and a USDC row filed under the USDT scope
 // would collide with a real USDT symbol on the board.
 func (loader bybitFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
-	sdk := newBybitPublicSDK(loader.settings)
-
-	rows, err := sdk.GetTickers(ctx, "linear")
+	rows, err := loadBybitLinearTickers(ctx, loader.settings)
 	if err != nil {
 		meta := clientMeta{venue: exchange.VenueBybit, product: exchange.ProductPerp}
 		return exchange.FundingBoardSnapshot{}, normErr(meta, fundingBoardOperation, err)
@@ -71,6 +122,54 @@ type bitgetFundingBoardLoader struct {
 	settings    Settings
 }
 
+type bitgetInstrumentCacheValue struct {
+	rows     []bitget.Instrument
+	loadedAt time.Time
+	wait     chan struct{}
+}
+
+var bitgetInstrumentCache = struct {
+	sync.Mutex
+	values map[string]*bitgetInstrumentCacheValue
+}{values: make(map[string]*bitgetInstrumentCacheValue)}
+
+func loadBitgetInstruments(ctx context.Context, settings Settings, productType string) ([]bitget.Instrument, error) {
+	key := fmt.Sprintf("%p|%s|%s", settings.HTTPClient, settings.Endpoint, productType)
+	for {
+		bitgetInstrumentCache.Lock()
+		current := bitgetInstrumentCache.values[key]
+		if current != nil && current.wait == nil && time.Since(current.loadedAt) < time.Minute {
+			rows := append([]bitget.Instrument(nil), current.rows...)
+			bitgetInstrumentCache.Unlock()
+			return rows, nil
+		}
+		if current != nil && current.wait != nil {
+			wait := current.wait
+			bitgetInstrumentCache.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-wait:
+				continue
+			}
+		}
+		current = &bitgetInstrumentCacheValue{wait: make(chan struct{})}
+		bitgetInstrumentCache.values[key] = current
+		bitgetInstrumentCache.Unlock()
+		rows, err := newBitgetPublicSDK(settings).GetInstruments(ctx, productType, "")
+		bitgetInstrumentCache.Lock()
+		if err == nil {
+			current.rows, current.loadedAt = append([]bitget.Instrument(nil), rows...), time.Now()
+		} else {
+			delete(bitgetInstrumentCache.values, key)
+		}
+		close(current.wait)
+		current.wait = nil
+		bitgetInstrumentCache.Unlock()
+		return rows, err
+	}
+}
+
 func NewBitgetFundingBoardLoader(productType string, settings Settings) exchange.FundingBoardLoader {
 	return bitgetFundingBoardLoader{productType: productType, settings: settings}
 }
@@ -95,7 +194,7 @@ func (loader bitgetFundingBoardLoader) LoadFundingBoard(ctx context.Context, sco
 		return exchange.FundingBoardSnapshot{}, normErr(meta, fundingBoardOperation, err)
 	}
 	intervals := map[string]exchange.OptionalInt{}
-	if instruments, err := sdk.GetInstruments(ctx, loader.productType, ""); err == nil {
+	if instruments, err := loadBitgetInstruments(ctx, loader.settings, loader.productType); err == nil {
 		for _, instrument := range instruments {
 			if hours := fundingIntervalHours(instrument.FundInterval); hours.Valid {
 				intervals[instrument.Symbol] = hours

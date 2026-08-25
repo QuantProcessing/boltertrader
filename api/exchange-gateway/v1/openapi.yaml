@@ -286,21 +286,6 @@ paths:
         '101':
           description: private event stream; each server message is a PrivateEvent
         default: {$ref: '#/components/responses/Error'}
-  /v1/public/ws:
-    get:
-      operationId: streamPublicMarket
-      parameters:
-        - {name: account_id, in: query, required: true, schema: {type: string}}
-        - {name: instrument_id, in: query, required: true, schema: {type: string}}
-        - name: kind
-          in: query
-          required: true
-          schema: {type: string, enum: [order_book, bbo, mark_price, funding_rate]}
-      responses:
-        '101':
-          description: Each connection starts with a snapshot and has no cursor replay; a gap or upstream error emits resync_required and closes with policy violation so the client reconnects for a fresh snapshot.
-          x-websocket-message-schema: {$ref: '#/components/schemas/PublicMarketEvent'}
-        default: {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     bearerAuth:
@@ -638,20 +623,6 @@ components:
         resource_version: {type: integer, minimum: 1}
         observed_at: {type: string, format: date-time}
         verified_at: {type: string, format: date-time}
-    PublicMarketEvent:
-      type: object
-      required: [boot_id, sequence, event_id, account_id, instrument_id, kind, event_type, occurred_at, payload]
-      additionalProperties: false
-      properties:
-        boot_id: {type: string}
-        sequence: {type: integer, minimum: 1}
-        event_id: {type: string}
-        account_id: {type: string}
-        instrument_id: {type: string}
-        kind: {type: string, enum: [order_book, bbo, mark_price, funding_rate]}
-        event_type: {type: string, enum: [snapshot, update, resync_required]}
-        occurred_at: {type: string, format: date-time}
-        payload: {type: object, additionalProperties: true}
     PrivateEvent:
       type: object
       required: [boot_id, sequence, event_id, account_id, resource_version, kind, occurred_at, payload]

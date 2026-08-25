@@ -14,12 +14,14 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	exchangefactory "github.com/QuantProcessing/boltertrader/exchange/factory"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
+	"github.com/shopspring/decimal"
 )
 
 var ErrBoardUnavailable = errors.New("funding board unavailable")
@@ -126,9 +128,9 @@ type Snapshot struct {
 // Stale and Unavailable are separate because they mean different things to
 // somebody about to trade a spread: stale says "these are the venue's last
 // known rates and they are older than the rest of the table", unavailable says
-// "we have nothing recent enough to put next to another venue's number". An
-// unavailable column carries no entries by design — a three-minute-old rate
-// rendered beside fresh ones is an invitation to trade a spread that closed.
+// "there is nothing recent enough to trade against". The column retains
+// last-known entries for diagnosis; business projections exclude their stale
+// fields from executable calculations.
 type VenueSnapshot struct {
 	Venue          string
 	Environment    string
@@ -236,7 +238,7 @@ type Source struct {
 // Observer receives bounded per-route lifecycle metrics. Implementations must
 // not retain credentials or native payloads; none are passed here.
 type Observer interface {
-	ObserveFundingMarket(venue, route, state string, lastSuccess time.Time, reconnects uint64)
+	ObserveDerivativeFeed(venue, route, state string, lastSuccess time.Time, reconnects uint64)
 }
 
 // ChangeKind describes which part of the resident projection changed. Upserts
@@ -317,7 +319,7 @@ func (source *Source) SetObserver(observer Observer) {
 		return
 	}
 	for _, current := range observations {
-		observer.ObserveFundingMarket(current.venue, current.route, string(current.state), current.lastSuccess, current.reconnectCount)
+		observer.ObserveDerivativeFeed(current.venue, current.route, string(current.state), current.lastSuccess, current.reconnectCount)
 	}
 }
 
@@ -485,15 +487,20 @@ func boardPatch(snapshot exchange.FundingBoardSnapshot) exchange.FundingMarketPa
 			MarkPrice: entry.MarkPrice, IndexPrice: entry.IndexPrice,
 			OpenInterest: entry.OpenInterest, OpenInterestNotional: entry.OpenInterestNotional,
 			OpenInterestNotionalAsset: entry.OpenInterestNotionalAsset,
-			FundingObservedAt:         entry.FundingObservedAt, PriceObservedAt: entry.PriceObservedAt,
+			FundingObservedAt:         entry.FundingObservedAt, MarkObservedAt: entry.MarkObservedAt,
+			IndexObservedAt: entry.IndexObservedAt, PriceObservedAt: entry.PriceObservedAt,
 			OpenInterestObservedAt: entry.OpenInterestObservedAt,
 		}
 		if fact.FundingObservedAt.IsZero() {
 			fact.FundingObservedAt = snapshot.ObservedAt
 		}
-		if fact.PriceObservedAt.IsZero() && (fact.MarkPrice.Valid || fact.IndexPrice.Valid) {
-			fact.PriceObservedAt = snapshot.ObservedAt
+		if fact.MarkObservedAt.IsZero() && fact.MarkPrice.Valid {
+			fact.MarkObservedAt = observationOr(fact.PriceObservedAt, snapshot.ObservedAt)
 		}
+		if fact.IndexObservedAt.IsZero() && fact.IndexPrice.Valid {
+			fact.IndexObservedAt = observationOr(fact.PriceObservedAt, snapshot.ObservedAt)
+		}
+		fact.PriceObservedAt = latestObservation(fact.MarkObservedAt, fact.IndexObservedAt)
 		if fact.OpenInterestObservedAt.IsZero() && (fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid) {
 			fact.OpenInterestObservedAt = snapshot.ObservedAt
 		}
@@ -657,6 +664,44 @@ func (source *Source) Subscribe(ctx context.Context) (<-chan Change, func(), err
 	return channel, cancel, nil
 }
 
+// UpdateMark merges a hot per-instrument mark into the same resident facts as
+// the broad derivative feed. Only the mark clock changes; funding and open
+// interest retain their own observation times.
+func (source *Source) UpdateMark(routeProfileID, nativeID, nativeSymbol string, price decimal.Decimal, observedAt time.Time) error {
+	if source == nil || strings.TrimSpace(routeProfileID) == "" || (strings.TrimSpace(nativeID) == "" && strings.TrimSpace(nativeSymbol) == "") || !price.IsPositive() || observedAt.IsZero() {
+		return ErrBoardUnavailable
+	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	if source.closed {
+		return ErrBoardUnavailable
+	}
+	for _, current := range source.columns {
+		if current.profile.ID != routeProfileID {
+			continue
+		}
+		for key, fact := range current.facts {
+			matched := nativeID != "" && fact.Instrument.NativeID == nativeID
+			if !matched {
+				matched = nativeSymbol != "" && strings.EqualFold(fact.Instrument.NativeSymbol, nativeSymbol)
+			}
+			if !matched {
+				continue
+			}
+			fact.MarkPrice = exchange.OptionalDecimal{Value: price, Valid: true}
+			fact.MarkObservedAt = observedAt.UTC()
+			fact.PriceObservedAt = observedAt.UTC()
+			current.facts[key] = fact
+			if observedAt.After(current.lastSuccess) {
+				current.lastSuccess = observedAt.UTC()
+			}
+			source.signalUpdate(ChangeUpsert)
+			return nil
+		}
+	}
+	return ErrBoardUnavailable
+}
+
 func (source *Source) signalUpdate(kind ChangeKind) {
 	select {
 	case source.updates <- kind:
@@ -685,19 +730,18 @@ func (source *Source) publishLoop(ctx context.Context) {
 				continue
 			}
 			source.mu.Lock()
-			for _, kind := range []ChangeKind{ChangeVenueStatus, ChangeUpsert} {
-				if !pending[kind] {
-					continue
-				}
-				source.sequence++
-				change := Change{Sequence: source.sequence, Kind: kind}
-				for id, subscriber := range source.subs {
-					select {
-					case subscriber <- change:
-					default:
-						close(subscriber)
-						delete(source.subs, id)
-					}
+			kind := ChangeVenueStatus
+			if pending[ChangeUpsert] {
+				kind = ChangeUpsert
+			}
+			source.sequence++
+			change := Change{Sequence: source.sequence, Kind: kind}
+			for id, subscriber := range source.subs {
+				select {
+				case subscriber <- change:
+				default:
+					close(subscriber)
+					delete(source.subs, id)
 				}
 			}
 			source.mu.Unlock()
@@ -733,7 +777,8 @@ func (source *Source) freshnessSignature() uint64 {
 				}
 			}
 			if priceFactFresh(fact, now, source.maxAge) {
-				if now.Sub(fact.PriceObservedAt) > 15*time.Second {
+				if !(fact.MarkPrice.Valid && observationFresh(now, firstObservation(fact.MarkObservedAt, fact.PriceObservedAt), 15*time.Second)) &&
+					!(fact.IndexPrice.Valid && observationFresh(now, firstObservation(fact.IndexObservedAt, fact.PriceObservedAt), 15*time.Second)) {
 					priceDelayed++
 				} else {
 					priceFresh++
@@ -945,7 +990,7 @@ func (source *Source) recordFailure(current *column, err error, reconnect bool) 
 	state, lastSuccess, reconnects := current.status, current.lastSuccess, current.reconnects
 	source.mu.Unlock()
 	if observer != nil {
-		observer.ObserveFundingMarket(current.profile.Venue, current.profile.ID, string(state), lastSuccess, reconnects)
+		observer.ObserveDerivativeFeed(current.profile.Venue, current.profile.ID, string(state), lastSuccess, reconnects)
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		slog.Warn("funding market feed degraded",
@@ -989,12 +1034,18 @@ func (source *Source) apply(current *column, patch exchange.FundingMarketPatch) 
 	state, lastSuccess, reconnects := current.status, current.lastSuccess, current.reconnects
 	source.mu.Unlock()
 	if observer != nil {
-		observer.ObserveFundingMarket(current.profile.Venue, current.profile.ID, string(state), lastSuccess, reconnects)
+		observer.ObserveDerivativeFeed(current.profile.Venue, current.profile.ID, string(state), lastSuccess, reconnects)
 	}
 	source.signalUpdate(ChangeUpsert)
 }
 
 func mergeFundingFact(target *exchange.FundingMarketFact, incoming exchange.FundingMarketFact, fields exchange.FundingMarketField, observedAt time.Time) {
+	if target.MarkPrice.Valid && target.MarkObservedAt.IsZero() {
+		target.MarkObservedAt = target.PriceObservedAt
+	}
+	if target.IndexPrice.Valid && target.IndexObservedAt.IsZero() {
+		target.IndexObservedAt = target.PriceObservedAt
+	}
 	if fields.Has(exchange.FundingMarketFieldIdentity) || target.Instrument.NativeSymbol == "" {
 		target.Instrument = incoming.Instrument
 	}
@@ -1013,16 +1064,21 @@ func mergeFundingFact(target *exchange.FundingMarketFact, incoming exchange.Fund
 	if fields.Has(exchange.FundingMarketFieldNextFundingTime) && fundingCurrent {
 		target.NextFundingTime = incoming.NextFundingTime
 	}
-	priceObservedAt := observationOr(incoming.PriceObservedAt, observedAt)
-	priceCurrent := target.PriceObservedAt.IsZero() || !priceObservedAt.Before(target.PriceObservedAt)
-	if fields.Has(exchange.FundingMarketFieldMarkPrice) && priceCurrent {
+	markObservedAt := observationOr(incoming.MarkObservedAt, observationOr(incoming.PriceObservedAt, observedAt))
+	targetMarkObservedAt := firstObservation(target.MarkObservedAt, target.PriceObservedAt)
+	markCurrent := targetMarkObservedAt.IsZero() || !markObservedAt.Before(targetMarkObservedAt)
+	if fields.Has(exchange.FundingMarketFieldMarkPrice) && markCurrent {
 		target.MarkPrice = incoming.MarkPrice
-		target.PriceObservedAt = priceObservedAt
+		target.MarkObservedAt = markObservedAt
 	}
-	if fields.Has(exchange.FundingMarketFieldIndexPrice) && priceCurrent {
+	indexObservedAt := observationOr(incoming.IndexObservedAt, observationOr(incoming.PriceObservedAt, observedAt))
+	targetIndexObservedAt := firstObservation(target.IndexObservedAt, target.PriceObservedAt)
+	indexCurrent := targetIndexObservedAt.IsZero() || !indexObservedAt.Before(targetIndexObservedAt)
+	if fields.Has(exchange.FundingMarketFieldIndexPrice) && indexCurrent {
 		target.IndexPrice = incoming.IndexPrice
-		target.PriceObservedAt = priceObservedAt
+		target.IndexObservedAt = indexObservedAt
 	}
+	target.PriceObservedAt = latestObservation(target.MarkObservedAt, target.IndexObservedAt)
 	openInterestObservedAt := observationOr(incoming.OpenInterestObservedAt, observedAt)
 	openInterestCurrent := target.OpenInterestObservedAt.IsZero() || !openInterestObservedAt.Before(target.OpenInterestObservedAt)
 	if fields.Has(exchange.FundingMarketFieldOpenInterest) && openInterestCurrent {
@@ -1039,6 +1095,26 @@ func mergeFundingFact(target *exchange.FundingMarketFact, incoming exchange.Fund
 func observationOr(candidate, fallback time.Time) time.Time {
 	if !candidate.IsZero() {
 		return candidate.UTC()
+	}
+	return fallback.UTC()
+}
+
+func latestObservation(left, right time.Time) time.Time {
+	if right.After(left) {
+		return right.UTC()
+	}
+	if left.IsZero() {
+		return time.Time{}
+	}
+	return left.UTC()
+}
+
+func firstObservation(preferred, fallback time.Time) time.Time {
+	if !preferred.IsZero() {
+		return preferred.UTC()
+	}
+	if fallback.IsZero() {
+		return time.Time{}
 	}
 	return fallback.UTC()
 }
@@ -1147,40 +1223,17 @@ func (source *Source) projectLocked() Snapshot {
 		if current.lastSuccess.IsZero() || observedAt.Sub(current.lastSuccess) > source.maxAge {
 			venue.Unavailable = true
 			venue.Status = exchange.FundingMarketFeedUnavailable
-			venues = append(venues, venue)
-			continue
 		}
-		venue.ObservedAt = current.lastSuccess
+		if !current.lastSuccess.IsZero() {
+			venue.ObservedAt = current.lastSuccess
+		}
 		for _, fact := range current.facts {
-			fundingFresh := fundingFactFresh(fact, observedAt, source.maxAge)
-			priceFresh := priceFactFresh(fact, observedAt, source.maxAge)
-			openInterestFresh := openInterestFactFresh(fact, observedAt, source.maxAge)
-			if !fundingFresh && !priceFresh && !openInterestFresh {
-				continue
-			}
-			projected := fact
-			if !fundingFresh {
-				projected.FundingRate = exchange.OptionalDecimal{}
-				projected.FundingIntervalHours = exchange.OptionalInt{}
-				projected.NextFundingTime = time.Time{}
-				projected.FundingObservedAt = time.Time{}
-			}
-			if !priceFresh {
-				projected.MarkPrice = exchange.OptionalDecimal{}
-				projected.IndexPrice = exchange.OptionalDecimal{}
-				projected.PriceObservedAt = time.Time{}
-			}
-			if !openInterestFresh {
-				projected.OpenInterest = exchange.OptionalDecimal{}
-				projected.OpenInterestNotional = exchange.OptionalDecimal{}
-				projected.OpenInterestNotionalAsset = ""
-				projected.OpenInterestObservedAt = time.Time{}
-			}
-			if (fundingFresh && observedAt.Sub(projected.FundingObservedAt) > time.Minute) ||
-				(priceFresh && observedAt.Sub(projected.PriceObservedAt) > 15*time.Second) {
+			entry := fundingBoardEntry(fact)
+			entry.StaleFields, entry.MissingFields = derivativeFieldState(fact, observedAt, source.maxAge)
+			if len(entry.StaleFields) > 0 {
 				venue.Stale = true
 			}
-			venue.Entries = append(venue.Entries, fundingBoardEntry(projected))
+			venue.Entries = append(venue.Entries, entry)
 		}
 		if venue.Stale && venue.Status == exchange.FundingMarketFeedLive {
 			venue.Status = exchange.FundingMarketFeedDegraded
@@ -1189,7 +1242,6 @@ func (source *Source) projectLocked() Snapshot {
 			return venue.Entries[left].Symbol < venue.Entries[right].Symbol
 		})
 		if len(venue.Entries) == 0 {
-			venue.ObservedAt = time.Time{}
 			venue.Unavailable = true
 			venue.Status = exchange.FundingMarketFeedUnavailable
 		}
@@ -1199,18 +1251,48 @@ func (source *Source) projectLocked() Snapshot {
 }
 
 func fundingFactFresh(fact exchange.FundingMarketFact, now time.Time, maxAge time.Duration) bool {
-	return fact.FundingRate.Valid && !fact.FundingObservedAt.IsZero() && now.Sub(fact.FundingObservedAt) <= maxAge
+	return fact.FundingRate.Valid && observationFresh(now, fact.FundingObservedAt, maxAge)
 }
 
 func priceFactFresh(fact exchange.FundingMarketFact, now time.Time, maxAge time.Duration) bool {
-	return (fact.MarkPrice.Valid || fact.IndexPrice.Valid) && !fact.PriceObservedAt.IsZero() && now.Sub(fact.PriceObservedAt) <= maxAge
+	return (fact.MarkPrice.Valid && observationFresh(now, firstObservation(fact.MarkObservedAt, fact.PriceObservedAt), maxAge)) ||
+		(fact.IndexPrice.Valid && observationFresh(now, firstObservation(fact.IndexObservedAt, fact.PriceObservedAt), maxAge))
 }
 
 func openInterestFactFresh(fact exchange.FundingMarketFact, now time.Time, maxAge time.Duration) bool {
-	return (fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid) && !fact.OpenInterestObservedAt.IsZero() && now.Sub(fact.OpenInterestObservedAt) <= maxAge
+	return (fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid) && observationFresh(now, fact.OpenInterestObservedAt, maxAge)
+}
+
+func derivativeFieldState(fact exchange.FundingMarketFact, now time.Time, openInterestMaxAge time.Duration) (stale, missing []string) {
+	type field struct {
+		name      string
+		present   bool
+		observed  time.Time
+		threshold time.Duration
+	}
+	for _, current := range []field{
+		{name: "funding", present: fact.FundingRate.Valid, observed: fact.FundingObservedAt, threshold: time.Minute},
+		{name: "mark", present: fact.MarkPrice.Valid, observed: firstObservation(fact.MarkObservedAt, fact.PriceObservedAt), threshold: 15 * time.Second},
+		{name: "index", present: fact.IndexPrice.Valid, observed: firstObservation(fact.IndexObservedAt, fact.PriceObservedAt), threshold: 15 * time.Second},
+		{name: "open_interest", present: fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid, observed: fact.OpenInterestObservedAt, threshold: openInterestMaxAge},
+	} {
+		if !current.present {
+			missing = append(missing, current.name)
+		} else if !observationFresh(now, current.observed, current.threshold) {
+			stale = append(stale, current.name)
+		}
+	}
+	return stale, missing
+}
+
+func observationFresh(now, observedAt time.Time, maxAge time.Duration) bool {
+	age := now.UTC().Sub(observedAt.UTC())
+	return maxAge > 0 && !observedAt.IsZero() && age >= 0 && age <= maxAge
 }
 
 func fundingBoardEntry(fact exchange.FundingMarketFact) exchange.FundingBoardEntry {
+	markObservedAt := firstObservation(fact.MarkObservedAt, fact.PriceObservedAt)
+	indexObservedAt := firstObservation(fact.IndexObservedAt, fact.PriceObservedAt)
 	return exchange.FundingBoardEntry{
 		Symbol: fact.Instrument.Symbol, NativeSymbol: fact.Instrument.NativeSymbol,
 		NativeID: fact.Instrument.NativeID, BaseAsset: fact.Instrument.BaseAsset,
@@ -1219,7 +1301,8 @@ func fundingBoardEntry(fact exchange.FundingMarketFact) exchange.FundingBoardEnt
 		MarkPrice: fact.MarkPrice, IndexPrice: fact.IndexPrice,
 		OpenInterest: fact.OpenInterest, OpenInterestNotional: fact.OpenInterestNotional,
 		OpenInterestNotionalAsset: fact.OpenInterestNotionalAsset,
-		FundingObservedAt:         fact.FundingObservedAt, PriceObservedAt: fact.PriceObservedAt,
+		FundingObservedAt:         fact.FundingObservedAt, MarkObservedAt: markObservedAt,
+		IndexObservedAt: indexObservedAt, PriceObservedAt: latestObservation(markObservedAt, indexObservedAt),
 		OpenInterestObservedAt: fact.OpenInterestObservedAt,
 	}
 }

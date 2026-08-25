@@ -71,7 +71,7 @@ then a reconciler brings the runtime to it. See
 
 **Trade** shows, for the selected instrument: the ticker strip, a candlestick
 chart, the order book, the order ticket, and the blotter. Live updates arrive on
-a single server-sent stream at `/api/v1/realtime/stream`.
+the single multiplexed WebSocket at `/api/v1/realtime/ws`.
 
 Pick an instrument your account's product policy allows.
 
