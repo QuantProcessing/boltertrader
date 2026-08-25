@@ -20,7 +20,8 @@ WORKDIR /src
 # `tsconfig.json` type-checks `e2e/`.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund
 
 COPY web/ ./
 # `npm run build` is `tsc --noEmit && vite build`, so a type error fails the
