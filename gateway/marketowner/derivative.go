@@ -129,7 +129,7 @@ func (owners *DerivativeOwners) runOwner(ctx context.Context, owner *derivativeV
 }
 
 func (owners *DerivativeOwners) bootstrapOwner(ctx context.Context, owner *derivativeVenueOwner, generation uint64) error {
-	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	patch, err := owner.feed.Bootstrap(requestCtx)
 	if err == nil {

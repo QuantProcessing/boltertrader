@@ -50,7 +50,10 @@ var protectedTokenFiles = []string{
 // what any test observes.
 func bootstrapInto(t *testing.T, root string) Result {
 	t.Helper()
-	for _, name := range []string{postgresPortVar, gatewayPortVar, authEdgePortVar, tradingPortVar, webPortVar, bootstrapUserVar} {
+	for _, name := range []string{
+		postgresPortVar, gatewayPortVar, authEdgePortVar, tradingPortVar, webPortVar, bootstrapUserVar,
+		gatewayHTTPProxyVar, "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+	} {
 		t.Setenv(name, "")
 	}
 	result, err := Bootstrap(root)
@@ -58,6 +61,52 @@ func bootstrapInto(t *testing.T, root string) Result {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	return result
+}
+
+func TestBootstrapMapsLoopbackProxyForGatewayContainer(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{gatewayHTTPProxyVar, "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:10900")
+	result, err := Bootstrap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := parseEnvFile(t, result.EnvFile)
+	if got, want := values[gatewayHTTPProxyVar], "http://host.docker.internal:10900"; got != want {
+		t.Fatalf("%s = %q, want %q", gatewayHTTPProxyVar, got, want)
+	}
+}
+
+func TestBootstrapRejectsCredentialedProxy(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv(gatewayHTTPProxyVar, "http://user:password@127.0.0.1:10900")
+	if _, err := Bootstrap(root); err == nil || !strings.Contains(err.Error(), "must not contain credentials") {
+		t.Fatalf("credentialed proxy error = %v", err)
+	}
+}
+
+func TestBootstrapDoesNotRetainAnAbsentAmbientProxy(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{gatewayHTTPProxyVar, "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:10900")
+	if _, err := Bootstrap(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ALL_PROXY", "")
+	result, err := Bootstrap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parseEnvFile(t, result.EnvFile)[gatewayHTTPProxyVar]; got != "" {
+		t.Fatalf("stale %s was retained as %q", gatewayHTTPProxyVar, got)
+	}
 }
 
 func readAll(t *testing.T, path string) string {

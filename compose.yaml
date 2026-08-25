@@ -203,6 +203,17 @@ services:
       BT_SECRET_MASTER_KEY_VERSION: v1
       BT_SECRET_STORE_DIR: /var/lib/boltertrader/secretstore
       BT_SECRET_STORE_NAMESPACE: boltertrader
+      # Local venue traffic may need the same proxy as host tooling. Bootstrap
+      # rewrites a loopback proxy to host.docker.internal before putting it in
+      # .env.stack; Go's HTTP transport reads HTTP(S)_PROXY, not ALL_PROXY.
+      HTTP_PROXY: ${GATEWAY_HTTP_PROXY:-}
+      HTTPS_PROXY: ${GATEWAY_HTTP_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1,postgres,gateway,trading,authedge,web
+      # The production default remains 3s. The local stack allows a slow proxy
+      # to complete and then reports it as delayed via the 1s EWMA threshold.
+      BT_VENUE_PROBE_TIMEOUT: ${BT_VENUE_PROBE_TIMEOUT:-30s}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Written out rather than composed from *secrets: YAML merge keys cannot
     # append to a sequence. The store is the one writable path in the stack —
     # read_only above governs the image layer, not a bind mount declared rw —

@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,6 +120,7 @@ const (
 	authEdgePortVar          = "AUTHEDGE_PORT"
 	tradingPortVar           = "TRADING_PORT"
 	bootstrapUserVar         = "BT_BOOTSTRAP_USERNAME"
+	gatewayHTTPProxyVar      = "GATEWAY_HTTP_PROXY"
 )
 
 // Config is the resolved set of values written into .env.stack.
@@ -128,6 +131,7 @@ type Config struct {
 	AuthEdgePort      string
 	TradingPort       string
 	BootstrapUsername string
+	GatewayHTTPProxy  string
 }
 
 // Result reports what a Bootstrap run did, so the caller can tell the operator
@@ -405,6 +409,11 @@ func resolveConfig(envStackPath string) (Config, error) {
 		TradingPort:       resolve(tradingPortVar, previous, defaultTradingPort),
 		BootstrapUsername: resolve(bootstrapUserVar, previous, defaultUsername),
 	}
+	proxy, err := resolveGatewayHTTPProxy()
+	if err != nil {
+		return Config{}, err
+	}
+	config.GatewayHTTPProxy = proxy
 	for _, port := range []struct {
 		name  string
 		value string
@@ -427,6 +436,57 @@ func resolveConfig(envStackPath string) (Config, error) {
 		return Config{}, fmt.Errorf("%s must be a non-empty name without '$' or a newline, got %q", bootstrapUserVar, config.BootstrapUsername)
 	}
 	return config, nil
+}
+
+// resolveGatewayHTTPProxy carries an operator's local development proxy across
+// the host/container boundary. A loopback proxy is reachable from Docker
+// Desktop as host.docker.internal, not as 127.0.0.1 inside the Gateway
+// container. Credentials are deliberately rejected because .env.stack is a
+// generated configuration artifact, not a secret store.
+func resolveGatewayHTTPProxy() (string, error) {
+	raw := strings.TrimSpace(os.Getenv(gatewayHTTPProxyVar))
+	if raw == "" {
+		for _, name := range []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
+			if raw = strings.TrimSpace(os.Getenv(name)); raw != "" {
+				break
+			}
+		}
+	}
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Hostname() == "" {
+		return "", fmt.Errorf("%s must be an absolute proxy URL", gatewayHTTPProxyVar)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return "", fmt.Errorf("%s uses unsupported scheme %q", gatewayHTTPProxyVar, parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("%s must not contain credentials", gatewayHTTPProxyVar)
+	}
+	if (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("%s must not contain a path, query, or fragment", gatewayHTTPProxyVar)
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		port := parsed.Port()
+		if port == "" {
+			if parsed.Scheme == "https" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		parsed.Host = net.JoinHostPort("host.docker.internal", port)
+	}
+	value := parsed.String()
+	if strings.ContainsAny(value, "$\r\n") {
+		return "", fmt.Errorf("%s contains characters compose cannot preserve", gatewayHTTPProxyVar)
+	}
+	return value, nil
 }
 
 func resolve(name string, previous map[string]string, fallback string) string {
@@ -511,6 +571,11 @@ func renderEnvStack(secretDir string, config Config, uid, gid int) string {
 # The bootstrap operator's name. Not a secret; the password is never here in any
 # form, only its bcrypt hash in %s.
 %s=%s
+
+# Optional host HTTP proxy for Gateway's public venue traffic. Bootstrap maps a
+# loopback proxy to host.docker.internal so the container reaches the same
+# listener as host tools. Proxy URLs containing credentials are never persisted.
+%s=%s
 `,
 		EnvStackName,
 		filepath.Join(SecretDirName, StackDirName),
@@ -528,6 +593,7 @@ func renderEnvStack(secretDir string, config Config, uid, gid int) string {
 		tradingPortVar, config.TradingPort,
 		filepath.Join(SecretDirName, StackDirName, BootstrapPasswordHashFile),
 		bootstrapUserVar, config.BootstrapUsername,
+		gatewayHTTPProxyVar, config.GatewayHTTPProxy,
 	)
 	return out.String()
 }

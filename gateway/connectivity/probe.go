@@ -256,7 +256,7 @@ func DefaultHTTPCheckers(client *http.Client) map[exchange.Venue]Checker {
 		exchange.VenueGate:        {URL: "https://api.gateio.ws/api/v4/spot/time"},
 		exchange.VenueHyperliquid: {Method: http.MethodPost, URL: "https://api.hyperliquid.xyz/info", Body: `{"type":"meta"}`},
 		exchange.VenueLighter:     {URL: "https://mainnet.zklighter.elliot.ai/api/v1/exchangeStats"},
-		exchange.VenueNado:        {URL: "https://gateway.prod.nado.xyz/v1/status"},
+		exchange.VenueNado:        {URL: "https://gateway.prod.nado.xyz/v1/query?type=status"},
 	}
 	result := make(map[exchange.Venue]Checker, len(checks))
 	for venue, check := range checks {

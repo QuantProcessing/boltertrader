@@ -1580,6 +1580,24 @@ func TestHyperliquidPrivateStateNormalizersRejectImpossibleAccountState(t *testi
 	}
 }
 
+func TestHyperliquidAccountProjectionIgnoresSiblingProductEvents(t *testing.T) {
+	metas := map[string]hyperliquidMarketMeta{
+		"BTC": {nativeCoin: "BTC"},
+	}
+	order := hyperliquid.WsOrderUpdate{Order: hyperliquid.WsOrder{Coin: "@1"}}
+	if event, relevant, err := projectHyperliquidAccountOrder(metas, order); err != nil || relevant || event.Kind != "" {
+		t.Fatalf("sibling order projection = %+v, relevant=%t, err=%v", event, relevant, err)
+	}
+	fill := hyperliquidPrivateFill{fill: hyperliquid.WsUserFill{Coin: "@1"}}
+	if event, relevant, err := projectHyperliquidAccountFill(metas, fill); err != nil || relevant || event.Kind != "" {
+		t.Fatalf("sibling fill projection = %+v, relevant=%t, err=%v", event, relevant, err)
+	}
+	historical := hyperliquidPrivateFill{kind: exchange.EventSnapshot, fill: hyperliquid.WsUserFill{Coin: "BTC"}}
+	if event, relevant, err := projectHyperliquidAccountFill(metas, historical); err != nil || relevant || event.Kind != "" {
+		t.Fatalf("historical fill projection = %+v, relevant=%t, err=%v", event, relevant, err)
+	}
+}
+
 var (
 	_ = hyperliquidspot.PlaceOrderResponse{}
 	_ = hyperliquidperp.PlaceOrderResponse{}

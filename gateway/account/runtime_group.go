@@ -26,7 +26,11 @@ var (
 	ErrRuntimeCleanupFailed = errors.New("runtime cleanup failed")
 )
 
-const candidateCredentialProbeTimeout = 10 * time.Second
+// Account recovery starts alongside the public market owners. A route probe may
+// therefore share a constrained local proxy with several catalog bootstraps;
+// keep its deadline aligned with the account HTTP client instead of rejecting
+// a valid runtime during that initial burst.
+const candidateCredentialProbeTimeout = 30 * time.Second
 
 // CandidateFailure is the safe, persisted explanation for an atomic runtime
 // candidate rejection. It never contains a venue message or credential

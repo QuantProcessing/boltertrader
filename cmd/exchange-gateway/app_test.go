@@ -27,6 +27,21 @@ import (
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
+func TestVenueProbeTimeoutDefaultsAndValidatesOverride(t *testing.T) {
+	t.Setenv(venueProbeTimeoutEnv, "")
+	if got, err := venueProbeTimeout(); err != nil || got != 3*time.Second {
+		t.Fatalf("default timeout = %s, %v", got, err)
+	}
+	t.Setenv(venueProbeTimeoutEnv, "15s")
+	if got, err := venueProbeTimeout(); err != nil || got != 15*time.Second {
+		t.Fatalf("override timeout = %s, %v", got, err)
+	}
+	t.Setenv(venueProbeTimeoutEnv, "90s")
+	if _, err := venueProbeTimeout(); err == nil {
+		t.Fatal("oversized probe timeout was accepted")
+	}
+}
+
 func TestOperationalHTTPExposesMetricsAndObservesGatewayCommands(t *testing.T) {
 	metrics := observability.NewMetrics()
 	api := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -45,3 +45,13 @@ func TestProbeEWMAKeepsSlowVenueDelayed(t *testing.T) {
 		t.Fatalf("snapshot = %#v", state.snapshot)
 	}
 }
+
+func TestDefaultNadoProbeUsesDocumentedStatusQuery(t *testing.T) {
+	check, ok := DefaultHTTPCheckers(nil)[exchange.VenueNado].(HTTPCheck)
+	if !ok {
+		t.Fatal("Nado checker is not an HTTP check")
+	}
+	if want := "https://gateway.prod.nado.xyz/v1/query?type=status"; check.URL != want {
+		t.Fatalf("Nado probe URL = %q, want %q", check.URL, want)
+	}
+}

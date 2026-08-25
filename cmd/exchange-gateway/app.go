@@ -73,6 +73,20 @@ type runtimeDeps struct {
 	credentialResolver       account.ScopedCredentialResolver
 }
 
+const venueProbeTimeoutEnv = "BT_VENUE_PROBE_TIMEOUT"
+
+func venueProbeTimeout() (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(venueProbeTimeoutEnv))
+	if raw == "" {
+		return 3 * time.Second, nil
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout < time.Second || timeout > time.Minute {
+		return 0, fmt.Errorf("%s must be a duration between 1s and 1m", venueProbeTimeoutEnv)
+	}
+	return timeout, nil
+}
+
 func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error) {
 	flags := flag.NewFlagSet("exchange-gateway", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -133,9 +147,13 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
 	var venueConnectivity *connectivity.Manager
 	if !validationProfile {
+		probeTimeout, timeoutErr := venueProbeTimeout()
+		if timeoutErr != nil {
+			return fmt.Errorf("venue connectivity setup failed: %w", timeoutErr)
+		}
 		venueConnectivity, err = connectivity.New(connectivity.Options{
-			Checkers: connectivity.DefaultHTTPCheckers(&http.Client{Timeout: 3 * time.Second}),
-			Interval: 10 * time.Second, Timeout: 3 * time.Second, Observer: metrics,
+			Checkers: connectivity.DefaultHTTPCheckers(&http.Client{Timeout: probeTimeout}),
+			Interval: 10 * time.Second, Timeout: probeTimeout, Observer: metrics,
 		})
 		if err != nil {
 			return fmt.Errorf("venue connectivity setup failed")

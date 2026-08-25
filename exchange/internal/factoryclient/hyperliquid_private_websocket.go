@@ -542,17 +542,15 @@ func (backend *hyperliquidPrivateWSBackend) StartAccountEvents(ctx context.Conte
 		return nil, hyperliquidPrivateStartError(backend.meta, operation, err)
 	}
 	orders, err := backend.orders.add(ctx, backend.nextSinkKey("account-orders"), func(row hyperliquid.WsOrderUpdate) {
-		meta, ok := metas[row.Order.Coin]
-		if !ok {
-			callbacks.Error(fmt.Errorf("hyperliquid account order instrument is unknown"))
+		event, relevant, convertErr := projectHyperliquidAccountOrder(metas, row)
+		if !relevant {
 			return
 		}
-		event, convertErr := hyperliquidPrivateOrderEvent(meta, row)
 		if convertErr != nil {
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, convertErr.Error()))
 			return
 		}
-		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+		callbacks.Event(event)
 	}, callbacks.Error, func() (func() error, error) {
 		if connectErr := backend.ensureConnected(operation); connectErr != nil {
 			return nil, connectErr
@@ -582,18 +580,15 @@ func (backend *hyperliquidPrivateWSBackend) StartAccountEvents(ctx context.Conte
 	stops = append(stops, orders)
 
 	fills, err := backend.fills.add(ctx, backend.nextSinkKey("account-fills"), func(row hyperliquidPrivateFill) {
-		meta, ok := metas[row.fill.Coin]
-		if !ok {
-			callbacks.Error(fmt.Errorf("hyperliquid account fill instrument is unknown"))
+		event, relevant, convertErr := projectHyperliquidAccountFill(metas, row)
+		if !relevant {
 			return
 		}
-		fill, convertErr := hlFill(meta, row.fill.Coin, row.fill.Side, row.fill.Px, row.fill.Sz, row.fill.Fee, row.fill.FeeToken, row.fill.Oid, row.fill.Tid, row.fill.Hash, row.fill.Crossed, row.fill.Time)
 		if convertErr != nil {
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, convertErr.Error()))
 			return
 		}
-		event := exchange.FillEvent{Kind: row.kind, Fill: fill}
-		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+		callbacks.Event(event)
 	}, callbacks.Error, func() (func() error, error) {
 		if connectErr := backend.ensureConnected(operation); connectErr != nil {
 			return nil, connectErr
@@ -686,6 +681,42 @@ func (backend *hyperliquidPrivateWSBackend) StartAccountEvents(ctx context.Conte
 	}
 	stops = append(stops, states)
 	return hyperliquidPrivateStop(removeLifecycle, closeAccountStops(stops...)), nil
+}
+
+func projectHyperliquidAccountOrder(metas map[string]hyperliquidMarketMeta, row hyperliquid.WsOrderUpdate) (accountBackendEvent, bool, error) {
+	meta, ok := metas[row.Order.Coin]
+	if !ok {
+		// Hyperliquid's account topic is user-wide and may include the other
+		// product family. Each route projects only its own catalog; the sibling
+		// spot/perp owner consumes that event.
+		return accountBackendEvent{}, false, nil
+	}
+	event, err := hyperliquidPrivateOrderEvent(meta, row)
+	if err != nil {
+		return accountBackendEvent{}, true, err
+	}
+	return accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event}, true, nil
+}
+
+func projectHyperliquidAccountFill(metas map[string]hyperliquidMarketMeta, row hyperliquidPrivateFill) (accountBackendEvent, bool, error) {
+	if row.kind == exchange.EventSnapshot {
+		// Account startup reconciles orders and fills from REST after the native
+		// stream is established. Hyperliquid's userFills snapshot is historical,
+		// may contain legacy rows, and would duplicate that authoritative read.
+		return accountBackendEvent{}, false, nil
+	}
+	meta, ok := metas[row.fill.Coin]
+	if !ok {
+		// userFills is also user-wide. An event absent from this route's index is
+		// not a sequence gap for this route.
+		return accountBackendEvent{}, false, nil
+	}
+	fill, err := hlFill(meta, row.fill.Coin, row.fill.Side, row.fill.Px, row.fill.Sz, row.fill.Fee, row.fill.FeeToken, row.fill.Oid, row.fill.Tid, row.fill.Hash, row.fill.Crossed, row.fill.Time)
+	if err != nil {
+		return accountBackendEvent{}, true, err
+	}
+	event := exchange.FillEvent{Kind: row.kind, Fill: fill}
+	return accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event}, true, nil
 }
 
 func (backend *hyperliquidPrivateWSBackend) startNativeState(operation string) (func() error, error) {

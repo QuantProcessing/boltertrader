@@ -32,7 +32,7 @@ var ErrUnavailable = errors.New("public market unavailable")
 const (
 	defaultRefreshInterval = time.Minute
 	defaultMaxAge          = 2 * time.Minute
-	defaultVenueTimeout    = 10 * time.Second
+	defaultVenueTimeout    = 30 * time.Second
 )
 
 // Connector is the complete method set a public market route may expose.
