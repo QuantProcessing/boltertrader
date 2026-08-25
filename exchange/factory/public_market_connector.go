@@ -71,7 +71,7 @@ func NewPublicMarketConnector(
 	}
 	return &PublicMarketConnector{
 		catalog: instrumentCatalog, market: market, perp: perp, mark: mark, socket: socket, close: closeClient,
-		scope: scope, funding: fundingBoardLoaderForConfig(configName, settings) != nil,
+		scope: scope, funding: derivativeSnapshotLoaderForConfig(configName, settings) != nil,
 	}, nil
 }
 

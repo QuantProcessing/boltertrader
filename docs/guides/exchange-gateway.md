@@ -147,10 +147,21 @@ native symbols, native IDs, instrument encodings, or raw venue errors.
 
 `/internal/v1/market/ws` is Gateway's multiplexed service-to-service market
 protocol. Its public topics include order book, BBO, candles, mark, funding
-board, and venue connectivity. Market Hub owns one native feed per venue,
-environment, native family, and dataset, materializes a current snapshot, and
-fans it out to every consumer. A gap increments generation, emits
-`resync_required`, and rebuilds the snapshot.
+board, and venue connectivity. The production capability matrix selects each
+dataset's transport, native-family boundary, cadence, and rate-limit operation.
+Gateway owns exactly one physical `VenueFeedOwner` per venue, environment, and
+native market family; route profiles are output projections, not additional
+connections. Market Hub materializes current snapshots and fans them out to
+every logical consumer. A gap increments generation, emits `resync_required`,
+and rebuilds the snapshot.
+
+Hot order-book, BBO, candle, and mark topics share one pooled native socket per
+feed owner. A reference-counted hotset ranks position, open-order, execution,
+browser, arbitrage-top, and funding-history reasons in that order. Position,
+open-order, and execution topics cannot be evicted by venue topic limits; the
+last reason retains its topic for a 30-second grace period. Broad polling,
+catalog refresh, and FreshBBO fallback share one rate-limit coordinator and
+singleflight key per venue operation.
 
 The public market operations on the internal listener are the exception to the
 account rule: `/internal/v1/market/ws`, `/internal/v1/market-facts`,
@@ -160,13 +171,20 @@ answers them with credential-free venue clients. They remain authenticated by
 the internal bearer token and never expose credential material or raw venue
 errors.
 
-The funding board is a pure projection of resident `DerivativeFact` data. At startup Gateway
-bootstraps every supported perpetual route once and then maintains funding,
-mark, index, and open-interest facts from venue WebSockets. Binance and Aster
-open interest is enriched asynchronously on a rolling one-minute cycle; Nado's
-non-streamed price and OI fields are enriched by one bounded all-product read.
-An HTTP board read only copies memory and therefore cannot increase venue
-request volume. No order book is stored in this projection.
+The funding board is a pure projection of resident `DerivativeFact` data. At
+startup Gateway bootstraps every supported native perpetual family once and
+then maintains funding, mark, index, and open-interest facts using the matrix's
+all-market WebSocket or bounded batch-REST strategy. Wide and hot patches merge
+by independent field clocks, so a late funding update cannot overwrite a newer
+mark. Binance and Aster open interest is enriched asynchronously on a rolling
+one-minute cycle; Nado's non-streamed price and OI fields are enriched by one
+bounded all-product read. Hot Binance/Aster instruments raise OI cadence to 15
+seconds. Bybit and Bitget preserve mark, index, funding, and OI from their one
+native ticker; OKX combines the four native reference topics behind one logical
+hot reference stream. Gate updates its live `futures.tickers` payload when the
+catalog membership changes without replacing the owner or generation. An HTTP board read only copies memory and therefore
+cannot increase venue request volume. No order book is stored in this
+projection.
 
 The internal board WebSocket sends a complete `snapshot` first and coalesced
 `upsert` events afterwards. Each event has a monotonic sequence. A slow consumer
@@ -206,6 +224,14 @@ account health, and `resync_required` are normalized. A stale boot cursor,
 evicted replay cursor, stream gap, or process restart emits
 `resync_required`; clients must fetch REST snapshots before resuming.
 
+Each account route owns one product/account-level native stream regardless of
+catalog size. Startup first opens that stream and buffers deltas, loads balance
+and position snapshots, publishes the snapshots, replays buffered deltas, and
+then publishes the connected barrier. Gateway performs order/fill REST
+reconciliation after the barrier. Events carry generation, source sequence,
+and snapshot/live phase; reconnect, listen-key expiry, or sequence gaps require
+resync, and late events from an older generation are discarded.
+
 ## Recovery and reconciliation
 
 PostgreSQL stores idempotency reservations, command handoff state, normalized
@@ -228,10 +254,12 @@ write retry is forbidden.
 
 ## Metrics, logs, and audit
 
-`/metrics` uses a private Prometheus registry. It reports bounded account
-read/write readiness, command outcomes, uncertain work and reconciliation age,
-stream gaps/resync/evictions, Catalog age/version, PostgreSQL latency and safe
-error class, in-flight commands, and graceful shutdown outcomes.
+`/metrics` uses a private Prometheus registry. In addition to bounded account
+read/write readiness, commands, reconciliation, Catalog, PostgreSQL, and
+shutdown metrics, it reports venue-probe state/latency/failures, market-feed
+state/reconnects/gaps/resnapshots, field age/coverage, hot-subscription counts,
+and REST outcomes by venue and operation. Connectivity probes are independent
+of market-feed health and field freshness.
 
 Labels contain only fixed venue/product/environment, operation, outcome, and
 safe error-class vocabularies. Account IDs, instrument IDs, idempotency keys,

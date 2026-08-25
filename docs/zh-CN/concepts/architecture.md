@@ -96,8 +96,14 @@ gateway 刻意做厚，产品服务刻意做薄。任何不止一个产品会需
 产品服务只负责自己那些产品的决策——命令账本、预览、预留，以及其界面所需的
 projection。两个产品可以共用一个服务和这一整套机器：手动交易与资金费套利都住在
 `services/trading` 里，它们的差别在于端点、以及封签意图的形状，而不是把账本再抄
-一份。Trading 持有 Gateway 资金市场投影的本地副本，并负责策略相关计算；历史序列
+一份。Trading 持有 Gateway 衍生品事实投影的本地副本，并负责策略相关计算；历史序列
 仍按需读取，可执行套利预览则刻意绕过投影，即时读取两条腿的 BBO。
+市场能力矩阵是生产运行配置而不是说明文档：每个 dataset 的 transport、原生
+market family 边界、cadence 与 rate-limit operation 都由它选择。每个
+`venue + environment + native market family` 只有一个 feed owner；route profile
+只是该 owner 的输出投影，热点订单簿、BBO 与 K 线 topic 也共用该 owner 的一个
+原生 socket。Feed owner 将字段级 `DerivativePatch` 写入同一个内存事实仓库，
+资费看板、Trader 标记价、仓位 PnL 与套利投影都读取这份事实。
 当一个产品服务长出了第二个产品也会需要的能力，这就是把它下沉进 gateway 的
 信号，而不是复制一份的信号。
 

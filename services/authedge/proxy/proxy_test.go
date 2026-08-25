@@ -264,12 +264,8 @@ func TestAccountRoutesSplitByPath(t *testing.T) {
 func TestGatewayLifecycleRewritesOntoInternalPlane(t *testing.T) {
 	for _, testCase := range []struct{ method, browser, upstream string }{
 		{http.MethodPost, "/api/v1/accounts", "/internal/v1/accounts"},
-		{http.MethodPatch, "/api/v1/accounts/acct-1", "/internal/v1/accounts/acct-1"},
 		{http.MethodDelete, "/api/v1/accounts/acct-1", "/internal/v1/accounts/acct-1"},
-		{http.MethodPost, "/api/v1/accounts/acct-1/validate", "/internal/v1/accounts/acct-1/validate"},
-		{http.MethodPost, "/api/v1/accounts/acct-1/rotate", "/internal/v1/accounts/acct-1/rotate"},
 		{http.MethodPost, "/api/v1/accounts/acct-1/disable", "/internal/v1/accounts/acct-1/disable"},
-		{http.MethodPost, "/api/v1/accounts/acct-1/drain", "/internal/v1/accounts/acct-1/drain"},
 	} {
 		t.Run(testCase.method+" "+testCase.browser, func(t *testing.T) {
 			h := newHarness(t, nil)
@@ -282,6 +278,29 @@ func TestGatewayLifecycleRewritesOntoInternalPlane(t *testing.T) {
 			}
 			if h.gateway.method != testCase.method {
 				t.Fatalf("upstream method = %q, want %q", h.gateway.method, testCase.method)
+			}
+		})
+	}
+}
+
+func TestRetiredGatewayLifecycleRoutesAreNotForwarded(t *testing.T) {
+	for _, testCase := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPatch, "/api/v1/accounts/acct-1"},
+		{http.MethodPost, "/api/v1/accounts/acct-1/validate"},
+		{http.MethodPost, "/api/v1/accounts/acct-1/rotate"},
+		{http.MethodPost, "/api/v1/accounts/acct-1/drain"},
+	} {
+		t.Run(testCase.method+" "+testCase.path, func(t *testing.T) {
+			h := newHarness(t, nil)
+			response := h.do(t, testCase.method, testCase.path, map[string]string{csrfHeader: "csrf"}, `{}`)
+			if response.StatusCode != http.StatusMethodNotAllowed && response.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want retired route refusal", response.StatusCode)
+			}
+			if h.gateway.path != "" {
+				t.Fatalf("retired route reached Gateway as %q", h.gateway.path)
 			}
 		})
 	}

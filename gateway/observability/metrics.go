@@ -359,39 +359,6 @@ func (metrics *Metrics) SetCatalogSnapshot(states []CatalogState, now time.Time)
 	}
 }
 
-// ObserveDerivativeFeed records the resident broad derivative-fact owner into
-// the shared market-feed metric family. Funding, mark, index and open interest
-// remain independently aged datasets; this lifecycle describes only the owner.
-func (metrics *Metrics) ObserveDerivativeFeed(venue, route, state string, lastSuccess time.Time, reconnects uint64) {
-	if metrics == nil {
-		return
-	}
-	venue = safeVenue(venue)
-	family := marketFamilyForRoute(route)
-	feed := "derivative_facts"
-	switch state {
-	case "live", "degraded", "unavailable":
-	default:
-		state = "unavailable"
-	}
-	for _, candidate := range []string{"live", "degraded", "unavailable"} {
-		value := float64(0)
-		if candidate == state {
-			value = 1
-		}
-		metrics.marketFeedState.WithLabelValues(venue, family, feed, candidate).Set(value)
-	}
-	age := float64(0)
-	if !lastSuccess.IsZero() {
-		age = time.Since(lastSuccess.UTC()).Seconds()
-		if age < 0 {
-			age = 0
-		}
-	}
-	metrics.marketFactAge.WithLabelValues(venue, family, "funding").Set(age)
-	metrics.observeMarketReconnects(venue, family, feed, reconnects)
-}
-
 func (metrics *Metrics) ObserveVenueProbe(snapshot connectivity.Snapshot) {
 	if metrics == nil {
 		return
@@ -448,7 +415,7 @@ func (metrics *Metrics) RecordMarketGap(venue, family, feed string, resnapshot b
 	}
 }
 
-func (metrics *Metrics) SetMarketFact(venue, family, dataset string, age time.Duration, coverage float64, hot int) {
+func (metrics *Metrics) SetMarketFact(venue, family, dataset string, age time.Duration, coverage float64) {
 	if metrics == nil {
 		return
 	}
@@ -461,12 +428,19 @@ func (metrics *Metrics) SetMarketFact(venue, family, dataset string, age time.Du
 	if coverage > 1 {
 		coverage = 1
 	}
+	labels := []string{safeVenue(venue), safeMarketFamily(family), safeMarketDataset(dataset)}
+	metrics.marketFactAge.WithLabelValues(labels...).Set(age.Seconds())
+	metrics.marketCoverage.WithLabelValues(labels...).Set(coverage)
+}
+
+func (metrics *Metrics) SetMarketHot(venue, family, dataset string, hot int) {
+	if metrics == nil {
+		return
+	}
 	if hot < 0 {
 		hot = 0
 	}
 	labels := []string{safeVenue(venue), safeMarketFamily(family), safeMarketDataset(dataset)}
-	metrics.marketFactAge.WithLabelValues(labels...).Set(age.Seconds())
-	metrics.marketCoverage.WithLabelValues(labels...).Set(coverage)
 	metrics.marketHot.WithLabelValues(labels...).Set(float64(hot))
 }
 
@@ -630,23 +604,6 @@ func safeVenue(value string) string {
 		"binance", "okx", "lighter", "hyperliquid", "bybit",
 		"bitget", "gate", "aster", "nado",
 	})
-}
-
-func marketFamilyForRoute(route string) string {
-	switch {
-	case strings.HasPrefix(route, "bybit."):
-		return "linear"
-	case strings.HasPrefix(route, "bitget.") && strings.Contains(route, ".usdc."):
-		return "usdc-futures"
-	case strings.HasPrefix(route, "bitget."):
-		return "usdt-futures"
-	case strings.HasPrefix(route, "okx."):
-		return "swap"
-	case strings.HasPrefix(route, "nado."):
-		return "usdt0-perpetual"
-	default:
-		return "perpetual"
-	}
 }
 
 func safeMarketFamily(value string) string {

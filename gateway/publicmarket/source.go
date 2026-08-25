@@ -194,8 +194,18 @@ type MarkPriceStream struct {
 	Subscription exchange.Subscription[exchange.MarkPriceEvent]
 }
 
+// DerivativeReferenceStream preserves rich native ticker fields for the
+// Gateway Feed Owner while retaining an immediate mark snapshot for the public
+// mark topic.
+type DerivativeReferenceStream struct {
+	Instrument   exchange.Instrument
+	Snapshot     exchange.DerivativeReferenceEvent
+	Subscription exchange.Subscription[exchange.DerivativeReferenceEvent]
+}
+
 type Source struct {
 	columns      []*column
+	sockets      map[markethub.OwnerKey]exchange.SpotWebSocket
 	interval     time.Duration
 	venueTimeout time.Duration
 	now          func() time.Time
@@ -206,6 +216,23 @@ type Source struct {
 	running   bool
 	runCancel context.CancelFunc
 	runDone   chan struct{}
+}
+
+// ResolveDerivativeInstrument implements exchange.DerivativeInstrumentResolver
+// from the resident catalog snapshot. It performs no venue I/O.
+func (source *Source) ResolveDerivativeInstrument(ctx context.Context, routeProfileID, nativeSymbol, nativeID string) (exchange.DerivativeFact, bool) {
+	snapshot, err := source.Snapshot(ctx)
+	if err != nil {
+		return exchange.DerivativeFact{}, false
+	}
+	instrument, ok := snapshot.MatchFundingEntry(routeProfileID, exchange.FundingBoardEntry{NativeSymbol: nativeSymbol, NativeID: nativeID})
+	if !ok {
+		return exchange.DerivativeFact{}, false
+	}
+	return exchange.DerivativeFact{
+		InstrumentID: string(instrument.Catalog.ID), RouteProfileID: routeProfileID,
+		Instrument: instrument.Canonical.Identity, Environment: exchange.EnvironmentLive,
+	}, true
 }
 
 // SetMarketHub switches composite market-data snapshots to the same resident
@@ -231,6 +258,35 @@ func (source *Source) SetRequestCoordinator(coordinator *ratelimit.MarketCoordin
 		current.requests = coordinator
 		current.mu.Unlock()
 	}
+}
+
+// SetCapabilities binds catalog refreshes to the same validated runtime matrix
+// used by broad and hot market owners. It must run before collection starts so
+// cadence and operation identity cannot change under a live feed.
+func (source *Source) SetCapabilities(registry *marketcapability.Registry) error {
+	if source == nil || registry == nil {
+		return ErrUnavailable
+	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	if source.running || source.closed {
+		return ErrUnavailable
+	}
+	interval := time.Duration(0)
+	for _, current := range source.columns {
+		capability, err := registry.Resolve(exchange.Venue(current.profile.Venue), nativeMarketFamily(current.profile), exchange.DatasetCatalog, false)
+		if err != nil || capability.Transport != exchange.TransportREST || capability.RateLimitOperation == "" {
+			return fmt.Errorf("catalog capability %s: %w", current.profile.ID, errors.Join(ErrUnavailable, err))
+		}
+		current.capability = capability
+		if capability.NominalCadence > 0 && (interval == 0 || capability.NominalCadence < interval) {
+			interval = capability.NominalCadence
+		}
+	}
+	if interval > 0 {
+		source.interval = interval
+	}
+	return nil
 }
 
 type CatalogRevision struct {
@@ -357,10 +413,11 @@ type column struct {
 	catalog   *catalog.Service
 	accountID domain.AccountID
 
-	mu        sync.Mutex
-	inFlight  chan struct{}
-	revisions CatalogRevisionStore
-	requests  *ratelimit.MarketCoordinator
+	mu         sync.Mutex
+	inFlight   chan struct{}
+	revisions  CatalogRevisionStore
+	requests   *ratelimit.MarketCoordinator
+	capability exchange.MarketCapability
 }
 
 type sourceOptions struct {
@@ -409,7 +466,14 @@ func newSource(factory Factory, trusted *routeprofile.Registry, options sourceOp
 	if len(columns) == 0 {
 		return nil, ErrUnavailable
 	}
-	return &Source{columns: columns, interval: options.interval, venueTimeout: options.venueTimeout, now: options.now}, nil
+	sockets := make(map[markethub.OwnerKey]exchange.SpotWebSocket)
+	for _, current := range columns {
+		key := markethub.OwnerKey{Venue: exchange.Venue(current.profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: nativeMarketFamily(current.profile)}
+		if sockets[key] == nil {
+			sockets[key] = current.connector.WebSocket()
+		}
+	}
+	return &Source{columns: columns, sockets: sockets, interval: options.interval, venueTimeout: options.venueTimeout, now: options.now}, nil
 }
 
 // Venues reports the profiles this source can serve without performing I/O.
@@ -669,7 +733,7 @@ func (source *Source) WatchOrderBook(ctx context.Context, instrumentID string, l
 	if err != nil || limit <= 0 {
 		return OrderBookStream{}, ErrUnavailable
 	}
-	socket := current.connector.WebSocket()
+	socket := source.socketFor(current.profile)
 	if socket == nil {
 		return OrderBookStream{}, ErrUnavailable
 	}
@@ -695,7 +759,7 @@ func (source *Source) WatchCandles(ctx context.Context, instrumentID, interval s
 	if err != nil {
 		return CandleStream{}, err
 	}
-	socket := current.connector.WebSocket()
+	socket := source.socketFor(current.profile)
 	if socket == nil {
 		return CandleStream{}, ErrUnavailable
 	}
@@ -720,7 +784,7 @@ func (source *Source) WatchBBO(ctx context.Context, instrumentID string) (BBOStr
 	if err != nil {
 		return BBOStream{}, err
 	}
-	socket := current.connector.WebSocket()
+	socket := source.socketFor(current.profile)
 	if socket == nil {
 		return BBOStream{}, ErrUnavailable
 	}
@@ -743,7 +807,7 @@ func (source *Source) WatchMarkPrice(ctx context.Context, instrumentID string) (
 	if err != nil {
 		return MarkPriceStream{}, err
 	}
-	socket := current.connector.WebSocket()
+	socket := source.socketFor(current.profile)
 	perpSocket, ok := socket.(exchange.PerpWebSocket)
 	if !ok || perpSocket == nil {
 		return MarkPriceStream{}, ErrUnavailable
@@ -763,6 +827,35 @@ func (source *Source) WatchMarkPrice(ctx context.Context, instrumentID string) (
 	return MarkPriceStream{Instrument: instrument, Snapshot: mark, Subscription: subscription}, nil
 }
 
+// WatchDerivativeReference uses an adapter's additive rich-reference
+// capability. Bybit and Bitget expose one ticker containing all derivative
+// fields; OKX combines its four native reference channels behind this one
+// logical subscription. Its initial value deliberately comes from the resident
+// FactStore, not another REST request; this method owns only the live transport.
+func (source *Source) WatchDerivativeReference(ctx context.Context, instrumentID string) (DerivativeReferenceStream, error) {
+	current, instrument, err := source.resolvePublicID(ctx, instrumentID)
+	if err != nil {
+		return DerivativeReferenceStream{}, err
+	}
+	socket := source.socketFor(current.profile)
+	referenceSocket, ok := socket.(exchange.DerivativeReferenceWebSocket)
+	if !ok || referenceSocket == nil {
+		return DerivativeReferenceStream{}, ErrUnavailable
+	}
+	subscription, err := referenceSocket.WatchDerivativeReference(ctx, exchange.WatchRequest{
+		Instrument: instrument,
+		Options:    exchange.WatchOptions{Buffer: 64},
+	})
+	if err != nil || subscription == nil {
+		return DerivativeReferenceStream{}, fmt.Errorf("watch public derivative reference: %w", errors.Join(ErrUnavailable, err))
+	}
+	return DerivativeReferenceStream{
+		Instrument:   instrument,
+		Snapshot:     exchange.DerivativeReferenceEvent{Instrument: instrument},
+		Subscription: subscription,
+	}, nil
+}
+
 func (source *Source) resolvePublicID(ctx context.Context, instrumentID string) (*column, exchange.Instrument, error) {
 	if source == nil || ctx == nil || ctx.Err() != nil || source.isClosed() || strings.TrimSpace(instrumentID) == "" {
 		return nil, exchange.Instrument{}, ErrUnavailable
@@ -780,6 +873,17 @@ func (source *Source) resolvePublicID(ctx context.Context, instrumentID string) 
 		}
 	}
 	return nil, exchange.Instrument{}, ErrUnavailable
+}
+
+func (source *Source) socketFor(profile routeprofile.Profile) exchange.SpotWebSocket {
+	if source == nil {
+		return nil
+	}
+	key := markethub.OwnerKey{Venue: exchange.Venue(profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: nativeMarketFamily(profile)}
+	source.mu.Lock()
+	socket := source.sockets[key]
+	source.mu.Unlock()
+	return socket
 }
 
 func (source *Source) resolve(ctx context.Context, query Query) (*column, exchange.Instrument, error) {
@@ -833,7 +937,11 @@ func (current *column) refresh(ctx context.Context) error {
 			var value any
 			var err error
 			if current.requests != nil {
-				value, err = current.requests.Do(ctx, exchange.Venue(current.profile.Venue), "instruments", current.profile.ID, load)
+				operation := current.capability.RateLimitOperation
+				if operation == "" {
+					operation = "instruments"
+				}
+				value, err = current.requests.Do(ctx, exchange.Venue(current.profile.Venue), operation, current.profile.ID, load)
 			} else {
 				value, err = load(ctx)
 			}

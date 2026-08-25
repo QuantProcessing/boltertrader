@@ -23,7 +23,11 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 		LoadedAt: time.Unix(100, 0), Generation: 7,
 	}}, time.Unix(130, 0))
 	metrics.SetReconciliation(2, 45*time.Second)
-	metrics.ObserveDerivativeFeed("binance", "binance.perp.usdt.v1", "live", time.Unix(125, 0), 2)
+	metrics.ObserveMarketFeed("binance", "perpetual", "derivative_facts", "live", 2)
+	metrics.RecordMarketGap("binance", "perpetual", "derivative_facts", true)
+	metrics.SetMarketFact("binance", "perpetual", "funding", 5*time.Second, 0.75)
+	metrics.SetMarketHot("binance", "perpetual", "mark", 3)
+	metrics.RecordMarketREST("binance", "funding_rates", "success")
 	metrics.ObserveVenueProbe(connectivity.Snapshot{Venue: exchange.VenueBinance, State: connectivity.StateOnline, EWMALatency: 25 * time.Millisecond})
 	metrics.RecordStream(StreamGap)
 	metrics.RecordStream(StreamResync)
@@ -52,7 +56,12 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 		"gateway_venue_probe_consecutive_failures",
 		"gateway_market_feed_state",
 		"gateway_market_feed_reconnects_total",
+		"gateway_market_feed_gaps_total",
+		"gateway_market_feed_resnapshots_total",
 		"gateway_market_fact_age_seconds",
+		"gateway_market_fact_coverage_ratio",
+		"gateway_market_hot_subscriptions",
+		"gateway_market_rest_requests_total",
 		"gateway_postgres_operation_duration_seconds",
 		"gateway_in_flight_command_count",
 		"gateway_shutdown_total",
@@ -69,7 +78,7 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 	}
 	if !strings.Contains(body, `gateway_market_feed_state{feed="derivative_facts",market_family="perpetual",state="live",venue="binance"} 1`) ||
 		!strings.Contains(body, `gateway_market_feed_reconnects_total{feed="derivative_facts",market_family="perpetual",venue="binance"} 2`) {
-		t.Fatalf("funding-market lifecycle metrics missing:\n%s", body)
+		t.Fatalf("derivative owner lifecycle metrics missing:\n%s", body)
 	}
 }
 
@@ -83,7 +92,10 @@ func TestMetricsCollapseUntrustedDimensionsAndNeverExposeIdentifiers(t *testing.
 		Venue: canary, Product: canary, Environment: canary,
 		ReadReady: true, WriteReady: true,
 	}})
-	metrics.ObserveDerivativeFeed(canary, canary, canary, time.Now(), 100)
+	metrics.ObserveMarketFeed(canary, canary, canary, canary, 100)
+	metrics.SetMarketFact(canary, canary, canary, time.Second, 1)
+	metrics.SetMarketHot(canary, canary, canary, 1)
+	metrics.RecordMarketREST(canary, canary, canary)
 
 	response := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))

@@ -57,6 +57,13 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 	if backend.startReferenceCall != 1 {
 		t.Fatalf("reference starts = %d, want 1", backend.startReferenceCall)
 	}
+	derivative, err := socket.WatchDerivativeReference(context.Background(), exchange.WatchRequest{Instrument: instrument})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend.startReferenceCall != 1 {
+		t.Fatalf("reference starts after rich subscriber = %d, want 1", backend.startReferenceCall)
+	}
 
 	at := time.UnixMilli(1_700_000_000_000).UTC()
 	backend.referenceCallbacks.Event(perpReferenceEvent{
@@ -93,6 +100,18 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 	default:
 	}
 
+	backend.referenceCallbacks.Event(perpReferenceEvent{
+		DerivativeValid: true,
+		Derivative: exchange.DerivativeReferenceEvent{
+			Instrument:      instrument,
+			IndexPrice:      exchange.OptionalDecimal{Value: decimal.RequireFromString("2999.75"), Valid: true},
+			IndexObservedAt: at,
+		},
+	})
+	if got := <-derivative.Events(); !got.IndexPrice.Valid || !got.IndexPrice.Value.Equal(decimal.RequireFromString("2999.75")) {
+		t.Fatalf("derivative reference = %+v", got)
+	}
+
 	if err := mark.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +119,12 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 		t.Fatal("closing mark stopped funding's shared native stream")
 	}
 	if err := funding.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if backend.stopReferenceCall != 0 {
+		t.Fatal("closing funding stopped derivative's shared native stream")
+	}
+	if err := derivative.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if backend.stopReferenceCall != 1 {

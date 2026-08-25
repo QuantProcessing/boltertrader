@@ -7,16 +7,16 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
 
-type binanceFundingBoardLoader struct {
+type binanceDerivativeSnapshotLoader struct {
 	settlement string
 	settings   Settings
 }
 
-func NewBinanceFundingBoardLoader(settlement string, settings Settings) exchange.FundingBoardLoader {
-	return binanceFundingBoardLoader{settlement: settlement, settings: settings}
+func NewBinanceDerivativeSnapshotLoader(settlement string, settings Settings) DerivativeSnapshotLoader {
+	return binanceDerivativeSnapshotLoader{settlement: settlement, settings: settings}
 }
 
-// LoadFundingBoard reads Binance's premiumIndex surface plus its funding clock.
+// LoadDerivativeSnapshot reads Binance's premiumIndex surface plus its funding clock.
 //
 // Two calls rather than one because Binance splits the answer: premiumIndex
 // carries the rate and the next settlement, fundingInfo carries the interval,
@@ -28,12 +28,12 @@ func NewBinanceFundingBoardLoader(settlement string, settings Settings) exchange
 // Open interest is absent by construction: Binance only serves it one symbol at
 // a time, and paying several hundred requests for one column is not a trade a
 // board should make.
-func (loader binanceFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader binanceDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	sdk := newBinancePerpPublicSDK(loader.settings)
 
 	rows, err := sdk.GetAllFundingRates(ctx)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, binancePerpNormalizeError(fundingBoardOperation, err)
+		return DerivativeSnapshot{}, binancePerpNormalizeError(derivativeSnapshotOperation, err)
 	}
 	intervals := map[string]int64{}
 	if info, err := sdk.GetFundingInfo(ctx); err == nil {
@@ -44,7 +44,7 @@ func (loader binanceFundingBoardLoader) LoadFundingBoard(ctx context.Context, sc
 		}
 	}
 
-	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
+	entries := make([]DerivativeSnapshotEntry, 0, len(rows))
 	for _, row := range rows {
 		// premiumIndex answers for delivery futures too, and those carry a
 		// quarterly expiry in the symbol. Splitting on the quote asset drops
@@ -57,7 +57,7 @@ func (loader binanceFundingBoardLoader) LoadFundingBoard(ctx context.Context, sc
 		if err != nil {
 			continue
 		}
-		entry := exchange.FundingBoardEntry{
+		entry := DerivativeSnapshotEntry{
 			Symbol:       base + "-" + quote,
 			NativeSymbol: row.Symbol,
 			BaseAsset:    base,
@@ -74,7 +74,7 @@ func (loader binanceFundingBoardLoader) LoadFundingBoard(ctx context.Context, sc
 		}
 		entries = append(entries, entry)
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 // binanceSplitPerpSymbol recovers base and quote from a concatenated symbol.

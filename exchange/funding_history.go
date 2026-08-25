@@ -11,7 +11,7 @@ import (
 A funding history is one perpetual's settled funding rates over a window, read
 credential-free.
 
-It is to `FundingBoardSnapshot` what a chart is to a table: the board answers
+It is to the resident derivative-fact projection what a chart is to a table: the projection answers
 "what is every instrument on this venue paying right now" in one call, and this
 answers "what has this one instrument been paying" in one call per instrument.
 That asymmetry belongs to the venues, not to us — none of the ten publishes a

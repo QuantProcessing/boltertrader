@@ -39,7 +39,7 @@ type wantEntry struct {
 	openInterestNotional string // "" = absent; quote-stablecoin notional
 }
 
-// TestFundingBoardLoaderPerVenueShape pins each venue's field mapping and,
+// TestDerivativeSnapshotLoaderPerVenueShape pins each venue's field mapping and,
 // more importantly, each venue's degradation.
 //
 // The board is one table built from nine differently-shaped venue replies, and the
@@ -55,7 +55,7 @@ type wantEntry struct {
 // a Lighter row Lighter is merely relaying from another venue, a delisted Gate
 // contract — because a board silently gaining a phantom instrument is worse
 // than one visibly missing a real one.
-func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
+func TestDerivativeSnapshotLoaderPerVenueShape(t *testing.T) {
 	cases := []struct {
 		name string
 		// publishesOpenInterest states the venue's bulk-call contract. Only
@@ -63,12 +63,12 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		// falls back to rate spread precisely because of that; asserting it per
 		// venue is what keeps the fallback honest.
 		publishesOpenInterest bool
-		build                 func(*testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope)
+		build                 func(*testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope)
 		want                  []wantEntry
 	}{
 		{
 			name: "aster uses its v3 all-market premium index and filters settlement",
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/fapi/v3/premiumIndex": `[
 						{"symbol":"BTCUSDT","markPrice":"64010.25","indexPrice":"64008.75","lastFundingRate":"0.00012","nextFundingTime":1720000000000},
@@ -80,7 +80,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					]`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewAsterFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueAster, "USDT")
+				return NewAsterDerivativeSnapshotLoader("USDT", settings), derivativeSnapshotScope(exchange.VenueAster, "USDT")
 			},
 			want: []wantEntry{{
 				symbol: "BTC-USDT", nativeSymbol: "BTCUSDT", base: "BTC", quote: "USDT",
@@ -90,7 +90,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		},
 		{
 			name: "binance splits a concatenated symbol and takes its interval from fundingInfo",
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/fapi/v1/premiumIndex": `[
 						{"symbol":"BTCUSDT","markPrice":"64000.10","indexPrice":"63999.50","lastFundingRate":"0.00010000","nextFundingTime":1720000000000},
@@ -100,7 +100,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					"/fapi/v1/fundingInfo": `[{"symbol":"BTCUSDT","fundingIntervalHours":4}]`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewBinanceFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueBinance, "USDT")
+				return NewBinanceDerivativeSnapshotLoader("USDT", settings), derivativeSnapshotScope(exchange.VenueBinance, "USDT")
 			},
 			// ETHUSDC settles in the wrong asset for this loader and the
 			// quarterly has no quote suffix to split on; both are dropped.
@@ -113,7 +113,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		{
 			name:                  "okx keeps the native instId and derives its interval from two settlement stamps",
 			publishesOpenInterest: true,
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/api/v5/public/funding-rate": `{"code":"0","msg":"","data":[
 						{"instType":"SWAP","instId":"BTC-USDT-SWAP","fundingRate":"0.00012","fundingTime":"1720000000000","nextFundingTime":"1720028800000"},
@@ -131,7 +131,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					]}`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewOKXFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueOKX, "USDT")
+				return NewOKXDerivativeSnapshotLoader("USDT", settings), derivativeSnapshotScope(exchange.VenueOKX, "USDT")
 			},
 			// The blank-rate row is dropped rather than read as zero: OKX leaves
 			// the field empty when it has no rate to quote, and a 0.0000% cell
@@ -146,7 +146,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		{
 			name:                  "bybit answers with open interest and filters by settlement asset",
 			publishesOpenInterest: true,
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/v5/market/tickers": `{"retCode":0,"retMsg":"OK","time":1719999999000,"result":{"category":"linear","list":[
 						{"symbol":"BTCUSDT","markPrice":"64000.5","indexPrice":"63999.1","openInterest":"12345.67","fundingRate":"0.0001","nextFundingTime":"1720000000000","fundingIntervalHour":"8"},
@@ -154,7 +154,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					]}}`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewBybitFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueBybit, "USDT")
+				return NewBybitDerivativeSnapshotLoader("USDT", settings), derivativeSnapshotScope(exchange.VenueBybit, "USDT")
 			},
 			// Bybit serves every linear contract from one category, so the
 			// settlement filter here is the only thing keeping a USDC column's
@@ -168,7 +168,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		},
 		{
 			name: "bitget falls back to the instrument interval and publishes no open interest",
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/api/v3/market/tickers": `{"code":"00000","msg":"success","requestTime":1719999999000,"data":[
 						{"category":"USDT-FUTURES","symbol":"BTCUSDT","markPrice":"64000","indexPrice":"63999","fundingRate":"0.00015","fundingRateInterval":"","nextFundingTime":"1720000000000"}
@@ -178,7 +178,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					]}`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewBitgetFundingBoardLoader("USDT-FUTURES", settings), fundingBoardScope(exchange.VenueBitget, "USDT")
+				return NewBitgetDerivativeSnapshotLoader("USDT-FUTURES", settings), derivativeSnapshotScope(exchange.VenueBitget, "USDT")
 			},
 			// The ticker's own interval is blank here, which is what forces the
 			// instruments call to be the source. That second call is best-effort
@@ -192,7 +192,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		{
 			name:                  "gate converts a seconds interval to hours and skips a delisted contract's clock",
 			publishesOpenInterest: true,
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/futures/usdt/tickers": `[
 						{"contract":"BTC_USDT","mark_price":"64000","index_price":"63999","funding_rate":"0.0001","total_size":"98765"},
@@ -204,7 +204,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					]`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewGateFundingBoardLoader(settings), fundingBoardScope(exchange.VenueGate, "USDT")
+				return NewGateDerivativeSnapshotLoader(settings), derivativeSnapshotScope(exchange.VenueGate, "USDT")
 			},
 			want: []wantEntry{
 				{
@@ -229,7 +229,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		{
 			name:                  "hyperliquid states the hourly interval the venue never sends",
 			publishesOpenInterest: true,
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 					var payload map[string]any
 					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
@@ -259,7 +259,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 				}))
 				t.Cleanup(server.Close)
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewHyperliquidFundingBoardLoader(settings), fundingBoardScope(exchange.VenueHyperliquid, "USDC")
+				return NewHyperliquidDerivativeSnapshotLoader(settings), derivativeSnapshotScope(exchange.VenueHyperliquid, "USDC")
 			},
 			// Hyperliquid quotes an hourly rate and publishes no interval field,
 			// so the 1 is asserted here rather than inferred. Comparing this
@@ -277,7 +277,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		{
 			name:                  "lighter drops relayed rates and enriches its own market facts",
 			publishesOpenInterest: true,
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				server := fundingBoardFixtureServer(t, map[string]string{
 					"/api/v1/funding-rates": `{"code":200,"message":"","funding_rates":[
 						{"market_id":1,"exchange":"lighter","symbol":"BTC","rate":0.0001},
@@ -288,7 +288,7 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					]}`,
 				})
 				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
-				return NewLighterFundingBoardLoader(settings), fundingBoardScope(exchange.VenueLighter, "USDC")
+				return NewLighterDerivativeSnapshotLoader(settings), derivativeSnapshotScope(exchange.VenueLighter, "USDC")
 			},
 			// Lighter's endpoint is a comparison feed: it returns other venues'
 			// rates alongside its own. Filing a Binance rate in the Lighter
@@ -303,9 +303,9 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 		{
 			name:                  "nado unscales an x18 rate quoted over twenty-four hours",
 			publishesOpenInterest: true,
-			build: func(t *testing.T) (exchange.FundingBoardLoader, exchange.CatalogScope) {
+			build: func(t *testing.T) (DerivativeSnapshotLoader, exchange.CatalogScope) {
 				settings := nadoCatalogTestSettings(nadoFundingBoardRouter(t), exchange.ProductPerp)
-				return NewNadoFundingBoardLoader(settings), settings.CatalogScope
+				return NewNadoDerivativeSnapshotLoader(settings), settings.CatalogScope
 			},
 			// 10^14 unscaled by 10^18 is 0.0001, over a 24-hour period rather
 			// than the eight hours most venues quote. Both conversions are
@@ -324,9 +324,9 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			loader, scope := testCase.build(t)
-			snapshot, err := loader.LoadFundingBoard(context.Background(), scope)
+			snapshot, err := loader.LoadDerivativeSnapshot(context.Background(), scope)
 			if err != nil {
-				t.Fatalf("LoadFundingBoard: %v", err)
+				t.Fatalf("LoadDerivativeSnapshot: %v", err)
 			}
 
 			// The connector validates every snapshot before it reaches a board,
@@ -392,7 +392,7 @@ func TestBybitLinearFundingBoardSharesOneBulkTickerAcrossSettlements(t *testing.
 	})
 
 	settlements := []string{"USDT", "USDC"}
-	snapshots := make([]exchange.FundingBoardSnapshot, len(settlements))
+	snapshots := make([]DerivativeSnapshot, len(settlements))
 	errors := make([]error, len(settlements))
 	start := make(chan struct{})
 	var workers sync.WaitGroup
@@ -401,8 +401,8 @@ func TestBybitLinearFundingBoardSharesOneBulkTickerAcrossSettlements(t *testing.
 		go func(index int, settlement string) {
 			defer workers.Done()
 			<-start
-			snapshots[index], errors[index] = NewBybitFundingBoardLoader(settlement, settings).LoadFundingBoard(
-				t.Context(), fundingBoardScope(exchange.VenueBybit, settlement),
+			snapshots[index], errors[index] = NewBybitDerivativeSnapshotLoader(settlement, settings).LoadDerivativeSnapshot(
+				t.Context(), derivativeSnapshotScope(exchange.VenueBybit, settlement),
 			)
 		}(index, settlement)
 	}
@@ -425,7 +425,7 @@ func TestBybitLinearFundingBoardSharesOneBulkTickerAcrossSettlements(t *testing.
 	}
 }
 
-func assertFundingEntry(t *testing.T, got exchange.FundingBoardEntry, want wantEntry) {
+func assertFundingEntry(t *testing.T, got DerivativeSnapshotEntry, want wantEntry) {
 	t.Helper()
 
 	if got.Symbol != want.symbol {
@@ -486,7 +486,7 @@ func assertFundingOptional(t *testing.T, symbol, field string, got exchange.Opti
 	}
 }
 
-func fundingBoardScope(venue exchange.Venue, settlement string) exchange.CatalogScope {
+func derivativeSnapshotScope(venue exchange.Venue, settlement string) exchange.CatalogScope {
 	return exchange.CatalogScope{
 		Venue:       venue,
 		Environment: exchange.EnvironmentLive,

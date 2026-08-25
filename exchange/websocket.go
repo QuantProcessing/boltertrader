@@ -144,6 +144,36 @@ type FundingRateEvent struct {
 	NextAt      time.Time       `json:"next_at,omitempty"`
 }
 
+// DerivativeReferenceEvent is the optional rich reference-price stream used
+// by the Gateway Feed Owner. Some venues publish mark, index, funding and open
+// interest in one native ticker; preserving that shape prevents the common
+// WatchMarkPrice facade from throwing away fields needed by other projections.
+// Every value remains optional because other venues split the fields across
+// several native topics.
+type DerivativeReferenceEvent struct {
+	Instrument             Instrument      `json:"instrument"`
+	MarkPrice              OptionalDecimal `json:"mark_price"`
+	IndexPrice             OptionalDecimal `json:"index_price"`
+	FundingRate            OptionalDecimal `json:"funding_rate"`
+	FundingIntervalHours   OptionalInt     `json:"funding_interval_hours"`
+	NextFundingTime        time.Time       `json:"next_funding_time,omitempty"`
+	OpenInterest           OptionalDecimal `json:"open_interest"`
+	OpenInterestNotional   OptionalDecimal `json:"open_interest_notional"`
+	OpenInterestAsset      string          `json:"open_interest_asset,omitempty"`
+	FundingObservedAt      time.Time       `json:"funding_observed_at,omitempty"`
+	MarkObservedAt         time.Time       `json:"mark_observed_at,omitempty"`
+	IndexObservedAt        time.Time       `json:"index_observed_at,omitempty"`
+	OpenInterestObservedAt time.Time       `json:"open_interest_observed_at,omitempty"`
+}
+
+// DerivativeReferenceWebSocket is an additive capability. It intentionally is
+// not embedded in PerpWebSocket, so existing adapters and third-party callers
+// remain source compatible while richer adapters can expose their native
+// ticker without opening a second connection.
+type DerivativeReferenceWebSocket interface {
+	WatchDerivativeReference(context.Context, WatchRequest) (Subscription[DerivativeReferenceEvent], error)
+}
+
 type SpotWebSocket interface {
 	WatchOrderBook(context.Context, WatchRequest) (Subscription[BookEvent], error)
 	WatchBBO(context.Context, WatchRequest) (Subscription[BBOEvent], error)

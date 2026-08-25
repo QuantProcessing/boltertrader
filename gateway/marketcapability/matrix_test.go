@@ -50,8 +50,8 @@ func TestRuntimeRegistryConsumesEveryCapabilityOwnerAndDataset(t *testing.T) {
 		if resolveErr != nil {
 			t.Fatalf("unconsumed capability %#v: %v", capability, resolveErr)
 		}
-		if resolved.Venue != capability.Venue || resolved.NativeMarketFamily != capability.NativeMarketFamily || resolved.Dataset != capability.Dataset {
-			t.Fatalf("capability resolved to a different native owner: got %#v want %#v", resolved, capability)
+		if resolved != capability {
+			t.Fatalf("capability is shadowed by another runtime strategy: got %#v want %#v", resolved, capability)
 		}
 	}
 }

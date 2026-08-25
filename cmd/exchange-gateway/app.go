@@ -167,6 +167,9 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		if marketErr != nil {
 			return fmt.Errorf("public market source setup failed")
 		}
+		if marketErr = publicMarkets.SetCapabilities(marketCapabilities); marketErr != nil {
+			return fmt.Errorf("public market capabilities failed: %w", marketErr)
+		}
 		publicMarkets.SetRequestCoordinator(marketRequests)
 		go func() { _ = publicMarkets.Run(ctx) }()
 		freshBBO, marketErr = markethub.NewBBOCache(publicMarkets, time.Now)
@@ -194,11 +197,10 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	if !validationProfile {
 		boardFactory, boardErr := fundingboard.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
 		if boardErr == nil {
+			boardFactory.SetMarketRequestCoordinator(marketRequests)
 			marketFacts = markethub.NewFactStore(metrics, time.Now)
+			go marketFacts.RunMetrics(ctx, time.Second)
 			derivativeOwners, boardErr = marketowner.NewDerivativeOwners(boardFactory, routeprofile.DefaultRegistry(), marketCapabilities, publicMarkets, marketFacts, metrics)
-			if derivativeOwners != nil {
-				derivativeOwners.SetRequestCoordinator(marketRequests)
-			}
 		}
 		if boardErr == nil {
 			fundingBoard, boardErr = fundingboard.NewProjection(marketFacts, boardFactory, routeprofile.DefaultRegistry())
@@ -222,12 +224,11 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		}()
 	}
 	if !validationProfile {
+		boardMarks := marketowner.BoardMarks{Facts: marketFacts, Markets: publicMarkets, Capabilities: marketCapabilities}
 		marketHub, err = markethub.New(markethub.Options{
 			Owner: marketowner.Owner{
 				Source: publicMarkets, Capabilities: marketCapabilities,
-				BoardMarks: marketowner.BoardMarks{
-					Facts: marketFacts, Markets: publicMarkets, Capabilities: marketCapabilities,
-				},
+				BoardMarks: boardMarks,
 			},
 			IdleGrace: 30 * time.Second,
 			Observer:  metrics,
@@ -236,7 +237,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("market Hub setup failed")
 		}
 		publicMarkets.SetMarketHub(marketHub)
-		hotActivator = marketowner.NewHotActivator(marketHub)
+		hotActivator = marketowner.NewHotActivator(marketHub, boardMarks, derivativeOwners, metrics)
 		hotsets, err = hotset.New(hotset.Options{
 			Activator: hotActivator,
 			Capacity: func(owner markethub.OwnerKey) int {

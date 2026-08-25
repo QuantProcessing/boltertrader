@@ -11,7 +11,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
 	"github.com/QuantProcessing/boltertrader/gateway/hotset"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
-	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/QuantProcessing/boltertrader/gateway/realtimewire"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -161,7 +160,10 @@ func readInternalControls(ctx context.Context, connection *websocket.Conn, targe
 }
 
 func (handler *InternalHandler) runInternalTopic(ctx context.Context, subscriptionID string, request realtimewire.TopicRequest, emit func(realtimewire.Message) bool) error {
-	if handler.marketHub != nil && handler.marketKeys != nil && isSharedMarketTopic(request.Topic) {
+	if isSharedMarketTopic(request.Topic) {
+		if handler.marketHub == nil || handler.marketKeys == nil {
+			return fmt.Errorf("shared market Hub unavailable")
+		}
 		return handler.runSharedMarketTopic(ctx, subscriptionID, request, emit)
 	}
 	sequence, generation := uint64(0), uint64(1)
@@ -170,121 +172,6 @@ func (handler *InternalHandler) runInternalTopic(ctx context.Context, subscripti
 		return emit(realtimewire.Message{Type: kind, SubscriptionID: subscriptionID, Topic: request.Topic, Generation: generation, Sequence: sequence, SourceSequence: sourceSequence, ObservedAt: observedAt.UTC(), Data: realtimewire.EncodeData(data)})
 	}
 	switch request.Topic {
-	case realtimewire.TopicOrderBook:
-		stream, err := handler.publicMarkets.WatchOrderBook(ctx, request.InstrumentID, request.Depth)
-		if err != nil {
-			return err
-		}
-		defer stream.Subscription.Close()
-		if !send(realtimewire.MessageSnapshot, observedTime(stream.Snapshot.Time), stream.Snapshot.Sequence, map[string]any{"bids": nonNil(stream.Snapshot.Bids), "asks": nonNil(stream.Snapshot.Asks)}) {
-			return nil
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case event, open := <-stream.Subscription.Events():
-				if !open {
-					return nil
-				}
-				if event.Resync {
-					return fmt.Errorf("order-book gap")
-				}
-				if !send(realtimewire.MessageDelta, observedTime(event.Time), event.Sequence, map[string]any{"kind": event.Kind, "previous": event.Previous, "bids": nonNil(event.Bids), "asks": nonNil(event.Asks)}) {
-					return nil
-				}
-			case <-stream.Subscription.Errors():
-				return fmt.Errorf("order-book stream error")
-			}
-		}
-	case realtimewire.TopicBBO:
-		source, ok := handler.publicMarkets.(interface {
-			WatchBBO(context.Context, string) (publicmarket.BBOStream, error)
-		})
-		if !ok {
-			return fmt.Errorf("BBO stream unsupported")
-		}
-		stream, err := source.WatchBBO(ctx, request.InstrumentID)
-		if err != nil {
-			return err
-		}
-		defer stream.Subscription.Close()
-		if publisher, ok := handler.freshBBO.(interface {
-			Publish(markethub.BBOQuote) error
-		}); ok {
-			_ = publisher.Publish(markethub.BBOQuote{InstrumentID: request.InstrumentID, Bid: stream.Snapshot.Bid, Ask: stream.Snapshot.Ask, ObservedAt: observedTime(stream.Snapshot.Time), SourceSequence: stream.Snapshot.SourceSequence})
-		}
-		if !send(realtimewire.MessageSnapshot, observedTime(stream.Snapshot.Time), stream.Snapshot.SourceSequence, map[string]any{"bid": stream.Snapshot.Bid, "ask": stream.Snapshot.Ask}) {
-			return nil
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case event, open := <-stream.Subscription.Events():
-				if !open {
-					return nil
-				}
-				if publisher, ok := handler.freshBBO.(interface {
-					Publish(markethub.BBOQuote) error
-				}); ok {
-					_ = publisher.Publish(markethub.BBOQuote{InstrumentID: request.InstrumentID, Bid: event.Bid, Ask: event.Ask, ObservedAt: observedTime(event.Time), SourceSequence: event.SourceSequence})
-				}
-				if !send(realtimewire.MessageDelta, observedTime(event.Time), event.SourceSequence, map[string]any{"bid": event.Bid, "ask": event.Ask}) {
-					return nil
-				}
-			case <-stream.Subscription.Errors():
-				return fmt.Errorf("BBO stream error")
-			}
-		}
-	case realtimewire.TopicCandles:
-		stream, err := handler.publicMarkets.WatchCandles(ctx, request.InstrumentID, request.Interval)
-		if err != nil {
-			return err
-		}
-		defer stream.Subscription.Close()
-		if !send(realtimewire.MessageSnapshot, time.Now().UTC(), "", map[string]any{"interval": request.Interval, "candles": stream.Snapshot.Candles}) {
-			return nil
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case event, open := <-stream.Subscription.Events():
-				if !open {
-					return nil
-				}
-				if !send(realtimewire.MessageDelta, observedTime(event.Candle.CloseTime), "", event) {
-					return nil
-				}
-			case <-stream.Subscription.Errors():
-				return fmt.Errorf("candle stream error")
-			}
-		}
-	case realtimewire.TopicMarkPrice:
-		stream, err := handler.publicMarkets.WatchMarkPrice(ctx, request.InstrumentID)
-		if err != nil {
-			return err
-		}
-		defer stream.Subscription.Close()
-		if !send(realtimewire.MessageSnapshot, observedTime(stream.Snapshot.Time), "", map[string]any{"price": stream.Snapshot.Price.String()}) {
-			return nil
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case event, open := <-stream.Subscription.Events():
-				if !open {
-					return nil
-				}
-				if !send(realtimewire.MessageDelta, observedTime(event.Time), "", map[string]any{"price": event.Price.String()}) {
-					return nil
-				}
-			case <-stream.Subscription.Errors():
-				return fmt.Errorf("mark stream error")
-			}
-		}
 	case realtimewire.TopicFundingBoard:
 		if handler.fundingBoardChanges == nil {
 			return fmt.Errorf("funding board stream unavailable")

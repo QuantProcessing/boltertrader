@@ -694,42 +694,42 @@ func instrumentLoaderForConfig(configName string, settings settings) exchange.In
 	}
 }
 
-// fundingBoardLoaderForConfig mirrors instrumentLoaderForConfig for the
+// derivativeSnapshotLoaderForConfig mirrors instrumentLoaderForConfig for the
 // credential-free funding surface.
 //
 // Only perpetual configs appear: spot has no funding. Every configured perp
 // venue, including Aster's public v3 premium-index surface, is represented.
-func fundingBoardLoaderForConfig(configName string, settings settings) exchange.FundingBoardLoader {
+func derivativeSnapshotLoaderForConfig(configName string, settings settings) factoryclient.DerivativeSnapshotLoader {
 	switch configName {
 	case "binance-usd-perp":
-		return factoryclient.NewBinanceFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+		return factoryclient.NewBinanceDerivativeSnapshotLoader("USDT", factorySettingsForConfig(configName, settings))
 	case "aster-usdt-perp":
-		return factoryclient.NewAsterFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+		return factoryclient.NewAsterDerivativeSnapshotLoader("USDT", factorySettingsForConfig(configName, settings))
 	case "okx-usdt-perp":
-		return factoryclient.NewOKXFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+		return factoryclient.NewOKXDerivativeSnapshotLoader("USDT", factorySettingsForConfig(configName, settings))
 	case "lighter-perp":
-		return factoryclient.NewLighterFundingBoardLoader(factorySettingsForConfig(configName, settings))
+		return factoryclient.NewLighterDerivativeSnapshotLoader(factorySettingsForConfig(configName, settings))
 	case "hyperliquid-perp":
-		return factoryclient.NewHyperliquidFundingBoardLoader(factorySettingsForConfig(configName, settings))
+		return factoryclient.NewHyperliquidDerivativeSnapshotLoader(factorySettingsForConfig(configName, settings))
 	case "bybit-usdt-perp":
-		return factoryclient.NewBybitFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+		return factoryclient.NewBybitDerivativeSnapshotLoader("USDT", factorySettingsForConfig(configName, settings))
 	case "bybit-usdc-perp":
-		return factoryclient.NewBybitFundingBoardLoader("USDC", factorySettingsForConfig(configName, settings))
+		return factoryclient.NewBybitDerivativeSnapshotLoader("USDC", factorySettingsForConfig(configName, settings))
 	case "bitget-usdt-perp":
-		return factoryclient.NewBitgetFundingBoardLoader("USDT-FUTURES", factorySettingsForConfig(configName, settings))
+		return factoryclient.NewBitgetDerivativeSnapshotLoader("USDT-FUTURES", factorySettingsForConfig(configName, settings))
 	case "bitget-usdc-perp":
-		return factoryclient.NewBitgetFundingBoardLoader("USDC-FUTURES", factorySettingsForConfig(configName, settings))
+		return factoryclient.NewBitgetDerivativeSnapshotLoader("USDC-FUTURES", factorySettingsForConfig(configName, settings))
 	case "gate-usdt-perp":
-		return factoryclient.NewGateFundingBoardLoader(factorySettingsForConfig(configName, settings))
+		return factoryclient.NewGateDerivativeSnapshotLoader(factorySettingsForConfig(configName, settings))
 	case "nado-usdt0-perp":
-		return factoryclient.NewNadoFundingBoardLoader(factorySettingsForConfig(configName, settings))
+		return factoryclient.NewNadoDerivativeSnapshotLoader(factorySettingsForConfig(configName, settings))
 	default:
 		return nil
 	}
 }
 
 // fundingHistoryLoaderForConfig is the per-instrument counterpart of
-// fundingBoardLoaderForConfig.
+// derivativeSnapshotLoaderForConfig.
 //
 // It covers ten of the board's eleven route configs. Nado is deliberately
 // absent: it publishes the current funding rate but no settled series through

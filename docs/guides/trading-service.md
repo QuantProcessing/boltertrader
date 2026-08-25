@@ -95,7 +95,7 @@ say what its quoted period is remains visible on the funding board but is not
 emitted as an arbitrage opportunity; the service never assumes eight hours.
 
 `GET /api/v1/products/arbitrage/opportunities` is a public read and ranks purely
-from Trading's local catalog and funding-market projection. Anonymous callers
+from Trading's local catalog and derivative-fact projection. Anonymous callers
 see every public opportunity; only authenticated callers may add `accountId`
 parameters to calculate execution reachability. Each item carries blockers.
 Funding strategies require a fresh rate and published interval; basis and price

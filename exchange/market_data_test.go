@@ -30,6 +30,34 @@ func TestApplyDerivativePatchPreservesAbsentFieldsAndClocks(t *testing.T) {
 	}
 }
 
+func TestApplyDerivativePatchAdvancesFundingClockForScheduleOnlyPatch(t *testing.T) {
+	initialAt := time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC)
+	scheduleAt := initialAt.Add(2 * time.Second)
+	current := DerivativeFact{
+		FundingRate:          OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true},
+		FundingIntervalHours: OptionalInt{Value: 8, Valid: true},
+		FundingObservedAt:    initialAt,
+	}
+
+	current = ApplyDerivativePatch(current, DerivativeFact{
+		FundingIntervalHours: OptionalInt{Value: 4, Valid: true},
+		NextFundingTime:      scheduleAt.Add(4 * time.Hour),
+		FundingObservedAt:    scheduleAt,
+	}, DerivativeFieldFundingInterval|DerivativeFieldNextFundingTime)
+	if !current.FundingObservedAt.Equal(scheduleAt) || current.FundingIntervalHours.Value != 4 {
+		t.Fatalf("schedule patch did not advance funding clock: %#v", current)
+	}
+
+	lateAt := initialAt.Add(time.Second)
+	current = ApplyDerivativePatch(current, DerivativeFact{
+		FundingRate:       OptionalDecimal{Value: decimal.RequireFromString("0.9"), Valid: true},
+		FundingObservedAt: lateAt,
+	}, DerivativeFieldFunding)
+	if !current.FundingRate.Value.Equal(decimal.RequireFromString("0.0001")) || !current.FundingObservedAt.Equal(scheduleAt) {
+		t.Fatalf("late funding patch replaced newer schedule: %#v", current)
+	}
+}
+
 func TestDerivativeFactFreshnessUsesIndependentClocks(t *testing.T) {
 	now := time.Date(2026, 8, 25, 1, 0, 10, 0, time.UTC)
 	fact := DerivativeFact{

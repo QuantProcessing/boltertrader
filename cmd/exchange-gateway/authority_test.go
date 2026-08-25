@@ -20,6 +20,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
@@ -789,69 +790,46 @@ func TestAuthorityErrorPreservesCandidateCredentialFailure(t *testing.T) {
 // newTestFundingBoardSource builds a board whose every venue answers with the
 // same single entry, so a projection test can assert field mapping without
 // depending on which venues the profile registry happens to carry.
-func newTestFundingBoardSource(t *testing.T, entry exchange.FundingBoardEntry) *fundingboard.Source {
+func newTestFundingBoardSource(t *testing.T, entry exchange.FundingBoardEntry) fundingboard.Board {
 	t.Helper()
-	source, err := fundingboard.NewSource(constantFundingFactory{entry: entry}, routeprofile.DefaultRegistry())
+	now := time.Now().UTC()
+	fact := exchange.DerivativeFact{
+		InstrumentID: "binance:live:perp:USDT:BTC-USDT", RouteProfileID: "binance.perp.usdt.v1",
+		Environment: exchange.EnvironmentLive,
+		Instrument:  exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: entry.Symbol, NativeSymbol: entry.NativeSymbol, NativeID: entry.NativeID, BaseAsset: entry.BaseAsset, QuoteAsset: entry.QuoteAsset, SettleAsset: "USDT"},
+		FundingRate: exchange.OptionalDecimal{Value: entry.Rate, Valid: true}, FundingIntervalHours: entry.IntervalHours,
+		NextFundingTime: entry.NextFundingTime, FundingObservedAt: now,
+		MarkPrice: entry.MarkPrice, IndexPrice: entry.IndexPrice,
+		OpenInterest: entry.OpenInterest, OpenInterestNotional: entry.OpenInterestNotional,
+		OpenInterestNotionalAsset: entry.OpenInterestNotionalAsset,
+	}
+	if fact.OpenInterestNotional.Valid && fact.OpenInterestNotionalAsset == "" {
+		fact.OpenInterestNotionalAsset = fact.Instrument.SettleAsset
+	}
+	if fact.MarkPrice.Valid {
+		fact.MarkObservedAt = now
+	}
+	if fact.IndexPrice.Valid {
+		fact.IndexObservedAt = now
+	}
+	if fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid {
+		fact.OpenInterestObservedAt = now
+	}
+	store := markethub.NewFactStore(nil, time.Now)
+	err := store.Apply(exchange.DerivativePatch{
+		Kind: exchange.EventSnapshot, Scope: exchange.CatalogScope{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Environment: exchange.EnvironmentLive, Settlement: "USDT"},
+		NativeFamily: "perpetual", Generation: 1, ObservedAt: now, Fields: exchange.DerivativeFieldAll, Facts: []exchange.DerivativeFact{fact},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runCtx, cancel := context.WithCancel(context.Background())
-	go func() { _ = source.Run(runCtx) }()
-	deadline := time.Now().Add(time.Second)
-	for {
-		snapshot, snapshotErr := source.Snapshot(context.Background())
-		ready := snapshotErr == nil
-		if ready {
-			ready = false
-			for _, venue := range snapshot.Venues {
-				if len(venue.Entries) > 0 {
-					ready = true
-					break
-				}
-			}
-		}
-		if ready {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("funding board did not bootstrap")
-		}
-		time.Sleep(time.Millisecond)
+	projection, err := fundingboard.NewProjection(store, nil, routeprofile.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		cancel()
-		_ = source.Close()
-	})
-	return source
+	t.Cleanup(func() { _ = projection.Close() })
+	return projection
 }
-
-type constantFundingFactory struct{ entry exchange.FundingBoardEntry }
-
-func (factory constantFundingFactory) Build(profile routeprofile.Profile) (fundingboard.Connector, error) {
-	return constantFundingConnector{
-		scope: exchange.CatalogScope{
-			Venue:   exchange.Venue(profile.Venue),
-			Product: exchange.Product(profile.Product),
-			// The profile no longer carries an environment: every route is live.
-			// The scope field stays because a snapshot is labelled with the venue
-			// it came from and callers compare that label against their request.
-			Environment: exchange.EnvironmentLive,
-			Settlement:  profile.SettlementAsset,
-		},
-		entry: factory.entry,
-	}, nil
-}
-
-type constantFundingConnector struct {
-	scope exchange.CatalogScope
-	entry exchange.FundingBoardEntry
-}
-
-func (connector constantFundingConnector) Refresh(context.Context) (exchange.FundingBoardSnapshot, error) {
-	return exchange.FundingBoardSnapshot{Scope: connector.scope, Entries: []exchange.FundingBoardEntry{connector.entry}}, nil
-}
-
-func (constantFundingConnector) Close() error { return nil }
 
 // TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer
 // pins the three things this dispatch does that the board's does not, because

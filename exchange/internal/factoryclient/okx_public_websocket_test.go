@@ -582,18 +582,22 @@ type fakeOKXPublicWSClient struct {
 	candleChannels []string
 	unsubscribed   []okx.WsSubscribeArgs
 
-	bookHandler    func(*okx.OrderBook, string)
-	bookError      func(error)
-	tickerHandler  func(*okx.Ticker)
-	tickerError    func(error)
-	tradeHandler   func(*okx.PublicTrade)
-	tradeError     func(error)
-	candleHandler  func(okx.Candle)
-	candleError    func(error)
-	markHandler    func(*okx.MarkPrice)
-	markError      func(error)
-	fundingHandler func(*okx.FundingRate)
-	fundingError   func(error)
+	bookHandler         func(*okx.OrderBook, string)
+	bookError           func(error)
+	tickerHandler       func(*okx.Ticker)
+	tickerError         func(error)
+	tradeHandler        func(*okx.PublicTrade)
+	tradeError          func(error)
+	candleHandler       func(okx.Candle)
+	candleError         func(error)
+	markHandler         func(*okx.MarkPrice)
+	markError           func(error)
+	fundingHandler      func(*okx.FundingRate)
+	fundingError        func(error)
+	indexHandler        func(*okx.IndexTicker)
+	indexError          func(error)
+	openInterestHandler func(*okx.OpenInterest)
+	openInterestError   func(error)
 
 	reconnectStarted   func(error)
 	reconnectRecovered func()
@@ -680,6 +684,18 @@ func (client *fakeOKXPublicWSClient) SubscribeFundingRateWithError(_ string, han
 	return nil
 }
 
+func (client *fakeOKXPublicWSClient) SubscribeIndexTickerWithError(_ string, handler func(*okx.IndexTicker), errorHandler func(error)) error {
+	client.indexHandler = handler
+	client.indexError = errorHandler
+	return nil
+}
+
+func (client *fakeOKXPublicWSClient) SubscribeOpenInterestWithError(_ string, handler func(*okx.OpenInterest), errorHandler func(error)) error {
+	client.openInterestHandler = handler
+	client.openInterestError = errorHandler
+	return nil
+}
+
 func (client *fakeOKXPublicWSClient) Unsubscribe(args okx.WsSubscribeArgs) error {
 	client.unsubscribed = append(client.unsubscribed, args)
 	return nil
@@ -697,6 +713,12 @@ func (client *fakeOKXPublicWSClient) subscribeCount() int {
 		count++
 	}
 	if client.fundingHandler != nil || client.fundingError != nil {
+		count++
+	}
+	if client.indexHandler != nil || client.indexError != nil {
+		count++
+	}
+	if client.openInterestHandler != nil || client.openInterestError != nil {
 		count++
 	}
 	return count

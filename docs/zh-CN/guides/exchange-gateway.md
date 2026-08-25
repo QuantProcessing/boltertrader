@@ -135,9 +135,17 @@ idempotency 和重启 reconciliation 模型后才会开放。底层
 native symbol、native ID、instrument encoding 或原始交易所错误。
 
 `/internal/v1/market/ws` 是 Gateway 的多路复用服务间行情协议，公开 topic 包括订单簿、
-BBO、K 线、标记价、资费看板和交易所连接状态。Market Hub 按 venue、environment、原生
-market family 和 dataset 唯一持有上游 feed，维护可重建的最新 snapshot，并扇出给所有
-消费者。出现 gap 时 generation 增加，发送 `resync_required` 并重建 snapshot。
+BBO、K 线、标记价、资费看板和交易所连接状态。生产能力矩阵决定每个 dataset 的
+transport、原生 market family 边界、cadence 与 rate-limit operation。Gateway 按
+venue、environment 与原生 market family 唯一持有一个物理 `VenueFeedOwner`；route
+profile 只是输出投影，不会增加连接。Market Hub 维护可重建的最新 snapshot，并扇出给
+所有逻辑消费者。出现 gap 时 generation 增加，发送 `resync_required` 并重建 snapshot。
+
+热点订单簿、BBO、K 线与 mark topic 在每个 feed owner 内共用一个原生 socket。引用计数
+hotset 依次按 position、open-order、execution、browser、arbitrage-top 与
+funding-history 排序；position、open-order 与 execution 不会因交易所 topic 上限被淘汰，
+最后一个原因释放后仍保留 30 秒。全市场轮询、catalog 刷新与 FreshBBO fallback 共用
+按 venue operation 编排的 rate-limit coordinator 和 singleflight。
 
 内部监听器上的公共行情操作是这条「必须带账户」规则的例外：`/internal/v1/market/ws`、
 `/internal/v1/market-facts`、`/internal/v1/funding-board`、
@@ -145,11 +153,15 @@ market family 和 dataset 唯一持有上游 feed，维护可重建的最新 sna
 免凭证的交易所 client 回答。它们仍由内部 bearer token 保护，也不会暴露凭证、
 原生交易所错误等内部细节。
 
-资金费看板是常驻 `DerivativeFact` 的纯业务投影。Gateway 启动时对所有支持的永续 route
-做一次 bootstrap，随后通过交易所 WebSocket 持续合并资金费、mark、index 与 OI。
-Binance 和 Aster 的 OI 以一分钟滚动周期异步补齐；Nado 未流式提供的价格和 OI 由
-一次有界的全产品查询补齐。HTTP 看板接口只复制内存，所以前端数量不会放大交易所
-请求。完整订单簿不进入这份投影。
+资金费看板是常驻 `DerivativeFact` 的纯业务投影。Gateway 启动时对所有支持的永续原生
+family 做一次 bootstrap，随后按能力矩阵选择全市场 WebSocket 或有界批量 REST，持续
+合并资金费、mark、index 与 OI。宽表与热点 patch 按字段独立时钟合并，迟到的资金费更新
+不会覆盖较新的 mark。Binance 和 Aster 的 OI 以一分钟滚动周期异步补齐，热点品种提高到
+15 秒；Nado 未流式提供的价格和 OI 由一次有界的全产品查询补齐。Bybit 与 Bitget 从同一条
+原生 ticker 保留 mark、index、funding 与 OI，OKX 的四类 reference topic 在 owner 内合并为
+一个逻辑热点流。Gate 在 catalog 成员变化时更新现有 `futures.tickers` payload，不替换 owner
+或 generation。HTTP 看板接口只复制内存，所以前端数量
+不会放大交易所请求。完整订单簿不进入这份投影。
 
 资费 topic 首帧发送完整 `snapshot`，后续最多每秒发送一次合并更新。慢消费者或流缺口会
 收到 `resync_required`。资金费、mark、index 与 OI 分别计算 freshness；过期值保留用于诊断，
@@ -179,6 +191,12 @@ Authorization: Bearer <token>
 boot cursor 过期、replay 被淘汰、stream gap 或进程重启时会发出
 `resync_required`；调用方必须重新获取 REST snapshot。
 
+每个账户 route 只持有一个产品/账户级原生流，数量不随 catalog 增长。启动时先建立原生
+流并缓存增量，再加载余额与仓位 snapshot、发布 snapshot、重放缓存增量，最后发布
+connected barrier；Gateway 随后执行订单/成交 REST reconciliation。事件携带
+generation、source sequence 与 snapshot/live phase；重连、listen-key 失效或 sequence
+gap 必须 resync，旧 generation 的迟到事件会被丢弃。
+
 ## 恢复与 reconciliation
 
 PostgreSQL 持久化 idempotency reservation、command handoff 状态、标准订单、
@@ -198,10 +216,11 @@ venue correlation 精确查询；禁止 generic write retry。
 
 ## 指标、日志与审计
 
-`/metrics` 使用独立 Prometheus registry，包含账户 read/write readiness、
-command outcome、uncertain 数量与最老 reconciliation age、stream
-gap/resync/eviction、Catalog age/version、PostgreSQL latency 与安全错误分类、
-in-flight command，以及 graceful shutdown outcome。
+`/metrics` 使用独立 Prometheus registry。除账户 read/write readiness、command、
+reconciliation、Catalog、PostgreSQL 与 shutdown 指标外，还包含交易所 probe
+状态/延迟/失败、行情 feed 状态/reconnect/gap/resnapshot、字段 age/coverage、热点订阅数，
+以及按 venue 和 operation 分类的 REST outcome。连接 probe、行情 feed 健康与字段
+freshness 相互独立。
 
 label 仅允许固定的 venue/product/environment、operation、outcome 和安全错误
 分类。account ID、instrument ID、idempotency key、order ID、native message

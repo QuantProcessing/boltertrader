@@ -172,30 +172,29 @@ func marketPushHandler[T any](
 
 // SubscribeIndexTicker subscribes to the public index-tickers channel.
 func (c *WSClient) SubscribeIndexTicker(instId string, handler func(*IndexTicker)) error {
+	return c.SubscribeIndexTickerWithError(instId, handler, nil)
+}
+
+func (c *WSClient) SubscribeIndexTickerWithError(instId string, handler func(*IndexTicker), errorHandler func(error)) error {
 	args := WsSubscribeArgs{
 		Channel: "index-tickers",
 		InstId:  instId,
 	}
-
-	return c.Subscribe(args, func(msg []byte) {
-		var push WsPushData[IndexTicker]
-		if err := json.Unmarshal(msg, &push); err != nil {
-			fmt.Println("Error unmarshal index-tickers:", err)
-			return
-		}
-		for _, d := range push.Data {
-			val := d
-			handler(&val)
-		}
-	})
+	return c.Subscribe(args, marketPushHandler("index ticker", func(value IndexTicker, _ string) {
+		handler(&value)
+	}, errorHandler))
 }
 
 // SubscribeOpenInterest subscribes to the public open-interest channel.
 func (c *WSClient) SubscribeOpenInterest(instId string, handler func(*OpenInterest)) error {
+	return c.SubscribeOpenInterestWithError(instId, handler, nil)
+}
+
+func (c *WSClient) SubscribeOpenInterestWithError(instId string, handler func(*OpenInterest), errorHandler func(error)) error {
 	args := WsSubscribeArgs{Channel: "open-interest", InstType: "SWAP", InstId: instId}
 	return c.Subscribe(args, marketPushHandler("open interest", func(value OpenInterest, _ string) {
 		handler(&value)
-	}, nil))
+	}, errorHandler))
 }
 
 // SubscribeOptionSummary subscribes to the public opt-summary channel.

@@ -10,10 +10,12 @@ import (
 )
 
 type perpReferenceEvent struct {
-	MarkPrice    exchange.MarkPriceEvent
-	MarkValid    bool
-	FundingRate  exchange.FundingRateEvent
-	FundingValid bool
+	MarkPrice       exchange.MarkPriceEvent
+	MarkValid       bool
+	FundingRate     exchange.FundingRateEvent
+	FundingValid    bool
+	Derivative      exchange.DerivativeReferenceEvent
+	DerivativeValid bool
 }
 
 type perpWSBackend interface {
@@ -22,34 +24,36 @@ type perpWSBackend interface {
 }
 
 type referenceTopic struct {
-	mu       sync.Mutex
-	marks    map[string]*typedSubscription[exchange.MarkPriceEvent]
-	funding  map[string]*typedSubscription[exchange.FundingRateEvent]
-	stop     func() error
-	ready    chan struct{}
-	starting bool
-	startErr error
+	mu         sync.Mutex
+	marks      map[string]*typedSubscription[exchange.MarkPriceEvent]
+	funding    map[string]*typedSubscription[exchange.FundingRateEvent]
+	derivative map[string]*typedSubscription[exchange.DerivativeReferenceEvent]
+	stop       func() error
+	ready      chan struct{}
+	starting   bool
+	startErr   error
 }
 
 func newReferenceTopic() *referenceTopic {
 	return &referenceTopic{
-		marks:    make(map[string]*typedSubscription[exchange.MarkPriceEvent]),
-		funding:  make(map[string]*typedSubscription[exchange.FundingRateEvent]),
-		ready:    make(chan struct{}),
-		starting: true,
+		marks:      make(map[string]*typedSubscription[exchange.MarkPriceEvent]),
+		funding:    make(map[string]*typedSubscription[exchange.FundingRateEvent]),
+		derivative: make(map[string]*typedSubscription[exchange.DerivativeReferenceEvent]),
+		ready:      make(chan struct{}),
+		starting:   true,
 	}
 }
 
 func (topic *referenceTopic) empty() bool {
 	topic.mu.Lock()
 	defer topic.mu.Unlock()
-	return len(topic.marks) == 0 && len(topic.funding) == 0
+	return len(topic.marks) == 0 && len(topic.funding) == 0 && len(topic.derivative) == 0
 }
 
 func (topic *referenceTopic) count() int {
 	topic.mu.Lock()
 	defer topic.mu.Unlock()
-	return len(topic.marks) + len(topic.funding)
+	return len(topic.marks) + len(topic.funding) + len(topic.derivative)
 }
 
 func (topic *referenceTopic) callbacks() streamCallbacks[perpReferenceEvent] {
@@ -75,15 +79,30 @@ func (topic *referenceTopic) callbacks() streamCallbacks[perpReferenceEvent] {
 					subscription.emit(event.FundingRate)
 				}
 			}
+			if event.DerivativeValid {
+				topic.mu.Lock()
+				derivative := make([]*typedSubscription[exchange.DerivativeReferenceEvent], 0, len(topic.derivative))
+				for _, subscription := range topic.derivative {
+					derivative = append(derivative, subscription)
+				}
+				topic.mu.Unlock()
+				for _, subscription := range derivative {
+					subscription.emit(event.Derivative)
+				}
+			}
 		},
 		Status: func(status backendStatus) {
 			topic.mu.Lock()
-			subscriptions := make([]func(backendStatus), 0, len(topic.marks)+len(topic.funding))
+			subscriptions := make([]func(backendStatus), 0, len(topic.marks)+len(topic.funding)+len(topic.derivative))
 			for _, subscription := range topic.marks {
 				sub := subscription
 				subscriptions = append(subscriptions, func(status backendStatus) { sub.emitStatus(status) })
 			}
 			for _, subscription := range topic.funding {
+				sub := subscription
+				subscriptions = append(subscriptions, func(status backendStatus) { sub.emitStatus(status) })
+			}
+			for _, subscription := range topic.derivative {
 				sub := subscription
 				subscriptions = append(subscriptions, func(status backendStatus) { sub.emitStatus(status) })
 			}
@@ -94,12 +113,16 @@ func (topic *referenceTopic) callbacks() streamCallbacks[perpReferenceEvent] {
 		},
 		Error: func(err error) {
 			topic.mu.Lock()
-			subscriptions := make([]func(error), 0, len(topic.marks)+len(topic.funding))
+			subscriptions := make([]func(error), 0, len(topic.marks)+len(topic.funding)+len(topic.derivative))
 			for _, subscription := range topic.marks {
 				sub := subscription
 				subscriptions = append(subscriptions, func(err error) { sub.emitError(err) })
 			}
 			for _, subscription := range topic.funding {
+				sub := subscription
+				subscriptions = append(subscriptions, func(err error) { sub.emitError(err) })
+			}
+			for _, subscription := range topic.derivative {
 				sub := subscription
 				subscriptions = append(subscriptions, func(err error) { sub.emitError(err) })
 			}
@@ -209,6 +232,28 @@ func (socket *perpWebSocket) WatchFundingRate(
 		},
 		func(topic *referenceTopic, id string) {
 			delete(topic.funding, id)
+		},
+	)
+}
+
+func (socket *perpWebSocket) WatchDerivativeReference(
+	ctx context.Context,
+	request exchange.WatchRequest,
+) (exchange.Subscription[exchange.DerivativeReferenceEvent], error) {
+	if err := socket.validateWatch(ctx, "WatchDerivativeReference", request); err != nil {
+		return nil, err
+	}
+	return watchReference(
+		socket,
+		ctx,
+		request,
+		"WatchDerivativeReference",
+		"derivative-reference",
+		func(topic *referenceTopic, subscription *typedSubscription[exchange.DerivativeReferenceEvent]) {
+			topic.derivative[subscription.id] = subscription
+		},
+		func(topic *referenceTopic, id string) {
+			delete(topic.derivative, id)
 		},
 	)
 }
@@ -353,7 +398,7 @@ func removeReferenceSubscription[T any](
 	}
 	topic.mu.Lock()
 	remove(topic, id)
-	empty := len(topic.marks) == 0 && len(topic.funding) == 0
+	empty := len(topic.marks) == 0 && len(topic.funding) == 0 && len(topic.derivative) == 0
 	topic.mu.Unlock()
 	if !empty {
 		socket.mu.Unlock()
@@ -396,6 +441,10 @@ func (socket *perpWebSocket) Close() error {
 				subscriptions = append(subscriptions, sub.Close)
 			}
 			for _, subscription := range topic.funding {
+				sub := subscription
+				subscriptions = append(subscriptions, sub.Close)
+			}
+			for _, subscription := range topic.derivative {
 				sub := subscription
 				subscriptions = append(subscriptions, sub.Close)
 			}

@@ -22,6 +22,8 @@ type okxPublicWebSocketClient interface {
 	SubscribeCandlesWithError(string, string, func(okx.Candle), func(error)) error
 	SubscribeMarkPriceWithError(string, func(*okx.MarkPrice), func(error)) error
 	SubscribeFundingRateWithError(string, func(*okx.FundingRate), func(error)) error
+	SubscribeIndexTickerWithError(string, func(*okx.IndexTicker), func(error)) error
+	SubscribeOpenInterestWithError(string, func(*okx.OpenInterest), func(error)) error
 	Unsubscribe(okx.WsSubscribeArgs) error
 }
 
@@ -284,8 +286,12 @@ func (backend *okxPublicWSBackend) StartReference(
 				return
 			}
 			callbacks.Event(perpReferenceEvent{
-				MarkPrice: event,
-				MarkValid: true,
+				MarkPrice: event, MarkValid: true, DerivativeValid: true,
+				Derivative: exchange.DerivativeReferenceEvent{
+					Instrument:     instrument,
+					MarkPrice:      exchange.OptionalDecimal{Value: event.Price, Valid: true},
+					MarkObservedAt: event.Time,
+				},
 			})
 		},
 		func(err error) {
@@ -305,8 +311,13 @@ func (backend *okxPublicWSBackend) StartReference(
 				return
 			}
 			callbacks.Event(perpReferenceEvent{
-				FundingRate:  event,
-				FundingValid: true,
+				FundingRate: event, FundingValid: true, DerivativeValid: true,
+				Derivative: exchange.DerivativeReferenceEvent{
+					Instrument:        instrument,
+					FundingRate:       exchange.OptionalDecimal{Value: event.Rate, Valid: true},
+					NextFundingTime:   event.NextAt,
+					FundingObservedAt: event.EffectiveAt,
+				},
 			})
 		},
 		func(err error) {
@@ -318,6 +329,66 @@ func (backend *okxPublicWSBackend) StartReference(
 		return nil, okxWSError(backend.meta, "WatchFundingRate", exchange.KindTransport, err.Error())
 	}
 	fundingSubscribed = true
+	indexNative := strings.TrimSuffix(native, "-SWAP")
+	if err := backend.ws.SubscribeIndexTickerWithError(
+		indexNative,
+		func(index *okx.IndexTicker) {
+			if index == nil || index.InstId != indexNative {
+				emitOKXWSError(callbacks, okxWSError(backend.meta, "WatchIndexPrice", exchange.KindMalformedResponse, "index instrument mismatch"))
+				return
+			}
+			price, priceErr := okxPositiveDecimal(index.IdxPx)
+			observedAt, timeErr := okxMillis(index.Ts)
+			if priceErr != nil || timeErr != nil {
+				emitOKXWSError(callbacks, okxWSError(backend.meta, "WatchIndexPrice", exchange.KindMalformedResponse, "invalid index ticker"))
+				return
+			}
+			callbacks.Event(perpReferenceEvent{DerivativeValid: true, Derivative: exchange.DerivativeReferenceEvent{
+				Instrument: instrument, IndexPrice: exchange.OptionalDecimal{Value: price, Valid: true}, IndexObservedAt: observedAt,
+			}})
+		},
+		func(err error) {
+			emitOKXWSError(callbacks, okxWSError(backend.meta, "WatchIndexPrice", exchange.KindMalformedResponse, err.Error()))
+		},
+	); err != nil {
+		_ = backend.unsubscribe("WatchMarkPrice", okx.WsSubscribeArgs{Channel: "mark-price", InstId: native})
+		_ = backend.unsubscribe("WatchFundingRate", okx.WsSubscribeArgs{Channel: "funding-rate", InstId: native})
+		backend.unregisterStatus(registration)
+		return nil, okxWSError(backend.meta, "WatchIndexPrice", exchange.KindTransport, err.Error())
+	}
+	if err := backend.ws.SubscribeOpenInterestWithError(
+		native,
+		func(openInterest *okx.OpenInterest) {
+			if openInterest == nil || openInterest.InstId != native {
+				emitOKXWSError(callbacks, okxWSError(backend.meta, "WatchOpenInterest", exchange.KindMalformedResponse, "open-interest instrument mismatch"))
+				return
+			}
+			observedAt, timeErr := okxMillis(openInterest.Ts)
+			if timeErr != nil {
+				emitOKXWSError(callbacks, okxWSError(backend.meta, "WatchOpenInterest", exchange.KindMalformedResponse, "invalid open-interest timestamp"))
+				return
+			}
+			event := exchange.DerivativeReferenceEvent{Instrument: instrument, OpenInterestObservedAt: observedAt}
+			event.OpenInterest = fundingOptionalNonNegative(firstNonEmpty(openInterest.OICcy, openInterest.OI))
+			event.OpenInterestNotional = fundingOptionalNonNegative(openInterest.OIUsd)
+			if event.OpenInterestNotional.Valid {
+				event.OpenInterestAsset = "USD"
+			}
+			if !event.OpenInterest.Valid && !event.OpenInterestNotional.Valid {
+				return
+			}
+			callbacks.Event(perpReferenceEvent{DerivativeValid: true, Derivative: event})
+		},
+		func(err error) {
+			emitOKXWSError(callbacks, okxWSError(backend.meta, "WatchOpenInterest", exchange.KindMalformedResponse, err.Error()))
+		},
+	); err != nil {
+		_ = backend.unsubscribe("WatchMarkPrice", okx.WsSubscribeArgs{Channel: "mark-price", InstId: native})
+		_ = backend.unsubscribe("WatchFundingRate", okx.WsSubscribeArgs{Channel: "funding-rate", InstId: native})
+		_ = backend.unsubscribe("WatchIndexPrice", okx.WsSubscribeArgs{Channel: "index-tickers", InstId: indexNative})
+		backend.unregisterStatus(registration)
+		return nil, okxWSError(backend.meta, "WatchOpenInterest", exchange.KindTransport, err.Error())
+	}
 	return func() error {
 		backend.unregisterStatus(registration)
 		var errs []error
@@ -328,6 +399,12 @@ func (backend *okxPublicWSBackend) StartReference(
 			if err := backend.unsubscribe("WatchFundingRate", okx.WsSubscribeArgs{Channel: "funding-rate", InstId: native}); err != nil {
 				errs = append(errs, err)
 			}
+		}
+		if err := backend.unsubscribe("WatchIndexPrice", okx.WsSubscribeArgs{Channel: "index-tickers", InstId: indexNative}); err != nil {
+			errs = append(errs, err)
+		}
+		if err := backend.unsubscribe("WatchOpenInterest", okx.WsSubscribeArgs{Channel: "open-interest", InstType: "SWAP", InstId: native}); err != nil {
+			errs = append(errs, err)
 		}
 		return errorsJoin(errs)
 	}, nil

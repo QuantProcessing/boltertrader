@@ -1,104 +1,34 @@
 package exchange
 
 import (
-	"context"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
 
-/*
-A funding board is one venue's whole perpetual funding surface read in a single
-credential-free call.
-
-This is deliberately not `FundingRate`: that type answers "what is this one
-instrument paying, for this account's route", and every venue serves it from a
-per-symbol endpoint behind an authenticated client. The board answers "what is
-every instrument on this venue paying right now", which every venue also
-publishes, but from a different endpoint that needs no key at all. Modelling it
-as a loader — the same shape as `InstrumentLoader` — keeps it out of the
-account-bound client surface entirely, so a board can be read before a single
-account exists.
-
-The optional fields are optional because the venues disagree, not because we
-are being permissive: only three venues return open interest in their bulk
-call, and some venues publish no settlement clock. A consumer must render a
-missing cell as missing rather than as zero.
-*/
-
+// FundingBoardEntry is the normalized, credential-free product projection for
+// one perpetual instrument. Collection snapshots and loader contracts are
+// adapter-private; only this stable row crosses into Gateway's public board.
 type FundingBoardEntry struct {
-	Symbol       string          `json:"symbol"`
-	NativeSymbol string          `json:"native_symbol,omitempty"`
-	NativeID     string          `json:"native_id,omitempty"`
-	BaseAsset    string          `json:"base_asset,omitempty"`
-	QuoteAsset   string          `json:"quote_asset,omitempty"`
-	Rate         decimal.Decimal `json:"rate"`
-	// RateValid is projection metadata used when a realtime fact has fresh
-	// price/OI fields but no fresh funding observation. Legacy REST board
-	// loaders always carry a rate, so their adapter sets validity explicitly.
-	RateValid       bool            `json:"-"`
-	IntervalHours   OptionalInt     `json:"interval_hours"`
-	NextFundingTime time.Time       `json:"next_funding_time,omitempty"`
-	MarkPrice       OptionalDecimal `json:"mark_price"`
-	IndexPrice      OptionalDecimal `json:"index_price"`
-	// OpenInterest is the venue-native quantity. Depending on the venue this is
-	// base units or contracts and therefore must not be compared across venues.
-	OpenInterest OptionalDecimal `json:"open_interest"`
-	// OpenInterestNotional is OpenInterest converted at the row's mark price
-	// into the quote/settlement stablecoin (USDT or USDC). Cross-venue products
-	// use this field for display, filtering and sorting.
-	OpenInterestNotional OptionalDecimal `json:"open_interest_notional"`
-	// OpenInterestNotionalAsset is the stablecoin used by the converted
-	// notional. It is explicit because some route profiles settle in USDC while
-	// others settle in USDT; a generic "USD" label would hide that distinction.
-	OpenInterestNotionalAsset string `json:"open_interest_notional_asset,omitempty"`
-	// The three observation clocks are independent. A fresh mark update must
-	// never make an old funding rate or open-interest value appear current.
-	FundingObservedAt      time.Time `json:"funding_observed_at,omitempty"`
-	MarkObservedAt         time.Time `json:"mark_observed_at,omitempty"`
-	IndexObservedAt        time.Time `json:"index_observed_at,omitempty"`
-	PriceObservedAt        time.Time `json:"price_observed_at,omitempty"`
-	OpenInterestObservedAt time.Time `json:"open_interest_observed_at,omitempty"`
-	StaleFields            []string  `json:"stale_fields,omitempty"`
-	MissingFields          []string  `json:"missing_fields,omitempty"`
-}
-
-type FundingBoardSnapshot struct {
-	SchemaVersion int                 `json:"schema_version"`
-	Scope         CatalogScope        `json:"scope"`
-	ObservedAt    time.Time           `json:"observed_at"`
-	Entries       []FundingBoardEntry `json:"entries,omitempty"`
-}
-
-type FundingBoardLoader interface {
-	LoadFundingBoard(context.Context, CatalogScope) (FundingBoardSnapshot, error)
-}
-
-// Validate rejects a snapshot that cannot be rendered as a row on a board.
-//
-// The scope check matters more than it looks: a board aggregates several
-// venues into one table, and a loader that answered for the wrong scope would
-// silently file its rates under another venue's column.
-func (snapshot FundingBoardSnapshot) Validate(scope CatalogScope) error {
-	if snapshot.Scope != scope {
-		return invalidFundingBoard("funding board scope does not match requested scope")
-	}
-	seen := make(map[string]struct{}, len(snapshot.Entries))
-	for _, entry := range snapshot.Entries {
-		if entry.Symbol == "" {
-			return invalidFundingBoard("funding board entry is missing a canonical symbol")
-		}
-		if _, duplicate := seen[entry.Symbol]; duplicate {
-			return invalidFundingBoard("funding board contains a duplicate canonical symbol")
-		}
-		seen[entry.Symbol] = struct{}{}
-	}
-	return nil
-}
-
-func invalidFundingBoard(message string) error {
-	return NewError(KindInvalidConfig, ErrorDetails{
-		Operation:   "FundingBoard.Load",
-		SafeMessage: message,
-	})
+	Symbol                    string          `json:"symbol"`
+	NativeSymbol              string          `json:"native_symbol,omitempty"`
+	NativeID                  string          `json:"native_id,omitempty"`
+	BaseAsset                 string          `json:"base_asset,omitempty"`
+	QuoteAsset                string          `json:"quote_asset,omitempty"`
+	Rate                      decimal.Decimal `json:"rate"`
+	RateValid                 bool            `json:"-"`
+	IntervalHours             OptionalInt     `json:"interval_hours"`
+	NextFundingTime           time.Time       `json:"next_funding_time,omitempty"`
+	MarkPrice                 OptionalDecimal `json:"mark_price"`
+	IndexPrice                OptionalDecimal `json:"index_price"`
+	OpenInterest              OptionalDecimal `json:"open_interest"`
+	OpenInterestNotional      OptionalDecimal `json:"open_interest_notional"`
+	OpenInterestNotionalAsset string          `json:"open_interest_notional_asset,omitempty"`
+	FundingObservedAt         time.Time       `json:"funding_observed_at,omitempty"`
+	MarkObservedAt            time.Time       `json:"mark_observed_at,omitempty"`
+	IndexObservedAt           time.Time       `json:"index_observed_at,omitempty"`
+	PriceObservedAt           time.Time       `json:"price_observed_at,omitempty"`
+	OpenInterestObservedAt    time.Time       `json:"open_interest_observed_at,omitempty"`
+	StaleFields               []string        `json:"stale_fields,omitempty"`
+	MissingFields             []string        `json:"missing_fields,omitempty"`
 }

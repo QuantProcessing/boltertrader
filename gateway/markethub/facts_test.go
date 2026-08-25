@@ -2,12 +2,76 @@ package markethub
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/shopspring/decimal"
 )
+
+func TestFactStoreAbsentPatchDoesNotInventObservationClock(t *testing.T) {
+	store := NewFactStore(nil, nil)
+	at := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	fact := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity, at, fact)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Apply(derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, at.Add(time.Second), fact)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Get(fact.InstrumentID)
+	if got.MarkPrice.Valid || !got.MarkObservedAt.IsZero() {
+		t.Fatalf("absent mark became observed: %+v", got)
+	}
+}
+
+func TestFactStoreMetricsAgeAdvancesWhileFeedIsSilent(t *testing.T) {
+	base := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
+	observer := &factObserver{facts: make(chan observedFact, 16)}
+	store := NewFactStore(observer, func() time.Time { return time.Unix(0, clock.Load()).UTC() })
+	fact := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	fact.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true}
+	fact.MarkObservedAt = base
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, base, fact)); err != nil {
+		t.Fatal(err)
+	}
+	for len(observer.facts) > 0 {
+		<-observer.facts
+	}
+	clock.Store(base.Add(10 * time.Second).UnixNano())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go store.RunMetrics(ctx, time.Millisecond)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case observed := <-observer.facts:
+			if observed.dataset == string(exchange.DatasetMark) && observed.age >= 10*time.Second {
+				return
+			}
+		case <-deadline:
+			t.Fatal("silent fact age metric did not advance")
+		}
+	}
+}
+
+type observedFact struct {
+	dataset  string
+	age      time.Duration
+	coverage float64
+}
+
+type factObserver struct{ facts chan observedFact }
+
+func (*factObserver) ObserveMarketFeed(string, string, string, string, uint64) {}
+func (*factObserver) RecordMarketGap(string, string, string, bool)             {}
+func (*factObserver) SetMarketHot(string, string, string, int)                 {}
+func (observer *factObserver) SetMarketFact(_, _, dataset string, age time.Duration, coverage float64) {
+	observer.facts <- observedFact{dataset: dataset, age: age, coverage: coverage}
+}
 
 func TestFactStoreRejectsLateFieldWithoutRefreshingOtherFields(t *testing.T) {
 	store := NewFactStore(nil, nil)

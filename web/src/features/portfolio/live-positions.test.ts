@@ -30,4 +30,31 @@ describe("portfolio public mark projection", () => {
     expect(result?.unrealizedPnl).toBe("");
     expect(result?.unrealizedPnlSource).toBe("unavailable");
   });
+
+  it("matches marks independently across venues and positions", () => {
+    const bybit: AccountPosition = {
+      ...position,
+      accountId: "b",
+      instrumentId: "bybit:live:perp:USDC:ETH-USDC",
+      settlementAsset: "USDC",
+      quantity: "2",
+      entryPrice: "3000",
+    };
+    const multi: FundingBoardSnapshot = {
+      observedAt: new Date().toISOString(),
+      venues: [
+        ...board().venues,
+        {
+          venue: "bybit", environment: "live", product: "perp", settlement: "USDC", routeProfileId: "bybit.perp.usdc.v1",
+          stale: false, unavailable: false, status: "live",
+          rows: [{ instrumentId: bybit.instrumentId, symbol: "ETH-USDC", marketFamily: "venue_perpetual", assetClass: "unknown", markPrice: "3010" }],
+        },
+      ],
+    };
+    const [binanceResult, bybitResult] = applyFundingBoardMarks([position, bybit], multi);
+    expect(binanceResult?.markPrice).toBe("71000");
+    expect(binanceResult?.unrealizedPnl).toBe("10");
+    expect(bybitResult?.markPrice).toBe("3010");
+    expect(bybitResult?.unrealizedPnl).toBe("20");
+  });
 });

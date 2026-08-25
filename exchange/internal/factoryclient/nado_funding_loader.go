@@ -9,15 +9,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type nadoFundingBoardLoader struct {
+type nadoDerivativeSnapshotLoader struct {
 	settings Settings
 }
 
-func NewNadoFundingBoardLoader(settings Settings) exchange.FundingBoardLoader {
-	return nadoFundingBoardLoader{settings: settings}
+func NewNadoDerivativeSnapshotLoader(settings Settings) DerivativeSnapshotLoader {
+	return nadoDerivativeSnapshotLoader{settings: settings}
 }
 
-// LoadFundingBoard resolves Nado's product ids back into symbols.
+// LoadDerivativeSnapshot resolves Nado's product ids back into symbols.
 //
 // Nado keys its bulk funding response by numeric product id and sends no symbol
 // at all, so a board row is only nameable after a discovery pass. That pass is
@@ -34,16 +34,16 @@ func NewNadoFundingBoardLoader(settings Settings) exchange.FundingBoardLoader {
 // interest are enriched from Nado's all-contracts endpoint when that endpoint
 // is available. A failed enrichment never turns valid funding data into an
 // unavailable board.
-func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader nadoDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	base := newNadoBase(exchange.ProductPerp, "", "", Settings{
 		Endpoint:          loader.settings.Endpoint,
 		WebSocketEndpoint: loader.settings.WebSocketEndpoint,
 		HTTPClient:        loader.settings.HTTPClient,
 	})
 
-	products, err := base.discover(ctx, fundingBoardOperation)
+	products, err := base.discover(ctx, derivativeSnapshotOperation)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, err
+		return DerivativeSnapshot{}, err
 	}
 	byProductID := make(map[string]nadoProduct, len(products))
 	for _, product := range products {
@@ -52,7 +52,7 @@ func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 
 	rates, err := base.sdk.GetAllFundingRates(ctx)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, base.normalize(fundingBoardOperation, err)
+		return DerivativeSnapshot{}, base.normalize(derivativeSnapshotOperation, err)
 	}
 	contracts, _ := base.sdk.GetContracts(ctx, nil)
 	contractsByProductID := make(map[int64]nadoContractFields, len(contracts))
@@ -66,7 +66,7 @@ func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 		}
 	}
 
-	entries := make([]exchange.FundingBoardEntry, 0, len(rates))
+	entries := make([]DerivativeSnapshotEntry, 0, len(rates))
 	for productID, row := range rates {
 		product, known := byProductID[productID]
 		if !known {
@@ -76,7 +76,7 @@ func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 		if err != nil {
 			continue
 		}
-		entry := exchange.FundingBoardEntry{
+		entry := DerivativeSnapshotEntry{
 			Symbol:        product.canonical,
 			NativeSymbol:  product.native,
 			NativeID:      productID,
@@ -97,7 +97,7 @@ func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 		}
 		entries = append(entries, entry)
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 type nadoContractFields struct {

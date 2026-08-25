@@ -18,6 +18,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const coordinatorRuntimeID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"
+
 func TestCoordinatorConcurrentIdempotencyCallsDriverOnce(t *testing.T) {
 	fixture := newCoordinatorFixture(t)
 	if report, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil || !report.WriteReady {
@@ -121,7 +123,7 @@ func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) 
 		t.Run(race, func(t *testing.T) {
 			fixture := newCoordinatorFixture(t)
 			active := true
-			current := account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
+			current := account.WriteFence{AccountID: fixture.accountID, RuntimeID: coordinatorRuntimeID}
 			fixture.router.route.CheckWriteFence = func(fence account.WriteFence) error {
 				if !active || fence != current {
 					return account.ErrStaleWriteFence
@@ -130,7 +132,7 @@ func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) 
 			}
 			hook := func(context.Context, store.StoredCommand) error {
 				if race == "rotation" {
-					current = account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2}
+					current = account.WriteFence{AccountID: fixture.accountID, RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"}
 				} else {
 					active = false
 				}
@@ -141,7 +143,7 @@ func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) 
 				t.Fatalf("initial recovery=%+v err=%v", report, err)
 			}
 			request := fixture.placeRequest()
-			request.WriteFence = account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
+			request.WriteFence = account.WriteFence{AccountID: fixture.accountID, RuntimeID: coordinatorRuntimeID}
 			if _, err := fixture.coordinator.Place(context.Background(), request); !errors.Is(err, ErrWriteNotReady) {
 				t.Fatalf("Place error=%v, want ErrWriteNotReady", err)
 			}
@@ -210,10 +212,8 @@ func TestCoordinatorRejectsIncompleteWriteFenceBeforeReservation(t *testing.T) {
 		fence account.WriteFence
 	}{
 		{name: "zero"},
-		{name: "missing desired revision", fence: account.WriteFence{AccountID: "binance-main", RuntimeGeneration: 1, CredentialVersion: 1}},
-		{name: "missing runtime generation", fence: account.WriteFence{AccountID: "binance-main", DesiredStateRevision: 1, CredentialVersion: 1}},
-		{name: "missing credential version", fence: account.WriteFence{AccountID: "binance-main", DesiredStateRevision: 1, RuntimeGeneration: 1}},
-		{name: "wrong account", fence: account.WriteFence{AccountID: "binance-other", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}},
+		{name: "missing runtime id", fence: account.WriteFence{AccountID: "binance-main"}},
+		{name: "wrong account", fence: account.WriteFence{AccountID: "binance-other", RuntimeID: coordinatorRuntimeID}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -243,7 +243,7 @@ func TestCoordinatorRequiresFinalWriteFenceCheckerBeforeReservation(t *testing.T
 		t.Fatalf("RecoverAccount: %v", err)
 	}
 	request := fixture.placeRequest()
-	request.WriteFence = account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
+	request.WriteFence = account.WriteFence{AccountID: fixture.accountID, RuntimeID: coordinatorRuntimeID}
 	if _, err := fixture.coordinator.Place(context.Background(), request); !errors.Is(err, ErrWriteNotReady) {
 		t.Fatalf("Place error=%v, want ErrWriteNotReady", err)
 	}
@@ -295,8 +295,7 @@ func TestCoordinatorRecoveryRoutesDurableCommandToRecordedRetiringGeneration(t *
 	request := fixture.placeRequest()
 	request.RouteID = "spot-retiring"
 	request.WriteFence = account.WriteFence{
-		AccountID: fixture.accountID, DesiredStateRevision: 7,
-		RuntimeGeneration: 11, CredentialVersion: 3,
+		AccountID: fixture.accountID, RuntimeID: coordinatorRuntimeID,
 	}
 	payload, payloadHash, err := canonicalPlacePayload(request)
 	if err != nil {
@@ -335,8 +334,7 @@ func TestCoordinatorRecoveryRoutesDurableCommandToRecordedRetiringGeneration(t *
 
 	accountID, instrumentID, routeID, fence, calls := router.RecoveryRequest()
 	wantFence := domain.AccountFence{
-		AccountID: request.AccountID, DesiredStateRevision: request.WriteFence.DesiredStateRevision,
-		RuntimeGeneration: request.WriteFence.RuntimeGeneration, CredentialVersion: request.WriteFence.CredentialVersion,
+		AccountID: request.AccountID, RuntimeID: request.WriteFence.RuntimeID,
 	}
 	if calls != 1 || accountID != request.AccountID || instrumentID != request.InstrumentID || routeID != request.RouteID || fence != wantFence {
 		t.Fatalf("recovery request calls=%d account=%s instrument=%s route=%s fence=%+v", calls, accountID, instrumentID, routeID, fence)
@@ -1024,7 +1022,7 @@ func (fixture *coordinatorFixture) placeRequest() PlaceRequest {
 		Side: exchange.SideBuy, Type: exchange.OrderTypeLimit,
 		Quantity: decimal.RequireFromString("0.001"), LimitPrice: decimal.RequireFromString("100"),
 		LimitPolicy: exchange.LimitPolicyResting,
-		WriteFence:  account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		WriteFence:  account.WriteFence{AccountID: fixture.accountID, RuntimeID: coordinatorRuntimeID},
 	}
 }
 

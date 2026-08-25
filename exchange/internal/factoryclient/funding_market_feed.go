@@ -3,6 +3,8 @@ package factoryclient
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,69 +12,225 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
 
-type fundingMarketWatcher interface {
-	stream(context.Context, exchange.FundingMarketPatch, func(exchange.FundingMarketPatch)) error
+type derivativeMarketFeed struct {
+	native        *nativeDerivativeFeed
+	routeProfiles []string
+	nativeFamily  string
+	resolver      exchange.DerivativeInstrumentResolver
+	hotMu         sync.Mutex
+	nativeByID    map[string]string
+	hot           map[string]bool
+}
+
+func NewDerivativeFeed(scope exchange.CatalogScope, routeProfiles []string, nativeFamily string, loader DerivativeSnapshotLoader, resolver exchange.DerivativeInstrumentResolver, settings Settings) exchange.DerivativeFeed {
+	native := newNativeDerivativeFeed(scope, loader, settings)
+	return &derivativeMarketFeed{
+		native: native, routeProfiles: append([]string(nil), routeProfiles...), nativeFamily: nativeFamily, resolver: resolver,
+		nativeByID: make(map[string]string), hot: make(map[string]bool),
+	}
+}
+
+func (feed *derivativeMarketFeed) SetHotInstrument(instrumentID string, active bool) {
+	if feed == nil || feed.native == nil || instrumentID == "" {
+		return
+	}
+	feed.hotMu.Lock()
+	if active {
+		feed.hot[instrumentID] = true
+	} else {
+		delete(feed.hot, instrumentID)
+	}
+	native := feed.nativeByID[instrumentID]
+	feed.hotMu.Unlock()
+	if native != "" {
+		feed.native.SetHotInstrument(native, active)
+	}
+}
+
+func (feed *derivativeMarketFeed) Bootstrap(ctx context.Context) (exchange.DerivativePatch, error) {
+	if feed == nil || feed.native == nil {
+		return exchange.DerivativePatch{}, errors.New("derivative feed is unavailable")
+	}
+	patch, err := feed.native.Bootstrap(ctx)
+	if err != nil {
+		return exchange.DerivativePatch{}, err
+	}
+	return feed.project(ctx, patch)
+}
+
+func (feed *derivativeMarketFeed) Stream(ctx context.Context, emit func(exchange.DerivativePatch)) error {
+	if feed == nil || feed.native == nil || emit == nil {
+		return errors.New("derivative feed is unavailable")
+	}
+	return feed.native.Stream(ctx, func(patch nativeDerivativePatch) {
+		projected, err := feed.project(ctx, patch)
+		if err == nil {
+			emit(projected)
+		}
+	})
+}
+
+func (feed *derivativeMarketFeed) Close() error {
+	if feed == nil || feed.native == nil {
+		return nil
+	}
+	return feed.native.Close()
+}
+
+func (feed *derivativeMarketFeed) project(ctx context.Context, patch nativeDerivativePatch) (exchange.DerivativePatch, error) {
+	if feed == nil || feed.resolver == nil || len(feed.routeProfiles) == 0 || feed.nativeFamily == "" {
+		return exchange.DerivativePatch{}, errors.New("derivative projection is unavailable")
+	}
+	if err := patch.validate(); err != nil {
+		return exchange.DerivativePatch{}, err
+	}
+	facts := make([]exchange.DerivativeFact, 0, len(patch.Facts))
+	for _, native := range patch.Facts {
+		for _, routeProfile := range feed.routeProfiles {
+			fact, ok := feed.resolver.ResolveDerivativeInstrument(ctx, routeProfile, native.Instrument.NativeSymbol, native.Instrument.NativeID)
+			if !ok {
+				continue
+			}
+			fact.FundingRate, fact.FundingIntervalHours, fact.NextFundingTime = native.FundingRate, native.FundingIntervalHours, native.NextFundingTime
+			fact.MarkPrice, fact.IndexPrice = native.MarkPrice, native.IndexPrice
+			fact.OpenInterest, fact.OpenInterestNotional = native.OpenInterest, native.OpenInterestNotional
+			fact.OpenInterestNotionalAsset = native.OpenInterestNotionalAsset
+			fact.FundingObservedAt = native.FundingObservedAt
+			fact.MarkObservedAt = firstObservedAt(native.MarkObservedAt, native.PriceObservedAt)
+			fact.IndexObservedAt = firstObservedAt(native.IndexObservedAt, native.PriceObservedAt)
+			fact.OpenInterestObservedAt = native.OpenInterestObservedAt
+			facts = append(facts, fact)
+			feed.hotMu.Lock()
+			feed.nativeByID[fact.InstrumentID] = native.Instrument.NativeSymbol
+			active := feed.hot[fact.InstrumentID]
+			feed.hotMu.Unlock()
+			if active {
+				feed.native.SetHotInstrument(native.Instrument.NativeSymbol, true)
+			}
+		}
+	}
+	if len(patch.Facts) > 0 && len(facts) == 0 {
+		return exchange.DerivativePatch{}, fmt.Errorf("derivative catalog projection unavailable")
+	}
+	kind := exchange.EventDelta
+	if patch.Kind == nativeDerivativePatchSnapshot {
+		kind = exchange.EventSnapshot
+	}
+	return exchange.DerivativePatch{
+		Kind: kind, Scope: patch.Scope, NativeFamily: feed.nativeFamily, Generation: 1,
+		ObservedAt: patch.ObservedAt, SourceSequence: strconv.FormatUint(patch.Sequence, 10),
+		Fields: derivativeFields(patch.Fields), Facts: facts,
+	}, nil
+}
+
+func derivativeFields(fields nativeDerivativeField) exchange.DerivativeField {
+	var result exchange.DerivativeField
+	for _, item := range []struct {
+		old  nativeDerivativeField
+		next exchange.DerivativeField
+	}{
+		{nativeDerivativeFieldIdentity, exchange.DerivativeFieldIdentity},
+		{nativeDerivativeFieldFunding, exchange.DerivativeFieldFunding},
+		{nativeDerivativeFieldFundingInterval, exchange.DerivativeFieldFundingInterval},
+		{nativeDerivativeFieldNextFundingTime, exchange.DerivativeFieldNextFundingTime},
+		{nativeDerivativeFieldMarkPrice, exchange.DerivativeFieldMark},
+		{nativeDerivativeFieldIndexPrice, exchange.DerivativeFieldIndex},
+		{nativeDerivativeFieldOpenInterest, exchange.DerivativeFieldOpenInterest},
+		{nativeDerivativeFieldOpenInterestNotional, exchange.DerivativeFieldOpenInterestNotional},
+	} {
+		if fields.Has(item.old) {
+			result |= item.next
+		}
+	}
+	return result
+}
+
+type derivativeWatcher interface {
+	stream(context.Context, nativeDerivativePatch, func(nativeDerivativePatch)) error
 	close() error
 }
 
-type fundingMarketFeed struct {
-	scope   exchange.CatalogScope
-	loader  exchange.FundingBoardLoader
-	watcher fundingMarketWatcher
-	now     func() time.Time
+type hotDerivativeWatcher interface {
+	setHotInstrument(string, bool)
+}
+
+type nativeDerivativeFeed struct {
+	scope    exchange.CatalogScope
+	loader   DerivativeSnapshotLoader
+	watcher  derivativeWatcher
+	settings Settings
+	now      func() time.Time
 
 	sequence     atomic.Uint64
 	mu           sync.RWMutex
-	status       exchange.FundingMarketFeedStatus
-	bootstrap    exchange.FundingMarketPatch
+	bootstrap    nativeDerivativePatch
 	hasBootstrap bool
 }
 
-func NewFundingMarketFeed(scope exchange.CatalogScope, loader exchange.FundingBoardLoader, settings Settings) exchange.FundingMarketFeed {
-	feed := &fundingMarketFeed{
-		scope: scope, loader: loader, now: time.Now,
-		status: exchange.FundingMarketFeedStatus{State: exchange.FundingMarketFeedUnavailable},
+func newNativeDerivativeFeed(scope exchange.CatalogScope, loader DerivativeSnapshotLoader, settings Settings) *nativeDerivativeFeed {
+	feed := &nativeDerivativeFeed{
+		scope: scope, loader: loader, settings: settings, now: time.Now,
 	}
-	feed.watcher = fundingMarketWatcherFor(scope, loader, settings)
+	feed.watcher = derivativeWatcherFor(scope, loader, settings)
 	return feed
 }
 
-// restFundingMarketWatcher is the safety-net transport for a venue whose
+// restDerivativeWatcher is the safety-net transport for a venue whose
 // realtime connection cannot be constructed. Venue-specific WebSocket
 // watchers replace it below; keeping the fallback here lets a route remain
 // degraded and observable rather than disappear from the board altogether.
-type restFundingMarketWatcher struct {
+type restDerivativeWatcher struct {
 	scope    exchange.CatalogScope
-	loader   exchange.FundingBoardLoader
+	loader   DerivativeSnapshotLoader
 	interval time.Duration
+	settings Settings
 }
 
-func fundingMarketWatcherFor(scope exchange.CatalogScope, loader exchange.FundingBoardLoader, settings Settings) fundingMarketWatcher {
+func derivativeWatcherFor(scope exchange.CatalogScope, loader DerivativeSnapshotLoader, settings Settings) derivativeWatcher {
+	streaming, interval := derivativeRuntimeStrategy(settings.MarketCapabilities)
+	if !streaming {
+		return &restDerivativeWatcher{scope: scope, loader: loader, interval: interval, settings: settings}
+	}
 	switch scope.Venue {
 	case exchange.VenueBinance:
-		return &binanceFundingMarketWatcher{settings: settings}
+		return &binanceDerivativeWatcher{settings: settings}
 	case exchange.VenueAster:
-		return &binanceFundingMarketWatcher{settings: settings, aster: true}
+		return &binanceDerivativeWatcher{settings: settings, aster: true}
 	case exchange.VenueHyperliquid:
-		return &hyperliquidFundingMarketWatcher{settings: settings}
+		return &hyperliquidDerivativeWatcher{settings: settings}
 	case exchange.VenueLighter:
-		return &lighterFundingMarketWatcher{settings: settings}
-	case exchange.VenueBybit:
-		return &restFundingMarketWatcher{scope: scope, loader: loader, interval: 15 * time.Second}
-	case exchange.VenueBitget:
-		return &restFundingMarketWatcher{scope: scope, loader: loader, interval: 15 * time.Second}
+		return &lighterDerivativeWatcher{settings: settings}
 	case exchange.VenueGate:
-		return &gateFundingMarketWatcher{settings: settings}
-	case exchange.VenueOKX:
-		return &restFundingMarketWatcher{scope: scope, loader: loader, interval: 15 * time.Second}
+		return &gateDerivativeWatcher{scope: scope, loader: loader, settings: settings}
 	case exchange.VenueNado:
-		return &nadoFundingMarketWatcher{settings: settings}
+		return &nadoDerivativeWatcher{settings: settings}
 	default:
-		return &restFundingMarketWatcher{scope: scope, loader: loader}
+		return &restDerivativeWatcher{scope: scope, loader: loader, interval: interval, settings: settings}
 	}
 }
 
-func (watcher *restFundingMarketWatcher) stream(ctx context.Context, _ exchange.FundingMarketPatch, emit func(exchange.FundingMarketPatch)) error {
+// derivativeRuntimeStrategy turns the validated capability rows selected by
+// Gateway into the adapter's broad-feed transport and cadence. Venue switches
+// below choose only the concrete protocol implementation; they no longer
+// decide whether the runtime uses WebSocket or REST.
+func derivativeRuntimeStrategy(capabilities []exchange.MarketCapability) (bool, time.Duration) {
+	streaming := false
+	interval := time.Duration(0)
+	for _, capability := range capabilities {
+		if capability.Transport == exchange.TransportWebSocket {
+			streaming = true
+		}
+		if capability.Transport == exchange.TransportREST && capability.NominalCadence > 0 && (interval == 0 || capability.NominalCadence < interval) {
+			interval = capability.NominalCadence
+		}
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	return streaming, interval
+}
+
+func (watcher *restDerivativeWatcher) stream(ctx context.Context, _ nativeDerivativePatch, emit func(nativeDerivativePatch)) error {
 	interval := watcher.interval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -84,37 +242,33 @@ func (watcher *restFundingMarketWatcher) stream(ctx context.Context, _ exchange.
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			snapshot, err := watcher.loader.LoadFundingBoard(ctx, watcher.scope)
+			snapshot, err := loadDerivativeSnapshot(ctx, watcher.scope, watcher.loader, watcher.settings)
 			if err != nil {
 				return err
 			}
-			emit(fundingMarketPatchFromBoard(snapshot))
+			emit(nativeDerivativePatchFromSnapshot(snapshot))
 		}
 	}
 }
 
-func (*restFundingMarketWatcher) close() error { return nil }
+func (*restDerivativeWatcher) close() error { return nil }
 
-func (feed *fundingMarketFeed) Bootstrap(ctx context.Context) (exchange.FundingMarketPatch, error) {
+func (feed *nativeDerivativeFeed) Bootstrap(ctx context.Context) (nativeDerivativePatch, error) {
 	if feed == nil || feed.loader == nil || ctx == nil {
-		return exchange.FundingMarketPatch{}, errors.New("funding market bootstrap is unavailable")
+		return nativeDerivativePatch{}, errors.New("native derivative bootstrap is unavailable")
 	}
-	snapshot, err := feed.loader.LoadFundingBoard(ctx, feed.scope)
+	snapshot, err := loadDerivativeSnapshot(ctx, feed.scope, feed.loader, feed.settings)
 	if err != nil {
-		feed.fail(err)
-		return exchange.FundingMarketPatch{}, err
+		return nativeDerivativePatch{}, err
 	}
 	if err := snapshot.Validate(feed.scope); err != nil {
-		feed.fail(err)
-		return exchange.FundingMarketPatch{}, err
+		return nativeDerivativePatch{}, err
 	}
-	patch := fundingMarketPatchFromBoard(snapshot)
+	patch := nativeDerivativePatchFromSnapshot(snapshot)
 	patch.Sequence = feed.sequence.Add(1)
-	if err := patch.Validate(); err != nil {
-		feed.fail(err)
-		return exchange.FundingMarketPatch{}, err
+	if err := patch.validate(); err != nil {
+		return nativeDerivativePatch{}, err
 	}
-	feed.succeed(patch.ObservedAt)
 	feed.mu.Lock()
 	feed.bootstrap = patch
 	feed.hasBootstrap = true
@@ -122,9 +276,9 @@ func (feed *fundingMarketFeed) Bootstrap(ctx context.Context) (exchange.FundingM
 	return patch, nil
 }
 
-func (feed *fundingMarketFeed) Stream(ctx context.Context, emit func(exchange.FundingMarketPatch)) error {
+func (feed *nativeDerivativeFeed) Stream(ctx context.Context, emit func(nativeDerivativePatch)) error {
 	if feed == nil || feed.watcher == nil || ctx == nil || emit == nil {
-		return errors.New("funding market stream is unavailable")
+		return errors.New("native derivative stream is unavailable")
 	}
 	feed.mu.RLock()
 	bootstrap, hasBootstrap := feed.bootstrap, feed.hasBootstrap
@@ -136,7 +290,7 @@ func (feed *fundingMarketFeed) Stream(ctx context.Context, emit func(exchange.Fu
 			return err
 		}
 	}
-	return feed.watcher.stream(ctx, bootstrap, func(patch exchange.FundingMarketPatch) {
+	return feed.watcher.stream(ctx, bootstrap, func(patch nativeDerivativePatch) {
 		if patch.Scope == (exchange.CatalogScope{}) {
 			patch.Scope = feed.scope
 		}
@@ -144,66 +298,43 @@ func (feed *fundingMarketFeed) Stream(ctx context.Context, emit func(exchange.Fu
 			patch.ObservedAt = feed.now().UTC()
 		}
 		patch.Sequence = feed.sequence.Add(1)
-		if err := patch.Validate(); err != nil {
-			feed.fail(err)
+		if err := patch.validate(); err != nil {
 			return
 		}
-		feed.succeed(patch.ObservedAt)
 		emit(patch)
 	})
 }
 
-func (feed *fundingMarketFeed) Status() exchange.FundingMarketFeedStatus {
-	if feed == nil {
-		return exchange.FundingMarketFeedStatus{State: exchange.FundingMarketFeedUnavailable}
-	}
-	feed.mu.RLock()
-	defer feed.mu.RUnlock()
-	return feed.status
-}
-
-func (feed *fundingMarketFeed) Close() error {
+func (feed *nativeDerivativeFeed) Close() error {
 	if feed == nil || feed.watcher == nil {
 		return nil
 	}
 	return feed.watcher.close()
 }
 
-func (feed *fundingMarketFeed) succeed(observedAt time.Time) {
-	feed.mu.Lock()
-	feed.status.State = exchange.FundingMarketFeedLive
-	feed.status.LastSuccessAt = observedAt.UTC()
-	feed.status.LastError = ""
-	feed.mu.Unlock()
+func (feed *nativeDerivativeFeed) SetHotInstrument(nativeSymbol string, active bool) {
+	if feed == nil || nativeSymbol == "" {
+		return
+	}
+	if watcher, ok := feed.watcher.(hotDerivativeWatcher); ok {
+		watcher.setHotInstrument(nativeSymbol, active)
+	}
 }
 
-func (feed *fundingMarketFeed) fail(err error) {
-	feed.mu.Lock()
-	if feed.status.LastSuccessAt.IsZero() {
-		feed.status.State = exchange.FundingMarketFeedUnavailable
-	} else {
-		feed.status.State = exchange.FundingMarketFeedDegraded
-	}
-	if err != nil {
-		feed.status.LastError = err.Error()
-	}
-	feed.mu.Unlock()
-}
-
-func fundingMarketPatchFromBoard(snapshot exchange.FundingBoardSnapshot) exchange.FundingMarketPatch {
-	facts := make([]exchange.FundingMarketFact, 0, len(snapshot.Entries))
+func nativeDerivativePatchFromSnapshot(snapshot DerivativeSnapshot) nativeDerivativePatch {
+	facts := make([]nativeDerivativeFact, 0, len(snapshot.Entries))
 	for _, entry := range snapshot.Entries {
 		settlement := snapshot.Scope.Settlement
 		if settlement == "" {
 			settlement = entry.QuoteAsset
 		}
-		fact := exchange.FundingMarketFact{
+		fact := nativeDerivativeFact{
 			Instrument: exchange.InstrumentIdentity{
 				Venue: snapshot.Scope.Venue, Product: exchange.ProductPerp,
 				Symbol: entry.Symbol, NativeSymbol: entry.NativeSymbol, NativeID: entry.NativeID,
 				BaseAsset: entry.BaseAsset, QuoteAsset: entry.QuoteAsset, SettleAsset: settlement,
 			},
-			FundingRate:               exchange.OptionalDecimal{Value: entry.Rate, Valid: true},
+			FundingRate:               exchange.OptionalDecimal{Value: entry.Rate, Valid: entry.RateValid},
 			FundingIntervalHours:      entry.IntervalHours,
 			NextFundingTime:           entry.NextFundingTime,
 			MarkPrice:                 entry.MarkPrice,
@@ -217,7 +348,7 @@ func fundingMarketPatchFromBoard(snapshot exchange.FundingBoardSnapshot) exchang
 			PriceObservedAt:           entry.PriceObservedAt,
 			OpenInterestObservedAt:    entry.OpenInterestObservedAt,
 		}
-		if fact.FundingObservedAt.IsZero() {
+		if fact.FundingRate.Valid && fact.FundingObservedAt.IsZero() {
 			fact.FundingObservedAt = snapshot.ObservedAt
 		}
 		if fact.OpenInterestNotional.Valid && fact.OpenInterestNotionalAsset == "" {
@@ -235,9 +366,9 @@ func fundingMarketPatchFromBoard(snapshot exchange.FundingBoardSnapshot) exchang
 		}
 		facts = append(facts, fact)
 	}
-	return exchange.FundingMarketPatch{
-		Kind: exchange.FundingMarketPatchSnapshot, Scope: snapshot.Scope,
-		ObservedAt: snapshot.ObservedAt, Fields: exchange.FundingMarketFieldAll, Facts: facts,
+	return nativeDerivativePatch{
+		Kind: nativeDerivativePatchSnapshot, Scope: snapshot.Scope,
+		ObservedAt: snapshot.ObservedAt, Fields: nativeDerivativeFieldAll, Facts: facts,
 	}
 }
 

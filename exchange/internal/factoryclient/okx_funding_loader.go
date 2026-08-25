@@ -8,16 +8,26 @@ import (
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 )
 
-type okxFundingBoardLoader struct {
+type okxDerivativeSnapshotLoader struct {
 	settlement string
 	settings   Settings
+	client     okxDerivativeSnapshotClient
 }
 
-func NewOKXFundingBoardLoader(settlement string, settings Settings) exchange.FundingBoardLoader {
-	return okxFundingBoardLoader{settlement: settlement, settings: settings}
+type okxDerivativeSnapshotClient interface {
+	GetAllFundingRates(context.Context) ([]okx.FundingRate, error)
+	GetMarkPrices(context.Context, string) ([]okx.MarkPrice, error)
+	GetOpenInterests(context.Context, string) ([]okx.OpenInterest, error)
+	GetIndexTickers(context.Context, string) ([]okx.IndexTicker, error)
 }
 
-// LoadFundingBoard reads every swap's funding rate in one instId=ANY call.
+func NewOKXDerivativeSnapshotLoader(settlement string, settings Settings) DerivativeSnapshotLoader {
+	return okxDerivativeSnapshotLoader{settlement: settlement, settings: settings}
+}
+
+func (okxDerivativeSnapshotLoader) coordinatesDerivativeRequests() bool { return true }
+
+// LoadDerivativeSnapshot reads every swap's funding rate in one instId=ANY call.
 //
 // OKX is the one venue whose canonical symbol is already its native one — the
 // catalog loader files swaps under their raw instId (BTC-USDT-SWAP), so no
@@ -28,16 +38,25 @@ func NewOKXFundingBoardLoader(settlement string, settings Settings) exchange.Fun
 // are, and their difference is the interval. Deriving it costs nothing and is
 // exact, where a hardcoded eight hours would be wrong for the instruments OKX
 // settles hourly.
-func (loader okxFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
-	sdk := newOKXPublicSDK(loader.settings)
-
-	rows, err := sdk.GetAllFundingRates(ctx)
-	if err != nil {
-		return exchange.FundingBoardSnapshot{}, okxNormalizeErr(exchange.ProductPerp, fundingBoardOperation, err)
+func (loader okxDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
+	client := loader.client
+	if client == nil {
+		client = newOKXPublicSDK(loader.settings)
 	}
-	marks, _ := sdk.GetMarkPrices(ctx, okxSwapType)
-	openInterests, _ := sdk.GetOpenInterests(ctx, okxSwapType)
-	indexes, _ := sdk.GetIndexTickers(ctx, loader.settlement)
+
+	rows, err := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueOKX, "funding_rates", "swap", client.GetAllFundingRates)
+	if err != nil {
+		return DerivativeSnapshot{}, okxNormalizeErr(exchange.ProductPerp, derivativeSnapshotOperation, err)
+	}
+	marks, _ := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueOKX, "mark_prices", "swap", func(callCtx context.Context) ([]okx.MarkPrice, error) {
+		return client.GetMarkPrices(callCtx, okxSwapType)
+	})
+	openInterests, _ := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueOKX, "open_interest", "swap", func(callCtx context.Context) ([]okx.OpenInterest, error) {
+		return client.GetOpenInterests(callCtx, okxSwapType)
+	})
+	indexes, _ := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueOKX, "index_tickers", "swap", func(callCtx context.Context) ([]okx.IndexTicker, error) {
+		return client.GetIndexTickers(callCtx, loader.settlement)
+	})
 	markByInstrument := make(map[string]okx.MarkPrice, len(marks))
 	for _, row := range marks {
 		markByInstrument[row.InstId] = row
@@ -51,7 +70,7 @@ func (loader okxFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope 
 		indexByInstrument[row.InstId] = row
 	}
 
-	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
+	entries := make([]DerivativeSnapshotEntry, 0, len(rows))
 	for _, row := range rows {
 		if row.InstrumentType != "" && !stringsEqualFold(row.InstrumentType, okxSwapType) {
 			continue
@@ -68,7 +87,7 @@ func (loader okxFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope 
 		if err != nil {
 			continue
 		}
-		entry := exchange.FundingBoardEntry{
+		entry := DerivativeSnapshotEntry{
 			Symbol:       row.InstrumentID,
 			NativeSymbol: row.InstrumentID,
 			BaseAsset:    base,
@@ -109,7 +128,7 @@ func (loader okxFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope 
 		}
 		entries = append(entries, entry)
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 type okxFundingHistoryLoader struct {

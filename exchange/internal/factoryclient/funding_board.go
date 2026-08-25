@@ -8,18 +8,18 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Shared plumbing for the credential-free funding board loaders.
+// Shared plumbing for credential-free derivative snapshot loaders.
 //
 // The loaders in this family differ only in which endpoint they call and how
 // that venue spells a symbol. Everything downstream of the parse — the snapshot
-// envelope, the "absent means absent" rule for optional cells — is identical,
+// envelope and the "absent means absent" rule for optional fields — is identical,
 // and lives here so that nine loaders cannot drift into nine slightly different
 // notions of what a missing mark price means.
 
-const fundingBoardOperation = "FundingBoard.Load"
+const derivativeSnapshotOperation = "DerivativeSnapshot.Load"
 
-func fundingBoardSnapshot(scope exchange.CatalogScope, entries []exchange.FundingBoardEntry) exchange.FundingBoardSnapshot {
-	return exchange.FundingBoardSnapshot{
+func derivativeSnapshot(scope exchange.CatalogScope, entries []DerivativeSnapshotEntry) DerivativeSnapshot {
+	return DerivativeSnapshot{
 		SchemaVersion: 1,
 		Scope:         scope,
 		ObservedAt:    time.Now().UTC(),
@@ -31,7 +31,7 @@ func fundingBoardSnapshot(scope exchange.CatalogScope, entries []exchange.Fundin
 // whether it was answered.
 //
 // Unparseable and non-positive both degrade to invalid rather than to zero. A
-// zero mark price is not a price, and rendering one as "0.00" on a board an
+// zero mark price is not a price, and rendering one as "0.00" in a product an
 // operator sizes a trade against is worse than rendering a dash.
 func fundingOptionalDecimal(value string) exchange.OptionalDecimal {
 	parsed, err := decimal.NewFromString(value)
@@ -73,7 +73,7 @@ func fundingOpenInterestNotional(openInterest, markPrice string, multiplier deci
 // The bulk ticker endpoints send no base/quote metadata — only the native
 // symbol — so the base is whatever survives canonicalisation ahead of the
 // separator. A symbol that never got one is returned whole rather than blanked,
-// because a board row labelled with the venue's own spelling is still usable.
+// because a derivative row labelled with the venue's own spelling is still usable.
 func baseFromCanonical(canonical string) string {
 	if index := strings.Index(canonical, "-"); index > 0 {
 		return canonical[:index]
@@ -85,7 +85,7 @@ func baseFromCanonical(canonical string) string {
 //
 // Funding rates are legitimately negative, so the sign carries meaning and the
 // positive-only parsers cannot be reused. An unparseable rate is the one field
-// a board row cannot degrade around — there is nothing left to render — so the
+// a derivative row cannot degrade around — there is nothing left to render — so the
 // loaders skip such a row rather than failing the whole venue.
 func decimalOrSkip(value string) (decimal.Decimal, error) {
 	return positiveOrNegativeDecimal(strings.TrimSpace(value))

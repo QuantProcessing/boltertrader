@@ -4,30 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/hotset"
 	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
-	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
-	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 )
 
 type DerivativeFeedFactory interface {
-	BuildFeed(routeprofile.Profile) (exchange.FundingMarketFeed, error)
-}
-
-type derivativeRouteFeed struct {
-	profile routeprofile.Profile
-	feed    exchange.FundingMarketFeed
+	BuildDerivativeFeed([]routeprofile.Profile, []exchange.MarketCapability, exchange.DerivativeInstrumentResolver) (exchange.DerivativeFeed, error)
 }
 
 type derivativeVenueOwner struct {
 	key        markethub.OwnerKey
-	routes     []derivativeRouteFeed
+	profiles   []routeprofile.Profile
+	feed       exchange.DerivativeFeed
 	generation uint64
 }
 
@@ -36,22 +30,14 @@ type derivativeVenueOwner struct {
 // projections managed by that element, never independent lifecycle owners.
 type DerivativeOwners struct {
 	owners   []derivativeVenueOwner
-	markets  *publicmarket.Source
 	facts    *markethub.FactStore
 	observer markethub.Observer
-	requests *ratelimit.MarketCoordinator
 	mu       sync.Mutex
 	closed   bool
 }
 
-func (owners *DerivativeOwners) SetRequestCoordinator(coordinator *ratelimit.MarketCoordinator) {
-	if owners != nil {
-		owners.requests = coordinator
-	}
-}
-
-func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.Registry, capabilities *marketcapability.Registry, markets *publicmarket.Source, facts *markethub.FactStore, observer markethub.Observer) (*DerivativeOwners, error) {
-	if factory == nil || profiles == nil || capabilities == nil || markets == nil || facts == nil {
+func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.Registry, capabilities *marketcapability.Registry, resolver exchange.DerivativeInstrumentResolver, facts *markethub.FactStore, observer markethub.Observer) (*DerivativeOwners, error) {
+	if factory == nil || profiles == nil || capabilities == nil || resolver == nil || facts == nil {
 		return nil, fmt.Errorf("derivative Feed Owner dependencies are incomplete")
 	}
 	byOwner := make(map[markethub.OwnerKey][]routeprofile.Profile)
@@ -69,23 +55,26 @@ func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.R
 	}
 	owners := make([]derivativeVenueOwner, 0, len(byOwner))
 	for key, ownerProfiles := range byOwner {
-		owner := derivativeVenueOwner{key: key, routes: make([]derivativeRouteFeed, 0, len(ownerProfiles))}
-		for _, profile := range ownerProfiles {
-			feed, err := factory.BuildFeed(profile)
-			if err != nil || feed == nil {
-				for _, route := range owner.routes {
-					_ = route.feed.Close()
-				}
-				return nil, fmt.Errorf("build derivative feed %s: %w", profile.ID, err)
+		owner := derivativeVenueOwner{key: key, profiles: append([]routeprofile.Profile(nil), ownerProfiles...)}
+		runtimeCapabilities := make([]exchange.MarketCapability, 0, 4)
+		for _, dataset := range []exchange.MarketDataset{exchange.DatasetFunding, exchange.DatasetMark, exchange.DatasetIndex, exchange.DatasetOpenInterest} {
+			capability, resolveErr := capabilities.Resolve(key.Venue, key.NativeFamily, dataset, false)
+			if resolveErr != nil {
+				return nil, fmt.Errorf("%s %s capability: %w", ownerProfiles[0].ID, dataset, resolveErr)
 			}
-			owner.routes = append(owner.routes, derivativeRouteFeed{profile: profile, feed: feed})
+			runtimeCapabilities = append(runtimeCapabilities, capability)
 		}
+		feed, err := factory.BuildDerivativeFeed(ownerProfiles, runtimeCapabilities, resolver)
+		if err != nil || feed == nil {
+			return nil, fmt.Errorf("build derivative feed %s/%s: %w", key.Venue, key.NativeFamily, err)
+		}
+		owner.feed = feed
 		owners = append(owners, owner)
 	}
 	if len(owners) == 0 {
 		return nil, fmt.Errorf("no derivative Feed Owners configured")
 	}
-	return &DerivativeOwners{owners: owners, markets: markets, facts: facts, observer: observer}, nil
+	return &DerivativeOwners{owners: owners, facts: facts, observer: observer}, nil
 }
 
 func (owners *DerivativeOwners) Run(ctx context.Context) error {
@@ -118,30 +107,18 @@ func (owners *DerivativeOwners) runOwner(ctx context.Context, owner *derivativeV
 		}
 		owners.observe(owner.key, "live", reconnects)
 		backoff = time.Second
-		attempt, cancel := context.WithCancel(ctx)
-		results := make(chan error, len(owner.routes))
-		for index := range owner.routes {
-			route := &owner.routes[index]
-			go func() {
-				results <- route.feed.Stream(attempt, func(patch exchange.FundingMarketPatch) {
-					if projected, err := owners.project(attempt, owner.key, route.profile, generation, patch); err == nil {
-						_ = owners.facts.Apply(projected)
-					}
-				})
-			}()
-		}
-		err := <-results
-		cancel()
-		for range owner.routes[1:] {
-			<-results
-		}
+		err := owner.feed.Stream(ctx, func(patch exchange.DerivativePatch) {
+			patch.Generation = generation
+			patch.NativeFamily = owner.key.NativeFamily
+			_ = owners.facts.Apply(patch)
+		})
 		if ctx.Err() != nil {
 			return
 		}
 		reconnects++
 		owners.observe(owner.key, "degraded", reconnects)
 		if owners.observer != nil {
-			owners.observer.RecordMarketGap(string(owner.key.Venue), owner.key.NativeFamily, "derivative", true)
+			owners.observer.RecordMarketGap(string(owner.key.Venue), owner.key.NativeFamily, "derivative_facts", true)
 		}
 		_ = err
 		if !waitContext(ctx, backoff) {
@@ -152,102 +129,40 @@ func (owners *DerivativeOwners) runOwner(ctx context.Context, owner *derivativeV
 }
 
 func (owners *DerivativeOwners) bootstrapOwner(ctx context.Context, owner *derivativeVenueOwner, generation uint64) error {
-	results := make(chan error, len(owner.routes))
-	for index := range owner.routes {
-		route := &owner.routes[index]
-		go func() {
-			requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			load := func(callCtx context.Context) (any, error) { return route.feed.Bootstrap(callCtx) }
-			var value any
-			var err error
-			if owners.requests != nil {
-				value, err = owners.requests.Do(requestCtx, owner.key.Venue, "derivative_bootstrap", route.profile.ID, load)
-			} else {
-				value, err = load(requestCtx)
-			}
-			patch, _ := value.(exchange.FundingMarketPatch)
-			if err == nil {
-				var projected exchange.DerivativePatch
-				projected, err = owners.project(requestCtx, owner.key, route.profile, generation, patch)
-				if err == nil {
-					err = owners.facts.Apply(projected)
-				}
-			}
-			results <- err
-		}()
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	patch, err := owner.feed.Bootstrap(requestCtx)
+	if err == nil {
+		patch.Generation = generation
+		patch.NativeFamily = owner.key.NativeFamily
+		err = owners.facts.Apply(patch)
 	}
-	var result error
-	for range owner.routes {
-		result = errors.Join(result, <-results)
-	}
-	return result
-}
-
-func (owners *DerivativeOwners) project(ctx context.Context, owner markethub.OwnerKey, profile routeprofile.Profile, generation uint64, patch exchange.FundingMarketPatch) (exchange.DerivativePatch, error) {
-	if err := patch.Validate(); err != nil {
-		return exchange.DerivativePatch{}, err
-	}
-	catalog, err := owners.markets.Snapshot(ctx)
-	if err != nil {
-		return exchange.DerivativePatch{}, err
-	}
-	facts := make([]exchange.DerivativeFact, 0, len(patch.Facts))
-	for _, native := range patch.Facts {
-		entry := exchange.FundingBoardEntry{NativeSymbol: native.Instrument.NativeSymbol, NativeID: native.Instrument.NativeID}
-		instrument, ok := catalog.MatchFundingEntry(profile.ID, entry)
-		if !ok {
-			continue
-		}
-		facts = append(facts, exchange.DerivativeFact{
-			InstrumentID: string(instrument.Catalog.ID), RouteProfileID: profile.ID,
-			Instrument: instrument.Canonical.Identity, Environment: exchange.EnvironmentLive,
-			FundingRate: native.FundingRate, FundingIntervalHours: native.FundingIntervalHours,
-			NextFundingTime: native.NextFundingTime, MarkPrice: native.MarkPrice, IndexPrice: native.IndexPrice,
-			OpenInterest: native.OpenInterest, OpenInterestNotional: native.OpenInterestNotional,
-			OpenInterestNotionalAsset: native.OpenInterestNotionalAsset,
-			FundingObservedAt:         native.FundingObservedAt, MarkObservedAt: native.MarkObservedAt,
-			IndexObservedAt: native.IndexObservedAt, OpenInterestObservedAt: native.OpenInterestObservedAt,
-		})
-	}
-	if len(patch.Facts) > 0 && len(facts) == 0 {
-		return exchange.DerivativePatch{}, fmt.Errorf("derivative catalog projection unavailable")
-	}
-	kind := exchange.EventDelta
-	if patch.Kind == exchange.FundingMarketPatchSnapshot {
-		kind = exchange.EventSnapshot
-	}
-	return exchange.DerivativePatch{
-		Kind: kind, Scope: patch.Scope, NativeFamily: owner.NativeFamily, ObservedAt: patch.ObservedAt,
-		Generation: generation, SourceSequence: strconv.FormatUint(patch.Sequence, 10), Fields: derivativeFields(patch.Fields), Facts: facts,
-	}, nil
-}
-
-func derivativeFields(fields exchange.FundingMarketField) exchange.DerivativeField {
-	var result exchange.DerivativeField
-	for _, item := range []struct {
-		old  exchange.FundingMarketField
-		next exchange.DerivativeField
-	}{
-		{exchange.FundingMarketFieldIdentity, exchange.DerivativeFieldIdentity},
-		{exchange.FundingMarketFieldFunding, exchange.DerivativeFieldFunding},
-		{exchange.FundingMarketFieldFundingInterval, exchange.DerivativeFieldFundingInterval},
-		{exchange.FundingMarketFieldNextFundingTime, exchange.DerivativeFieldNextFundingTime},
-		{exchange.FundingMarketFieldMarkPrice, exchange.DerivativeFieldMark},
-		{exchange.FundingMarketFieldIndexPrice, exchange.DerivativeFieldIndex},
-		{exchange.FundingMarketFieldOpenInterest, exchange.DerivativeFieldOpenInterest},
-		{exchange.FundingMarketFieldOpenInterestNotional, exchange.DerivativeFieldOpenInterestNotional},
-	} {
-		if fields.Has(item.old) {
-			result |= item.next
-		}
-	}
-	return result
+	return err
 }
 
 func (owners *DerivativeOwners) observe(key markethub.OwnerKey, state string, reconnects uint64) {
 	if owners.observer != nil {
-		owners.observer.ObserveMarketFeed(string(key.Venue), key.NativeFamily, "derivative", state, reconnects)
+		owners.observer.ObserveMarketFeed(string(key.Venue), key.NativeFamily, "derivative_facts", state, reconnects)
+	}
+}
+
+// SetHot forwards logical hotset demand to the one broad owner for this native
+// family. Feeds without a cadence-sensitive field simply ignore the hint.
+func (owners *DerivativeOwners) SetHot(key hotset.Key, active bool) {
+	if owners == nil {
+		return
+	}
+	owners.mu.Lock()
+	defer owners.mu.Unlock()
+	for index := range owners.owners {
+		owner := &owners.owners[index]
+		if owner.key != key.Owner {
+			continue
+		}
+		if feed, ok := owner.feed.(exchange.DerivativeHotsetFeed); ok {
+			feed.SetHotInstrument(key.InstrumentID, active)
+		}
+		return
 	}
 }
 
@@ -263,9 +178,7 @@ func (owners *DerivativeOwners) Close() error {
 	owners.closed = true
 	var result error
 	for _, owner := range owners.owners {
-		for _, route := range owner.routes {
-			result = errors.Join(result, route.feed.Close())
-		}
+		result = errors.Join(result, owner.feed.Close())
 	}
 	owners.mu.Unlock()
 	return result

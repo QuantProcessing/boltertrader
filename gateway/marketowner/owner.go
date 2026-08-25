@@ -27,7 +27,7 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 	if owner.Capabilities == nil {
 		return markethub.NativeStream{}, fmt.Errorf("%w: capability registry unavailable", markethub.ErrUnavailable)
 	}
-	capability, err := owner.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, key.Dataset, key.InstrumentID != "")
+	_, err := owner.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, key.Dataset, key.InstrumentID != "")
 	if err != nil {
 		return markethub.NativeStream{}, fmt.Errorf("%w: %v", markethub.ErrUnavailable, err)
 	}
@@ -64,20 +64,22 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 		}
 		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, time.Now().UTC(), "", map[string]any{"interval": key.Interval, "candles": candles}), Events: events, Errors: failures, Close: stream.Subscription.Close}, nil
 	case exchange.DatasetMark:
-		if capability.Granularity != exchange.GranularitySingleInstrument {
-			stream, supported, err := owner.BoardMarks.Open(ctx, key)
-			if supported || err != nil {
-				return stream, err
-			}
+		// The logical mark topic always reads the authoritative FactStore.
+		// Hot single-instrument reference streams are activated separately and
+		// merge their richer fields into that store; opening WatchMarkPrice here
+		// would create a second native topic for the same instrument.
+		boardStream, supported, err := owner.BoardMarks.Open(ctx, key)
+		if supported || err != nil {
+			return boardStream, err
 		}
-		stream, err := owner.Source.WatchMarkPrice(ctx, key.InstrumentID)
+		markStream, err := owner.Source.WatchMarkPrice(ctx, key.InstrumentID)
 		if err != nil {
 			return markethub.NativeStream{}, err
 		}
 		events, failures := make(chan markethub.Message, 64), make(chan error, 1)
-		owner.BoardMarks.PublishMark(ctx, key.InstrumentID, exchange.OptionalDecimal{Value: stream.Snapshot.Price, Valid: true}, observed(stream.Snapshot.Time))
-		go forwardMark(ctx, key.InstrumentID, owner.BoardMarks, stream.Subscription, events, failures)
-		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, observed(stream.Snapshot.Time), "", map[string]any{"price": stream.Snapshot.Price.String()}), Events: events, Errors: failures, Close: stream.Subscription.Close}, nil
+		owner.BoardMarks.PublishMark(ctx, key.InstrumentID, exchange.OptionalDecimal{Value: markStream.Snapshot.Price, Valid: true}, observed(markStream.Snapshot.Time))
+		go forwardMark(ctx, key.InstrumentID, owner.BoardMarks, markStream.Subscription, events, failures)
+		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, observed(markStream.Snapshot.Time), "", map[string]any{"price": markStream.Snapshot.Price.String()}), Events: events, Errors: failures, Close: markStream.Subscription.Close}, nil
 	default:
 		return markethub.NativeStream{}, fmt.Errorf("%w: dataset %s", markethub.ErrUnavailable, key.Dataset)
 	}

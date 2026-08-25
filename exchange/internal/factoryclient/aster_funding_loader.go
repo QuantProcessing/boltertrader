@@ -7,30 +7,30 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
 
-type asterFundingBoardLoader struct {
+type asterDerivativeSnapshotLoader struct {
 	settlement string
 	settings   Settings
 }
 
-func NewAsterFundingBoardLoader(settlement string, settings Settings) exchange.FundingBoardLoader {
-	return asterFundingBoardLoader{settlement: settlement, settings: settings}
+func NewAsterDerivativeSnapshotLoader(settlement string, settings Settings) DerivativeSnapshotLoader {
+	return asterDerivativeSnapshotLoader{settlement: settlement, settings: settings}
 }
 
-// LoadFundingBoard reads Aster's credential-free all-market premium-index
+// LoadDerivativeSnapshot reads Aster's credential-free all-market premium-index
 // surface. Aster uses the Binance wire shape but its v3 endpoint family, so it
 // has its own loader instead of being filed under Binance by convenience.
-func (loader asterFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader asterDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	sdk, err := newAsterPerpPublicSDK(loader.settings)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, asterErr(exchange.ProductPerp, fundingBoardOperation, exchange.KindInvalidConfig, err.Error())
+		return DerivativeSnapshot{}, asterErr(exchange.ProductPerp, derivativeSnapshotOperation, exchange.KindInvalidConfig, err.Error())
 	}
 	rows, err := sdk.GetAllFundingRates(ctx)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, asterNormalizeErr(exchange.ProductPerp, fundingBoardOperation, err)
+		return DerivativeSnapshot{}, asterNormalizeErr(exchange.ProductPerp, derivativeSnapshotOperation, err)
 	}
 	config, err := sdk.GetFundingInfo(ctx)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, asterNormalizeErr(exchange.ProductPerp, fundingBoardOperation, err)
+		return DerivativeSnapshot{}, asterNormalizeErr(exchange.ProductPerp, derivativeSnapshotOperation, err)
 	}
 	intervals := make(map[string]int64, len(config))
 	for _, row := range config {
@@ -38,7 +38,7 @@ func (loader asterFundingBoardLoader) LoadFundingBoard(ctx context.Context, scop
 			intervals[row.Symbol] = row.FundingIntervalHours
 		}
 	}
-	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
+	entries := make([]DerivativeSnapshotEntry, 0, len(rows))
 	for _, row := range rows {
 		base, quote, ok := binanceSplitPerpSymbol(row.Symbol)
 		if !ok || quote != loader.settlement {
@@ -48,7 +48,7 @@ func (loader asterFundingBoardLoader) LoadFundingBoard(ctx context.Context, scop
 		if err != nil {
 			continue
 		}
-		entry := exchange.FundingBoardEntry{
+		entry := DerivativeSnapshotEntry{
 			Symbol:       base + "-" + quote,
 			NativeSymbol: row.Symbol,
 			BaseAsset:    base,
@@ -65,7 +65,7 @@ func (loader asterFundingBoardLoader) LoadFundingBoard(ctx context.Context, scop
 		}
 		entries = append(entries, entry)
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 type asterFundingHistoryLoader struct {

@@ -78,7 +78,7 @@ intervalHours`）再两两相比，价差是 `shortDaily − longDaily`，标题
 服务不会擅自默认按八小时算。
 
 `GET /api/v1/products/arbitrage/opportunities` 是公共读取，只使用 Trading 本地的
-catalog 和资金市场投影排名。匿名用户可以看全部公开机会；只有已登录用户才能传入
+catalog 和衍生品事实投影排名。匿名用户可以看全部公开机会；只有已登录用户才能传入
 `accountId` 计算账户可执行性。资金费策略要求费率与周期新鲜可用，基差和价差策略
 要求对应价格新鲜可用；OI 只参与展示、筛选和排序，永远不阻塞套利。是否上架由公开
 instrument directory 决定，账户可达性是另一条独立的执行事实，二者不能互相推断。

@@ -42,23 +42,25 @@ uses live public venue data instead.
 
 ## Credential-free public reads
 
-Two reads need no credential and therefore do not go through a client.
-`exchange.FundingBoardLoader` and `exchange.FundingHistoryLoader` are separate
-one-method interfaces: the first answers the current funding row for a venue's
-whole product surface, the second answers one instrument's past funding points
-within the bounds carried by `exchange.FundingHistoryRequest`.
+Current derivative facts and settled funding history need no credential.
+`factory.NewPublicDerivativeFeed` constructs an `exchange.DerivativeFeed` for
+one native market family and one or more route projections. A single broad
+venue snapshot or stream can therefore produce funding, mark, index, and OI
+patches for USDT and USDC routes without opening the native feed twice.
+Adapters whose native ticker carries several derivative fields may additionally
+implement `exchange.DerivativeReferenceWebSocket`; Gateway uses it as one rich
+hot stream while ordinary `PerpWebSocket` callers remain source compatible.
 
-`factory.NewPublicFundingConnector` and
-`factory.NewPublicFundingHistoryConnector` build them from an
-`exchange.CatalogScope` alone — venue, product, and environment, no key and no
-secret. A caller that reads only public funding never presents a credential and
-never holds an account.
+`factory.NewPublicFundingHistoryConnector` remains the request-driven path for
+one instrument's settled funding points within the bounds carried by
+`exchange.FundingHistoryRequest`. Both paths are built from public catalog
+identity — venue, product, environment, and settlement — and never receive an
+API key, secret, or account.
 
-Each snapshot carries a `Validate` method that rejects an answer whose identity
-does not match the request, so a loader cannot quietly return another venue's
-row. A venue that publishes no history at all still admits the interface and
-returns `exchange.ErrUnsupported`, which keeps the absence a documented answer
-rather than an empty series.
+Snapshots and patches validate identity before entering the normalized fact
+store, so an adapter cannot quietly publish another venue or route. A venue
+that publishes no history returns `exchange.ErrUnsupported`, which keeps the
+absence a documented answer rather than an empty series.
 
 ## Typed product surfaces
 

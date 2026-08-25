@@ -10,6 +10,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/shopspring/decimal"
@@ -370,6 +371,43 @@ type fakeFactory struct {
 func (factory fakeFactory) Build(profile routeprofile.Profile) (Connector, error) {
 	if profile.Venue == "binance" && profile.Product == routeprofile.ProductPerp && profile.SettlementAsset == "USDT" {
 		return factory.connector, nil
+	}
+	return nil, errors.New("profile not exercised")
+}
+
+func TestSourcePoolsNativeFamilySocketAndConsumesCatalogCapabilities(t *testing.T) {
+	usdtSocket, usdcSocket := &fakeMarkSocket{}, &fakeMarkSocket{}
+	factory := bybitRouteFactory{connectors: map[string]Connector{
+		"USDT": &fakeConnector{socket: usdtSocket},
+		"USDC": &fakeConnector{socket: usdcSocket},
+	}}
+	source, err := NewSource(factory, routeprofile.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	if len(source.columns) != 2 || len(source.sockets) != 1 {
+		t.Fatalf("columns=%d native sockets=%d, want two projections over one socket", len(source.columns), len(source.sockets))
+	}
+	capabilities, err := marketcapability.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.SetCapabilities(capabilities); err != nil {
+		t.Fatal(err)
+	}
+	for _, current := range source.columns {
+		if current.capability.Dataset != exchange.DatasetCatalog || current.capability.RateLimitOperation != "instruments" {
+			t.Fatalf("catalog capability=%+v", current.capability)
+		}
+	}
+}
+
+type bybitRouteFactory struct{ connectors map[string]Connector }
+
+func (factory bybitRouteFactory) Build(profile routeprofile.Profile) (Connector, error) {
+	if profile.Venue == "bybit" && profile.Product == routeprofile.ProductPerp {
+		return factory.connectors[profile.SettlementAsset], nil
 	}
 	return nil, errors.New("profile not exercised")
 }

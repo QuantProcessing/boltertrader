@@ -9,15 +9,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type gateFundingBoardLoader struct {
+type gateDerivativeSnapshotLoader struct {
 	settings Settings
 }
 
-func NewGateFundingBoardLoader(settings Settings) exchange.FundingBoardLoader {
-	return gateFundingBoardLoader{settings: settings}
+func NewGateDerivativeSnapshotLoader(settings Settings) DerivativeSnapshotLoader {
+	return gateDerivativeSnapshotLoader{settings: settings}
 }
 
-// LoadFundingBoard joins Gate's ticker surface to its contract surface.
+// LoadDerivativeSnapshot joins Gate's ticker surface to its contract surface.
 //
 // Both calls are required, not one preferred over the other: the ticker carries
 // the live rate, mark, index and open size, while the funding clock and the
@@ -28,13 +28,13 @@ func NewGateFundingBoardLoader(settings Settings) exchange.FundingBoardLoader {
 // The contract call is best-effort in the same sense as the other venues' —
 // tickers alone still render a usable board, so a contract failure narrows the
 // table rather than emptying it.
-func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader gateDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	sdk, _ := newGateSDK("", "", loader.settings)
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 
 	tickers, err := sdk.ListFuturesTickers(ctx, gate.SettleUSDT, "")
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, gateNormalizeErr(meta, fundingBoardOperation, err)
+		return DerivativeSnapshot{}, gateNormalizeErr(meta, derivativeSnapshotOperation, err)
 	}
 	type contractInfo struct {
 		interval   exchange.OptionalInt
@@ -63,7 +63,7 @@ func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 		}
 	}
 
-	entries := make([]exchange.FundingBoardEntry, 0, len(tickers))
+	entries := make([]DerivativeSnapshotEntry, 0, len(tickers))
 	for _, row := range tickers {
 		rate, err := decimalOrSkip(row.FundingRate)
 		if err != nil {
@@ -71,7 +71,7 @@ func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 		}
 		base, quote := gateSplitSymbol(row.Contract)
 		contract := contractsByName[row.Contract]
-		entries = append(entries, exchange.FundingBoardEntry{
+		entries = append(entries, DerivativeSnapshotEntry{
 			Symbol:          gateCanonicalSymbol(base, quote, row.Contract),
 			NativeSymbol:    row.Contract,
 			BaseAsset:       base,
@@ -90,7 +90,7 @@ func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 			),
 		})
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 type gateFundingHistoryLoader struct {

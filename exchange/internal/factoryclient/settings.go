@@ -9,11 +9,13 @@ import (
 // Settings carries validated local construction settings from exchange/factory
 // into the private SDK-backed builders.
 type Settings struct {
-	Endpoint          string
-	WebSocketEndpoint string
-	HTTPClient        *http.Client
-	AccountAddress    string
-	InstrumentCatalog exchange.InstrumentCatalog
-	CatalogScope      exchange.CatalogScope
-	SourceDescriptor  exchange.SourceDescriptor
+	Endpoint           string
+	WebSocketEndpoint  string
+	HTTPClient         *http.Client
+	AccountAddress     string
+	InstrumentCatalog  exchange.InstrumentCatalog
+	CatalogScope       exchange.CatalogScope
+	SourceDescriptor   exchange.SourceDescriptor
+	MarketRequests     exchange.MarketRequestCoordinator
+	MarketCapabilities []exchange.MarketCapability
 }

@@ -4141,178 +4141,70 @@
   ],
   "symbols": [
     {
-      "id": "exchange/factory.NewPublicFundingMarketFeed",
+      "id": "exchange/factory.NewPublicDerivativeFeed",
       "kind": "func",
       "coverage": "unit",
-      "tests": ["TestPublicFundingMarketFeedBootstrap"]
+      "tests": ["TestPublicDerivativeFeedConstruction"]
     },
     {
-      "id": "exchange.FundingMarketFact",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFact.Key",
-      "kind": "method",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFeed",
+      "id": "exchange.DerivativeFeed",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
     },
     {
-      "id": "exchange.FundingMarketFeed.Bootstrap",
+      "id": "exchange.DerivativeFeed.Bootstrap",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
     },
     {
-      "id": "exchange.FundingMarketFeed.Stream",
+      "id": "exchange.DerivativeFeed.Stream",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
     },
     {
-      "id": "exchange.FundingMarketFeed.Status",
+      "id": "exchange.DerivativeFeed.Close",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
     },
     {
-      "id": "exchange.FundingMarketFeed.Close",
+      "id": "exchange.DerivativeHotsetFeed",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": ["TestBinanceHotOpenInterestSelectsOnlyAdmittedSymbols"]
+    },
+    {
+      "id": "exchange.DerivativeHotsetFeed.SetHotInstrument",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": ["TestBinanceHotOpenInterestSelectsOnlyAdmittedSymbols"]
+    },
+    {
+      "id": "exchange.DerivativeInstrumentResolver",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativeInstrumentResolver.ResolveDerivativeInstrument",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
     },
     {
-      "id": "exchange.FundingMarketFeedState",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+      "id": "exchange.MarketRequestCoordinator",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
     },
     {
-      "id": "exchange.FundingMarketFeedStatus",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFeedUnavailable",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFeedDegraded",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFeedLive",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketField",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketField.Has",
-      "kind": "method",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldIdentity",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldFunding",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldFundingInterval",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldNextFundingTime",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldMarkPrice",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldIndexPrice",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldOpenInterest",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldOpenInterestNotional",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketFieldAll",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketPatch",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketPatch.Validate",
-      "kind": "method",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketPatchKind",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketPatchSnapshot",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
-    },
-    {
-      "id": "exchange.FundingMarketPatchDelta",
-      "kind": "const",
-      "coverage": "unit",
-      "tests": ["TestFundingMarketPatchValidationAndFieldMask"]
+      "id": "exchange.MarketRequestCoordinator.Do",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
     },
     {
       "id": "exchange.AckAcceptedPending",
@@ -4896,6 +4788,24 @@
       "tests": [
         "TestWebSocketFacetMethodSets"
       ]
+    },
+    {
+      "id": "exchange.DerivativeReferenceEvent",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": ["TestPerpWebSocketSharesOneNativeReferenceStream"]
+    },
+    {
+      "id": "exchange.DerivativeReferenceWebSocket",
+      "kind": "interface",
+      "coverage": "unit",
+      "tests": ["TestPerpWebSocketSharesOneNativeReferenceStream"]
+    },
+    {
+      "id": "exchange.DerivativeReferenceWebSocket.WatchDerivativeReference",
+      "kind": "interface_method",
+      "coverage": "unit",
+      "tests": ["TestPerpWebSocketSharesOneNativeReferenceStream"]
     },
     {
       "id": "exchange.FundingRateHistoryRequest",
@@ -6987,79 +6897,7 @@
       "kind": "type",
       "coverage": "unit",
       "tests": [
-        "TestFundingBoardLoaderPerVenueShape"
-      ]
-    },
-    {
-      "id": "exchange.FundingBoardSnapshot",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardLoaderPerVenueShape"
-      ]
-    },
-    {
-      "id": "exchange.FundingBoardSnapshot.Validate",
-      "kind": "method",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardLoaderPerVenueShape"
-      ]
-    },
-    {
-      "id": "exchange.FundingBoardLoader",
-      "kind": "interface",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardLoaderPerVenueShape"
-      ]
-    },
-    {
-      "id": "exchange.FundingBoardLoader.LoadFundingBoard",
-      "kind": "interface_method",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardLoaderPerVenueShape"
-      ]
-    },
-    {
-      "id": "exchange/factory.NewPublicFundingConnector",
-      "kind": "func",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardSourceDegradesPerVenue"
-      ]
-    },
-    {
-      "id": "exchange/factory.PublicFundingConnector",
-      "kind": "type",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardSourceDegradesPerVenue"
-      ]
-    },
-    {
-      "id": "exchange/factory.PublicFundingConnector.Refresh",
-      "kind": "method",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardSourceDegradesPerVenue"
-      ]
-    },
-    {
-      "id": "exchange/factory.PublicFundingConnector.Scope",
-      "kind": "method",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardSourceDegradesPerVenue"
-      ]
-    },
-    {
-      "id": "exchange/factory.PublicFundingConnector.Close",
-      "kind": "method",
-      "coverage": "unit",
-      "tests": [
-        "TestFundingBoardSourceDegradesPerVenue"
+        "TestFundingBoardEntryPreservesMissingValues"
       ]
     },
     {

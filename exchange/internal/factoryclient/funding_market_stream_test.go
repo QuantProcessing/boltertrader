@@ -18,7 +18,7 @@ import (
 func TestBybitTickerFactKeepsAbsentDeltaFieldsUntouched(t *testing.T) {
 	observedAt := time.Date(2026, time.August, 20, 1, 2, 3, 0, time.UTC)
 	fact, fields := bybitTickerFact(fundingTestIdentity(), bybit.Ticker{FundingRate: "0.0001"}, observedAt)
-	if fields != exchange.FundingMarketFieldFunding || !fact.FundingRate.Valid || fact.MarkPrice.Valid || fact.OpenInterest.Valid {
+	if fields != nativeDerivativeFieldFunding || !fact.FundingRate.Valid || fact.MarkPrice.Valid || fact.OpenInterest.Valid {
 		t.Fatalf("fact=%+v fields=%b", fact, fields)
 	}
 }
@@ -27,8 +27,8 @@ func TestBitgetTickerFactUsesUTAOpenInterest(t *testing.T) {
 	fact, fields := bitgetTickerFact(fundingTestIdentity(), bitget.Ticker{
 		OpenInterest: "12.5", MarkPrice: "200", FundingRate: "0.0002",
 	}, time.Now().UTC())
-	if !fields.Has(exchange.FundingMarketFieldOpenInterest) ||
-		!fields.Has(exchange.FundingMarketFieldOpenInterestNotional) ||
+	if !fields.Has(nativeDerivativeFieldOpenInterest) ||
+		!fields.Has(nativeDerivativeFieldOpenInterestNotional) ||
 		!fact.OpenInterest.Valid || !fact.OpenInterest.Value.Equal(decimal.RequireFromString("12.5")) ||
 		!fact.OpenInterestNotional.Valid || !fact.OpenInterestNotional.Value.Equal(decimal.NewFromInt(2500)) ||
 		fact.OpenInterestNotionalAsset != "USDT" {
@@ -40,7 +40,7 @@ func TestGateTickerFactAppliesContractMultiplier(t *testing.T) {
 	fact, fields := gateTickerFact(fundingTestIdentity(), gate.FuturesTicker{
 		Contract: "BTC_USDT", MarkPrice: "200", TotalSize: "10",
 	}, decimal.RequireFromString("0.001"), time.Now().UTC())
-	if !fields.Has(exchange.FundingMarketFieldOpenInterestNotional) ||
+	if !fields.Has(nativeDerivativeFieldOpenInterestNotional) ||
 		!fact.OpenInterestNotional.Valid || !fact.OpenInterestNotional.Value.Equal(decimal.NewFromInt(2)) {
 		t.Fatalf("fact=%+v fields=%b", fact, fields)
 	}
@@ -55,7 +55,7 @@ func TestLighterMarketStatCarriesComparableFundingPeriodAndPrices(t *testing.T) 
 	fact, fields := lighterMarketStatFact(identity, lighterMarketStat{
 		CurrentFundingRate: "0.00008", MarkPrice: "64000", IndexPrice: "63990", OpenInterest: "12.5",
 	}, observedAt)
-	if !fields.Has(exchange.FundingMarketFieldFundingInterval) ||
+	if !fields.Has(nativeDerivativeFieldFundingInterval) ||
 		!fact.FundingIntervalHours.Valid || fact.FundingIntervalHours.Value != lighterFundingQuoteHours ||
 		!fact.MarkPrice.Valid || !fact.IndexPrice.Valid ||
 		!fact.OpenInterestNotional.Valid || !fact.OpenInterestNotional.Value.Equal(decimal.NewFromInt(800000)) {
@@ -99,7 +99,7 @@ func TestOpenInterestEnrichmentIsBoundedAndIsolatesSymbolFailure(t *testing.T) {
 	runOpenInterestEnrichmentRound(context.Background(), exchange.CatalogScope{
 		Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 		Product: exchange.ProductPerp, Settlement: "USDT",
-	}, identities, marks, &marksMu, func(exchange.FundingMarketPatch) {
+	}, identities, marks, &marksMu, func(nativeDerivativePatch) {
 		emitted.Add(1)
 	}, load, 2, 0)
 	if maximum.Load() > 2 || maximum.Load() < 2 {
@@ -107,6 +107,38 @@ func TestOpenInterestEnrichmentIsBoundedAndIsolatesSymbolFailure(t *testing.T) {
 	}
 	if emitted.Load() != 4 {
 		t.Fatalf("successful emissions=%d", emitted.Load())
+	}
+}
+
+func TestBinanceHotOpenInterestSelectsOnlyAdmittedSymbols(t *testing.T) {
+	watcher := &binanceDerivativeWatcher{}
+	watcher.setHotInstrument("BTCUSDT", true)
+	watcher.setHotInstrument("MISSING", true)
+	all := map[string]exchange.InstrumentIdentity{
+		"BTCUSDT": {Venue: exchange.VenueBinance, Product: exchange.ProductPerp, NativeSymbol: "BTCUSDT"},
+		"ETHUSDT": {Venue: exchange.VenueBinance, Product: exchange.ProductPerp, NativeSymbol: "ETHUSDT"},
+	}
+	hot := watcher.hotIdentities(all)
+	if len(hot) != 1 || hot["BTCUSDT"].NativeSymbol != "BTCUSDT" {
+		t.Fatalf("hot identities = %+v", hot)
+	}
+	watcher.setHotInstrument("BTCUSDT", false)
+	if got := watcher.hotIdentities(all); len(got) != 0 {
+		t.Fatalf("released hot identities = %+v", got)
+	}
+}
+
+func TestGateSubscriptionFactsAreStableAndTrackMembership(t *testing.T) {
+	facts := []nativeDerivativeFact{
+		{Instrument: exchange.InstrumentIdentity{NativeSymbol: "ETH_USDT"}},
+		{Instrument: exchange.InstrumentIdentity{NativeSymbol: "BTC_USDT"}},
+	}
+	identities, _, payload := gateSubscriptionFacts(facts)
+	if len(identities) != 2 || len(payload) != 2 || payload[0] != "BTC_USDT" || payload[1] != "ETH_USDT" {
+		t.Fatalf("gate subscription facts = identities:%+v payload:%+v", identities, payload)
+	}
+	if !sameStrings(payload, []string{"BTC_USDT", "ETH_USDT"}) || sameStrings(payload, []string{"BTC_USDT"}) {
+		t.Fatal("gate catalog membership comparison is unstable")
 	}
 }
 

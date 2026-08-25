@@ -113,10 +113,18 @@ previews, reservations, and the projections its interface needs. Two products
 can share one service and all of that machinery: manual trading and funding
 arbitrage both live in `services/trading`, and they differ in their endpoints
 and in the shape of the intent they seal, not in a second copy of the ledger.
-Trading keeps a local copy of Gateway's funding-market projection and owns the
+Trading keeps a local copy of Gateway's derivative-fact projection and owns the
 strategy-specific calculations. Historical series stay request-driven, while
 an executable arbitrage preview deliberately bypasses the projection and reads
 fresh BBO for both legs.
+The market-capability matrix is production configuration, not documentation:
+it selects the transport, native market-family boundary, cadence, and rate-limit
+operation for each dataset. Exactly one feed owner exists for each
+`venue + environment + native market family`. Route profiles are projections
+of that owner, and hot order-book/BBO/candle topics share one pooled native
+socket per owner. Feed owners write field-level `DerivativePatch` values into a
+single in-memory fact store; the funding board, Trader mark, position PnL, and
+arbitrage projection all read those same facts.
 When a product service grows a capability that a second product would also
 need, that is a signal to move it down into the gateway, not to duplicate it.
 

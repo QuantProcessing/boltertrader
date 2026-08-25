@@ -229,7 +229,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTCUSDT",
-					Scope:        fundingBoardScope(exchange.VenueBinance, "USDT"),
+					Scope:        derivativeSnapshotScope(exchange.VenueBinance, "USDT"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}
@@ -267,7 +267,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				})
 				request := exchange.FundingHistoryRequest{
 					Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT",
-					Scope: fundingBoardScope(exchange.VenueAster, "USDT"),
+					Scope: derivativeSnapshotScope(exchange.VenueAster, "USDT"),
 					Since: fundingHistoryTime(0), Until: fundingHistoryTime(24),
 				}
 				return NewAsterFundingHistoryLoader(fixture.settings()), request, fixture
@@ -303,7 +303,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				})
 				request := exchange.FundingHistoryRequest{
 					Symbol: "BTC-USDT-SWAP",
-					Scope:  fundingBoardScope(exchange.VenueOKX, "USDT"),
+					Scope:  derivativeSnapshotScope(exchange.VenueOKX, "USDT"),
 					Since:  fundingHistoryTime(0),
 					Until:  fundingHistoryTime(24),
 				}
@@ -343,7 +343,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTCUSDT",
-					Scope:        fundingBoardScope(exchange.VenueBybit, "USDT"),
+					Scope:        derivativeSnapshotScope(exchange.VenueBybit, "USDT"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}
@@ -385,7 +385,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTCUSDT",
-					Scope:        fundingBoardScope(exchange.VenueBitget, "USDT"),
+					Scope:        derivativeSnapshotScope(exchange.VenueBitget, "USDT"),
 					Since:        fundingHistoryTime(-960),
 					Until:        fundingHistoryTime(0),
 				}
@@ -435,7 +435,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTC_USDT",
-					Scope:        fundingBoardScope(exchange.VenueGate, "USDT"),
+					Scope:        derivativeSnapshotScope(exchange.VenueGate, "USDT"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}
@@ -477,7 +477,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDC",
 					NativeSymbol: "BTC",
-					Scope:        fundingBoardScope(exchange.VenueHyperliquid, "USDC"),
+					Scope:        derivativeSnapshotScope(exchange.VenueHyperliquid, "USDC"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(600),
 				}
@@ -548,7 +548,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 					Symbol:       "BTC-USDC",
 					NativeSymbol: "BTC",
 					NativeID:     "1",
-					Scope:        fundingBoardScope(exchange.VenueLighter, "USDC"),
+					Scope:        derivativeSnapshotScope(exchange.VenueLighter, "USDC"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}

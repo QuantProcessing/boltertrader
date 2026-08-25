@@ -84,7 +84,7 @@ func (loader hyperliquidInstrumentLoader) loadPerp(ctx context.Context) ([]excha
 
 // hyperliquidCatalogAssetContexts supplies only the universe ordering expected
 // by the shared precision mapper. Empty asset contexts are intentional: mark,
-// index, funding and OI belong to FundingMarketFeed, not to reference data.
+// index, funding and OI belong to the derivative Feed Owner, not to reference data.
 func hyperliquidCatalogAssetContexts(prep *hyperliquidperp.PrepMeta) *hyperliquidperp.MetaAndAssetCtxsFull {
 	if prep == nil {
 		return nil

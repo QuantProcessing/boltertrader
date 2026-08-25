@@ -3,8 +3,10 @@ package factoryclient
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -15,91 +17,91 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func bybitTickerFact(identity exchange.InstrumentIdentity, row bybit.Ticker, observedAt time.Time) (exchange.FundingMarketFact, exchange.FundingMarketField) {
-	fact := exchange.FundingMarketFact{Instrument: identity}
-	fields := exchange.FundingMarketField(0)
+func bybitTickerFact(identity exchange.InstrumentIdentity, row bybit.Ticker, observedAt time.Time) (nativeDerivativeFact, nativeDerivativeField) {
+	fact := nativeDerivativeFact{Instrument: identity}
+	fields := nativeDerivativeField(0)
 	if row.FundingRate != "" {
 		fact.FundingRate = fundingOptionalSigned(row.FundingRate)
 		if fact.FundingRate.Valid {
 			fact.FundingObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldFunding
+			fields |= nativeDerivativeFieldFunding
 		}
 	}
 	if row.FundingIntervalHour != "" {
 		fact.FundingIntervalHours = fundingIntervalHours(row.FundingIntervalHour)
 		if fact.FundingIntervalHours.Valid {
-			fields |= exchange.FundingMarketFieldFundingInterval
+			fields |= nativeDerivativeFieldFundingInterval
 		}
 	}
 	if row.NextFundingTime != "" {
 		fact.NextFundingTime = fundingUnixMillis(row.NextFundingTime)
 		if !fact.NextFundingTime.IsZero() {
-			fields |= exchange.FundingMarketFieldNextFundingTime
+			fields |= nativeDerivativeFieldNextFundingTime
 		}
 	}
 	if row.MarkPrice != "" {
 		fact.MarkPrice = fundingOptionalDecimal(row.MarkPrice)
 		if fact.MarkPrice.Valid {
 			fact.PriceObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldMarkPrice
+			fields |= nativeDerivativeFieldMarkPrice
 		}
 	}
 	if row.IndexPrice != "" {
 		fact.IndexPrice = fundingOptionalDecimal(row.IndexPrice)
 		if fact.IndexPrice.Valid {
 			fact.PriceObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldIndexPrice
+			fields |= nativeDerivativeFieldIndexPrice
 		}
 	}
 	if row.OpenInterest != "" {
 		fact.OpenInterest = fundingOptionalNonNegative(row.OpenInterest)
 		if fact.OpenInterest.Valid {
 			fact.OpenInterestObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldOpenInterest
+			fields |= nativeDerivativeFieldOpenInterest
 		}
 		fact.OpenInterestNotional = fundingOpenInterestNotional(row.OpenInterest, row.MarkPrice, decimal.NewFromInt(1))
 		if fact.OpenInterestNotional.Valid {
 			fact.OpenInterestNotionalAsset = identity.SettleAsset
-			fields |= exchange.FundingMarketFieldOpenInterestNotional
+			fields |= nativeDerivativeFieldOpenInterestNotional
 		}
 	}
 	return fact, fields
 }
 
-func bitgetTickerFact(identity exchange.InstrumentIdentity, row bitget.Ticker, observedAt time.Time) (exchange.FundingMarketFact, exchange.FundingMarketField) {
-	fact := exchange.FundingMarketFact{Instrument: identity}
-	fields := exchange.FundingMarketField(0)
+func bitgetTickerFact(identity exchange.InstrumentIdentity, row bitget.Ticker, observedAt time.Time) (nativeDerivativeFact, nativeDerivativeField) {
+	fact := nativeDerivativeFact{Instrument: identity}
+	fields := nativeDerivativeField(0)
 	if row.FundingRate != "" {
 		fact.FundingRate = fundingOptionalSigned(row.FundingRate)
 		if fact.FundingRate.Valid {
 			fact.FundingObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldFunding
+			fields |= nativeDerivativeFieldFunding
 		}
 	}
 	if row.FundingRateInterval != "" {
 		fact.FundingIntervalHours = fundingIntervalHours(row.FundingRateInterval)
 		if fact.FundingIntervalHours.Valid {
-			fields |= exchange.FundingMarketFieldFundingInterval
+			fields |= nativeDerivativeFieldFundingInterval
 		}
 	}
 	if row.NextFundingTime != "" {
 		fact.NextFundingTime = fundingUnixMillis(row.NextFundingTime)
 		if !fact.NextFundingTime.IsZero() {
-			fields |= exchange.FundingMarketFieldNextFundingTime
+			fields |= nativeDerivativeFieldNextFundingTime
 		}
 	}
 	if row.MarkPrice != "" {
 		fact.MarkPrice = fundingOptionalDecimal(row.MarkPrice)
 		if fact.MarkPrice.Valid {
 			fact.PriceObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldMarkPrice
+			fields |= nativeDerivativeFieldMarkPrice
 		}
 	}
 	if row.IndexPrice != "" {
 		fact.IndexPrice = fundingOptionalDecimal(row.IndexPrice)
 		if fact.IndexPrice.Valid {
 			fact.PriceObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldIndexPrice
+			fields |= nativeDerivativeFieldIndexPrice
 		}
 	}
 	openInterest := firstNonEmpty(row.OpenInterest, row.HoldingAmount)
@@ -107,23 +109,25 @@ func bitgetTickerFact(identity exchange.InstrumentIdentity, row bitget.Ticker, o
 		fact.OpenInterest = fundingOptionalNonNegative(openInterest)
 		if fact.OpenInterest.Valid {
 			fact.OpenInterestObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldOpenInterest
+			fields |= nativeDerivativeFieldOpenInterest
 		}
 		fact.OpenInterestNotional = fundingOpenInterestNotional(openInterest, row.MarkPrice, decimal.NewFromInt(1))
 		if fact.OpenInterestNotional.Valid {
 			fact.OpenInterestNotionalAsset = identity.SettleAsset
-			fields |= exchange.FundingMarketFieldOpenInterestNotional
+			fields |= nativeDerivativeFieldOpenInterestNotional
 		}
 	}
 	return fact, fields
 }
 
-type gateFundingMarketWatcher struct {
+type gateDerivativeWatcher struct {
+	scope    exchange.CatalogScope
+	loader   DerivativeSnapshotLoader
 	settings Settings
 	closeSlot
 }
 
-func (watcher *gateFundingMarketWatcher) stream(ctx context.Context, bootstrap exchange.FundingMarketPatch, emit func(exchange.FundingMarketPatch)) error {
+func (watcher *gateDerivativeWatcher) stream(ctx context.Context, bootstrap nativeDerivativePatch, emit func(nativeDerivativePatch)) error {
 	profile := gate.MainnetEnvironmentProfile()
 	if watcher.settings.WebSocketEndpoint != "" {
 		profile.FuturesUSDTWSURL = watcher.settings.WebSocketEndpoint
@@ -137,20 +141,9 @@ func (watcher *gateFundingMarketWatcher) stream(ctx context.Context, bootstrap e
 	if err := client.Connect(ctx); err != nil {
 		return err
 	}
-	identities := fundingIdentityByNative(bootstrap.Facts)
-	multipliers := make(map[string]decimal.Decimal, len(bootstrap.Facts))
-	for _, fact := range bootstrap.Facts {
-		multiplier := decimal.NewFromInt(1)
-		if fact.OpenInterest.Valid && fact.OpenInterestNotional.Valid && fact.MarkPrice.Valid && fact.OpenInterest.Value.IsPositive() {
-			multiplier = fact.OpenInterestNotional.Value.Div(fact.OpenInterest.Value).Div(fact.MarkPrice.Value)
-		}
-		multipliers[fact.Instrument.NativeSymbol] = multiplier
-	}
-	payload := make([]string, 0, len(identities))
-	for native := range identities {
-		payload = append(payload, native)
-	}
-	if err := client.Subscribe(ctx, "futures.tickers", payload, func(raw json.RawMessage) {
+	var factsMu sync.RWMutex
+	identities, multipliers, payload := gateSubscriptionFacts(bootstrap.Facts)
+	handler := func(raw json.RawMessage) {
 		var envelope gate.WSEnvelope
 		if json.Unmarshal(raw, &envelope) != nil {
 			return
@@ -165,68 +158,132 @@ func (watcher *gateFundingMarketWatcher) stream(ctx context.Context, bootstrap e
 		}
 		observedAt := fundingGateTime(envelope)
 		for _, row := range rows {
+			factsMu.RLock()
 			identity, ok := identities[row.Contract]
+			multiplier := multipliers[row.Contract]
+			factsMu.RUnlock()
 			if !ok {
 				continue
 			}
-			fact, fields := gateTickerFact(identity, row, multipliers[row.Contract], observedAt)
+			fact, fields := gateTickerFact(identity, row, multiplier, observedAt)
 			if fields != 0 {
-				emit(fundingDelta(bootstrap.Scope, observedAt, fields, fact))
+				emit(derivativeDelta(bootstrap.Scope, observedAt, fields, fact))
 			}
 		}
-	}); err != nil {
+	}
+	if err := client.Subscribe(ctx, "futures.tickers", payload, handler); err != nil {
 		return err
 	}
-	<-ctx.Done()
-	return ctx.Err()
+	refresh := time.NewTicker(time.Minute)
+	defer refresh.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-refresh.C:
+			snapshot, loadErr := loadDerivativeSnapshot(ctx, watcher.scope, watcher.loader, watcher.settings)
+			if loadErr != nil {
+				return loadErr
+			}
+			patch := nativeDerivativePatchFromSnapshot(snapshot)
+			nextIdentities, nextMultipliers, nextPayload := gateSubscriptionFacts(patch.Facts)
+			if sameStrings(payload, nextPayload) {
+				emit(patch)
+				continue
+			}
+			// Gate allows subscribe/unsubscribe updates on the live client. Replace
+			// only the topic payload when catalog membership changes; the owner,
+			// socket and generation remain intact.
+			if unsubscribeErr := client.Unsubscribe(ctx, "futures.tickers", payload); unsubscribeErr != nil {
+				return unsubscribeErr
+			}
+			if subscribeErr := client.Subscribe(ctx, "futures.tickers", nextPayload, handler); subscribeErr != nil {
+				return subscribeErr
+			}
+			factsMu.Lock()
+			identities, multipliers, payload = nextIdentities, nextMultipliers, nextPayload
+			factsMu.Unlock()
+			emit(patch)
+		}
+	}
 }
 
-func (watcher *gateFundingMarketWatcher) close() error { return watcher.run() }
+func (watcher *gateDerivativeWatcher) close() error { return watcher.run() }
 
-func gateTickerFact(identity exchange.InstrumentIdentity, row gate.FuturesTicker, multiplier decimal.Decimal, observedAt time.Time) (exchange.FundingMarketFact, exchange.FundingMarketField) {
-	fact := exchange.FundingMarketFact{Instrument: identity}
-	fields := exchange.FundingMarketField(0)
+func gateSubscriptionFacts(facts []nativeDerivativeFact) (map[string]exchange.InstrumentIdentity, map[string]decimal.Decimal, []string) {
+	identities := derivativeIdentityByNative(facts)
+	multipliers := make(map[string]decimal.Decimal, len(facts))
+	payload := make([]string, 0, len(identities))
+	for _, fact := range facts {
+		multiplier := decimal.NewFromInt(1)
+		if fact.OpenInterest.Valid && fact.OpenInterestNotional.Valid && fact.MarkPrice.Valid && fact.OpenInterest.Value.IsPositive() {
+			multiplier = fact.OpenInterestNotional.Value.Div(fact.OpenInterest.Value).Div(fact.MarkPrice.Value)
+		}
+		multipliers[fact.Instrument.NativeSymbol] = multiplier
+	}
+	for native := range identities {
+		payload = append(payload, native)
+	}
+	sort.Strings(payload)
+	return identities, multipliers, payload
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func gateTickerFact(identity exchange.InstrumentIdentity, row gate.FuturesTicker, multiplier decimal.Decimal, observedAt time.Time) (nativeDerivativeFact, nativeDerivativeField) {
+	fact := nativeDerivativeFact{Instrument: identity}
+	fields := nativeDerivativeField(0)
 	if row.FundingRate != "" {
 		fact.FundingRate = fundingOptionalSigned(row.FundingRate)
 		if fact.FundingRate.Valid {
 			fact.FundingObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldFunding
+			fields |= nativeDerivativeFieldFunding
 		}
 	}
 	fact.MarkPrice = fundingOptionalDecimal(row.MarkPrice)
 	fact.IndexPrice = fundingOptionalDecimal(row.IndexPrice)
 	if fact.MarkPrice.Valid {
 		fact.PriceObservedAt = observedAt
-		fields |= exchange.FundingMarketFieldMarkPrice
+		fields |= nativeDerivativeFieldMarkPrice
 	}
 	if fact.IndexPrice.Valid {
 		fact.PriceObservedAt = observedAt
-		fields |= exchange.FundingMarketFieldIndexPrice
+		fields |= nativeDerivativeFieldIndexPrice
 	}
 	if row.TotalSize != "" {
 		fact.OpenInterest = fundingOptionalNonNegative(row.TotalSize)
 		if fact.OpenInterest.Valid {
 			fact.OpenInterestObservedAt = observedAt
-			fields |= exchange.FundingMarketFieldOpenInterest
+			fields |= nativeDerivativeFieldOpenInterest
 		}
 		fact.OpenInterestNotional = fundingOpenInterestNotional(row.TotalSize, row.MarkPrice, multiplier)
 		if fact.OpenInterestNotional.Valid {
 			fact.OpenInterestNotionalAsset = identity.SettleAsset
-			fields |= exchange.FundingMarketFieldOpenInterestNotional
+			fields |= nativeDerivativeFieldOpenInterestNotional
 		}
 	}
 	return fact, fields
 }
 
-type nadoFundingMarketWatcher struct {
+type nadoDerivativeWatcher struct {
 	settings Settings
 	closeSlot
 }
 
-func (watcher *nadoFundingMarketWatcher) stream(ctx context.Context, bootstrap exchange.FundingMarketPatch, emit func(exchange.FundingMarketPatch)) error {
+func (watcher *nadoDerivativeWatcher) stream(ctx context.Context, bootstrap nativeDerivativePatch, emit func(nativeDerivativePatch)) error {
 	base := newNadoBase(exchange.ProductPerp, "", "", watcher.settings)
 	if base.sdk == nil {
-		return exchange.NewError(exchange.KindInvalidConfig, exchange.ErrorDetails{Venue: exchange.VenueNado, Product: exchange.ProductPerp, Operation: fundingBoardOperation, SafeMessage: "Nado public SDK is unavailable"})
+		return exchange.NewError(exchange.KindInvalidConfig, exchange.ErrorDetails{Venue: exchange.VenueNado, Product: exchange.ProductPerp, Operation: derivativeSnapshotOperation, SafeMessage: "Nado public SDK is unavailable"})
 	}
 	client, err := nadosdk.NewWsMarketClient(ctx, base.sdk.Profile())
 	if err != nil {
@@ -257,8 +314,8 @@ func (watcher *nadoFundingMarketWatcher) stream(ctx context.Context, bootstrap e
 		if err != nil {
 			return
 		}
-		fact := exchange.FundingMarketFact{Instrument: identity, FundingRate: exchange.OptionalDecimal{Value: rate, Valid: true}, FundingObservedAt: observedAt}
-		emit(fundingDelta(bootstrap.Scope, observedAt, exchange.FundingMarketFieldFunding, fact))
+		fact := nativeDerivativeFact{Instrument: identity, FundingRate: exchange.OptionalDecimal{Value: rate, Valid: true}, FundingObservedAt: observedAt}
+		emit(derivativeDelta(bootstrap.Scope, observedAt, nativeDerivativeFieldFunding, fact))
 	}); err != nil {
 		return err
 	}
@@ -267,11 +324,13 @@ func (watcher *nadoFundingMarketWatcher) stream(ctx context.Context, bootstrap e
 	return ctx.Err()
 }
 
-func (watcher *nadoFundingMarketWatcher) runNadoFacts(ctx context.Context, base *nadoBase, scope exchange.CatalogScope, identities map[int64]exchange.InstrumentIdentity, emit func(exchange.FundingMarketPatch)) {
+func (watcher *nadoDerivativeWatcher) runNadoFacts(ctx context.Context, base *nadoBase, scope exchange.CatalogScope, identities map[int64]exchange.InstrumentIdentity, emit func(nativeDerivativePatch)) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
-		contracts, err := base.sdk.GetContracts(ctx, nil)
+		contracts, err := coordinatedMarketRequest(ctx, watcher.settings, exchange.VenueNado, "contracts", "usdt0-perpetual", func(requestCtx context.Context) (nadosdk.ContractV2Map, error) {
+			return base.sdk.GetContracts(requestCtx, nil)
+		})
 		if err == nil {
 			observedAt := time.Now().UTC()
 			for _, row := range contracts {
@@ -279,32 +338,32 @@ func (watcher *nadoFundingMarketWatcher) runNadoFacts(ctx context.Context, base 
 				if !ok {
 					continue
 				}
-				fact := exchange.FundingMarketFact{Instrument: identity, PriceObservedAt: observedAt, OpenInterestObservedAt: observedAt}
-				fields := exchange.FundingMarketField(0)
+				fact := nativeDerivativeFact{Instrument: identity, PriceObservedAt: observedAt, OpenInterestObservedAt: observedAt}
+				fields := nativeDerivativeField(0)
 				if row.MarkPrice != nil && *row.MarkPrice > 0 {
 					fact.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromFloat(*row.MarkPrice), Valid: true}
-					fields |= exchange.FundingMarketFieldMarkPrice
+					fields |= nativeDerivativeFieldMarkPrice
 				}
 				if row.IndexPrice != nil && *row.IndexPrice > 0 {
 					fact.IndexPrice = exchange.OptionalDecimal{Value: decimal.NewFromFloat(*row.IndexPrice), Valid: true}
-					fields |= exchange.FundingMarketFieldIndexPrice
+					fields |= nativeDerivativeFieldIndexPrice
 				}
 				if row.OpenInterest != nil && *row.OpenInterest >= 0 {
 					fact.OpenInterest = exchange.OptionalDecimal{Value: decimal.NewFromFloat(*row.OpenInterest), Valid: true}
-					fields |= exchange.FundingMarketFieldOpenInterest
+					fields |= nativeDerivativeFieldOpenInterest
 				}
 				if row.OpenInterestUsd != nil && *row.OpenInterestUsd >= 0 {
 					fact.OpenInterestNotional = exchange.OptionalDecimal{Value: decimal.NewFromFloat(*row.OpenInterestUsd), Valid: true}
 					fact.OpenInterestNotionalAsset = "USD"
-					fields |= exchange.FundingMarketFieldOpenInterestNotional
+					fields |= nativeDerivativeFieldOpenInterestNotional
 				}
 				if next := nadoFundingTimestamp(row.NextFundingRateTimestamp); !next.IsZero() {
 					fact.NextFundingTime = next
 					fact.FundingObservedAt = observedAt
-					fields |= exchange.FundingMarketFieldNextFundingTime
+					fields |= nativeDerivativeFieldNextFundingTime
 				}
 				if fields != 0 {
-					emit(fundingDelta(scope, observedAt, fields, fact))
+					emit(derivativeDelta(scope, observedAt, fields, fact))
 				}
 			}
 		}
@@ -316,7 +375,7 @@ func (watcher *nadoFundingMarketWatcher) runNadoFacts(ctx context.Context, base 
 	}
 }
 
-func (watcher *nadoFundingMarketWatcher) close() error { return watcher.run() }
+func (watcher *nadoDerivativeWatcher) close() error { return watcher.run() }
 
 func fundingStringMillisOrNow(value string) time.Time {
 	millis, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)

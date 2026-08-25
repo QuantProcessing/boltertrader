@@ -27,6 +27,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const crashRuntimeID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c44"
+
 const (
 	crashChildEnv   = "GATEWAY_ORDER_CRASH_CHILD"
 	crashDSNEnv     = "GATEWAY_ORDER_CRASH_DSN"
@@ -89,7 +91,7 @@ func TestCoordinatorRealPostgresProcessCrashWindows(t *testing.T) {
 			accountID := domain.AccountID(fmt.Sprintf("crash-%d-%s", index, strings.ReplaceAll(test.phase, "_", "-")))
 			postgresStore := gatewaypostgres.NewStore(pool)
 			if _, err := postgresStore.CreateDesiredAccount(ctx, store.DesiredAccount{
-				AccountID: accountID, Venue: "binance", VenueEnvironment: "live",
+				AccountID: accountID, RuntimeID: crashRuntimeID, Venue: "binance", VenueEnvironment: "live",
 				SecretRef:            strings.Repeat("A", 43),
 				DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 				RequestedState: store.DesiredCreating,
@@ -158,7 +160,7 @@ func prepareCrashActiveRuntime(t *testing.T, ctx context.Context, postgresStore 
 	snapshot := store.DesiredSnapshot{
 		SnapshotID: uuid.New(), OperationID: operationID, AccountID: accountID,
 		Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
-		Fence:          domain.AccountFence{AccountID: accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		Fence:          domain.AccountFence{AccountID: accountID, RuntimeID: crashRuntimeID},
 		RequestedState: store.DesiredActive,
 		Routes: []store.RouteDefinition{{
 			RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive,
@@ -241,7 +243,7 @@ func runCoordinatorCrashChild(t *testing.T) {
 		Side:           exchange.SideBuy, Type: exchange.OrderTypeLimit,
 		Quantity: decimal.RequireFromString("0.001"), LimitPrice: decimal.RequireFromString("100"),
 		LimitPolicy: exchange.LimitPolicyResting,
-		WriteFence:  account.WriteFence{AccountID: accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		WriteFence:  account.WriteFence{AccountID: accountID, RuntimeID: crashRuntimeID},
 	})
 	if phase == "during_venue" {
 		t.Fatal("during-venue child was not killed")

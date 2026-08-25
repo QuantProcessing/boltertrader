@@ -36,21 +36,23 @@ testnet profile 已被删除——各交易所的实现差异过大。匿名产�
 
 ## Credential-free public read
 
-有两个 read 不需要 credential，因此也不经过 client。
-`exchange.FundingBoardLoader` 与 `exchange.FundingHistoryLoader` 是两个各自独立
-的单 method interface：前者回答某个 venue 整个 product surface 的当前 funding
-row，后者在 `exchange.FundingHistoryRequest` 携带的 bound 之内，回答某一个
-instrument 过去的 funding point。
+当前衍生品事实与已结算资金费历史都不需要 credential。
+`factory.NewPublicDerivativeFeed` 为一个原生 market family 和一个或多个 route
+projection 构造 `exchange.DerivativeFeed`。因此，同一份交易所全市场 snapshot 或
+stream 可以同时输出 USDT/USDC route 的 funding、mark、index 与 OI patch，而不必
+重复建立原生 feed。
+如果交易所原生 ticker 同时携带多个衍生品字段，adapter 还可以实现可选的
+`exchange.DerivativeReferenceWebSocket`；Gateway 将它作为一条富字段热点流使用，同时
+保持普通 `PerpWebSocket` 调用方的源码兼容。
 
-`factory.NewPublicFundingConnector` 与
-`factory.NewPublicFundingHistoryConnector` 只凭一个 `exchange.CatalogScope`
-构造它们——venue、product 与 environment，没有 key，也没有 secret。只读取
-public funding 的调用方从不出示 credential，也从不持有 account。
+`factory.NewPublicFundingHistoryConnector` 继续作为按需读取路径，在
+`exchange.FundingHistoryRequest` 给定的范围内读取单个 instrument 的已结算资金费。
+两条路径都只使用公共 catalog identity——venue、product、environment 与
+settlement——从不接收 API key、secret 或 account。
 
-每个 snapshot 都带一个 `Validate` method，用来拒绝 identity 与 request 对不上的
-答案，所以 loader 无法悄悄返回另一个 venue 的 row。完全不发布 history 的 venue
-仍然接纳该 interface，并返回 `exchange.ErrUnsupported`——这让「没有」成为一个
-被记录在案的答案，而不是一条空 series。
+snapshot 与 patch 在进入标准化事实仓库前会校验 identity，adapter 不能悄悄发布
+另一个 venue 或 route。完全不发布历史的 venue 返回
+`exchange.ErrUnsupported`，让「没有」成为明确答案而不是空 series。
 
 ## Typed product surface
 

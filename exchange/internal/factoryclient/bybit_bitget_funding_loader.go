@@ -12,7 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type bybitFundingBoardLoader struct {
+type bybitDerivativeSnapshotLoader struct {
 	settlement string
 	settings   Settings
 }
@@ -65,11 +65,11 @@ func loadBybitLinearTickers(ctx context.Context, settings Settings) ([]bybit.Tic
 	}
 }
 
-func NewBybitFundingBoardLoader(settlement string, settings Settings) exchange.FundingBoardLoader {
-	return bybitFundingBoardLoader{settlement: settlement, settings: settings}
+func NewBybitDerivativeSnapshotLoader(settlement string, settings Settings) DerivativeSnapshotLoader {
+	return bybitDerivativeSnapshotLoader{settlement: settlement, settings: settings}
 }
 
-// LoadFundingBoard reads the whole linear ticker surface.
+// LoadDerivativeSnapshot reads the whole linear ticker surface.
 //
 // Bybit is the venue that answers everything at once: rate, clock, interval,
 // mark, index and open interest all ride on the ticker, so this loader needs a
@@ -80,17 +80,17 @@ func NewBybitFundingBoardLoader(settlement string, settings Settings) exchange.F
 // row, because tickers do not carry a settle coin — the linear category mixes
 // USDT- and USDC-margined contracts, and a USDC row filed under the USDT scope
 // would collide with a real USDT symbol on the board.
-func (loader bybitFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader bybitDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	rows, err := loadBybitLinearTickers(ctx, loader.settings)
 	if err != nil {
 		meta := clientMeta{venue: exchange.VenueBybit, product: exchange.ProductPerp}
-		return exchange.FundingBoardSnapshot{}, normErr(meta, fundingBoardOperation, err)
+		return DerivativeSnapshot{}, normErr(meta, derivativeSnapshotOperation, err)
 	}
 
-	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
+	entries := make([]DerivativeSnapshotEntry, 0, len(rows))
 	for _, row := range rows {
 		quote := quoteAsset(row.Symbol)
-		if quote != loader.settlement {
+		if loader.settlement != "" && quote != loader.settlement {
 			continue
 		}
 		rate, err := decimalOrSkip(row.FundingRate)
@@ -98,7 +98,7 @@ func (loader bybitFundingBoardLoader) LoadFundingBoard(ctx context.Context, scop
 			continue
 		}
 		canonical := canonicalSymbol(row.Symbol, "", "")
-		entries = append(entries, exchange.FundingBoardEntry{
+		entries = append(entries, DerivativeSnapshotEntry{
 			Symbol:          canonical,
 			NativeSymbol:    row.Symbol,
 			BaseAsset:       baseFromCanonical(canonical),
@@ -114,10 +114,10 @@ func (loader bybitFundingBoardLoader) LoadFundingBoard(ctx context.Context, scop
 			),
 		})
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
-type bitgetFundingBoardLoader struct {
+type bitgetDerivativeSnapshotLoader struct {
 	productType string
 	settings    Settings
 }
@@ -170,11 +170,11 @@ func loadBitgetInstruments(ctx context.Context, settings Settings, productType s
 	}
 }
 
-func NewBitgetFundingBoardLoader(productType string, settings Settings) exchange.FundingBoardLoader {
-	return bitgetFundingBoardLoader{productType: productType, settings: settings}
+func NewBitgetDerivativeSnapshotLoader(productType string, settings Settings) DerivativeSnapshotLoader {
+	return bitgetDerivativeSnapshotLoader{productType: productType, settings: settings}
 }
 
-// LoadFundingBoard reads one Bitget product type's ticker surface.
+// LoadDerivativeSnapshot reads one Bitget product type's ticker surface.
 //
 // Unlike Bybit, Bitget scopes the request itself — USDT-FUTURES and
 // USDC-FUTURES are separate categories — so no settlement filter is applied
@@ -185,13 +185,13 @@ func NewBitgetFundingBoardLoader(productType string, settings Settings) exchange
 // instrument for the rest; the second call is best-effort because a board
 // without an interval is still a board, while a board that failed to load is
 // not.
-func (loader bitgetFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader bitgetDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	sdk := newBitgetPublicSDK(loader.settings)
 
 	rows, err := sdk.GetTickers(ctx, loader.productType)
 	if err != nil {
 		meta := clientMeta{venue: exchange.VenueBitget, product: exchange.ProductPerp}
-		return exchange.FundingBoardSnapshot{}, normErr(meta, fundingBoardOperation, err)
+		return DerivativeSnapshot{}, normErr(meta, derivativeSnapshotOperation, err)
 	}
 	intervals := map[string]exchange.OptionalInt{}
 	if instruments, err := loadBitgetInstruments(ctx, loader.settings, loader.productType); err == nil {
@@ -203,7 +203,7 @@ func (loader bitgetFundingBoardLoader) LoadFundingBoard(ctx context.Context, sco
 	}
 
 	marginCoin := bitgetMarginCoin(loader.productType)
-	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
+	entries := make([]DerivativeSnapshotEntry, 0, len(rows))
 	for _, row := range rows {
 		rate, err := decimalOrSkip(row.FundingRate)
 		if err != nil {
@@ -214,7 +214,7 @@ func (loader bitgetFundingBoardLoader) LoadFundingBoard(ctx context.Context, sco
 		if !interval.Valid {
 			interval = intervals[row.Symbol]
 		}
-		entries = append(entries, exchange.FundingBoardEntry{
+		entries = append(entries, DerivativeSnapshotEntry{
 			Symbol:          canonical,
 			NativeSymbol:    row.Symbol,
 			BaseAsset:       baseFromCanonical(canonical),
@@ -226,7 +226,7 @@ func (loader bitgetFundingBoardLoader) LoadFundingBoard(ctx context.Context, sco
 			IndexPrice:      fundingOptionalDecimal(row.IndexPrice),
 		})
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 type bybitFundingHistoryLoader struct {

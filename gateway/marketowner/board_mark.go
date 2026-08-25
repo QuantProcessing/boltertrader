@@ -22,14 +22,62 @@ type BoardMarks struct {
 }
 
 func (source BoardMarks) PublishMark(ctx context.Context, instrumentID string, price exchange.OptionalDecimal, observedAt time.Time) {
-	if source.Facts == nil || source.Markets == nil || !price.Valid {
+	source.PublishReference(ctx, instrumentID, exchange.DerivativeReferenceEvent{
+		MarkPrice: price, MarkObservedAt: observedAt,
+	})
+}
+
+// PublishReference merges every field carried by one hot native ticker into
+// the same FactStore used by the broad sweep. ApplyDerivativePatch owns the
+// per-field clocks, so a late hot message cannot replace newer broad data (or
+// vice versa).
+func (source BoardMarks) PublishReference(ctx context.Context, instrumentID string, event exchange.DerivativeReferenceEvent) {
+	if source.Facts == nil || source.Markets == nil {
 		return
 	}
 	fact, ok := source.Facts.Get(instrumentID)
 	if !ok {
 		return
 	}
-	fact.MarkPrice, fact.MarkObservedAt = price, observedAt.UTC()
+	fields := exchange.DerivativeField(0)
+	if event.MarkPrice.Valid && !event.MarkObservedAt.IsZero() {
+		fact.MarkPrice, fact.MarkObservedAt = event.MarkPrice, event.MarkObservedAt.UTC()
+		fields |= exchange.DerivativeFieldMark
+	}
+	if event.IndexPrice.Valid && !event.IndexObservedAt.IsZero() {
+		fact.IndexPrice, fact.IndexObservedAt = event.IndexPrice, event.IndexObservedAt.UTC()
+		fields |= exchange.DerivativeFieldIndex
+	}
+	if (event.FundingRate.Valid || event.FundingIntervalHours.Valid || !event.NextFundingTime.IsZero()) && !event.FundingObservedAt.IsZero() {
+		fact.FundingObservedAt = event.FundingObservedAt.UTC()
+		if event.FundingRate.Valid {
+			fact.FundingRate = event.FundingRate
+			fields |= exchange.DerivativeFieldFunding
+		}
+		if event.FundingIntervalHours.Valid {
+			fact.FundingIntervalHours = event.FundingIntervalHours
+			fields |= exchange.DerivativeFieldFundingInterval
+		}
+		if !event.NextFundingTime.IsZero() {
+			fact.NextFundingTime = event.NextFundingTime.UTC()
+			fields |= exchange.DerivativeFieldNextFundingTime
+		}
+	}
+	if (event.OpenInterest.Valid || event.OpenInterestNotional.Valid) && !event.OpenInterestObservedAt.IsZero() {
+		fact.OpenInterestObservedAt = event.OpenInterestObservedAt.UTC()
+		if event.OpenInterest.Valid {
+			fact.OpenInterest = event.OpenInterest
+			fields |= exchange.DerivativeFieldOpenInterest
+		}
+		if event.OpenInterestNotional.Valid && event.OpenInterestAsset != "" {
+			fact.OpenInterestNotional = event.OpenInterestNotional
+			fact.OpenInterestNotionalAsset = event.OpenInterestAsset
+			fields |= exchange.DerivativeFieldOpenInterestNotional
+		}
+	}
+	if fields == 0 {
+		return
+	}
 	owner := markethub.OwnerKey{Venue: fact.Instrument.Venue, Environment: fact.Environment, NativeFamily: marketcapability.NativeFamily(fact.Instrument.Venue, exchange.ProductPerp, fact.Instrument.SettleAsset)}
 	generation := source.Facts.Generation(owner)
 	if generation == 0 {
@@ -40,8 +88,18 @@ func (source BoardMarks) PublishMark(ctx context.Context, instrumentID string, p
 		Scope:        exchange.CatalogScope{Venue: fact.Instrument.Venue, Environment: fact.Environment, Product: exchange.ProductPerp, Settlement: fact.Instrument.SettleAsset},
 		NativeFamily: owner.NativeFamily,
 		Generation:   generation,
-		ObservedAt:   observedAt.UTC(), Fields: exchange.DerivativeFieldMark, Facts: []exchange.DerivativeFact{fact},
+		ObservedAt:   latestReferenceObservation(event), Fields: fields, Facts: []exchange.DerivativeFact{fact},
 	})
+}
+
+func latestReferenceObservation(event exchange.DerivativeReferenceEvent) time.Time {
+	latest := event.MarkObservedAt
+	for _, candidate := range []time.Time{event.IndexObservedAt, event.FundingObservedAt, event.OpenInterestObservedAt} {
+		if candidate.After(latest) {
+			latest = candidate
+		}
+	}
+	return latest.UTC()
 }
 
 func (source BoardMarks) Open(ctx context.Context, key markethub.SubscriptionKey) (markethub.NativeStream, bool, error) {

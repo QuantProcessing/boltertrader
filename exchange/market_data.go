@@ -1,10 +1,19 @@
 package exchange
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// MarketRequestCoordinator is the process-wide public REST gate shared by
+// catalog refresh, broad derivative sweeps and execution quote fallbacks.
+// Exchange adapters depend on this small contract rather than on Gateway's
+// concrete limiter implementation.
+type MarketRequestCoordinator interface {
+	Do(context.Context, Venue, string, string, func(context.Context) (any, error)) (any, error)
+}
 
 // MarketDataset names a reusable venue fact. It deliberately says nothing
 // about how a venue transports that fact; transport belongs in the capability
@@ -114,7 +123,8 @@ func (fact DerivativeFact) Validate() error {
 	if identity.Product != ProductPerp || !knownVenue(identity.Venue) || strings.TrimSpace(identity.NativeSymbol) == "" {
 		return fmt.Errorf("derivative fact instrument is invalid")
 	}
-	if fact.FundingRate.Valid != !fact.FundingObservedAt.IsZero() {
+	fundingPresent := fact.FundingRate.Valid || fact.FundingIntervalHours.Valid || !fact.NextFundingTime.IsZero()
+	if fundingPresent != !fact.FundingObservedAt.IsZero() {
 		return fmt.Errorf("derivative funding value and clock disagree")
 	}
 	if fact.MarkPrice.Valid != !fact.MarkObservedAt.IsZero() {
@@ -166,6 +176,30 @@ type DerivativePatch struct {
 	Facts          []DerivativeFact `json:"facts"`
 }
 
+// DerivativeInstrumentResolver maps a venue-native identity onto the current
+// canonical catalog. Adapters use it at their output boundary, so no raw venue
+// funding DTO escapes into Gateway business projections.
+type DerivativeInstrumentResolver interface {
+	ResolveDerivativeInstrument(context.Context, string, string, string) (DerivativeFact, bool)
+}
+
+// DerivativeFeed is the one physical upstream owned by a native-family Feed
+// Owner. A feed may project its native rows onto several route profiles, but
+// those projections never create additional exchange connections or polls.
+type DerivativeFeed interface {
+	Bootstrap(context.Context) (DerivativePatch, error)
+	Stream(context.Context, func(DerivativePatch)) error
+	Close() error
+}
+
+// DerivativeHotsetFeed is an optional extension for a broad feed that can
+// raise the cadence of expensive fields for selected canonical instruments.
+// The broad owner remains authoritative; callers only express demand and do
+// not control native topics directly.
+type DerivativeHotsetFeed interface {
+	SetHotInstrument(instrumentID string, active bool)
+}
+
 func (patch DerivativePatch) Validate() error {
 	if patch.Kind != EventSnapshot && patch.Kind != EventDelta {
 		return fmt.Errorf("derivative patch kind is invalid")
@@ -208,14 +242,18 @@ func ApplyDerivativePatch(current DerivativeFact, patch DerivativeFact, fields D
 		current.Instrument = patch.Instrument
 		current.Environment = patch.Environment
 	}
-	if fields.Has(DerivativeFieldFunding) && observationCurrent(current.FundingObservedAt, patch.FundingObservedAt) {
-		current.FundingRate, current.FundingObservedAt = patch.FundingRate, patch.FundingObservedAt
-	}
-	if fields.Has(DerivativeFieldFundingInterval) && observationCurrent(current.FundingObservedAt, patch.FundingObservedAt) {
-		current.FundingIntervalHours = patch.FundingIntervalHours
-	}
-	if fields.Has(DerivativeFieldNextFundingTime) && observationCurrent(current.FundingObservedAt, patch.FundingObservedAt) {
-		current.NextFundingTime = patch.NextFundingTime
+	fundingFields := fields & (DerivativeFieldFunding | DerivativeFieldFundingInterval | DerivativeFieldNextFundingTime)
+	if fundingFields != 0 && observationCurrent(current.FundingObservedAt, patch.FundingObservedAt) {
+		if fields.Has(DerivativeFieldFunding) {
+			current.FundingRate = patch.FundingRate
+		}
+		if fields.Has(DerivativeFieldFundingInterval) {
+			current.FundingIntervalHours = patch.FundingIntervalHours
+		}
+		if fields.Has(DerivativeFieldNextFundingTime) {
+			current.NextFundingTime = patch.NextFundingTime
+		}
+		current.FundingObservedAt = patch.FundingObservedAt
 	}
 	if fields.Has(DerivativeFieldMark) && observationCurrent(current.MarkObservedAt, patch.MarkObservedAt) {
 		current.MarkPrice, current.MarkObservedAt = patch.MarkPrice, patch.MarkObservedAt

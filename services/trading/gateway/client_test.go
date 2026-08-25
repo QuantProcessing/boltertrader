@@ -244,8 +244,11 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := projection.Snapshot(context.Background()); err == nil {
-		t.Fatal("old Gateway catalog became fresh after Platform fetch")
+	if stale, err := projection.Snapshot(context.Background()); err != nil || stale.Revision != "gateway-catalog-old" {
+		t.Fatalf("stale Gateway catalog was not retained: snapshot=%+v err=%v", stale, err)
+	}
+	if status := projection.Status(); !status.Ready || status.Reason != catalog.ReasonStale {
+		t.Fatalf("old Gateway catalog status=%+v, want readable stale", status)
 	}
 	fact, err := adapter.MarketData().Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "live", Product: "perp", InstrumentID: "BTC-USDT"})
 	if err != nil || fact.MarkPrice != "100.05" {
@@ -656,15 +659,13 @@ func TestConfiguredGatewayAdapterPropagatesExactAccountFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := json.RawMessage(`{"accountId":"account-long","instrumentId":"BTC-USDT-LONG","side":"buy","quantity":"0.5","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
+	payload := json.RawMessage(`{"accountId":"account-long","instrumentId":"BTC-USDT-LONG","side":"buy","quantity":"0.5","orderType":"market","routeId":"perp","runtimeId":"runtime-long"}`)
 	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_child_1", ProductID: "manual", Payload: payload}); err != nil {
 		t.Fatalf("Handoff: %v", err)
 	}
 	body := <-requestBody
-	for key, want := range map[string]float64{"desired_state_revision": 11, "runtime_generation": 4, "credential_version": 3} {
-		if body[key] != want {
-			t.Fatalf("Gateway request %s=%v, want %v; body=%+v", key, body[key], want, body)
-		}
+	if body["runtime_id"] != "runtime-long" {
+		t.Fatalf("Gateway request runtime_id=%v, want runtime-long; body=%+v", body["runtime_id"], body)
 	}
 }
 
@@ -716,7 +717,7 @@ func TestConfiguredGatewayAdapterRefusesDisabledWritesBeforeHTTP(t *testing.T) {
 
 func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
-	valid := orders.Command{CommandID: "platform-command", AccountID: "account-a", Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
+	valid := orders.Command{CommandID: "platform-command", AccountID: "account-a", Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","runtimeId":"runtime-a"}`)}
 
 	t.Run("not attempted", func(t *testing.T) {
 		calls := 0
@@ -841,7 +842,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 // axis, along with the only deployment split they could have caught.
 func TestGatewayAdapterGatesLiveWrites(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
-	command := orders.Command{CommandID: "platform-command", AccountID: "account-a", Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
+	command := orders.Command{CommandID: "platform-command", AccountID: "account-a", Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","runtimeId":"runtime-a"}`)}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"submitted","resource_version":1}`))

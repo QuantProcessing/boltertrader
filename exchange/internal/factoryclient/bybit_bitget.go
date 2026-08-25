@@ -3414,6 +3414,9 @@ func (b *bybitWSBackend) StartReference(ctx context.Context, instrument exchange
 			callbacks.Error(err)
 			return
 		}
+		fact, fields := bybitTickerFact(canonical.Identity, msg.Data, observedAt)
+		ref.Derivative = derivativeReferenceEvent(canonical, fact, fields, observedAt)
+		ref.DerivativeValid = fields != 0
 		callbacks.Event(ref)
 	}); err != nil {
 		_ = ws.Close()
@@ -3614,6 +3617,9 @@ func (b *bitgetWSBackend) StartReference(ctx context.Context, instrument exchang
 			callbacks.Error(err)
 			return
 		}
+		fact, fields := bitgetTickerFact(canonical.Identity, row, observedAt)
+		ref.Derivative = derivativeReferenceEvent(canonical, fact, fields, observedAt)
+		ref.DerivativeValid = fields != 0
 		callbacks.Event(ref)
 	}); err != nil {
 		_ = ws.Close()
@@ -3622,6 +3628,46 @@ func (b *bitgetWSBackend) StartReference(ctx context.Context, instrument exchang
 	return bitgetPublicStop(ctx, ws, arg), nil
 }
 func (b *bitgetWSBackend) Close() error { return nil }
+
+func derivativeReferenceEvent(instrument exchange.Instrument, fact nativeDerivativeFact, fields nativeDerivativeField, observedAt time.Time) exchange.DerivativeReferenceEvent {
+	event := exchange.DerivativeReferenceEvent{Instrument: instrument}
+	if fields.Has(nativeDerivativeFieldMarkPrice) {
+		event.MarkPrice = fact.MarkPrice
+		event.MarkObservedAt = firstObservedAt(fact.MarkObservedAt, firstObservedAt(fact.PriceObservedAt, observedAt))
+	}
+	if fields.Has(nativeDerivativeFieldIndexPrice) {
+		event.IndexPrice = fact.IndexPrice
+		event.IndexObservedAt = firstObservedAt(fact.IndexObservedAt, firstObservedAt(fact.PriceObservedAt, observedAt))
+	}
+	if fields.Has(nativeDerivativeFieldFunding) {
+		event.FundingRate = fact.FundingRate
+		event.FundingObservedAt = firstObservedAt(fact.FundingObservedAt, observedAt)
+	}
+	if fields.Has(nativeDerivativeFieldFundingInterval) {
+		event.FundingIntervalHours = fact.FundingIntervalHours
+		if event.FundingObservedAt.IsZero() {
+			event.FundingObservedAt = observedAt.UTC()
+		}
+	}
+	if fields.Has(nativeDerivativeFieldNextFundingTime) {
+		event.NextFundingTime = fact.NextFundingTime
+		if event.FundingObservedAt.IsZero() {
+			event.FundingObservedAt = observedAt.UTC()
+		}
+	}
+	if fields.Has(nativeDerivativeFieldOpenInterest) {
+		event.OpenInterest = fact.OpenInterest
+		event.OpenInterestObservedAt = firstObservedAt(fact.OpenInterestObservedAt, observedAt)
+	}
+	if fields.Has(nativeDerivativeFieldOpenInterestNotional) {
+		event.OpenInterestNotional = fact.OpenInterestNotional
+		event.OpenInterestAsset = fact.OpenInterestNotionalAsset
+		if event.OpenInterestObservedAt.IsZero() {
+			event.OpenInterestObservedAt = observedAt.UTC()
+		}
+	}
+	return event
+}
 
 func bybitPublicStop(ctx context.Context, ws *bybit.PublicWSClient, topic string) func() error {
 	var once sync.Once

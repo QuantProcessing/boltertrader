@@ -22,15 +22,15 @@ var lighterFundingPercent = decimal.NewFromInt(100)
 // when normalising the rate to a day.
 const lighterFundingQuoteHours int64 = 8
 
-type lighterFundingBoardLoader struct {
+type lighterDerivativeSnapshotLoader struct {
 	settings Settings
 }
 
-func NewLighterFundingBoardLoader(settings Settings) exchange.FundingBoardLoader {
-	return lighterFundingBoardLoader{settings: settings}
+func NewLighterDerivativeSnapshotLoader(settings Settings) DerivativeSnapshotLoader {
+	return lighterDerivativeSnapshotLoader{settings: settings}
 }
 
-// LoadFundingBoard reads Lighter's funding surface.
+// LoadDerivativeSnapshot reads Lighter's funding surface.
 //
 // Lighter exposes the funding comparison and market statistics through two
 // public endpoints. The first is authoritative for the rate; the second is a
@@ -41,12 +41,12 @@ func NewLighterFundingBoardLoader(settings Settings) exchange.FundingBoardLoader
 // The SDK already restricts the response to Lighter's own rates; the endpoint
 // also carries other venues' rates for comparison, and those must not reach a
 // column labelled Lighter.
-func (loader lighterFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader lighterDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	sdk := newLighterPublicSDK(loader.settings)
 
 	rows, err := sdk.GetAllFundingRates(ctx)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, lighterNormalizeErr(exchange.ProductPerp, fundingBoardOperation, err)
+		return DerivativeSnapshot{}, lighterNormalizeErr(exchange.ProductPerp, derivativeSnapshotOperation, err)
 	}
 	type marketDetail struct {
 		markPrice    string
@@ -66,12 +66,12 @@ func (loader lighterFundingBoardLoader) LoadFundingBoard(ctx context.Context, sc
 		}
 	}
 
-	entries := make([]exchange.FundingBoardEntry, 0, len(rows))
+	entries := make([]DerivativeSnapshotEntry, 0, len(rows))
 	for _, row := range rows {
 		if row == nil || row.Symbol == "" {
 			continue
 		}
-		entry := exchange.FundingBoardEntry{
+		entry := DerivativeSnapshotEntry{
 			Symbol:       row.Symbol + "-USDC",
 			NativeSymbol: row.Symbol,
 			NativeID:     strconv.Itoa(row.MarketId),
@@ -96,7 +96,7 @@ func (loader lighterFundingBoardLoader) LoadFundingBoard(ctx context.Context, sc
 		}
 		entries = append(entries, entry)
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 type lighterFundingHistoryLoader struct {

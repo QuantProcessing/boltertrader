@@ -10,15 +10,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type hyperliquidFundingBoardLoader struct {
+type hyperliquidDerivativeSnapshotLoader struct {
 	settings Settings
 }
 
-func NewHyperliquidFundingBoardLoader(settings Settings) exchange.FundingBoardLoader {
-	return hyperliquidFundingBoardLoader{settings: settings}
+func NewHyperliquidDerivativeSnapshotLoader(settings Settings) DerivativeSnapshotLoader {
+	return hyperliquidDerivativeSnapshotLoader{settings: settings}
 }
 
-// LoadFundingBoard reads the perp universe and its asset contexts together.
+// LoadDerivativeSnapshot reads the perp universe and its asset contexts together.
 //
 // This deliberately uses metaAndAssetCtxs rather than the bare predictedFundings
 // call the plan named: the same response carries mark, oracle and open interest
@@ -31,19 +31,19 @@ func NewHyperliquidFundingBoardLoader(settings Settings) exchange.FundingBoardLo
 // there is no field to read it from, and leaving it blank would let the board
 // compare an hourly rate against an eight-hourly one as if they were the same
 // number.
-func (loader hyperliquidFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
+func (loader hyperliquidDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	base := newHyperliquidPublicSDK(loader.settings)
 	directory, _, err := hyperliquidPerpDirectory(ctx, base, false, true)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, hlNormalizeQueryErr(exchange.ProductPerp, fundingBoardOperation, err, nil)
+		return DerivativeSnapshot{}, hlNormalizeQueryErr(exchange.ProductPerp, derivativeSnapshotOperation, err, nil)
 	}
-	entries := make([]exchange.FundingBoardEntry, 0)
+	entries := make([]DerivativeSnapshotEntry, 0)
 	for _, dex := range directory {
 		if scope.Settlement != "" && dex.collateral != scope.Settlement {
 			continue
 		}
 		if dex.full == nil || len(dex.full.Meta.Universe) != len(dex.full.AssetCtxs) {
-			return exchange.FundingBoardSnapshot{}, hlMalformed(exchange.ProductPerp, fundingBoardOperation, "hyperliquid returned mismatched universe and asset context lengths")
+			return DerivativeSnapshot{}, hlMalformed(exchange.ProductPerp, derivativeSnapshotOperation, "hyperliquid returned mismatched universe and asset context lengths")
 		}
 		for index, universe := range dex.full.Meta.Universe {
 			if !hyperliquidValidPerpCoin(universe.Name, dex.name) {
@@ -58,7 +58,7 @@ func (loader hyperliquidFundingBoardLoader) LoadFundingBoard(ctx context.Context
 			if dex.index > 0 {
 				symbol = universe.Name + "-" + dex.collateral
 			}
-			entries = append(entries, exchange.FundingBoardEntry{
+			entries = append(entries, DerivativeSnapshotEntry{
 				Symbol:       symbol,
 				NativeSymbol: universe.Name,
 				// The HIP-3 dex index is part of the asset id. Keeping the same
@@ -77,7 +77,7 @@ func (loader hyperliquidFundingBoardLoader) LoadFundingBoard(ctx context.Context
 			})
 		}
 	}
-	return fundingBoardSnapshot(scope, entries), nil
+	return derivativeSnapshot(scope, entries), nil
 }
 
 type hyperliquidFundingHistoryLoader struct {

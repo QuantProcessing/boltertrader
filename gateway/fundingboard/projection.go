@@ -80,7 +80,7 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 	}
 	result := Snapshot{ObservedAt: now, Venues: make([]VenueSnapshot, 0, len(projection.profiles))}
 	for routeID, profile := range projection.profiles {
-		venue := VenueSnapshot{Venue: profile.Venue, Environment: string(exchange.EnvironmentLive), Product: string(profile.Product), Settlement: profile.SettlementAsset, RouteProfileID: routeID, Status: exchange.FundingMarketFeedUnavailable, Unavailable: true}
+		venue := VenueSnapshot{Venue: profile.Venue, Environment: string(exchange.EnvironmentLive), Product: string(profile.Product), Settlement: profile.SettlementAsset, RouteProfileID: routeID, Status: VenueUnavailable, Unavailable: true}
 		for _, fact := range byRoute[routeID] {
 			entry := derivativeBoardEntry(fact)
 			entry.StaleFields, entry.MissingFields = derivativeFactFieldState(fact, now, projection.fieldMaxAge)
@@ -95,9 +95,9 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 		}
 		if !venue.LastSuccessAt.IsZero() && now.Sub(venue.LastSuccessAt) <= projection.maxAge {
 			venue.Unavailable = false
-			venue.Status = exchange.FundingMarketFeedLive
+			venue.Status = VenueLive
 			if venue.Stale {
-				venue.Status = exchange.FundingMarketFeedDegraded
+				venue.Status = VenueDegraded
 			}
 		}
 		sort.Slice(venue.Entries, func(i, j int) bool { return venue.Entries[i].Symbol < venue.Entries[j].Symbol })
@@ -157,6 +157,12 @@ func (projection *Projection) Subscribe(ctx context.Context) (<-chan Change, fun
 
 func (projection *Projection) History(ctx context.Context, query HistoryQuery) (exchange.FundingHistorySnapshot, error) {
 	if projection == nil || ctx == nil || ctx.Err() != nil {
+		return exchange.FundingHistorySnapshot{}, ErrBoardUnavailable
+	}
+	projection.mu.Lock()
+	closed := projection.closed
+	projection.mu.Unlock()
+	if closed {
 		return exchange.FundingHistorySnapshot{}, ErrBoardUnavailable
 	}
 	if query.RouteProfileID == "" || (query.NativeSymbol == "" && query.NativeID == "") {
@@ -258,6 +264,16 @@ func latestDerivativeObservation(fact exchange.DerivativeFact) time.Time {
 		}
 	}
 	return latest.UTC()
+}
+
+func latestObservation(left, right time.Time) time.Time {
+	if right.After(left) {
+		return right.UTC()
+	}
+	if left.IsZero() {
+		return time.Time{}
+	}
+	return left.UTC()
 }
 
 var _ Board = (*Projection)(nil)

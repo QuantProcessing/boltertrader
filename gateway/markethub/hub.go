@@ -98,7 +98,8 @@ type Options struct {
 type Observer interface {
 	ObserveMarketFeed(venue, family, feed, state string, reconnects uint64)
 	RecordMarketGap(venue, family, feed string, resnapshot bool)
-	SetMarketFact(venue, family, dataset string, age time.Duration, coverage float64, hot int)
+	SetMarketFact(venue, family, dataset string, age time.Duration, coverage float64)
+	SetMarketHot(venue, family, dataset string, hot int)
 }
 
 type feedState struct {
@@ -391,7 +392,7 @@ func (hub *Hub) observeFactLocked(state *feedState) {
 	if age < 0 {
 		age = 0
 	}
-	hub.observer.SetMarketFact(string(state.key.Owner.Venue), state.key.Owner.NativeFamily, string(state.key.Dataset), age, 1, len(state.subs))
+	hub.observer.SetMarketFact(string(state.key.Owner.Venue), state.key.Owner.NativeFamily, string(state.key.Dataset), age, 1)
 }
 
 // materializeLatest keeps the first message for every future consumer a full

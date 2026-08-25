@@ -117,28 +117,28 @@ func (store *FactStore) Generation(owner OwnerKey) uint64 {
 func normalizeDerivativeClocks(fact *exchange.DerivativeFact, fields exchange.DerivativeField, observedAt time.Time) {
 	observedAt = observedAt.UTC()
 	if fields.Has(exchange.DerivativeFieldFunding) || fields.Has(exchange.DerivativeFieldFundingInterval) || fields.Has(exchange.DerivativeFieldNextFundingTime) {
-		if fact.FundingObservedAt.IsZero() {
+		if (fact.FundingRate.Valid || fact.FundingIntervalHours.Valid || !fact.NextFundingTime.IsZero()) && fact.FundingObservedAt.IsZero() {
 			fact.FundingObservedAt = observedAt
 		} else {
 			fact.FundingObservedAt = fact.FundingObservedAt.UTC()
 		}
 	}
 	if fields.Has(exchange.DerivativeFieldMark) {
-		if fact.MarkObservedAt.IsZero() {
+		if fact.MarkPrice.Valid && fact.MarkObservedAt.IsZero() {
 			fact.MarkObservedAt = observedAt
 		} else {
 			fact.MarkObservedAt = fact.MarkObservedAt.UTC()
 		}
 	}
 	if fields.Has(exchange.DerivativeFieldIndex) {
-		if fact.IndexObservedAt.IsZero() {
+		if fact.IndexPrice.Valid && fact.IndexObservedAt.IsZero() {
 			fact.IndexObservedAt = observedAt
 		} else {
 			fact.IndexObservedAt = fact.IndexObservedAt.UTC()
 		}
 	}
 	if fields.Has(exchange.DerivativeFieldOpenInterest) || fields.Has(exchange.DerivativeFieldOpenInterestNotional) {
-		if fact.OpenInterestObservedAt.IsZero() {
+		if (fact.OpenInterest.Valid || fact.OpenInterestNotional.Valid) && fact.OpenInterestObservedAt.IsZero() {
 			fact.OpenInterestObservedAt = observedAt
 		} else {
 			fact.OpenInterestObservedAt = fact.OpenInterestObservedAt.UTC()
@@ -203,6 +203,36 @@ func (store *FactStore) Subscribe(ctx context.Context, buffer int) (<-chan FactC
 	return updates, cancel, nil
 }
 
+// RunMetrics keeps age gauges moving even while a feed is silent. Updating an
+// age only when a patch arrives freezes a healthy-looking value precisely when
+// the upstream has stopped, which defeats the metric's purpose.
+func (store *FactStore) RunMetrics(ctx context.Context, interval time.Duration) {
+	if store == nil || store.observer == nil || ctx == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			store.mu.Lock()
+			owners := make(map[OwnerKey]struct{})
+			for _, owner := range store.owners {
+				owners[owner] = struct{}{}
+			}
+			for owner := range owners {
+				store.observeLocked(owner, exchange.DerivativeFieldFunding|exchange.DerivativeFieldMark|exchange.DerivativeFieldIndex|exchange.DerivativeFieldOpenInterest|exchange.DerivativeFieldOpenInterestNotional)
+			}
+			store.mu.Unlock()
+		}
+	}
+}
+
 func (store *FactStore) observeLocked(owner OwnerKey, fields exchange.DerivativeField) {
 	if store.observer == nil {
 		return
@@ -248,7 +278,7 @@ func (store *FactStore) observeLocked(owner OwnerKey, fields exchange.Derivative
 				age = 0
 			}
 		}
-		store.observer.SetMarketFact(string(owner.Venue), owner.NativeFamily, string(item.dataset), age, coverage, 0)
+		store.observer.SetMarketFact(string(owner.Venue), owner.NativeFamily, string(item.dataset), age, coverage)
 	}
 }
 

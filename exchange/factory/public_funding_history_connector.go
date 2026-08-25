@@ -10,10 +10,9 @@ import (
 // PublicFundingHistoryConnector owns credential-free reads of one venue's
 // settled funding rates.
 //
-// It mirrors PublicFundingConnector and stays a separate type for the same
-// reason that one is separate from PublicInstrumentConnector: the board answers
-// for a whole venue in one call and this answers for one instrument, so a
-// shared Refresh would have to take a symbol that the board has no use for.
+// It stays separate from the resident DerivativeFeed because history is an
+// explicitly bounded, single-instrument read, while current derivative facts
+// are a continuously maintained native-family projection.
 //
 // Not every venue reaches this far. NewPublicFundingHistoryConnector fails for
 // the ones with no history endpoint rather than constructing a connector that
