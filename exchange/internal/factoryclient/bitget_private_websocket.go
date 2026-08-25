@@ -8,6 +8,8 @@ import (
 	bitget "github.com/QuantProcessing/boltertrader/sdk/bitget"
 )
 
+const accountWideNative = "*"
+
 // bitgetPrivateTopicHub adapts Bitget's account-wide UTA private topics to the
 // instrument-scoped exchange subscriptions exposed by this package. Bitget
 // permits one subscription to each topic and identifies the instrument in each
@@ -115,9 +117,15 @@ func (hub *bitgetPrivateTopicHub[T]) snapshot(native string) []streamCallbacks[T
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	routes := hub.callbacks[native]
-	result := make([]streamCallbacks[T], 0, len(routes))
+	accountRoutes := hub.callbacks[accountWideNative]
+	result := make([]streamCallbacks[T], 0, len(routes)+len(accountRoutes))
 	for _, callbacks := range routes {
 		result = append(result, callbacks)
+	}
+	if native != accountWideNative {
+		for _, callbacks := range accountRoutes {
+			result = append(result, callbacks)
+		}
 	}
 	return result
 }

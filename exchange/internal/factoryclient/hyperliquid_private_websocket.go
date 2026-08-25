@@ -519,6 +519,175 @@ func (backend *hyperliquidPrivateWSBackend) StartPositions(
 	return hyperliquidPrivateStop(removeLifecycle, stop), nil
 }
 
+func (backend *hyperliquidPrivateWSBackend) StartAccountEvents(ctx context.Context, index accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	metas := make(map[string]hyperliquidMarketMeta, len(index.byNative))
+	for _, item := range index.instruments() {
+		meta, err := backend.resolve(ctx, operation, item.Instrument)
+		if err != nil {
+			return nil, err
+		}
+		metas[meta.nativeCoin] = meta
+	}
+	status := func(value backendStatus) {
+		if callbacks.Status != nil {
+			callbacks.Status(accountStreamStatus(backend.meta, value))
+		}
+	}
+	removeLifecycle := backend.lifecycle.Register(backend.nextSinkKey("account"), status, nil)
+	stops := make([]func() error, 0, 3)
+	fail := func(err error) (func() error, error) {
+		_ = closeAccountStops(stops...)()
+		removeLifecycle()
+		return nil, hyperliquidPrivateStartError(backend.meta, operation, err)
+	}
+	orders, err := backend.orders.add(ctx, backend.nextSinkKey("account-orders"), func(row hyperliquid.WsOrderUpdate) {
+		meta, ok := metas[row.Order.Coin]
+		if !ok {
+			callbacks.Error(fmt.Errorf("hyperliquid account order instrument is unknown"))
+			return
+		}
+		event, convertErr := hyperliquidPrivateOrderEvent(meta, row)
+		if convertErr != nil {
+			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, convertErr.Error()))
+			return
+		}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+	}, callbacks.Error, func() (func() error, error) {
+		if connectErr := backend.ensureConnected(operation); connectErr != nil {
+			return nil, connectErr
+		}
+		handler := func(rows []hyperliquid.WsOrderUpdate) {
+			for _, row := range rows {
+				backend.orders.publish(row)
+			}
+		}
+		onDecodeError := func(err error) {
+			backend.orders.broadcastError(hyperliquidWebSocketMalformed(backend.meta, operation, err.Error()))
+		}
+		var subscribeErr error
+		if backend.meta.product == exchange.ProductSpot {
+			subscribeErr = backend.spot.SubscribeOrderUpdatesConfirmedWithErrors(backend.user, handler, onDecodeError)
+		} else {
+			subscribeErr = backend.perp.SubscribeOrderUpdatesConfirmedWithErrors(backend.user, handler, onDecodeError)
+		}
+		if subscribeErr != nil {
+			return nil, websocketError(backend.meta, operation, exchange.KindTransport, "websocket subscription was not confirmed")
+		}
+		return backend.nativeStop("orderUpdates", map[string]string{"type": "orderUpdates", "user": backend.user}, operation), nil
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, orders)
+
+	fills, err := backend.fills.add(ctx, backend.nextSinkKey("account-fills"), func(row hyperliquidPrivateFill) {
+		meta, ok := metas[row.fill.Coin]
+		if !ok {
+			callbacks.Error(fmt.Errorf("hyperliquid account fill instrument is unknown"))
+			return
+		}
+		fill, convertErr := hlFill(meta, row.fill.Coin, row.fill.Side, row.fill.Px, row.fill.Sz, row.fill.Fee, row.fill.FeeToken, row.fill.Oid, row.fill.Tid, row.fill.Hash, row.fill.Crossed, row.fill.Time)
+		if convertErr != nil {
+			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, convertErr.Error()))
+			return
+		}
+		event := exchange.FillEvent{Kind: row.kind, Fill: fill}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+	}, callbacks.Error, func() (func() error, error) {
+		if connectErr := backend.ensureConnected(operation); connectErr != nil {
+			return nil, connectErr
+		}
+		handler := func(rows hyperliquid.WsUserFills) {
+			kind := exchange.EventDelta
+			if rows.IsSnapshot {
+				kind = exchange.EventSnapshot
+			}
+			for _, row := range rows.Fills {
+				backend.fills.publish(hyperliquidPrivateFill{fill: row, kind: kind})
+			}
+		}
+		onDecodeError := func(err error) {
+			backend.fills.broadcastError(hyperliquidWebSocketMalformed(backend.meta, operation, err.Error()))
+		}
+		var subscribeErr error
+		if backend.meta.product == exchange.ProductSpot {
+			subscribeErr = backend.spot.SubscribeUserFillsConfirmedWithErrors(backend.user, handler, onDecodeError)
+		} else {
+			subscribeErr = backend.perp.SubscribeUserFillsConfirmedWithErrors(backend.user, handler, onDecodeError)
+		}
+		if subscribeErr != nil {
+			return nil, websocketError(backend.meta, operation, exchange.KindTransport, "websocket subscription was not confirmed")
+		}
+		return backend.nativeStop("userFills", map[string]any{"type": "userFills", "user": backend.user, "aggregateByTime": false}, operation), nil
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, fills)
+
+	previousPositions := make(map[string]struct{})
+	var positionsMu sync.Mutex
+	states, err := backend.state.add(ctx, backend.nextSinkKey("account-state"), func(state hyperliquidPrivateState) {
+		if state.spot != nil {
+			balances, convertErr := hlSpotBalances(operation, state.spot)
+			if convertErr != nil {
+				callbacks.Error(convertErr)
+				return
+			}
+			event := exchange.BalanceEvent{Kind: exchange.EventSnapshot, Balances: balances, Time: time.Now().UTC()}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &event})
+			return
+		}
+		if state.perp == nil {
+			return
+		}
+		balance, convertErr := hyperliquidPerpBalanceEvent(*state.perp)
+		if convertErr != nil {
+			callbacks.Error(convertErr)
+			return
+		}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &balance})
+		positionsMu.Lock()
+		defer positionsMu.Unlock()
+		current := make(map[string]struct{})
+		for _, row := range state.perp.AssetPositions {
+			coin := row.Position.Coin
+			meta, ok := metas[coin]
+			if !ok {
+				callbacks.Error(fmt.Errorf("hyperliquid account position instrument is unknown"))
+				return
+			}
+			pos := row.Position
+			normalized, normalizeErr := hlPosition(meta, pos.Szi, pos.PositionValue, pos.EntryPx, pos.UnrealizedPnl, pos.LiquidationPx, pos.MarginUsed, pos.Leverage.Value)
+			if normalizeErr != nil {
+				callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, normalizeErr.Error()))
+				return
+			}
+			positions := []exchange.Position(nil)
+			if !normalized.Quantity.IsZero() {
+				positions = []exchange.Position{normalized}
+				current[coin] = struct{}{}
+			}
+			event := exchange.PositionEvent{Kind: exchange.EventSnapshot, Positions: positions, Time: hyperliquidStateTime(state.perp.Time)}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, NativeSymbol: coin, Position: &event})
+		}
+		for coin := range previousPositions {
+			if _, exists := current[coin]; exists {
+				continue
+			}
+			event := exchange.PositionEvent{Kind: exchange.EventSnapshot, Time: hyperliquidStateTime(state.perp.Time)}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, NativeSymbol: coin, Position: &event})
+		}
+		previousPositions = current
+	}, callbacks.Error, func() (func() error, error) { return backend.startNativeState(operation) })
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, states)
+	return hyperliquidPrivateStop(removeLifecycle, closeAccountStops(stops...)), nil
+}
+
 func (backend *hyperliquidPrivateWSBackend) startNativeState(operation string) (func() error, error) {
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err

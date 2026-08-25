@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
@@ -25,11 +26,179 @@ type perpPrivateWSBackend interface {
 	StartPositions(context.Context, exchange.Instrument, streamCallbacks[exchange.PositionEvent]) (func() error, error)
 }
 
+type accountBackendEvent struct {
+	Kind           exchange.AccountEventKind
+	NativeSymbol   string
+	NativeID       string
+	SourceSequence string
+	Order          *exchange.OrderEvent
+	Fill           *exchange.FillEvent
+	Balance        *exchange.BalanceEvent
+	Position       *exchange.PositionEvent
+}
+
+type accountEventCallbacks struct {
+	Event  func(accountBackendEvent)
+	Status func(exchange.StreamStatusEvent)
+	Error  func(error)
+}
+
+func accountStreamStatus(meta clientMeta, status backendStatus) exchange.StreamStatusEvent {
+	return exchange.StreamStatusEvent{
+		State: status.State, Phase: status.Phase, Venue: meta.venue, Product: meta.product,
+		Generation: status.Generation, Reason: status.Reason, Time: status.Time,
+	}
+}
+
+func closeAccountStops(stops ...func() error) func() error {
+	var once sync.Once
+	var result error
+	return func() error {
+		once.Do(func() {
+			for index := len(stops) - 1; index >= 0; index-- {
+				if stops[index] != nil {
+					result = errors.Join(result, stops[index]())
+				}
+			}
+		})
+		return result
+	}
+}
+
+type accountEventBackend interface {
+	StartAccountEvents(context.Context, accountInstrumentIndex, accountEventCallbacks) (func() error, error)
+}
+
+var (
+	_ accountEventBackend = (*binanceSpotPrivateWSBackend)(nil)
+	_ accountEventBackend = (*binancePerpPrivateWSBackend)(nil)
+	_ accountEventBackend = (*asterSpotWSBackend)(nil)
+	_ accountEventBackend = (*asterPerpWSBackend)(nil)
+	_ accountEventBackend = (*bybitPrivateWSBackend)(nil)
+	_ accountEventBackend = (*bitgetPrivateWSBackend)(nil)
+	_ accountEventBackend = (*okxPrivateWSBackend)(nil)
+	_ accountEventBackend = (*gateSpotWSBackend)(nil)
+	_ accountEventBackend = (*gatePerpWSBackend)(nil)
+	_ accountEventBackend = (*hyperliquidPrivateWSBackend)(nil)
+	_ accountEventBackend = (*lighterPrivateWSBackend)(nil)
+	_ accountEventBackend = (*nadoSpotWSBackend)(nil)
+	_ accountEventBackend = (*nadoPerpWSBackend)(nil)
+)
+
+type accountInstrumentIndex struct {
+	byNative map[string]exchange.AccountInstrument
+}
+
+func newAccountInstrumentIndex(route exchange.AccountRoute, instruments []exchange.AccountInstrument) (accountInstrumentIndex, error) {
+	index := accountInstrumentIndex{byNative: make(map[string]exchange.AccountInstrument, len(instruments)*2)}
+	for _, item := range instruments {
+		identity := item.Instrument.Identity
+		if item.InstrumentID == "" || item.Instrument.Validate() != nil || identity.Venue != route.Venue || identity.Product != route.Product {
+			return accountInstrumentIndex{}, fmt.Errorf("account event catalog is invalid")
+		}
+		for _, native := range []string{identity.NativeSymbol, identity.NativeID} {
+			native = strings.TrimSpace(native)
+			if native == "" {
+				continue
+			}
+			if existing, duplicate := index.byNative[native]; duplicate && existing.InstrumentID != item.InstrumentID {
+				return accountInstrumentIndex{}, fmt.Errorf("account event native identity is ambiguous")
+			}
+			index.byNative[native] = item
+		}
+	}
+	if len(index.byNative) == 0 {
+		return accountInstrumentIndex{}, fmt.Errorf("account instrument index is unavailable")
+	}
+	return index, nil
+}
+
+func (index accountInstrumentIndex) resolve(nativeSymbol, nativeID string) (exchange.AccountInstrument, bool) {
+	for _, native := range []string{nativeID, nativeSymbol} {
+		if item, ok := index.byNative[strings.TrimSpace(native)]; ok {
+			return item, true
+		}
+	}
+	return exchange.AccountInstrument{}, false
+}
+
+func (index accountInstrumentIndex) instruments() []exchange.AccountInstrument {
+	seen := make(map[string]struct{}, len(index.byNative))
+	items := make([]exchange.AccountInstrument, 0, len(index.byNative))
+	for _, item := range index.byNative {
+		if _, ok := seen[item.InstrumentID]; ok {
+			continue
+		}
+		seen[item.InstrumentID] = struct{}{}
+		items = append(items, item)
+	}
+	return items
+}
+
+func projectAccountBackendEvent(route exchange.AccountRoute, index accountInstrumentIndex, event accountBackendEvent) ([]exchange.AccountEvent, error) {
+	switch event.Kind {
+	case exchange.AccountEventOrder:
+		if event.Order == nil {
+			return nil, fmt.Errorf("account order event payload is missing")
+		}
+		item, ok := index.resolve(event.Order.Order.NativeSymbol, event.Order.Order.NativeID)
+		if !ok {
+			return nil, fmt.Errorf("account order native instrument is unknown")
+		}
+		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, InstrumentID: item.InstrumentID, ObservedAt: observedAccountTime(event.Order.Order.UpdatedAt), Phase: accountPhase(event.Order.Kind), Order: event.Order}}, nil
+	case exchange.AccountEventFill:
+		if event.Fill == nil {
+			return nil, fmt.Errorf("account fill event payload is missing")
+		}
+		item, ok := index.resolve(event.Fill.Fill.NativeSymbol, event.Fill.Fill.NativeID)
+		if !ok {
+			return nil, fmt.Errorf("account fill native instrument is unknown")
+		}
+		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, InstrumentID: item.InstrumentID, ObservedAt: observedAccountTime(event.Fill.Fill.Time), Phase: accountPhase(event.Fill.Kind), Fill: event.Fill}}, nil
+	case exchange.AccountEventBalance:
+		if event.Balance == nil {
+			return nil, fmt.Errorf("account balance event payload is missing")
+		}
+		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, ObservedAt: observedAccountTime(event.Balance.Time), Phase: accountPhase(event.Balance.Kind), Balance: event.Balance}}, nil
+	case exchange.AccountEventPosition:
+		if event.Position == nil {
+			return nil, fmt.Errorf("account position event payload is missing")
+		}
+		byInstrument := make(map[string][]exchange.Position)
+		items := make(map[string]exchange.AccountInstrument)
+		for _, position := range event.Position.Positions {
+			item, ok := index.resolve(position.NativeSymbol, position.NativeID)
+			if !ok {
+				return nil, fmt.Errorf("account position native instrument is unknown")
+			}
+			byInstrument[item.InstrumentID] = append(byInstrument[item.InstrumentID], position)
+			items[item.InstrumentID] = item
+		}
+		if len(byInstrument) == 0 {
+			item, ok := index.resolve(event.NativeSymbol, event.NativeID)
+			if !ok {
+				return nil, fmt.Errorf("empty account position event has no native instrument")
+			}
+			byInstrument[item.InstrumentID] = nil
+			items[item.InstrumentID] = item
+		}
+		result := make([]exchange.AccountEvent, 0, len(byInstrument))
+		for instrumentID, positions := range byInstrument {
+			projected := &exchange.PositionEvent{Kind: event.Position.Kind, Positions: positions, Time: event.Position.Time}
+			result = append(result, exchange.AccountEvent{Kind: event.Kind, Route: route, InstrumentID: items[instrumentID].InstrumentID, ObservedAt: observedAccountTime(event.Position.Time), Phase: accountPhase(event.Position.Kind), Position: projected})
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("account event kind is unsupported")
+	}
+}
+
 type spotWebSocket struct {
 	*publicWebSocket
-	private          *privateWebSocket
-	accountCatalogMu sync.RWMutex
-	accountCatalog   []exchange.AccountInstrument
+	private           *privateWebSocket
+	accountCatalogMu  sync.RWMutex
+	accountCatalog    []exchange.AccountInstrument
+	accountGeneration atomic.Uint64
 }
 
 func (socket *spotWebSocket) String() string {

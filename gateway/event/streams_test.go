@@ -348,6 +348,14 @@ func TestStreamManagerOpensOneAccountStreamPerDynamicRoute(t *testing.T) {
 			Asset: "SPOT-DELTA", Available: decimal.NewFromInt(1), Total: decimal.NewFromInt(1),
 		}},
 	}
+	select {
+	case event := <-subscription.Events():
+		t.Fatalf("account delta escaped before recovery baseline: %+v", event)
+	default:
+	}
+	if err := streams.releaseAccountEvents(); err != nil {
+		t.Fatal(err)
+	}
 	receiveEvent(t, subscription)
 	receiveEvent(t, subscription)
 

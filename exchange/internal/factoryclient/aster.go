@@ -1708,6 +1708,70 @@ func (backend *asterSpotWSBackend) StartBalances(ctx context.Context, callbacks 
 	})
 	return stop, nil
 }
+
+func (backend *asterSpotWSBackend) StartAccountEvents(ctx context.Context, _ accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	account, err := backend.ensureAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active, stop := asterCallbackGate()
+	account.SubscribeExecutionReport(func(event *asterspot.ExecutionReportEvent) {
+		if !active() || event == nil {
+			return
+		}
+		order, orderErr := asterOrder(exchange.ProductSpot, event.Symbol, event.OrderID, event.ClientOrderID, event.Side, event.OrderType, event.TimeInForce, event.Quantity, event.Price, event.CumulativeFilledQuantity, event.OrderStatus, false)
+		if orderErr != nil {
+			callbacks.Error(orderErr)
+		} else {
+			orderEvent := &exchange.OrderEvent{Kind: exchange.EventDelta, Order: order}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: orderEvent})
+		}
+		if event.TradeID <= 0 {
+			return
+		}
+		price, quantity, parseErr := parse2(event.LastExecutedPrice, event.LastExecutedQuantity)
+		fee, feeErr := decimal.NewFromString(asterDefaultZero(event.CommissionAmount))
+		if parseErr != nil || feeErr != nil {
+			callbacks.Error(asterMalformed(exchange.ProductSpot, operation, "fill values are malformed"))
+			return
+		}
+		side := exchange.SideBuy
+		if event.Side == "SELL" {
+			side = exchange.SideSell
+		} else if event.Side != "BUY" {
+			callbacks.Error(asterMalformed(exchange.ProductSpot, operation, "unknown side"))
+			return
+		}
+		feeAsset := ""
+		if event.CommissionAsset != nil {
+			feeAsset = *event.CommissionAsset
+		}
+		liquidity := exchange.LiquidityTaker
+		if event.IsMaker {
+			liquidity = exchange.LiquidityMaker
+		}
+		fillEvent := &exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{NativeSymbol: event.Symbol, OrderID: strconv.FormatInt(event.OrderID, 10), FillID: strconv.FormatInt(event.TradeID, 10), Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: feeAsset, Liquidity: liquidity, Time: time.UnixMilli(event.TransactionTime).UTC()}}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: fillEvent})
+	})
+	account.SubscribeAccountPosition(func(event *asterspot.AccountPositionEvent) {
+		if !active() || event == nil {
+			return
+		}
+		balances := make([]exchange.Balance, 0, len(event.Balances))
+		for _, row := range event.Balances {
+			free, locked, parseErr := parse2(row.Free, row.Locked)
+			if parseErr != nil {
+				callbacks.Error(asterMalformed(exchange.ProductSpot, operation, parseErr.Error()))
+				return
+			}
+			balances = append(balances, exchange.Balance{Asset: row.Asset, Available: free, Locked: locked, Total: free.Add(locked)})
+		}
+		balanceEvent := &exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: time.UnixMilli(event.EventTime).UTC()}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: balanceEvent})
+	})
+	return stop, nil
+}
 func (backend *asterSpotWSBackend) PlaceOrder(ctx context.Context, req exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
 	return backend.client.PlaceOrder(ctx, req)
 }
@@ -1853,6 +1917,84 @@ func (backend *asterPerpWSBackend) StartPositions(ctx context.Context, instrumen
 			positions = append(positions, exchange.Position{NativeSymbol: native, Side: side, Quantity: qty.Abs(), EntryPrice: entry, UnrealizedPnL: pnl})
 		}
 		callbacks.Event(exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: time.UnixMilli(event.EventTime).UTC()})
+	})
+	return stop, nil
+}
+
+func (backend *asterPerpWSBackend) StartAccountEvents(ctx context.Context, _ accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	account, err := backend.ensureAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active, stop := asterCallbackGate()
+	account.SubscribeOrderUpdate(func(event *asterperp.OrderUpdateEvent) {
+		if !active() || event == nil {
+			return
+		}
+		row := event.Order
+		order, orderErr := asterOrder(exchange.ProductPerp, row.Symbol, row.OrderID, row.ClientOrderID, row.Side, row.OrderType, row.TimeInForce, row.OriginalQty, row.OriginalPrice, row.AccumulatedFilledQty, row.OrderStatus, row.IsReduceOnly)
+		if orderErr != nil {
+			callbacks.Error(orderErr)
+		} else {
+			orderEvent := &exchange.OrderEvent{Kind: exchange.EventDelta, Order: order}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: orderEvent})
+		}
+		if row.TradeID <= 0 {
+			return
+		}
+		price, quantity, parseErr := parse2(row.LastFilledPrice, row.LastFilledQty)
+		fee, feeErr := decimal.NewFromString(asterDefaultZero(row.Commission))
+		if parseErr != nil || feeErr != nil {
+			callbacks.Error(asterMalformed(exchange.ProductPerp, operation, "fill values are malformed"))
+			return
+		}
+		side := exchange.SideBuy
+		if row.Side == "SELL" {
+			side = exchange.SideSell
+		} else if row.Side != "BUY" {
+			callbacks.Error(asterMalformed(exchange.ProductPerp, operation, "unknown side"))
+			return
+		}
+		liquidity := exchange.LiquidityTaker
+		if row.IsMaker {
+			liquidity = exchange.LiquidityMaker
+		}
+		fillEvent := &exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{NativeSymbol: row.Symbol, OrderID: strconv.FormatInt(row.OrderID, 10), FillID: strconv.FormatInt(row.TradeID, 10), Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: row.CommissionAsset, Liquidity: liquidity, Time: time.UnixMilli(row.TradeTime).UTC()}}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: fillEvent})
+	})
+	account.SubscribeAccountUpdate(func(event *asterperp.AccountUpdateEvent) {
+		if !active() || event == nil {
+			return
+		}
+		if snapshot, accountErr := backend.client.PerpAccount(context.Background()); accountErr != nil {
+			callbacks.Error(withExchangeOperation(accountErr, operation))
+		} else {
+			balanceEvent := &exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: snapshot.Balances, Time: time.UnixMilli(event.EventTime).UTC()}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: balanceEvent})
+		}
+		positions := make([]exchange.Position, 0, len(event.UpdateData.Positions))
+		for _, row := range event.UpdateData.Positions {
+			quantity, entry, parseErr := parse2(row.PositionAmount, row.EntryPrice)
+			if parseErr != nil {
+				callbacks.Error(asterMalformed(exchange.ProductPerp, operation, parseErr.Error()))
+				return
+			}
+			pnl, pnlErr := decimal.NewFromString(asterDefaultZero(row.UnrealizedPnL))
+			if pnlErr != nil {
+				callbacks.Error(asterMalformed(exchange.ProductPerp, operation, pnlErr.Error()))
+				return
+			}
+			side := exchange.SideBuy
+			if quantity.IsNegative() || row.PositionSide == "SHORT" {
+				side = exchange.SideSell
+			}
+			positions = append(positions, exchange.Position{NativeSymbol: row.Symbol, Side: side, Quantity: quantity.Abs(), EntryPrice: entry, UnrealizedPnL: pnl})
+		}
+		if len(positions) > 0 {
+			positionEvent := &exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: time.UnixMilli(event.EventTime).UTC()}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, Position: positionEvent})
+		}
 	})
 	return stop, nil
 }

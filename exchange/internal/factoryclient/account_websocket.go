@@ -2,7 +2,6 @@ package factoryclient
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -36,29 +35,26 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 	if len(catalog) == 0 {
 		return nil, fmt.Errorf("account instrument index is unavailable")
 	}
+	index, err := newAccountInstrumentIndex(request.Route, catalog)
+	if err != nil {
+		return nil, err
+	}
+	backend, ok := spot.private.backend.(accountEventBackend)
+	if !ok {
+		return nil, fmt.Errorf("native account event stream is unavailable")
+	}
 	watchCtx, cancel := context.WithCancel(ctx)
 	var mu sync.Mutex
-	children := make([]func() error, 0, len(catalog)*3+1)
-	generation, sequence := uint64(1), uint64(0)
+	generation, sequence := spot.accountGeneration.Add(1), uint64(0)
+	backendGeneration := uint64(0)
+	gapOpen := false
 	var subscription *typedSubscription[exchange.AccountEvent]
 	closeChildren := func() error {
 		cancel()
-		mu.Lock()
-		closers := append([]func() error(nil), children...)
-		mu.Unlock()
-		var result error
-		for index := len(closers) - 1; index >= 0; index-- {
-			result = errors.Join(result, closers[index]())
-		}
-		return result
+		return nil
 	}
 	id := fmt.Sprintf("%s:%s:account:%s:%d", spot.meta.venue, spot.meta.product, request.Route.RouteID, websocketSubscriptionSequence.Add(1))
 	subscription = newTypedSubscription[exchange.AccountEvent](id, spot.meta, buffer, closeChildren)
-	add := func(child interface{ Close() error }) {
-		mu.Lock()
-		children = append(children, child.Close)
-		mu.Unlock()
-	}
 	emitEvent := func(event exchange.AccountEvent) {
 		mu.Lock()
 		sequence++
@@ -74,8 +70,21 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 			status.Time = time.Now().UTC()
 		}
 		mu.Lock()
-		if status.Generation > generation {
-			generation, sequence = status.Generation, 0
+		if status.State == exchange.SubscriptionGap && status.Phase == exchange.GapStarted {
+			generation = spot.accountGeneration.Add(1)
+			sequence = 0
+			gapOpen = true
+		} else if status.Generation > backendGeneration && backendGeneration != 0 {
+			if !gapOpen {
+				generation = spot.accountGeneration.Add(1)
+				sequence = 0
+			}
+		}
+		if status.Generation > backendGeneration {
+			backendGeneration = status.Generation
+		}
+		if status.State == exchange.SubscriptionActive {
+			gapOpen = false
 		}
 		status.Generation = generation
 		mu.Unlock()
@@ -91,52 +100,36 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 		emitEvent(exchange.AccountEvent{Kind: exchange.AccountEventResyncRequired, Route: request.Route, ObservedAt: time.Now().UTC(), Phase: exchange.AccountEventPhaseLive, Reason: "private-stream-error"})
 	}
 
-	balances, err := spot.WatchBalances(watchCtx, exchange.WatchAccountRequest{Options: request.Options})
+	stop, err := backend.StartAccountEvents(watchCtx, index, accountEventCallbacks{
+		Event: func(event accountBackendEvent) {
+			if watchCtx.Err() != nil {
+				return
+			}
+			projectedEvents, projectErr := projectAccountBackendEvent(request.Route, index, event)
+			if projectErr != nil {
+				emitError(projectErr)
+				return
+			}
+			for _, projected := range projectedEvents {
+				projected.SourceSequence = event.SourceSequence
+				emitEvent(projected)
+			}
+		},
+		Status: emitStatus,
+		Error:  emitError,
+	})
 	if err != nil {
 		_ = subscription.Close()
 		return nil, err
 	}
-	add(balances)
-	go bridgeAccountChild(watchCtx, balances, func(event exchange.BalanceEvent) {
-		emitEvent(exchange.AccountEvent{Kind: exchange.AccountEventBalance, Route: request.Route, ObservedAt: observedAccountTime(event.Time), Phase: accountPhase(event.Kind), Balance: &event})
-	}, emitStatus, emitError)
-
-	for _, item := range catalog {
-		if item.InstrumentID == "" || item.Instrument.Validate() != nil || item.Instrument.Identity.Venue != request.Route.Venue || item.Instrument.Identity.Product != request.Route.Product {
-			_ = subscription.Close()
-			return nil, fmt.Errorf("account event catalog is invalid")
+	previousClose := subscription.closeFn
+	subscription.closeFn = func() error {
+		if previousClose != nil {
+			previousClose()
 		}
-		orders, openErr := spot.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: item.Instrument, Options: request.Options})
-		if openErr != nil {
-			_ = subscription.Close()
-			return nil, openErr
-		}
-		add(orders)
-		instrumentID := item.InstrumentID
-		go bridgeAccountChild(watchCtx, orders, func(event exchange.OrderEvent) {
-			emitEvent(exchange.AccountEvent{Kind: exchange.AccountEventOrder, Route: request.Route, InstrumentID: instrumentID, ObservedAt: time.Now().UTC(), Phase: accountPhase(event.Kind), Order: &event})
-		}, emitStatus, emitError)
-		fills, openErr := spot.WatchFills(watchCtx, exchange.WatchRequest{Instrument: item.Instrument, Options: request.Options})
-		if openErr != nil {
-			_ = subscription.Close()
-			return nil, openErr
-		}
-		add(fills)
-		go bridgeAccountChild(watchCtx, fills, func(event exchange.FillEvent) {
-			emitEvent(exchange.AccountEvent{Kind: exchange.AccountEventFill, Route: request.Route, InstrumentID: instrumentID, ObservedAt: time.Now().UTC(), Phase: accountPhase(event.Kind), Fill: &event})
-		}, emitStatus, emitError)
-		if perp != nil {
-			positions, positionErr := perp.WatchPositions(watchCtx, exchange.WatchRequest{Instrument: item.Instrument, Options: request.Options})
-			if positionErr != nil {
-				_ = subscription.Close()
-				return nil, positionErr
-			}
-			add(positions)
-			go bridgeAccountChild(watchCtx, positions, func(event exchange.PositionEvent) {
-				emitEvent(exchange.AccountEvent{Kind: exchange.AccountEventPosition, Route: request.Route, InstrumentID: instrumentID, ObservedAt: observedAccountTime(event.Time), Phase: accountPhase(event.Kind), Position: &event})
-			}, emitStatus, emitError)
-		}
+		return stop()
 	}
+	emitStatus(exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Generation: generation, Time: time.Now().UTC()})
 	return subscription, nil
 }
 
@@ -145,31 +138,6 @@ func accountPhase(kind exchange.EventKind) exchange.AccountEventPhase {
 		return exchange.AccountEventPhaseSnapshot
 	}
 	return exchange.AccountEventPhaseLive
-}
-
-func bridgeAccountChild[T any](ctx context.Context, child exchange.Subscription[T], event func(T), status func(exchange.StreamStatusEvent), failure func(error)) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case value, open := <-child.Events():
-			if !open {
-				return
-			}
-			event(value)
-		case value, open := <-child.Status():
-			if !open {
-				return
-			}
-			status(value)
-		case err, open := <-child.Errors():
-			if !open {
-				return
-			}
-			failure(err)
-			return
-		}
-	}
 }
 
 func observedAccountTime(value time.Time) time.Time {

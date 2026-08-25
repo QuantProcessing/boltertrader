@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,8 +26,9 @@ type gatePerpREST interface {
 }
 
 type gateSpotWSBackend struct {
-	ws   *gate.WSClient
-	rest gateSpotREST
+	ws        *gate.WSClient
+	rest      gateSpotREST
+	lifecycle *backendLifecycle
 }
 
 type gatePerpWSBackend struct {
@@ -37,7 +39,11 @@ type gatePerpWSBackend struct {
 }
 
 func newGateSpotWSBackend(ws *gate.WSClient, rest gateSpotREST) *gateSpotWSBackend {
-	return &gateSpotWSBackend{ws: ws, rest: rest}
+	backend := &gateSpotWSBackend{ws: ws, rest: rest, lifecycle: newBackendLifecycle()}
+	if ws != nil {
+		ws.SetReconnectHooks(backend.lifecycle.Started, func() { backend.lifecycle.Recovered("gate private subscriptions restored") })
+	}
+	return backend
 }
 
 func newGatePerpWSBackend(ws *gate.WSClient, rest gatePerpREST) *gatePerpWSBackend {
@@ -58,6 +64,10 @@ func gatePerpPrivateInstrumentPayload(userID, instrument string) []string {
 
 func gatePerpPrivateAccountPayload(userID string) []string {
 	return []string{userID}
+}
+
+func gatePerpPrivateAllPayload(userID string) []string {
+	return []string{userID, "!all"}
 }
 
 func gateSpotOrderBookEvent(raw json.RawMessage, instrument exchange.Instrument) (exchange.BookEvent, error) {
@@ -318,6 +328,92 @@ func (backend *gateSpotWSBackend) StartBalances(ctx context.Context, callbacks s
 	})
 }
 
+func (backend *gateSpotWSBackend) StartAccountEvents(ctx context.Context, index accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	if backend == nil || backend.ws == nil {
+		return nil, exchange.NewError(exchange.KindInvalidConfig, exchange.ErrorDetails{Venue: exchange.VenueGate, Product: exchange.ProductSpot, Operation: operation, SafeMessage: "gate websocket client is not configured"})
+	}
+	removeLifecycle := backend.lifecycle.Register("account-events", func(value backendStatus) {
+		if callbacks.Status != nil {
+			callbacks.Status(accountStreamStatus(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, value))
+		}
+	}, nil)
+	stops := make([]func() error, 0, 3)
+	fail := func(err error) (func() error, error) {
+		_ = closeAccountStops(stops...)()
+		removeLifecycle()
+		return nil, err
+	}
+	orders, err := backend.subscribe(ctx, gate.ChannelSpotOrder, []string{"!all"}, func(raw json.RawMessage) {
+		message, decodeErr := gate.DecodeSpotOrderMessage(raw)
+		if decodeErr != nil {
+			callbacks.Error(gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, operation, decodeErr.Error()))
+			return
+		}
+		if validateErr := gateValidateSpotOrders(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, operation, message.Orders); validateErr != nil {
+			callbacks.Error(validateErr)
+			return
+		}
+		for _, row := range message.Orders {
+			item, ok := index.resolve(row.CurrencyPair, "")
+			if !ok {
+				callbacks.Error(fmt.Errorf("gate account order instrument is unknown"))
+				return
+			}
+			event := exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateSpotOrder(row, item.Instrument)}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+		}
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, orders)
+	fills, err := backend.subscribe(ctx, gate.ChannelSpotUserTrade, []string{"!all"}, func(raw json.RawMessage) {
+		message, decodeErr := gate.DecodeSpotUserTradeMessage(raw)
+		if decodeErr != nil {
+			callbacks.Error(gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, operation, decodeErr.Error()))
+			return
+		}
+		if validateErr := gateValidateSpotFills(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, operation, message.Trades); validateErr != nil {
+			callbacks.Error(validateErr)
+			return
+		}
+		for _, row := range message.Trades {
+			item, ok := index.resolve(row.CurrencyPair, "")
+			if !ok {
+				callbacks.Error(fmt.Errorf("gate account fill instrument is unknown"))
+				return
+			}
+			fill := exchange.Fill{NativeSymbol: row.CurrencyPair, NativeID: item.Instrument.Identity.NativeID, OrderID: row.OrderID, ClientOrderID: gatePortableClientOrderID(row.Text), FillID: row.ID, Side: gateSide(row.Side), Price: gateDecimal(row.Price), Quantity: gateDecimal(row.Amount), Fee: gateDecimal(row.Fee), FeeAsset: row.FeeCurrency, Liquidity: gateLiquidity(row.Role), Time: gateTimeMS(row.CreateTimeMS)}
+			event := exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+		}
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, fills)
+	balances, err := backend.subscribe(ctx, gate.ChannelSpotBalance, nil, func(raw json.RawMessage) {
+		events, convertErr := gateSpotBalanceEvents(raw)
+		if convertErr != nil {
+			callbacks.Error(convertErr)
+			return
+		}
+		for _, event := range events {
+			copyOf := event
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &copyOf})
+		}
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, balances)
+	return func() error {
+		removeLifecycle()
+		return closeAccountStops(stops...)()
+	}, nil
+}
+
 func (backend *gateSpotWSBackend) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
 	return backend.rest.PlaceOrder(ctx, request)
 }
@@ -504,6 +600,137 @@ func (backend *gatePerpWSBackend) StartPositions(ctx context.Context, instrument
 			callbacks.Event(event)
 		}
 	})
+}
+
+func (backend *gatePerpWSBackend) StartAccountEvents(ctx context.Context, index accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	type routeInstrument struct {
+		instrument exchange.Instrument
+		multiplier decimal.Decimal
+	}
+	metas := make(map[string]routeInstrument, len(index.byNative))
+	for _, item := range index.instruments() {
+		multiplier, err := backend.rest.gateContractMultiplier(operation, item.Instrument)
+		if err != nil {
+			return nil, err
+		}
+		metas[item.Instrument.Identity.NativeSymbol] = routeInstrument{instrument: item.Instrument, multiplier: multiplier}
+	}
+	userID, err := backend.privateUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	removeLifecycle := backend.lifecycle.Register("account-events", func(value backendStatus) {
+		if callbacks.Status != nil {
+			callbacks.Status(accountStreamStatus(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, value))
+		}
+	}, nil)
+	payload := gatePerpPrivateAllPayload(userID)
+	stops := make([]func() error, 0, 4)
+	fail := func(err error) (func() error, error) {
+		_ = closeAccountStops(stops...)()
+		removeLifecycle()
+		return nil, err
+	}
+	orders, err := backend.subscribe(ctx, gate.ChannelFuturesOrder, payload, func(raw json.RawMessage) {
+		message, decodeErr := gate.DecodeFuturesOrderMessage(raw)
+		if decodeErr != nil {
+			callbacks.Error(gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, operation, decodeErr.Error()))
+			return
+		}
+		if validateErr := gateValidateFuturesOrders(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, operation, message.Orders); validateErr != nil {
+			callbacks.Error(validateErr)
+			return
+		}
+		for _, row := range message.Orders {
+			meta, ok := metas[row.Contract]
+			if !ok {
+				callbacks.Error(fmt.Errorf("gate account order instrument is unknown"))
+				return
+			}
+			event := exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateFuturesOrder(row, meta.instrument, meta.multiplier)}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+		}
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, orders)
+	fills, err := backend.subscribe(ctx, gate.ChannelFuturesUserTrade, payload, func(raw json.RawMessage) {
+		message, decodeErr := gate.DecodeFuturesUserTradeMessage(raw)
+		if decodeErr != nil {
+			callbacks.Error(gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, operation, decodeErr.Error()))
+			return
+		}
+		if validateErr := gateValidateFuturesFills(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, operation, message.Trades); validateErr != nil {
+			callbacks.Error(validateErr)
+			return
+		}
+		for _, row := range message.Trades {
+			meta, ok := metas[row.Contract]
+			if !ok {
+				callbacks.Error(fmt.Errorf("gate account fill instrument is unknown"))
+				return
+			}
+			converted := gateFuturesFills([]gate.MyFuturesTrade{row}, meta.instrument, meta.multiplier)
+			for _, fill := range converted {
+				event := exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill}
+				callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+			}
+		}
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, fills)
+	balances, err := backend.subscribe(ctx, gate.ChannelFuturesBalance, gatePerpPrivateAccountPayload(userID), func(raw json.RawMessage) {
+		events, convertErr := gateFuturesBalanceEvents(raw)
+		if convertErr != nil {
+			callbacks.Error(convertErr)
+			return
+		}
+		for _, event := range events {
+			copyOf := event
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &copyOf})
+		}
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, balances)
+	positions, err := backend.subscribe(ctx, gate.ChannelFuturesPosition, payload, func(raw json.RawMessage) {
+		message, decodeErr := gate.DecodeFuturesPositionMessage(raw)
+		if decodeErr != nil {
+			callbacks.Error(gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, operation, decodeErr.Error()))
+			return
+		}
+		if validateErr := gateValidatePositions(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, operation, message.Positions); validateErr != nil {
+			callbacks.Error(validateErr)
+			return
+		}
+		for _, row := range message.Positions {
+			meta, ok := metas[row.Contract]
+			if !ok {
+				callbacks.Error(fmt.Errorf("gate account position instrument is unknown"))
+				return
+			}
+			side, size := exchange.SideBuy, row.Size
+			if size < 0 {
+				side, size = exchange.SideSell, -size
+			}
+			position := exchange.Position{NativeSymbol: row.Contract, NativeID: meta.instrument.Identity.NativeID, Side: side, Quantity: decimal.NewFromInt(size).Mul(meta.multiplier), EntryPrice: gateDecimal(row.EntryPrice), MarkPrice: gateDecimal(row.MarkPrice), UnrealizedPnL: gateDecimal(row.UnrealisedPNL), LiquidationPrice: gateOptionalDecimal(row.LiqPrice), Leverage: gateOptionalDecimal(row.Leverage), MarginUsed: gateOptionalDecimal(row.Margin)}
+			event := exchange.PositionEvent{Kind: exchange.EventDelta, Positions: []exchange.Position{position}, Time: time.Now().UTC()}
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, NativeSymbol: row.Contract, Position: &event})
+		}
+	})
+	if err != nil {
+		return fail(err)
+	}
+	stops = append(stops, positions)
+	return func() error {
+		removeLifecycle()
+		return closeAccountStops(stops...)()
+	}, nil
 }
 
 func (backend *gatePerpWSBackend) privateUserID(ctx context.Context) (string, error) {

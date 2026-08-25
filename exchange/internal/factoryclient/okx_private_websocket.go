@@ -262,6 +262,77 @@ func (backend *okxPrivateWSBackend) StartPositions(
 	}, nil
 }
 
+func (backend *okxPrivateWSBackend) StartAccountEvents(ctx context.Context, _ accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	if err := backend.ensureConnected(ctx, operation); err != nil {
+		return nil, err
+	}
+	status := backend.registerStatus(func(value backendStatus) {
+		if callbacks.Status != nil {
+			callbacks.Status(accountStreamStatus(backend.meta, value))
+		}
+	})
+	order := &okxPrivateOrderRegistration{callbacks: streamCallbacks[exchange.OrderEvent]{
+		Event: func(event exchange.OrderEvent) {
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+		},
+		Error: callbacks.Error,
+	}}
+	fill := &okxPrivateFillRegistration{callbacks: streamCallbacks[exchange.FillEvent]{
+		Event: func(event exchange.FillEvent) {
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+		},
+		Error: callbacks.Error,
+	}}
+	stream, first := backend.addOrderRegistration(accountWideNative, order, fill)
+	if first {
+		if err := backend.subscribeOrders(accountWideNative, stream.instType); err != nil {
+			_ = backend.removeOrderRegistration(accountWideNative, order, fill)
+			backend.unregisterStatus(status)
+			return nil, err
+		}
+	}
+	stops := []func() error{func() error { return backend.removeOrderRegistration(accountWideNative, order, fill) }}
+	fail := func(err error) (func() error, error) {
+		_ = closeAccountStops(stops...)()
+		backend.unregisterStatus(status)
+		return nil, err
+	}
+	balance := &okxPrivateBalanceRegistration{callbacks: streamCallbacks[exchange.BalanceEvent]{
+		Event: func(event exchange.BalanceEvent) {
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &event})
+		},
+		Error: callbacks.Error,
+	}}
+	if firstBalance := backend.addBalanceRegistration(balance); firstBalance {
+		if err := backend.ws.SubscribeAccountWithError(backend.emitBalance, func(err error) {
+			backend.emitBalanceError(okxWSError(backend.meta, operation, exchange.KindMalformedResponse, err.Error()))
+		}); err != nil {
+			_ = backend.removeBalanceRegistration(balance)
+			return fail(okxWSError(backend.meta, operation, exchange.KindTransport, err.Error()))
+		}
+	}
+	stops = append(stops, func() error { return backend.removeBalanceRegistration(balance) })
+	if backend.meta.product == exchange.ProductPerp {
+		position := &okxPrivatePositionRegistration{instrument: accountWideNative, callbacks: streamCallbacks[exchange.PositionEvent]{
+			Event: func(event exchange.PositionEvent) {
+				callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, Position: &event})
+			},
+			Error: callbacks.Error,
+		}}
+		if firstPosition := backend.addPositionRegistration(position); firstPosition {
+			if err := backend.ws.SubscribePositionsWithError(okxSwapType, backend.emitPosition, func(err error) {
+				backend.emitPositionError(okxWSError(backend.meta, operation, exchange.KindMalformedResponse, err.Error()))
+			}); err != nil {
+				_ = backend.removePositionRegistration(position)
+				return fail(okxWSError(backend.meta, operation, exchange.KindTransport, err.Error()))
+			}
+		}
+		stops = append(stops, func() error { return backend.removePositionRegistration(position) })
+	}
+	return closeAccountStops(append(stops, func() error { backend.unregisterStatus(status); return nil })...), nil
+}
+
 func (backend *okxPrivateWSBackend) PlaceOrder(
 	ctx context.Context,
 	req exchange.PlaceOrderRequest,
@@ -388,15 +459,23 @@ func (backend *okxPrivateWSBackend) removeOrderRegistration(
 	}
 	backend.mu.Unlock()
 	if unsubscribe {
-		return backend.unsubscribe("WatchOrders", okx.WsSubscribeArgs{Channel: "orders", InstType: instType, InstId: instrument})
+		args := okx.WsSubscribeArgs{Channel: "orders", InstType: instType}
+		if instrument != accountWideNative {
+			args.InstId = instrument
+		}
+		return backend.unsubscribe("WatchOrders", args)
 	}
 	return nil
 }
 
 func (backend *okxPrivateWSBackend) subscribeOrders(instrument, instType string) error {
+	var native *string
+	if instrument != accountWideNative {
+		native = &instrument
+	}
 	if err := backend.ws.SubscribeOrdersWithError(
 		instType,
-		&instrument,
+		native,
 		func(order *okx.Order) {
 			backend.emitOrder(order)
 		},
@@ -536,19 +615,22 @@ type okxPrivateOrderSnapshot struct {
 func (backend *okxPrivateWSBackend) orderStreamSnapshot(instrument string) okxPrivateOrderSnapshot {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	stream := backend.orderStreams[instrument]
-	if stream == nil {
-		return okxPrivateOrderSnapshot{}
+	out := okxPrivateOrderSnapshot{}
+	keys := []string{instrument}
+	if instrument != accountWideNative {
+		keys = append(keys, accountWideNative)
 	}
-	out := okxPrivateOrderSnapshot{
-		orders: make([]*okxPrivateOrderRegistration, 0, len(stream.orders)),
-		fills:  make([]*okxPrivateFillRegistration, 0, len(stream.fills)),
-	}
-	for registration := range stream.orders {
-		out.orders = append(out.orders, registration)
-	}
-	for registration := range stream.fills {
-		out.fills = append(out.fills, registration)
+	for _, key := range keys {
+		stream := backend.orderStreams[key]
+		if stream == nil {
+			continue
+		}
+		for registration := range stream.orders {
+			out.orders = append(out.orders, registration)
+		}
+		for registration := range stream.fills {
+			out.fills = append(out.fills, registration)
+		}
 	}
 	return out
 }
@@ -658,7 +740,7 @@ func (backend *okxPrivateWSBackend) positionSnapshot(instrument string) []*okxPr
 	}
 	out := make([]*okxPrivatePositionRegistration, 0, len(backend.positionsStream.registrations))
 	for registration := range backend.positionsStream.registrations {
-		if registration.instrument == instrument {
+		if registration.instrument == instrument || registration.instrument == accountWideNative {
 			out = append(out, registration)
 		}
 	}

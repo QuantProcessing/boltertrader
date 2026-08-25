@@ -2678,9 +2678,15 @@ func (hub *bybitPrivateTopicHub[T]) snapshot(native string) []streamCallbacks[T]
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	routes := hub.callbacks[native]
-	out := make([]streamCallbacks[T], 0, len(routes))
+	accountRoutes := hub.callbacks[accountWideNative]
+	out := make([]streamCallbacks[T], 0, len(routes)+len(accountRoutes))
 	for _, callbacks := range routes {
 		out = append(out, callbacks)
+	}
+	if native != accountWideNative {
+		for _, callbacks := range accountRoutes {
+			out = append(out, callbacks)
+		}
 	}
 	return out
 }
@@ -2852,6 +2858,10 @@ func (b *bybitPrivateWSBackend) StartOrders(ctx context.Context, instrument exch
 	if err != nil {
 		return nil, err
 	}
+	return b.startOrders(ctx, native, callbacks)
+}
+
+func (b *bybitPrivateWSBackend) startOrders(ctx context.Context, native string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	stop, err := b.orders.start(native, callbacks, func(ws *bybit.PrivateWSClient) error {
 		return ws.Subscribe(ctx, "order", func(payload json.RawMessage) {
 			msg, err := bybit.DecodeOrderMessage(payload)
@@ -2881,6 +2891,10 @@ func (b *bybitPrivateWSBackend) StartFills(ctx context.Context, instrument excha
 	if err != nil {
 		return nil, err
 	}
+	return b.startFills(ctx, native, callbacks)
+}
+
+func (b *bybitPrivateWSBackend) startFills(ctx context.Context, native string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	stop, err := b.fills.start(native, callbacks, func(ws *bybit.PrivateWSClient) error {
 		return ws.Subscribe(ctx, "execution", func(payload json.RawMessage) {
 			msg, err := bybit.DecodeExecutionMessage(payload)
@@ -2935,6 +2949,10 @@ func (b *bybitPrivateWSBackend) StartPositions(ctx context.Context, instrument e
 	if err != nil {
 		return nil, err
 	}
+	return b.startPositions(ctx, native, callbacks)
+}
+
+func (b *bybitPrivateWSBackend) startPositions(ctx context.Context, native string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
 	stop, err := b.positions.start(native, callbacks, func(ws *bybit.PrivateWSClient) error {
 		return ws.Subscribe(ctx, "position", func(payload json.RawMessage) {
 			msg, err := bybit.DecodePositionMessage(payload)
@@ -2961,6 +2979,53 @@ func (b *bybitPrivateWSBackend) StartPositions(ctx context.Context, instrument e
 	}
 	return stop, nil
 }
+
+func (b *bybitPrivateWSBackend) StartAccountEvents(ctx context.Context, _ accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	orders, err := b.startOrders(ctx, accountWideNative, streamCallbacks[exchange.OrderEvent]{
+		Event: func(event exchange.OrderEvent) {
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+		},
+		Error: callbacks.Error,
+	})
+	if err != nil {
+		return nil, err
+	}
+	fills, err := b.startFills(ctx, accountWideNative, streamCallbacks[exchange.FillEvent]{
+		Event: func(event exchange.FillEvent) {
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+		},
+		Error: callbacks.Error,
+	})
+	if err != nil {
+		_ = orders()
+		return nil, err
+	}
+	balances, err := b.StartBalances(ctx, streamCallbacks[exchange.BalanceEvent]{
+		Event: func(event exchange.BalanceEvent) {
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &event})
+		},
+		Error: callbacks.Error,
+	})
+	if err != nil {
+		_ = closeAccountStops(orders, fills)()
+		return nil, err
+	}
+	stops := []func() error{orders, fills, balances}
+	if b.client.meta.product == exchange.ProductPerp {
+		positions, positionErr := b.startPositions(ctx, accountWideNative, streamCallbacks[exchange.PositionEvent]{
+			Event: func(event exchange.PositionEvent) {
+				callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, Position: &event})
+			},
+			Error: callbacks.Error,
+		})
+		if positionErr != nil {
+			_ = closeAccountStops(stops...)()
+			return nil, positionErr
+		}
+		stops = append(stops, positions)
+	}
+	return closeAccountStops(stops...), nil
+}
 func (b *bybitPrivateWSBackend) Close() error {
 	var errs []error
 	if b.orders != nil {
@@ -2983,6 +3048,10 @@ func (b *bitgetPrivateWSBackend) StartOrders(ctx context.Context, instrument exc
 	if err != nil {
 		return nil, err
 	}
+	return b.startOrders(ctx, native, callbacks)
+}
+
+func (b *bitgetPrivateWSBackend) startOrders(ctx context.Context, native string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	stop, err := b.orders.start(ctx, native, callbacks, func(payload json.RawMessage) {
 		msg, err := bitget.DecodeOrderMessage(payload)
 		if err != nil {
@@ -3010,6 +3079,10 @@ func (b *bitgetPrivateWSBackend) StartFills(ctx context.Context, instrument exch
 	if err != nil {
 		return nil, err
 	}
+	return b.startFills(ctx, native, callbacks)
+}
+
+func (b *bitgetPrivateWSBackend) startFills(ctx context.Context, native string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	stop, err := b.fills.start(ctx, native, callbacks, func(payload json.RawMessage) {
 		msg, err := bitget.DecodeFillMessage(payload)
 		if err != nil {
@@ -3056,6 +3129,10 @@ func (b *bitgetPrivateWSBackend) StartPositions(ctx context.Context, instrument 
 	if err != nil {
 		return nil, err
 	}
+	return b.startPositions(ctx, native, callbacks)
+}
+
+func (b *bitgetPrivateWSBackend) startPositions(ctx context.Context, native string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
 	stop, err := b.positions.start(ctx, native, callbacks, func(payload json.RawMessage) {
 		msg, err := bitget.DecodePositionMessage(payload)
 		if err != nil {
@@ -3079,6 +3156,41 @@ func (b *bitgetPrivateWSBackend) StartPositions(ctx context.Context, instrument 
 		return nil, normErr(b.client.meta, "WatchPositions", err)
 	}
 	return stop, nil
+}
+
+func (b *bitgetPrivateWSBackend) StartAccountEvents(ctx context.Context, _ accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	orders, err := b.startOrders(ctx, accountWideNative, streamCallbacks[exchange.OrderEvent]{Event: func(event exchange.OrderEvent) {
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+	}, Error: callbacks.Error})
+	if err != nil {
+		return nil, err
+	}
+	fills, err := b.startFills(ctx, accountWideNative, streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) {
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+	}, Error: callbacks.Error})
+	if err != nil {
+		_ = orders()
+		return nil, err
+	}
+	balances, err := b.StartBalances(ctx, streamCallbacks[exchange.BalanceEvent]{Event: func(event exchange.BalanceEvent) {
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &event})
+	}, Error: callbacks.Error})
+	if err != nil {
+		_ = closeAccountStops(orders, fills)()
+		return nil, err
+	}
+	stops := []func() error{orders, fills, balances}
+	if b.client.meta.product == exchange.ProductPerp {
+		positions, positionErr := b.startPositions(ctx, accountWideNative, streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) {
+			callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, Position: &event})
+		}, Error: callbacks.Error})
+		if positionErr != nil {
+			_ = closeAccountStops(stops...)()
+			return nil, positionErr
+		}
+		stops = append(stops, positions)
+	}
+	return closeAccountStops(stops...), nil
 }
 func (b *bitgetPrivateWSBackend) Close() error {
 	if b == nil || b.ws == nil {

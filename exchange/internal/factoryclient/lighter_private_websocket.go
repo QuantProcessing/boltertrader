@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,8 @@ import (
 
 type lighterPrivateWSClient interface {
 	lighterPublicWSClient
+	SubscribeAccountAllOrders(int64, string, func([]byte)) error
+	UnsubscribeAccountAllOrders(int64) error
 	SubscribeAccountOrders(int, int64, string, func([]byte)) error
 	UnsubscribeAccountOrders(int, int64) error
 	SubscribeAccountAllTrades(int64, string, func([]byte)) error
@@ -25,6 +28,193 @@ type lighterPrivateWSClient interface {
 	UnsubscribeAccountAllPositions(int64) error
 	PlaceOrderOutcome(context.Context, *lighter.Client, lighter.CreateOrderRequest) (lighter.WSCommandOutcome, error)
 	CancelOrderOutcome(context.Context, *lighter.Client, lighter.CancelOrderRequest) (lighter.WSCommandOutcome, error)
+}
+
+func (backend *lighterPrivateWSBackend) StartAccountEvents(ctx context.Context, index accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	metas := make(map[int]lighterMarketMeta, len(index.byNative))
+	for _, item := range index.instruments() {
+		meta, err := backend.resolveMeta(ctx, operation, item.Instrument)
+		if err != nil {
+			return nil, err
+		}
+		metas[meta.marketID] = meta
+	}
+	token, err := backend.ensureAuth(operation)
+	if err != nil {
+		return nil, err
+	}
+	if err := backend.ensureConnected(operation); err != nil {
+		return nil, err
+	}
+	streamCallbacks := streamCallbacks[accountBackendEvent]{
+		Status: func(value backendStatus) {
+			if callbacks.Status != nil {
+				callbacks.Status(accountStreamStatus(clientMeta{venue: exchange.VenueLighter, product: backend.product}, value))
+			}
+		},
+		Error: callbacks.Error,
+	}
+	lifecycle, recoveredOnValid := lighterSimpleLifecycle(streamCallbacks)
+	key := "private-account-events"
+	backend.addLifecycle(key, lifecycle)
+	var stopped atomic.Bool
+	stops := make([]func() error, 0, 4)
+	fail := func(err error) (func() error, error) {
+		stopped.Store(true)
+		_ = closeAccountStops(stops...)()
+		backend.removeLifecycle(key)
+		return nil, err
+	}
+
+	if err := backend.ws.SubscribeAccountAllOrders(backend.rest.AccountIndex, token, func(payload []byte) {
+		if stopped.Load() {
+			return
+		}
+		var event lighter.WsAccountAllOrdersEvent
+		if err := json.Unmarshal(payload, &event); err != nil {
+			emitLighterError(callbacks.Error, backend.malformed(operation))
+			return
+		}
+		for _, orders := range event.Orders {
+			for _, row := range orders {
+				if row == nil {
+					continue
+				}
+				meta, ok := metas[row.MarketIndex]
+				if !ok {
+					emitLighterError(callbacks.Error, fmt.Errorf("lighter account order instrument is unknown"))
+					return
+				}
+				converted, convertErr := lighterOrder(row, meta)
+				if convertErr != nil {
+					emitLighterError(callbacks.Error, backend.malformed(operation))
+					return
+				}
+				orderEvent := exchange.OrderEvent{Kind: exchange.EventDelta, Order: converted}
+				callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &orderEvent})
+			}
+		}
+		recoveredOnValid()
+	}); err != nil {
+		return fail(backend.transport(operation))
+	}
+	stops = append(stops, func() error { return backend.ws.UnsubscribeAccountAllOrders(backend.rest.AccountIndex) })
+
+	if err := backend.ws.SubscribeAccountAllTrades(backend.rest.AccountIndex, token, func(payload []byte) {
+		if stopped.Load() {
+			return
+		}
+		var event lighter.WsAccountAllTradesEvent
+		if err := json.Unmarshal(payload, &event); err != nil {
+			emitLighterError(callbacks.Error, backend.malformed(operation))
+			return
+		}
+		for _, trades := range event.Trades {
+			for _, row := range trades {
+				meta, ok := metas[row.MarketId]
+				if !ok {
+					emitLighterError(callbacks.Error, fmt.Errorf("lighter account fill instrument is unknown"))
+					return
+				}
+				converted, convertErr := lighterFill(row, meta, backend.rest.AccountIndex)
+				if convertErr != nil {
+					emitLighterError(callbacks.Error, backend.malformed(operation))
+					return
+				}
+				fillEvent := exchange.FillEvent{Kind: exchange.EventDelta, Fill: converted}
+				callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &fillEvent})
+			}
+		}
+		recoveredOnValid()
+	}); err != nil {
+		return fail(backend.transport(operation))
+	}
+	stops = append(stops, func() error { return backend.ws.UnsubscribeAccountAllTrades(backend.rest.AccountIndex) })
+
+	if err := backend.ws.SubscribeAccountAllAssets(backend.rest.AccountIndex, token, func(payload []byte) {
+		if stopped.Load() {
+			return
+		}
+		var event lighter.WsAccountAllAssetsEvent
+		if err := json.Unmarshal(payload, &event); err != nil {
+			emitLighterError(callbacks.Error, backend.malformed(operation))
+			return
+		}
+		rows := make([]*lighter.SpotAsset, 0, len(event.Assets))
+		for _, row := range event.Assets {
+			rows = append(rows, row)
+		}
+		balances, convertErr := lighterSpotBalances(rows, backend.product, operation)
+		if convertErr != nil {
+			emitLighterError(callbacks.Error, convertErr)
+			return
+		}
+		balanceEvent := exchange.BalanceEvent{Kind: exchange.EventSnapshot, Balances: balances, Time: lighterUnixMillis(event.Timestamp)}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &balanceEvent})
+		recoveredOnValid()
+	}); err != nil {
+		return fail(backend.transport(operation))
+	}
+	stops = append(stops, func() error { return backend.ws.UnsubscribeAccountAllAssets(backend.rest.AccountIndex) })
+
+	if backend.product == exchange.ProductPerp {
+		previous := make(map[int]struct{})
+		var positionsMu sync.Mutex
+		if err := backend.ws.SubscribeAccountAllPositions(backend.rest.AccountIndex, token, func(payload []byte) {
+			if stopped.Load() {
+				return
+			}
+			var event lighter.WsAccountAllPositionsEvent
+			if err := json.Unmarshal(payload, &event); err != nil {
+				emitLighterError(callbacks.Error, backend.malformed(operation))
+				return
+			}
+			positionsMu.Lock()
+			defer positionsMu.Unlock()
+			current := make(map[int]struct{})
+			for _, row := range event.Positions {
+				if row == nil {
+					continue
+				}
+				meta, ok := metas[row.MarketId]
+				if !ok {
+					emitLighterError(callbacks.Error, fmt.Errorf("lighter account position instrument is unknown"))
+					return
+				}
+				converted, convertErr := lighterPosition(row, meta)
+				if convertErr != nil {
+					emitLighterError(callbacks.Error, backend.malformed(operation))
+					return
+				}
+				positions := []exchange.Position(nil)
+				if !converted.Quantity.IsZero() {
+					positions = []exchange.Position{converted}
+					current[row.MarketId] = struct{}{}
+				}
+				positionEvent := exchange.PositionEvent{Kind: exchange.EventSnapshot, Positions: positions, Time: time.Now().UTC()}
+				callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, Position: &positionEvent})
+			}
+			for marketID := range previous {
+				if _, exists := current[marketID]; exists {
+					continue
+				}
+				meta := metas[marketID]
+				positionEvent := exchange.PositionEvent{Kind: exchange.EventSnapshot, Time: time.Now().UTC()}
+				callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, Position: &positionEvent})
+			}
+			previous = current
+			recoveredOnValid()
+		}); err != nil {
+			return fail(backend.transport(operation))
+		}
+		stops = append(stops, func() error { return backend.ws.UnsubscribeAccountAllPositions(backend.rest.AccountIndex) })
+	}
+	return lighterStop(func() error {
+		stopped.Store(true)
+		backend.removeLifecycle(key)
+		return closeAccountStops(stops...)()
+	}), nil
 }
 
 type lighterPrivateWSBackend struct {

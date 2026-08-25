@@ -65,6 +65,7 @@ type binanceSpotPrivateWSBackend struct {
 	orderRoutes         map[uint64]binanceSpotOrderRoute
 	fillRoutes          map[uint64]binanceSpotFillRoute
 	balanceRoutes       map[uint64]binanceSpotBalanceRoute
+	accountRoutes       map[uint64]accountEventCallbacks
 }
 
 type binanceSpotOrderRoute struct {
@@ -150,6 +151,47 @@ func (backend *binanceSpotPrivateWSBackend) StartBalances(ctx context.Context, c
 		return nil, err
 	}
 	return stop, nil
+}
+
+func (backend *binanceSpotPrivateWSBackend) StartAccountEvents(ctx context.Context, _ accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	if err := backend.ensureAccountConnected(ctx, operation); err != nil {
+		return nil, err
+	}
+	removeLifecycle := backend.lifecycle.Register("spot:account:"+nextBinanceWSRequestID(), func(status backendStatus) {
+		callbacks.Status(accountStreamStatus(backend.meta, status))
+	}, nil)
+	backend.mu.Lock()
+	if backend.closed {
+		backend.mu.Unlock()
+		removeLifecycle()
+		return nil, websocketError(backend.meta, operation, exchange.KindSubscriptionClosed, "websocket client is closed")
+	}
+	if backend.accountRoutes == nil {
+		backend.accountRoutes = make(map[uint64]accountEventCallbacks)
+	}
+	if !backend.executionSubscribed {
+		backend.account.SubscribeExecutionReport(backend.dispatchExecutionReport)
+		backend.executionSubscribed = true
+	}
+	if !backend.balanceSubscribed {
+		backend.account.SubscribeAccountPosition(backend.dispatchAccountPosition)
+		backend.balanceSubscribed = true
+	}
+	backend.nextRouteID++
+	id := backend.nextRouteID
+	backend.accountRoutes[id] = callbacks
+	backend.mu.Unlock()
+	var once sync.Once
+	return func() error {
+		once.Do(func() {
+			backend.mu.Lock()
+			delete(backend.accountRoutes, id)
+			backend.mu.Unlock()
+			removeLifecycle()
+		})
+		return nil
+	}, nil
 }
 
 func (backend *binanceSpotPrivateWSBackend) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -357,6 +399,10 @@ func (backend *binanceSpotPrivateWSBackend) addBalanceRoute(operation string, ro
 
 func (backend *binanceSpotPrivateWSBackend) dispatchExecutionReport(event *binancespot.ExecutionReportEvent) {
 	backend.mu.Lock()
+	accountRoutes := make([]accountEventCallbacks, 0, len(backend.accountRoutes))
+	for _, route := range backend.accountRoutes {
+		accountRoutes = append(accountRoutes, route)
+	}
 	orderRoutes := make([]binanceSpotOrderRoute, 0, len(backend.orderRoutes))
 	for _, route := range backend.orderRoutes {
 		orderRoutes = append(orderRoutes, route)
@@ -366,6 +412,25 @@ func (backend *binanceSpotPrivateWSBackend) dispatchExecutionReport(event *binan
 		fillRoutes = append(fillRoutes, route)
 	}
 	backend.mu.Unlock()
+	if event != nil {
+		instrument := exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Symbol: event.Symbol, NativeSymbol: event.Symbol}}
+		for _, route := range accountRoutes {
+			order, err := binanceSpotWSOrderEvent(instrument, event.Symbol, event)
+			if err != nil && !errors.Is(err, binanceSkipEvent) {
+				route.Error(err)
+			} else if err == nil {
+				orderEvent := &exchange.OrderEvent{Kind: exchange.EventDelta, Order: order}
+				route.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: orderEvent})
+			}
+			fill, ok, err := binanceSpotWSFillEvent(instrument, event.Symbol, event)
+			if err != nil {
+				route.Error(err)
+			} else if ok {
+				fillEvent := &exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill}
+				route.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: fillEvent})
+			}
+		}
+	}
 	for _, route := range orderRoutes {
 		order, err := binanceSpotWSOrderEvent(route.instrument, route.venueSymbol, event)
 		if err != nil {
@@ -391,11 +456,28 @@ func (backend *binanceSpotPrivateWSBackend) dispatchExecutionReport(event *binan
 
 func (backend *binanceSpotPrivateWSBackend) dispatchAccountPosition(event *binancespot.AccountPositionEvent) {
 	backend.mu.Lock()
+	accountRoutes := make([]accountEventCallbacks, 0, len(backend.accountRoutes))
+	for _, route := range backend.accountRoutes {
+		accountRoutes = append(accountRoutes, route)
+	}
 	routes := make([]binanceSpotBalanceRoute, 0, len(backend.balanceRoutes))
 	for _, route := range backend.balanceRoutes {
 		routes = append(routes, route)
 	}
 	backend.mu.Unlock()
+	for _, route := range accountRoutes {
+		balances, err := binanceSpotWSBalances(event)
+		if err != nil {
+			route.Error(err)
+			continue
+		}
+		at := time.Now().UTC()
+		if event != nil && event.EventTime > 0 {
+			at = time.UnixMilli(event.EventTime).UTC()
+		}
+		balanceEvent := &exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: at}
+		route.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: balanceEvent})
+	}
 	for _, route := range routes {
 		balances, err := binanceSpotWSBalances(event)
 		if err != nil {
@@ -431,6 +513,7 @@ type binancePerpPrivateWSBackend struct {
 	fillRoutes        map[uint64]binancePerpFillRoute
 	balanceRoutes     map[uint64]binancePerpBalanceRoute
 	positionRoutes    map[uint64]binancePerpPositionRoute
+	accountRoutes     map[uint64]accountEventCallbacks
 }
 
 type binancePerpOrderRoute struct {
@@ -536,6 +619,47 @@ func (backend *binancePerpPrivateWSBackend) StartPositions(ctx context.Context, 
 		return nil, err
 	}
 	return stop, nil
+}
+
+func (backend *binancePerpPrivateWSBackend) StartAccountEvents(ctx context.Context, _ accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	if err := backend.ensureAccountConnected(ctx, operation); err != nil {
+		return nil, err
+	}
+	removeLifecycle := backend.lifecycle.Register("perp:account:"+nextBinanceWSRequestID(), func(status backendStatus) {
+		callbacks.Status(accountStreamStatus(backend.meta, status))
+	}, nil)
+	backend.mu.Lock()
+	if backend.closed {
+		backend.mu.Unlock()
+		removeLifecycle()
+		return nil, websocketError(backend.meta, operation, exchange.KindSubscriptionClosed, "websocket client is closed")
+	}
+	if backend.accountRoutes == nil {
+		backend.accountRoutes = make(map[uint64]accountEventCallbacks)
+	}
+	if !backend.orderSubscribed {
+		backend.account.SubscribeOrderUpdate(backend.dispatchOrderUpdate)
+		backend.orderSubscribed = true
+	}
+	if !backend.accountSubscribed {
+		backend.account.SubscribeAccountUpdate(backend.dispatchAccountUpdate)
+		backend.accountSubscribed = true
+	}
+	backend.nextRouteID++
+	id := backend.nextRouteID
+	backend.accountRoutes[id] = callbacks
+	backend.mu.Unlock()
+	var once sync.Once
+	return func() error {
+		once.Do(func() {
+			backend.mu.Lock()
+			delete(backend.accountRoutes, id)
+			backend.mu.Unlock()
+			removeLifecycle()
+		})
+		return nil
+	}, nil
 }
 
 func (backend *binancePerpPrivateWSBackend) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -772,6 +896,10 @@ func (backend *binancePerpPrivateWSBackend) addPositionRoute(operation string, r
 
 func (backend *binancePerpPrivateWSBackend) dispatchOrderUpdate(event *binanceperp.OrderUpdateEvent) {
 	backend.mu.Lock()
+	accountRoutes := make([]accountEventCallbacks, 0, len(backend.accountRoutes))
+	for _, route := range backend.accountRoutes {
+		accountRoutes = append(accountRoutes, route)
+	}
 	orderRoutes := make([]binancePerpOrderRoute, 0, len(backend.orderRoutes))
 	for _, route := range backend.orderRoutes {
 		orderRoutes = append(orderRoutes, route)
@@ -781,6 +909,29 @@ func (backend *binancePerpPrivateWSBackend) dispatchOrderUpdate(event *binancepe
 		fillRoutes = append(fillRoutes, route)
 	}
 	backend.mu.Unlock()
+	if event != nil {
+		instrument, _, nativeErr := binancePerpNativeSymbols(event.Order.Symbol)
+		for _, route := range accountRoutes {
+			if nativeErr != nil {
+				route.Error(nativeErr)
+				continue
+			}
+			order, err := binancePerpWSOrderEvent(instrument, event)
+			if err != nil && !errors.Is(err, binanceSkipEvent) {
+				route.Error(err)
+			} else if err == nil {
+				orderEvent := &exchange.OrderEvent{Kind: exchange.EventDelta, Order: order}
+				route.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: orderEvent})
+			}
+			fill, ok, err := binancePerpWSFillEvent(instrument, event)
+			if err != nil {
+				route.Error(err)
+			} else if ok {
+				fillEvent := &exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill}
+				route.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: fillEvent})
+			}
+		}
+	}
 	for _, route := range orderRoutes {
 		order, err := binancePerpWSOrderEvent(route.instrument, event)
 		if err != nil {
@@ -806,6 +957,10 @@ func (backend *binancePerpPrivateWSBackend) dispatchOrderUpdate(event *binancepe
 
 func (backend *binancePerpPrivateWSBackend) dispatchAccountUpdate(event *binanceperp.AccountUpdateEvent) {
 	backend.mu.Lock()
+	accountRoutes := make([]accountEventCallbacks, 0, len(backend.accountRoutes))
+	for _, route := range backend.accountRoutes {
+		accountRoutes = append(accountRoutes, route)
+	}
 	balanceRoutes := make([]binancePerpBalanceRoute, 0, len(backend.balanceRoutes))
 	for _, route := range backend.balanceRoutes {
 		balanceRoutes = append(balanceRoutes, route)
@@ -815,6 +970,40 @@ func (backend *binancePerpPrivateWSBackend) dispatchAccountUpdate(event *binance
 		positionRoutes = append(positionRoutes, route)
 	}
 	backend.mu.Unlock()
+	for _, route := range accountRoutes {
+		balances, err := binancePerpWSBalances(event)
+		if err != nil {
+			route.Error(err)
+		} else {
+			balanceEvent := &exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: binancePerpWSEventTime(event)}
+			route.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: balanceEvent})
+		}
+		var positions []exchange.Position
+		seen := make(map[string]struct{})
+		if event != nil {
+			for _, row := range event.UpdateData.Positions {
+				if _, duplicate := seen[row.Symbol]; duplicate {
+					continue
+				}
+				seen[row.Symbol] = struct{}{}
+				instrument, _, symbolErr := binancePerpNativeSymbols(row.Symbol)
+				if symbolErr != nil {
+					route.Error(symbolErr)
+					continue
+				}
+				rows, positionErr := binancePerpWSPositions(instrument, event)
+				if positionErr != nil {
+					route.Error(positionErr)
+					continue
+				}
+				positions = append(positions, rows...)
+			}
+		}
+		if len(positions) > 0 {
+			positionEvent := &exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: binancePerpWSEventTime(event)}
+			route.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, Position: positionEvent})
+		}
+	}
 	for _, route := range balanceRoutes {
 		balances, err := binancePerpWSBalances(event)
 		if err != nil {

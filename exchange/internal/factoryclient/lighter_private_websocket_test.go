@@ -71,6 +71,14 @@ func (ws *fakeLighterPrivateWS) SubscribeCandle(int, string, func([]byte)) error
 	return nil
 }
 func (ws *fakeLighterPrivateWS) UnsubscribeCandle(int, string) error { return nil }
+func (ws *fakeLighterPrivateWS) SubscribeAccountAllOrders(_ int64, _ string, cb func([]byte)) error {
+	if ws.quietSubscriptions {
+		return nil
+	}
+	cb([]byte(`{"orders":{"7":[{"order_index":11,"client_order_index":123,"market_index":7,"initial_base_amount":"1.2","remaining_base_amount":"0.7","filled_base_amount":"0.5","price":"100","is_ask":false,"type":"limit","time_in_force":"post-only","status":"open","created_at":1700000000000,"updated_at":1700000000100}]}}`))
+	return nil
+}
+func (ws *fakeLighterPrivateWS) UnsubscribeAccountAllOrders(int64) error { return nil }
 func (ws *fakeLighterPrivateWS) SubscribeAccountOrders(_ int, _ int64, _ string, cb func([]byte)) error {
 	if ws.quietSubscriptions {
 		return nil

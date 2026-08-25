@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -1891,6 +1892,125 @@ func (backend *nadoSpotWSBackend) StartBalances(ctx context.Context, callbacks s
 		return ws.UnsubscribePositions(nil)
 	}), nil
 }
+
+func (backend *nadoSpotWSBackend) StartAccountEvents(ctx context.Context, index accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	return backend.startAccountEvents(ctx, index, callbacks, backend.base.meta.product == exchange.ProductPerp)
+}
+
+func (backend *nadoSpotWSBackend) startAccountEvents(ctx context.Context, index accountInstrumentIndex, callbacks accountEventCallbacks, positions bool) (func() error, error) {
+	const operation = "WatchAccountEvents"
+	products := make(map[int64]nadoProduct, len(index.byNative))
+	for _, item := range index.instruments() {
+		product, err := backend.base.product(ctx, item.Instrument, operation)
+		if err != nil {
+			return nil, err
+		}
+		products[product.productID] = product
+	}
+	ws, err := backend.ensureAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var generation atomic.Uint64
+	ws.SetReconnectHooks(func(err error) {
+		value := generation.Add(1)
+		if callbacks.Status != nil {
+			callbacks.Status(accountStreamStatus(backend.base.meta, backendStatus{State: exchange.SubscriptionGap, Phase: exchange.GapStarted, Generation: value, Reason: "nado private websocket disconnected", Time: time.Now().UTC()}))
+		}
+	}, func() {
+		if callbacks.Status != nil {
+			callbacks.Status(accountStreamStatus(backend.base.meta, backendStatus{State: exchange.SubscriptionActive, Phase: exchange.GapRecovered, Generation: generation.Load(), Reason: "nado private subscriptions restored", Time: time.Now().UTC()}))
+		}
+	})
+	stops := make([]func() error, 0, 3)
+	fail := func(err error) (func() error, error) {
+		_ = closeAccountStops(stops...)()
+		return nil, backend.base.normalize(operation, err)
+	}
+	if err := ws.SubscribeOrders(nil, func(update *nadosdk.OrderUpdate) {
+		if update == nil {
+			callbacks.Error(nadoMalformed(backend.base.meta.product, operation, "nil order update"))
+			return
+		}
+		product, ok := products[update.ProductId]
+		if !ok {
+			callbacks.Error(fmt.Errorf("nado account order instrument is unknown"))
+			return
+		}
+		event, convertErr := nadoOrderUpdateEvent(update, product, backend.base.meta.product, operation)
+		if convertErr != nil {
+			callbacks.Error(convertErr)
+			return
+		}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &event})
+	}); err != nil {
+		return fail(err)
+	}
+	stops = append(stops, nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribeOrders(nil) }))
+	if err := ws.SubscribeFills(nil, func(fill *nadosdk.Fill) {
+		if fill == nil {
+			callbacks.Error(nadoMalformed(backend.base.meta.product, operation, "nil fill update"))
+			return
+		}
+		product, ok := products[fill.ProductId]
+		if !ok {
+			callbacks.Error(fmt.Errorf("nado account fill instrument is unknown"))
+			return
+		}
+		event, convertErr := nadoFillEvent(fill, product, backend.base.meta.product, operation)
+		if convertErr != nil {
+			callbacks.Error(convertErr)
+			return
+		}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventFill, Fill: &event})
+	}); err != nil {
+		return fail(err)
+	}
+	stops = append(stops, nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribeFills(nil) }))
+	refreshCtx, refreshCancel, refreshSetupDone := nadoWSLifecycleContext(ctx)
+	if err := ws.SubscribePositions(nil, func(change *nadosdk.PositionChange) {
+		if change == nil {
+			callbacks.Error(nadoMalformed(backend.base.meta.product, operation, "nil position update"))
+			return
+		}
+		balances, balanceErr := backend.base.balanceSnapshot(refreshCtx, operation)
+		if balanceErr != nil {
+			callbacks.Error(balanceErr)
+			return
+		}
+		at, timeErr := nadoUnixTime(change.Timestamp, backend.base.meta.product, operation, "balance timestamp")
+		if timeErr != nil {
+			callbacks.Error(timeErr)
+			return
+		}
+		balanceEvent := exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: at}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventBalance, Balance: &balanceEvent})
+		if !positions {
+			return
+		}
+		product, ok := products[change.ProductId]
+		if !ok {
+			callbacks.Error(fmt.Errorf("nado account position instrument is unknown"))
+			return
+		}
+		positionEvent, convertErr := nadoPositionEvent(change, product, operation)
+		if convertErr != nil {
+			callbacks.Error(convertErr)
+			return
+		}
+		callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventPosition, NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, Position: &positionEvent})
+	}); err != nil {
+		refreshSetupDone()
+		refreshCancel()
+		return fail(err)
+	}
+	refreshSetupDone()
+	stops = append(stops, nadoIdempotentUnsubscribe(func() error {
+		refreshCancel()
+		return ws.UnsubscribePositions(nil)
+	}))
+	return closeAccountStops(stops...), nil
+}
 func (backend *nadoSpotWSBackend) PlaceOrder(ctx context.Context, req exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
 	if err := req.Validate(backend.base.meta.product); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
@@ -2031,6 +2151,9 @@ func (backend *nadoPerpWSBackend) StartPositions(ctx context.Context, instrument
 		return nil, backend.base.normalize("WatchPositions", err)
 	}
 	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribePositions(&product.productID) }), nil
+}
+func (backend *nadoPerpWSBackend) StartAccountEvents(ctx context.Context, index accountInstrumentIndex, callbacks accountEventCallbacks) (func() error, error) {
+	return (*nadoSpotWSBackend)(backend).startAccountEvents(ctx, index, callbacks, true)
 }
 func (backend *nadoPerpWSBackend) StartReference(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchReference")

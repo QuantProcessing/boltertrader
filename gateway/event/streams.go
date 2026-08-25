@@ -487,6 +487,14 @@ func (manager *StreamManager) superviseStaticAccount(ctx context.Context, accoun
 			}
 			continue
 		}
+		if err := streams.releaseAccountEvents(); err != nil {
+			streams.close()
+			manager.unavailable(accountID, "private_stream_replay_failed", true)
+			if !waitContext(ctx, manager.reconnectBackoff) {
+				return
+			}
+			continue
+		}
 		if err := manager.activatePrivateStream(ctx, accountID, streams); err != nil {
 			streams.close()
 			if ctx.Err() != nil {
@@ -624,6 +632,23 @@ func (manager *StreamManager) runDynamicAccount(
 			}
 			continue
 		}
+		replayFailed := false
+		for _, streams := range sessions {
+			if err := streams.releaseAccountEvents(); err != nil {
+				replayFailed = true
+				break
+			}
+		}
+		if replayFailed {
+			closeDynamicRouteSessions(sessions)
+			for _, routeID := range routeIDs {
+				manager.dynamicRouteUnavailable(accountID, domain.WriteFence{AccountFence: plan.generation, RouteID: routeID}, "private_stream_replay_failed", true, observer)
+			}
+			if !waitContext(ctx, manager.reconnectBackoff) {
+				return
+			}
+			continue
+		}
 		for routeID, streams := range sessions {
 			manager.waitDynamicRouteActivation(ctx, routeID, streams, activations)
 		}
@@ -729,6 +754,11 @@ func (manager *StreamManager) reconnectDynamicRoute(
 		if recoveryErr != nil || !report.WriteReady {
 			streams.close()
 			manager.dynamicRouteUnavailable(accountID, fence, "private_stream_recovery_failed", true, observer)
+			continue
+		}
+		if err := streams.releaseAccountEvents(); err != nil {
+			streams.close()
+			manager.dynamicRouteUnavailable(accountID, fence, "private_stream_replay_failed", true, observer)
 			continue
 		}
 		return streams, true
@@ -891,6 +921,49 @@ type accountStreams struct {
 	once               sync.Once
 	faultOnce          sync.Once
 	onFault            func()
+	eventMu            sync.Mutex
+	bufferAccountData  bool
+	pendingAccountData []func() error
+}
+
+func (streams *accountStreams) dispatchAccountData(apply func() error) error {
+	if streams == nil || apply == nil {
+		return nil
+	}
+	streams.eventMu.Lock()
+	if streams.bufferAccountData {
+		streams.pendingAccountData = append(streams.pendingAccountData, apply)
+		streams.eventMu.Unlock()
+		return nil
+	}
+	streams.eventMu.Unlock()
+	return apply()
+}
+
+// releaseAccountEvents runs every private delta that arrived while REST
+// reconciliation established the account baseline. New deltas continue to be
+// queued until the replay is empty, so a live callback cannot overtake the
+// buffered generation.
+func (streams *accountStreams) releaseAccountEvents() error {
+	if streams == nil {
+		return nil
+	}
+	for {
+		streams.eventMu.Lock()
+		pending := streams.pendingAccountData
+		streams.pendingAccountData = nil
+		if len(pending) == 0 {
+			streams.bufferAccountData = false
+			streams.eventMu.Unlock()
+			return nil
+		}
+		streams.eventMu.Unlock()
+		for _, apply := range pending {
+			if err := apply(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (streams *accountStreams) expectActivations(routes map[domain.RouteID]struct{}) {
@@ -956,6 +1029,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 	streamContext, cancel := context.WithCancel(ctx)
 	streams := &accountStreams{
 		cancel: cancel, faults: make(chan struct{}, 1), activated: make(chan struct{}),
+		bufferAccountData: true,
 		onFault: func() {
 			manager.unavailable(accountID, account.ReasonPrivateStreamGap, true)
 		},
@@ -1106,6 +1180,7 @@ func (manager *StreamManager) openDynamicRouteStreams(
 	var streams *accountStreams
 	streams = &accountStreams{
 		cancel: cancel, faults: make(chan struct{}, 1), activated: make(chan struct{}),
+		bufferAccountData: true,
 		onFault: func() {
 			select {
 			case faults <- dynamicRouteFault{routeID: routeID, streams: streams}:
@@ -1189,31 +1264,39 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 		instrumentID := domain.InstrumentID(event.InstrumentID)
 		switch event.Kind {
 		case exchange.AccountEventOrder:
-			if event.Order == nil || instrumentID.Validate() != nil {
-				return fmt.Errorf("private account order event is invalid")
-			}
-			hotState.UpdateOrder(event.InstrumentID, event.Order.Order)
-			_, observeErr := manager.reconciler.ObserveVenueOrder(ctx, order.VenueOrderObservation{AccountID: accountID, InstrumentID: instrumentID, Product: product, Order: event.Order.Order})
-			if errors.Is(observeErr, store.ErrNotFound) {
-				return nil
-			}
-			return observeErr
+			return streams.dispatchAccountData(func() error {
+				if event.Order == nil || instrumentID.Validate() != nil {
+					return fmt.Errorf("private account order event is invalid")
+				}
+				hotState.UpdateOrder(event.InstrumentID, event.Order.Order)
+				_, observeErr := manager.reconciler.ObserveVenueOrder(ctx, order.VenueOrderObservation{AccountID: accountID, InstrumentID: instrumentID, Product: product, Order: event.Order.Order})
+				if errors.Is(observeErr, store.ErrNotFound) {
+					return nil
+				}
+				return observeErr
+			})
 		case exchange.AccountEventFill:
-			if event.Fill == nil || instrumentID.Validate() != nil {
-				return fmt.Errorf("private account fill event is invalid")
-			}
-			return manager.publishFill(accountID, instrumentID, *event.Fill)
+			return streams.dispatchAccountData(func() error {
+				if event.Fill == nil || instrumentID.Validate() != nil {
+					return fmt.Errorf("private account fill event is invalid")
+				}
+				return manager.publishFill(accountID, instrumentID, *event.Fill)
+			})
 		case exchange.AccountEventBalance:
-			if event.Balance == nil {
-				return fmt.Errorf("private account balance event is invalid")
-			}
-			return manager.publishBalances(accountID, *event.Balance)
+			return streams.dispatchAccountData(func() error {
+				if event.Balance == nil {
+					return fmt.Errorf("private account balance event is invalid")
+				}
+				return manager.publishBalances(accountID, *event.Balance)
+			})
 		case exchange.AccountEventPosition:
-			if event.Position == nil || instrumentID.Validate() != nil {
-				return fmt.Errorf("private account position event is invalid")
-			}
-			hotState.UpdatePositions(event.InstrumentID, *event.Position)
-			return manager.publishPositions(accountID, routeID, instrumentID, *event.Position)
+			return streams.dispatchAccountData(func() error {
+				if event.Position == nil || instrumentID.Validate() != nil {
+					return fmt.Errorf("private account position event is invalid")
+				}
+				hotState.UpdatePositions(event.InstrumentID, *event.Position)
+				return manager.publishPositions(accountID, routeID, instrumentID, *event.Position)
+			})
 		case exchange.AccountEventResyncRequired:
 			return fmt.Errorf("private account stream requires resync")
 		case exchange.AccountEventStreamStatus:
