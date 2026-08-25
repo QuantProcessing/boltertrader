@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -42,6 +43,13 @@ type BBOCache struct {
 	quotes    map[string]BBOQuote
 	group     singleflight.Group
 	observer  RESTObserver
+	requests  *ratelimit.MarketCoordinator
+}
+
+func (cache *BBOCache) SetRequestCoordinator(coordinator *ratelimit.MarketCoordinator) {
+	if cache != nil {
+		cache.requests = coordinator
+	}
 }
 
 func (cache *BBOCache) SetObserver(observer RESTObserver) {
@@ -85,13 +93,24 @@ func (cache *BBOCache) GetFreshBBO(ctx context.Context, instrumentID string, max
 		if quote, ok := cache.fresh(instrumentID, maxAge); ok {
 			return quote, nil
 		}
-		quote, loadErr := cache.bootstrap.SnapshotBBO(ctx, instrumentID)
+		venueName, _, _ := strings.Cut(instrumentID, ":")
+		load := func(callCtx context.Context) (any, error) { return cache.bootstrap.SnapshotBBO(callCtx, instrumentID) }
+		var raw any
+		var loadErr error
+		if cache.requests != nil {
+			raw, loadErr = cache.requests.Do(ctx, exchange.Venue(venueName), "bbo_snapshot", instrumentID, load)
+		} else {
+			raw, loadErr = load(ctx)
+		}
+		quote, _ := raw.(BBOQuote)
 		if loadErr != nil {
 			outcome := "error"
 			if errors.Is(loadErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				outcome = "timeout"
 			}
-			cache.observeREST(instrumentID, outcome)
+			if cache.requests == nil {
+				cache.observeREST(instrumentID, outcome)
+			}
 			return BBOQuote{}, errors.Join(ErrQuoteUnavailable, loadErr)
 		}
 		if quote.InstrumentID != instrumentID || !quote.valid() {
@@ -99,14 +118,20 @@ func (cache *BBOCache) GetFreshBBO(ctx context.Context, instrumentID string, max
 		}
 		age := cache.now().UTC().Sub(quote.ObservedAt.UTC())
 		if age < 0 || age > maxAge {
-			cache.observeREST(instrumentID, "error")
+			if cache.requests == nil {
+				cache.observeREST(instrumentID, "error")
+			}
 			return BBOQuote{}, ErrQuoteStale
 		}
 		if publishErr := cache.Publish(quote); publishErr != nil {
-			cache.observeREST(instrumentID, "error")
+			if cache.requests == nil {
+				cache.observeREST(instrumentID, "error")
+			}
 			return BBOQuote{}, publishErr
 		}
-		cache.observeREST(instrumentID, "success")
+		if cache.requests == nil {
+			cache.observeREST(instrumentID, "success")
+		}
 		return quote, nil
 	})
 	if err != nil {

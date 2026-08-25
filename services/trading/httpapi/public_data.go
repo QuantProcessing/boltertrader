@@ -89,6 +89,7 @@ type PublicDataDependencies struct {
 	MarketTopics     MarketTopicProjection
 	Connectivity     VenueConnectivityProjection
 	RealtimeObserver RealtimeObserver
+	Arbitrage        *ArbitrageProjection
 	Principal        func(*http.Request) (principalID string, err error)
 }
 

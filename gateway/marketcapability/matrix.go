@@ -214,6 +214,32 @@ func (registry *Registry) All() []exchange.MarketCapability {
 	return append([]exchange.MarketCapability(nil), registry.all...)
 }
 
+// HotCapacity returns the native owner's per-connection instrument budget.
+// A broad or poll-only owner does not consume per-instrument ticker topics, so
+// it receives a deliberately large logical budget; the adapter still shards
+// topic-based datasets according to their own matrix rows.
+func (registry *Registry) HotCapacity(venue exchange.Venue, family string) int {
+	if registry == nil {
+		return 0
+	}
+	owner := registry.byOwner[OwnerKey{Venue: venue, NativeFamily: family}]
+	capacity := 0
+	for _, dataset := range []exchange.MarketDataset{exchange.DatasetMark, exchange.DatasetBBO} {
+		for _, capability := range owner[dataset] {
+			if capability.Granularity != exchange.GranularitySingleInstrument || capability.MaxTopicsPerConnection <= 0 {
+				continue
+			}
+			if capacity == 0 || capability.MaxTopicsPerConnection < capacity {
+				capacity = capability.MaxTopicsPerConnection
+			}
+		}
+	}
+	if capacity == 0 {
+		return 1 << 20
+	}
+	return capacity
+}
+
 func For(venue exchange.Venue, family string) []exchange.MarketCapability {
 	all := Matrix()
 	result := make([]exchange.MarketCapability, 0)

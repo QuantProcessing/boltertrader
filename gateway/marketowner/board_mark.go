@@ -30,10 +30,16 @@ func (source BoardMarks) PublishMark(ctx context.Context, instrumentID string, p
 		return
 	}
 	fact.MarkPrice, fact.MarkObservedAt = price, observedAt.UTC()
+	owner := markethub.OwnerKey{Venue: fact.Instrument.Venue, Environment: fact.Environment, NativeFamily: marketcapability.NativeFamily(fact.Instrument.Venue, exchange.ProductPerp, fact.Instrument.SettleAsset)}
+	generation := source.Facts.Generation(owner)
+	if generation == 0 {
+		return
+	}
 	_ = source.Facts.Apply(exchange.DerivativePatch{
 		Kind:         exchange.EventDelta,
 		Scope:        exchange.CatalogScope{Venue: fact.Instrument.Venue, Environment: fact.Environment, Product: exchange.ProductPerp, Settlement: fact.Instrument.SettleAsset},
-		NativeFamily: marketcapability.NativeFamily(fact.Instrument.Venue, exchange.ProductPerp, fact.Instrument.SettleAsset),
+		NativeFamily: owner.NativeFamily,
+		Generation:   generation,
 		ObservedAt:   observedAt.UTC(), Fields: exchange.DerivativeFieldMark, Facts: []exchange.DerivativeFact{fact},
 	})
 }

@@ -30,6 +30,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const (
+	authorityRuntimeIDA = "018f47a8-2578-7d3c-9d7d-5e4f4a445e33"
+	authorityRuntimeIDB = "018f47a8-2578-7d3c-9d7d-5e4f4a445e34"
+)
+
 func TestManagerAuthorityReadsPropagatesConfiguredCatalogFailure(t *testing.T) {
 	reads := managerAuthorityReads{manager: &fakeAuthorityAccounts{
 		resources:     []account.Resource{{AccountID: "broken", ReadReady: false}},
@@ -308,7 +313,7 @@ func TestManagerAuthorityReadsProjectsGatewayRuntimeFacts(t *testing.T) {
 	observedAt := time.Date(2026, 8, 5, 1, 3, 4, 0, time.UTC)
 	accounts := &fakeAuthorityAccounts{
 		runtime: account.RuntimeAccount{
-			Desired: account.DesiredRuntime{AccountID: "account-a", DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2},
+			Desired: account.DesiredRuntime{AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2},
 			State:   account.RuntimeStateActive, Ready: true, RuntimeVersion: 9, LastAppliedDesiredStateRevision: 7, LastAppliedRuntimeGeneration: 3, ObservedAt: observedAt,
 		},
 		status:     account.Status{Resource: account.Resource{AccountID: "account-a", Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true, WriteReady: true}},
@@ -319,7 +324,7 @@ func TestManagerAuthorityReadsProjectsGatewayRuntimeFacts(t *testing.T) {
 		},
 	}
 	projection, err := (managerAuthorityReads{manager: accounts}).Runtime("account-a")
-	if err != nil || projection.AccountID != "account-a" || projection.RuntimeVersion != 9 || projection.LastAppliedDesiredStateRevision != 7 || !projection.Readiness.Ready || !projection.WriteReadiness.Ready || len(projection.Capabilities) != 2 || !projection.Capabilities[0].WriteReady || !projection.Capabilities[1].WriteReady || !projection.ObservedAt.Equal(observedAt) {
+	if err != nil || projection.AccountID != "account-a" || !projection.Readiness.Ready || !projection.WriteReadiness.Ready || len(projection.Capabilities) != 2 || !projection.Capabilities[0].WriteReady || !projection.Capabilities[1].WriteReady || !projection.ObservedAt.Equal(observedAt) {
 		t.Fatalf("Runtime()=%+v err=%v", projection, err)
 	}
 }
@@ -340,7 +345,7 @@ func TestManagerAuthorityReadsDerivesCapabilityReadinessFromExactRouteStatus(t *
 		t.Run(test.name, func(t *testing.T) {
 			accounts := &fakeAuthorityAccounts{
 				runtime: account.RuntimeAccount{
-					Desired: account.DesiredRuntime{AccountID: "account-a", DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2},
+					Desired: account.DesiredRuntime{AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2},
 					State:   account.RuntimeStateActive, Ready: true, RuntimeVersion: 9, LastAppliedDesiredStateRevision: 7, LastAppliedRuntimeGeneration: 3, ObservedAt: time.Now(),
 				},
 				status:        account.Status{Resource: account.Resource{AccountID: "account-a", ReadReady: true, WriteReady: true}},
@@ -631,7 +636,7 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 		}},
 		{path: "/internal/v1/accounts/runtime/account-a", assert: func(t *testing.T, data json.RawMessage) {
 			var runtime authorityRuntimeProjection
-			if err := json.Unmarshal(data, &runtime); err != nil || runtime.AccountID != "account-a" || runtime.RuntimeVersion != 9 || runtime.LastAppliedDesiredStateRevision != 7 || len(runtime.Capabilities) != 1 || !runtime.Capabilities[0].WriteReady || runtime.ObservedAt.IsZero() || strings.Contains(string(data), "secretRef") {
+			if err := json.Unmarshal(data, &runtime); err != nil || runtime.AccountID != "account-a" || len(runtime.Capabilities) != 1 || !runtime.Capabilities[0].WriteReady || runtime.ObservedAt.IsZero() || strings.Contains(string(data), "secretRef") {
 				t.Fatalf("runtime projection=%+v body=%s err=%v", runtime, data, err)
 			}
 		}},
@@ -1096,11 +1101,11 @@ func TestGatewayAuthorityRestoresActiveAndRotatingAccounts(t *testing.T) {
 	ctx := context.Background()
 	desiredStore := newMemoryDesiredStore()
 	desiredStore.items["active"] = store.DesiredAccount{
-		AccountID: "active", Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-active",
+		AccountID: "active", RuntimeID: authorityRuntimeIDA, Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-active",
 		DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: store.DesiredActive,
 	}
 	desiredStore.items["rotating"] = store.DesiredAccount{
-		AccountID: "rotating", Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-new", PreviousSecretRef: "opaque-old",
+		AccountID: "rotating", RuntimeID: authorityRuntimeIDB, Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-new", PreviousSecretRef: "opaque-old",
 		DesiredStateRevision: 3, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: store.DesiredRotating,
 		RotationFence: &store.RotationFence{ID: "rotate-1", State: store.RotationArmed, FromCredentialVersion: 1, ToCredentialVersion: 2, FromRuntimeGeneration: 1, ToRuntimeGeneration: 2, ArmedAt: time.Unix(1, 0)},
 	}
@@ -1181,7 +1186,7 @@ func authorityDesiredRuntime(t *testing.T, refValue string) account.DesiredRunti
 		t.Fatal(err)
 	}
 	return account.DesiredRuntime{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live",
+		AccountID: "dynamic", RuntimeID: authorityRuntimeIDA, Venue: "binance", VenueEnvironment: "live",
 		SecretRef: ref, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 		RequestedState: account.RuntimeStateActive,
 	}
@@ -1194,7 +1199,7 @@ func authorityDesiredRuntime(t *testing.T, refValue string) account.DesiredRunti
 func seedActiveAuthorityAccount(t *testing.T, ctx context.Context, authority *gatewayAuthority, desiredStore *memoryDesiredStore) {
 	t.Helper()
 	desiredStore.items["dynamic"] = store.DesiredAccount{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-initial",
+		AccountID: "dynamic", RuntimeID: authorityRuntimeIDA, Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-initial",
 		DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: store.DesiredActive,
 	}
 	if err := authority.restore(ctx); err != nil {
@@ -1265,11 +1270,11 @@ func (authorityCandidateBuilder) BuildRoute(context.Context, store.DesiredSnapsh
 }
 
 type authorityFailingCandidateBuilder struct {
-	failGeneration uint64
+	failRuntimeID string
 }
 
 func (builder authorityFailingCandidateBuilder) BuildRoute(_ context.Context, snapshot store.DesiredSnapshot, _ store.RouteDefinition, _ *credential.Decoded) (account.CandidateRoute, error) {
-	if snapshot.Fence.RuntimeGeneration == builder.failGeneration {
+	if snapshot.Fence.RuntimeID == builder.failRuntimeID {
 		return nil, errors.New("secret-material-canary")
 	}
 	return authorityCandidateRoute{}, nil
@@ -1465,7 +1470,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	apply := httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: applyOperationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
+			OperationID: applyOperationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDA, Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
 			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
@@ -1476,7 +1481,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	retire := httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityRetireDesired, AccountID: "account-a", OperationID: retireOperationID,
 		Retirement: &httpapi.RetireRequest{
-			OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1,
+			OperationID: retireOperationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1,
 		},
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -1501,7 +1506,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	if snapshotStore.retirementCommits != 1 {
 		t.Fatalf("retirement commits=%d want=1", snapshotStore.retirementCommits)
 	}
-	if !errors.Is(manager.CheckWriteFence(account.WriteFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}), account.ErrStaleWriteFence) {
+	if !errors.Is(manager.CheckWriteFence(account.WriteFence{AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}), account.ErrStaleWriteFence) {
 		t.Fatal("retired account still passed write fence")
 	}
 	restartedManager := newAuthorityManager(t, newAuthorityLifecycle())
@@ -1517,7 +1522,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	reused := apply
 	reused.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"
 	reused.DesiredApply = &httpapi.DesiredApplyRequest{
-		OperationID: reused.OperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
+		OperationID: reused.OperationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDB, Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 		DesiredStateRevision: 3, RuntimeGeneration: 2, CredentialVersion: 1, RequestedState: "active",
 		Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 	}
@@ -1529,7 +1534,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 
 	conflict := retire
 	conflict.Retirement = &httpapi.RetireRequest{
-		OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 3, RuntimeGeneration: 1, CredentialVersion: 1,
+		OperationID: retireOperationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDB, DesiredStateRevision: 3, RuntimeGeneration: 1, CredentialVersion: 1,
 	}
 	_, err = authority.Execute(context.Background(), conflict)
 	var authorityErr httpapi.AuthorityError
@@ -1566,7 +1571,7 @@ func TestProductionRuntimeLifecycleAllowsSnapshotRetirementWithoutInjectedCallba
 	if _, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: applyOperationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
+			OperationID: applyOperationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDA, Venue: "binance", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1,
 			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
 			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
@@ -1577,7 +1582,7 @@ func TestProductionRuntimeLifecycleAllowsSnapshotRetirementWithoutInjectedCallba
 	response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityRetireDesired, AccountID: "account-a", OperationID: retireOperationID,
 		Retirement: &httpapi.RetireRequest{
-			OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 2,
+			OperationID: retireOperationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 2,
 			RuntimeGeneration: 1, CredentialVersion: 1,
 		},
 	})
@@ -1682,12 +1687,12 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	apply := func(operationID string, revision, generation, credentialVersion int64, secretRef string) {
+	apply := func(operationID, runtimeID string, revision, generation, credentialVersion int64, secretRef string) {
 		t.Helper()
 		_, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
 			Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 			DesiredApply: &httpapi.DesiredApplyRequest{
-				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
+				OperationID: operationID, AccountID: "account-a", RuntimeID: runtimeID, Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
 				DesiredStateRevision: revision, RuntimeGeneration: generation, CredentialVersion: credentialVersion, RequestedState: "active",
 				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 			},
@@ -1698,15 +1703,15 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 	}
 	const retiringOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c70"
 	const activeOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c71"
-	apply(retiringOperationID, 1, 1, 1, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-	apply(activeOperationID, 2, 2, 2, "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
+	apply(retiringOperationID, authorityRuntimeIDA, 1, 1, 1, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	apply(activeOperationID, authorityRuntimeIDB, 2, 2, 2, "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
 
 	request := httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityFinalizeRotation, AccountID: "account-a", OperationID: activeOperationID,
 		RotationFinalization: &httpapi.RotationFinalizationRequest{
 			OperationID: activeOperationID, AccountID: "account-a",
-			ExpectedActiveFence:   httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
-			ExpectedRetiringFence: httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+			ExpectedActiveFence:   httpapi.AccountFence{AccountID: "account-a", RuntimeID: authorityRuntimeIDB, DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
+			ExpectedRetiringFence: httpapi.AccountFence{AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
 		},
 	}
 	var first httpapi.RotationFinalizationProof
@@ -1717,8 +1722,9 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 		}
 		proof, ok := response.Body.(httpapi.RotationFinalizationProof)
 		if !ok || response.Status != http.StatusOK || proof.OperationID != activeOperationID || proof.AccountID != "account-a" ||
-			proof.ActiveFence != request.RotationFinalization.ExpectedActiveFence || proof.RetiringFence != request.RotationFinalization.ExpectedRetiringFence ||
-			proof.TombstoneRevision != 2 || proof.RetiringState != "retired" || proof.SecretReferenceState != "tombstoned" {
+			proof.ActiveFence.AccountID != "account-a" || proof.ActiveFence.RuntimeID != authorityRuntimeIDB ||
+			proof.RetiringFence.AccountID != "account-a" || proof.RetiringFence.RuntimeID != authorityRuntimeIDA ||
+			proof.TombstoneRevision != 0 || proof.RetiringState != "retired" || proof.SecretReferenceState != "tombstoned" {
 			t.Fatalf("attempt %d proof=%T %+v status=%d", attempt+1, response.Body, response.Body, response.Status)
 		}
 		if proof.CompletedAt.IsZero() || proof.CompletedAt.Location() != time.UTC {
@@ -1746,8 +1752,8 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 	changed := request
 	changed.RotationFinalization = &httpapi.RotationFinalizationRequest{
 		OperationID: activeOperationID, AccountID: "account-a",
-		ExpectedActiveFence:   httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 3},
-		ExpectedRetiringFence: httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
+		ExpectedActiveFence:   httpapi.AccountFence{AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 3},
+		ExpectedRetiringFence: httpapi.AccountFence{AccountID: "account-a", RuntimeID: authorityRuntimeIDB, DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
 	}
 	_, err = authority.Execute(context.Background(), changed)
 	var conflict httpapi.AuthorityError
@@ -1788,7 +1794,7 @@ func TestAuthoritySnapshotApplyPromotesOnlyAfterDurableCAS(t *testing.T) {
 	desired := store.DesiredSnapshot{
 		SnapshotID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c35"), OperationID: operationID,
 		AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
-		Fence:          domain.AccountFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		Fence:          domain.AccountFence{AccountID: "account-a", RuntimeID: authorityRuntimeIDA, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
 		RequestedState: store.DesiredActive,
 		Routes:         []store.RouteDefinition{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive}},
 		CreatedAt:      time.Now(),
@@ -1835,7 +1841,7 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 		AccountID:   "account-a",
 		OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
+			OperationID: operationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDA, Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
 			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
@@ -1849,7 +1855,7 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 			t.Fatalf("attempt %d status=%d", attempt+1, response.Status)
 		}
 		view, ok := response.Body.(httpapi.RuntimeView)
-		if !ok || view.AccountID != "account-a" || view.Active == nil || view.Active.OperationID != operationID || view.Active.RuntimeGeneration != 1 || len(view.Active.Routes) != 1 || !view.Active.Routes[0].Ready {
+		if !ok || view.AccountID != "account-a" || view.Active == nil || view.Active.OperationID != operationID || view.Active.RuntimeID != authorityRuntimeIDA || len(view.Active.Routes) != 1 || !view.Active.Routes[0].Ready {
 			t.Fatalf("attempt %d view=%T %+v", attempt+1, response.Body, response.Body)
 		}
 		encoded, err := json.Marshal(view)
@@ -1891,7 +1897,7 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
+			OperationID: operationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDA, Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
 			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
@@ -1916,25 +1922,18 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 	var envelope struct {
 		Data struct {
 			httpapi.RuntimeView
-			DesiredStateRevision            int64                        `json:"desiredStateRevision"`
-			RuntimeGeneration               int64                        `json:"runtimeGeneration"`
-			CredentialVersion               int64                        `json:"credentialVersion"`
-			RuntimeVersion                  int64                        `json:"runtimeVersion"`
-			Readiness                       authorityProjectionReadiness `json:"readiness"`
-			WriteReadiness                  authorityProjectionReadiness `json:"writeReadiness"`
-			LastAppliedDesiredStateRevision int64                        `json:"lastAppliedDesiredStateRevision"`
-			LastAppliedRuntimeGeneration    int64                        `json:"lastAppliedRuntimeGeneration"`
-			Capabilities                    []authorityRuntimeCapability `json:"capabilities"`
-			ObservedAt                      time.Time                    `json:"observedAt"`
+			Readiness      authorityProjectionReadiness `json:"readiness"`
+			WriteReadiness authorityProjectionReadiness `json:"writeReadiness"`
+			Capabilities   []authorityRuntimeCapability `json:"capabilities"`
+			ObservedAt     time.Time                    `json:"observedAt"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
 	got := envelope.Data
-	if got.AccountID != "account-a" || got.Active == nil || got.Active.OperationID != operationID || len(got.Active.Routes) != 1 || !got.Active.Routes[0].Ready ||
-		got.DesiredStateRevision != 1 || got.RuntimeGeneration != 1 || got.CredentialVersion != 1 || got.RuntimeVersion != 1 ||
-		got.LastAppliedDesiredStateRevision != 1 || got.LastAppliedRuntimeGeneration != 1 || !got.Readiness.Ready || !got.WriteReadiness.Ready ||
+	if got.AccountID != "account-a" || got.Active == nil || got.Active.OperationID != operationID || got.Active.RuntimeID != authorityRuntimeIDA || len(got.Active.Routes) != 1 || !got.Active.Routes[0].Ready ||
+		!got.Readiness.Ready || !got.WriteReadiness.Ready ||
 		len(got.Capabilities) != 1 || got.Capabilities[0].RowID != "binance:spot" || !got.Capabilities[0].WriteReady || got.ObservedAt.IsZero() {
 		t.Fatalf("runtime=%+v", got)
 	}
@@ -2038,7 +2037,7 @@ func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.
 	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: operationID, AccountID: "account-a", Venue: "lighter", NativeEnvironment: "live",
+			OperationID: operationID, AccountID: "account-a", RuntimeID: authorityRuntimeIDA, Venue: "lighter", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
 			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "lighter.spot.v1", RequestedState: "active"}},
 		},
@@ -2064,7 +2063,7 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 	manager, err := account.NewManager(context.Background(), nil, account.Options{
 		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
 		HTTPClient:          &http.Client{},
-		RuntimeGroupBuilder: authorityFailingCandidateBuilder{failGeneration: 2}, CredentialResolver: authorityCredentialResolver{},
+		RuntimeGroupBuilder: authorityFailingCandidateBuilder{failRuntimeID: authorityRuntimeIDB}, CredentialResolver: authorityCredentialResolver{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2076,10 +2075,14 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 		t.Fatal(err)
 	}
 	request := func(operationID string, revision, generation int64) httpapi.AuthorityRequest {
+		runtimeID := authorityRuntimeIDA
+		if generation > 1 {
+			runtimeID = authorityRuntimeIDB
+		}
 		return httpapi.AuthorityRequest{
 			Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a", OperationID: operationID,
 			DesiredApply: &httpapi.DesiredApplyRequest{
-				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
+				OperationID: operationID, AccountID: "account-a", RuntimeID: runtimeID, Venue: "binance", NativeEnvironment: "live",
 				SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: revision,
 				RuntimeGeneration: generation, CredentialVersion: 1, RequestedState: "active",
 				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
@@ -2097,7 +2100,7 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 		t.Fatal(err)
 	}
 	view, ok := response.Body.(httpapi.RuntimeView)
-	if !ok || view.Active == nil || view.Active.RuntimeGeneration != 1 || view.Pending == nil || view.Pending.RuntimeGeneration != 2 || view.Pending.State != string(store.OperationCandidateFailed) || view.Pending.Reason != "CANDIDATE_BUILD_FAILED" || len(view.Pending.Routes) != 1 || view.Pending.Routes[0].Ready || view.Pending.Routes[0].Reason != "CANDIDATE_BUILD_FAILED" {
+	if !ok || view.Active == nil || view.Active.RuntimeID != authorityRuntimeIDA || view.Pending == nil || view.Pending.RuntimeID != authorityRuntimeIDB || view.Pending.State != string(store.OperationCandidateFailed) || view.Pending.Reason != "CANDIDATE_BUILD_FAILED" || len(view.Pending.Routes) != 1 || view.Pending.Routes[0].Ready || view.Pending.Routes[0].Reason != "CANDIDATE_BUILD_FAILED" {
 		t.Fatalf("view=%T %+v", response.Body, response.Body)
 	}
 	encoded, err := json.Marshal(view)
@@ -2133,7 +2136,7 @@ func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *t
 		Operation: httpapi.AuthorityApplyDesired, AccountID: "account-a",
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33",
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
+			OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "account-a", RuntimeID: authorityRuntimeIDA, Venue: "binance", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1,
 			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
 			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
@@ -2163,7 +2166,7 @@ func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *t
 		t.Fatal(err)
 	}
 	active := restartedManager.ActiveSnapshot("account-a")
-	if active == nil || active.Fence.RuntimeGeneration != 1 || len(active.Routes) != 1 {
+	if active == nil || active.Fence.RuntimeID != authorityRuntimeIDA || len(active.Routes) != 1 {
 		t.Fatalf("exact replay did not restore active=%+v", active)
 	}
 	if snapshotStore.promotions != 1 {

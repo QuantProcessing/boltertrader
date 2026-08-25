@@ -13,6 +13,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
+	"github.com/QuantProcessing/boltertrader/gateway/hotset"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -233,6 +234,7 @@ type InternalOptions struct {
 	MarketHub           InternalMarketHub
 	MarketKeys          InternalMarketKeys
 	FundingSettlements  InternalFundingSettlements
+	Hotset              InternalHotset
 	// Lifecycle is optional. A gateway without a durable account store can
 	// still serve the runtime and catalog surfaces, so the account lifecycle
 	// routes are only mounted when something can answer them.
@@ -257,6 +259,7 @@ type InternalHandler struct {
 	marketHub           InternalMarketHub
 	marketKeys          InternalMarketKeys
 	fundingSettlements  InternalFundingSettlements
+	hotset              InternalHotset
 	mux                 *http.ServeMux
 }
 
@@ -306,7 +309,7 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, marketFacts: options.MarketFacts, venueConnectivity: options.VenueConnectivity, freshBBO: options.FreshBBO, marketHub: options.MarketHub, marketKeys: options.MarketKeys, fundingSettlements: options.FundingSettlements, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, marketFacts: options.MarketFacts, venueConnectivity: options.VenueConnectivity, freshBBO: options.FreshBBO, marketHub: options.MarketHub, marketKeys: options.MarketKeys, fundingSettlements: options.FundingSettlements, hotset: options.Hotset, mux: http.NewServeMux()}
 	handler.register()
 	if handler.lifecycle != nil {
 		handler.registerAccountLifecycle()
@@ -357,9 +360,20 @@ type InternalFundingSettlements interface {
 	TrackActive(context.Context, string, string) (func(), error)
 }
 
+type InternalHotset interface {
+	Acquire(context.Context, hotset.Key, hotset.Reason) (*hotset.Lease, error)
+}
+
 func (handler *InternalHandler) fundingHistoryRead(w http.ResponseWriter, r *http.Request) {
+	instrumentID := strings.TrimSpace(r.URL.Query().Get("instrumentId"))
+	if handler.hotset != nil && handler.marketKeys != nil && instrumentID != "" {
+		if key, keyErr := handler.marketKeys.SubscriptionKey(r.Context(), instrumentID, exchange.DatasetMark, "", 0); keyErr == nil {
+			if lease, leaseErr := handler.hotset.Acquire(r.Context(), hotset.Key{Owner: key.Owner, InstrumentID: instrumentID}, hotset.ReasonFundingHistory); leaseErr == nil {
+				defer lease.Release()
+			}
+		}
+	}
 	if handler.fundingSettlements != nil {
-		instrumentID := strings.TrimSpace(r.URL.Query().Get("instrumentId"))
 		if instrumentID != "" {
 			_ = handler.fundingSettlements.TrackNextSettlement(r.Context(), instrumentID)
 		}
@@ -419,9 +433,11 @@ func (handler *InternalHandler) freshBBOSnapshot(w http.ResponseWriter, r *http.
 		return
 	}
 	instrumentID := r.URL.Query().Get("instrumentId")
-	if handler.fundingSettlements != nil {
-		if stop, trackErr := handler.fundingSettlements.TrackActive(r.Context(), instrumentID, "fresh_bbo"); trackErr == nil {
-			defer stop()
+	if handler.hotset != nil && handler.marketKeys != nil {
+		if key, keyErr := handler.marketKeys.SubscriptionKey(r.Context(), instrumentID, exchange.DatasetBBO, "", 0); keyErr == nil {
+			if lease, leaseErr := handler.hotset.Acquire(r.Context(), hotset.Key{Owner: key.Owner, InstrumentID: instrumentID}, hotset.ReasonExecution); leaseErr == nil {
+				defer lease.Release()
+			}
 		}
 	}
 	quote, err := handler.freshBBO.GetFreshBBO(r.Context(), instrumentID, 2*time.Second)

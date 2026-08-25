@@ -173,101 +173,36 @@ func (api *PublicDataAPI) unifiedRealtime(w http.ResponseWriter, r *http.Request
 }
 
 func (api *PublicDataAPI) runBrowserArbitrageTopic(ctx context.Context, id string, request realtimewire.TopicRequest, emit func(realtimewire.Message) bool) error {
-	type hotSubscription struct {
-		subscription realtimewire.Subscription
-		done         chan struct{}
+	if api.dependencies.Arbitrage == nil {
+		return fmt.Errorf("arbitrage projection unavailable")
 	}
-	hot := map[string]hotSubscription{}
-	defer func() {
-		for _, current := range hot {
-			current.subscription.Close()
-		}
-	}()
-	syncHot := func(items []arbitrageOpportunity) {
-		desired := map[string]bool{}
-		limit := len(items)
-		if limit > 100 {
-			limit = 100
-		}
-		for _, item := range items[:limit] {
-			for _, instrumentID := range []string{item.Long.InstrumentID, item.Short.InstrumentID} {
-				if strings.TrimSpace(instrumentID) != "" {
-					desired[instrumentID] = true
-				}
-			}
-		}
-		for instrumentID, current := range hot {
-			select {
-			case <-current.done:
-				current.subscription.Close()
-				delete(hot, instrumentID)
-			default:
-				if !desired[instrumentID] {
-					current.subscription.Close()
-					delete(hot, instrumentID)
-				}
-			}
-		}
-		for instrumentID := range desired {
-			if _, exists := hot[instrumentID]; exists {
-				continue
-			}
-			subscription, err := api.dependencies.MarketTopics.Subscribe(ctx, realtimewire.TopicRequest{Topic: realtimewire.TopicMarkPrice, InstrumentID: instrumentID}, 4)
-			if err != nil {
-				continue
-			}
-			done := make(chan struct{})
-			hot[instrumentID] = hotSubscription{subscription: subscription, done: done}
-			go func() {
-				defer close(done)
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case _, open := <-subscription.Events():
-						if !open {
-							return
-						}
-					}
-				}
-			}()
-		}
+	current, ready, updates, cancel, err := api.dependencies.Arbitrage.Subscribe(ctx, 4)
+	if err != nil {
+		return err
 	}
-	var previous string
-	sequence := uint64(0)
+	defer cancel()
+	send := func(snapshot arbitrageProjectionSnapshot, kind realtimewire.MessageType) bool {
+		return emit(realtimewire.Message{Type: kind, SubscriptionID: id, Topic: request.Topic, Generation: snapshot.Generation, Sequence: snapshot.Sequence, ObservedAt: snapshot.ObservedAt, Data: realtimewire.EncodeData(map[string]any{"items": snapshot.Items, "observedAt": snapshot.ObservedAt})})
+	}
+	if ready && !send(current, realtimewire.MessageSnapshot) {
+		return nil
+	}
+	first := !ready
 	for {
-		board, err := api.dependencies.FundingBoard.Get(ctx)
-		if err != nil {
-			return err
-		}
-		catalogSnapshot, err := api.dependencies.Catalog.Snapshot(ctx)
-		if err != nil {
-			return err
-		}
-		items := scanArbitrageOpportunities(catalogSnapshot, board, map[string]string{})
-		syncHot(items)
-		data := map[string]any{
-			"items":      items,
-			"observedAt": board.ObservedAt,
-		}
-		encoded := realtimewire.EncodeData(data)
-		if string(encoded) != previous {
-			sequence++
-			kind := realtimewire.MessageDelta
-			if previous == "" {
-				kind = realtimewire.MessageSnapshot
-			}
-			if !emit(realtimewire.Message{Type: kind, SubscriptionID: id, Topic: request.Topic, Generation: 1, Sequence: sequence, ObservedAt: board.ObservedAt, Data: encoded}) {
-				return nil
-			}
-			previous = string(encoded)
-		}
-		timer := time.NewTimer(time.Second)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return ctx.Err()
-		case <-timer.C:
+		case snapshot, open := <-updates:
+			if !open {
+				return fmt.Errorf("arbitrage projection consumer gap")
+			}
+			kind := realtimewire.MessageDelta
+			if first {
+				kind, first = realtimewire.MessageSnapshot, false
+			}
+			if !send(snapshot, kind) {
+				return nil
+			}
 		}
 	}
 }
@@ -291,6 +226,9 @@ func readBrowserControls(ctx context.Context, connection *websocket.Conn, target
 }
 
 func (api *PublicDataAPI) runBrowserMarketTopic(ctx context.Context, id string, request realtimewire.TopicRequest, emit func(realtimewire.Message) bool) error {
+	// Never trust a browser-supplied internal purpose. Browser demand has one
+	// fixed hotset priority on the authenticated Trading -> Gateway hop.
+	request.InternalPurpose = "browser"
 	subscription, err := api.dependencies.MarketTopics.Subscribe(ctx, request, realtimewire.OutboundBuffer)
 	if err != nil {
 		return err

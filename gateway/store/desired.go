@@ -342,10 +342,18 @@ func (request RotationFinalizationRequest) Validate() error {
 	if request.ExpectedActiveFence.AccountID != request.AccountID || request.ExpectedRetiringFence.AccountID != request.AccountID {
 		return ErrPromotionFenceConflict
 	}
-	if request.ExpectedActiveFence.DesiredStateRevision != request.ExpectedRetiringFence.DesiredStateRevision+1 ||
-		request.ExpectedActiveFence.RuntimeGeneration != request.ExpectedRetiringFence.RuntimeGeneration+1 ||
-		request.ExpectedActiveFence.CredentialVersion != request.ExpectedRetiringFence.CredentialVersion+1 {
-		return ErrPromotionFenceConflict
+	if request.ExpectedActiveFence.RuntimeID != "" && request.ExpectedRetiringFence.RuntimeID != "" {
+		if request.ExpectedActiveFence.RuntimeID == request.ExpectedRetiringFence.RuntimeID {
+			return ErrPromotionFenceConflict
+		}
+	} else {
+		// Compatibility for in-process callers that still construct the old
+		// three-counter fence. Production APIs only accept RuntimeID.
+		if request.ExpectedActiveFence.DesiredStateRevision != request.ExpectedRetiringFence.DesiredStateRevision+1 ||
+			request.ExpectedActiveFence.RuntimeGeneration != request.ExpectedRetiringFence.RuntimeGeneration+1 ||
+			request.ExpectedActiveFence.CredentialVersion != request.ExpectedRetiringFence.CredentialVersion+1 {
+			return ErrPromotionFenceConflict
+		}
 	}
 	return request.Scope.Validate()
 }

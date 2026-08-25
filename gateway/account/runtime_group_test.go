@@ -1641,8 +1641,8 @@ func TestRotationFinalizationWaitsForExactRetiringLeaseAndDestroysOnlyThatGenera
 	}
 	manager.groupMu.Lock()
 	runtime := manager.groups[active.Snapshot.AccountID]
-	_, exactExists := runtime.retiring[retiring.Snapshot.Fence.RuntimeGeneration]
-	_, otherExists := runtime.retiring[otherRetiring.Snapshot.Fence.RuntimeGeneration]
+	_, exactExists := runtime.retiring[retiring.Snapshot.Fence.RuntimeID]
+	_, otherExists := runtime.retiring[otherRetiring.Snapshot.Fence.RuntimeID]
 	manager.groupMu.Unlock()
 	if exactExists || !otherExists {
 		t.Fatalf("retiring membership exact=%t other=%t", exactExists, otherExists)
@@ -1655,6 +1655,7 @@ func TestRotationFinalizationWrongFenceAndMalformedProofDoNotCloseOrDestroyGener
 		retiring, active := groups[0], groups[1]
 		retiring.Admission.reopen()
 		request := rotationRuntimeRequest(active, retiring)
+		request.ExpectedActiveFence.RuntimeID = "018f47a8-2578-7d3c-9d7d-5e4f4a445cff"
 		request.ExpectedActiveFence.DesiredStateRevision++
 		request.ExpectedActiveFence.RuntimeGeneration++
 		request.ExpectedActiveFence.CredentialVersion++
@@ -1816,7 +1817,7 @@ func TestRotationFinalizationCloseFailureRetainsGroupForReplayRetry(t *testing.T
 		t.Fatalf("first finalization err=%v", err)
 	}
 	manager.groupMu.Lock()
-	retained := manager.groups[active.Snapshot.AccountID].retiring[retiring.Snapshot.Fence.RuntimeGeneration] == retiring
+	retained := manager.groups[active.Snapshot.AccountID].retiring[retiring.Snapshot.Fence.RuntimeID] == retiring
 	manager.groupMu.Unlock()
 	if !retained || retiring.State != GroupRetiring {
 		t.Fatalf("failed cleanup retained=%t state=%q", retained, retiring.State)
@@ -1828,7 +1829,7 @@ func TestRotationFinalizationCloseFailureRetainsGroupForReplayRetry(t *testing.T
 		t.Fatalf("route close calls=%d want=2", calls)
 	}
 	manager.groupMu.Lock()
-	_, retained = manager.groups[active.Snapshot.AccountID].retiring[retiring.Snapshot.Fence.RuntimeGeneration]
+	_, retained = manager.groups[active.Snapshot.AccountID].retiring[retiring.Snapshot.Fence.RuntimeID]
 	manager.groupMu.Unlock()
 	if retained || retiring.State != GroupDestroyed {
 		t.Fatalf("successful retry retained=%t state=%q", retained, retiring.State)
@@ -2142,6 +2143,7 @@ func runtimeRotationGroups(t *testing.T, count int) (*Manager, []*RuntimeGroup) 
 		pending := base
 		pending.OperationID, _ = secretstore.ParseOperationID(operationIDs[index])
 		pending.SnapshotID = uuid.MustParse(snapshotIDs[index])
+		pending.Fence.RuntimeID = snapshotIDs[index]
 		pending.Fence.DesiredStateRevision += uint64(index)
 		pending.Fence.RuntimeGeneration += uint64(index)
 		pending.Fence.CredentialVersion += uint64(index)
@@ -2221,7 +2223,7 @@ func runtimeGroupPending(t *testing.T) store.PendingSnapshot {
 	t.Helper()
 	op, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
 	ref, _ := secretstore.ParseOpaqueRef("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-	fence := domain.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 1}
+	fence := domain.AccountFence{AccountID: "account-a", RuntimeID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c35", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 1}
 	return store.PendingSnapshot{DesiredSnapshot: store.DesiredSnapshot{
 		SnapshotID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c35"), OperationID: op,
 		AccountID: fence.AccountID, Venue: "binance", NativeEnvironment: "live", SecretRef: ref,

@@ -2072,7 +2072,10 @@ func (authority *gatewayAuthority) runtimeDesired(desired store.DesiredAccount, 
 	return account.DesiredRuntime{
 		AccountID: desired.AccountID, Venue: desired.Venue, VenueEnvironment: desired.VenueEnvironment,
 		SecretRef: ref, RuntimeID: desired.RuntimeID,
-		RequestedState: state, RotationFence: rotationFence,
+		DesiredStateRevision: uint64(desired.DesiredStateRevision),
+		RuntimeGeneration:    uint64(desired.RuntimeGeneration),
+		CredentialVersion:    uint64(desired.CredentialVersion),
+		RequestedState:       state, RotationFence: rotationFence,
 	}, nil
 }
 

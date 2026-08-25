@@ -47,7 +47,7 @@ func TestDerivativePatchValidateRequiresCanonicalIdentity(t *testing.T) {
 	patch := DerivativePatch{
 		Kind:         EventSnapshot,
 		Scope:        CatalogScope{Venue: VenueBinance, Environment: EnvironmentLive, Product: ProductPerp, Settlement: "USDT"},
-		NativeFamily: "perpetual", ObservedAt: at,
+		NativeFamily: "perpetual", Generation: 1, ObservedAt: at,
 		Fields: DerivativeFieldIdentity,
 		Facts: []DerivativeFact{{
 			InstrumentID: "binance:perp:BTC-USDT", RouteProfileID: "binance-perp-usdt", Environment: EnvironmentLive,

@@ -14,20 +14,22 @@ import (
 // venue feeds and hot per-instrument feeds both write patches here; field
 // clocks decide which observation wins.
 type FactStore struct {
-	mu       sync.RWMutex
-	facts    map[string]exchange.DerivativeFact
-	owners   map[string]OwnerKey
-	sequence uint64
-	nextSub  uint64
-	subs     map[uint64]chan FactChange
-	observer Observer
-	now      func() time.Time
+	mu         sync.RWMutex
+	facts      map[string]exchange.DerivativeFact
+	owners     map[string]OwnerKey
+	generation map[string]uint64
+	sequence   uint64
+	nextSub    uint64
+	subs       map[uint64]chan FactChange
+	observer   Observer
+	now        func() time.Time
 }
 
 type FactChange struct {
-	Sequence uint64                   `json:"sequence"`
-	Owner    OwnerKey                 `json:"owner"`
-	Fields   exchange.DerivativeField `json:"fields"`
+	Sequence   uint64                   `json:"sequence"`
+	Owner      OwnerKey                 `json:"owner"`
+	Generation uint64                   `json:"generation"`
+	Fields     exchange.DerivativeField `json:"fields"`
 }
 
 func NewFactStore(observer Observer, now func() time.Time) *FactStore {
@@ -36,7 +38,7 @@ func NewFactStore(observer Observer, now func() time.Time) *FactStore {
 	}
 	return &FactStore{
 		facts: make(map[string]exchange.DerivativeFact), owners: make(map[string]OwnerKey),
-		subs: make(map[uint64]chan FactChange), observer: observer, now: now,
+		generation: make(map[string]uint64), subs: make(map[uint64]chan FactChange), observer: observer, now: now,
 	}
 }
 
@@ -50,6 +52,18 @@ func (store *FactStore) Apply(patch exchange.DerivativePatch) error {
 	owner := OwnerKey{Venue: patch.Scope.Venue, Environment: patch.Scope.Environment, NativeFamily: patch.NativeFamily}
 	ownerID := factOwnerID(owner)
 	store.mu.Lock()
+	currentGeneration := store.generation[ownerID]
+	if patch.Generation < currentGeneration {
+		store.mu.Unlock()
+		return nil
+	}
+	if patch.Generation > currentGeneration {
+		if patch.Kind != exchange.EventSnapshot || !patch.Fields.Has(exchange.DerivativeFieldIdentity) {
+			store.mu.Unlock()
+			return fmt.Errorf("%w: derivative generation requires snapshot", ErrResyncRequired)
+		}
+		store.generation[ownerID] = patch.Generation
+	}
 	if patch.Kind == exchange.EventSnapshot && patch.Fields.Has(exchange.DerivativeFieldIdentity) {
 		seen := make(map[string]struct{}, len(patch.Facts))
 		for _, fact := range patch.Facts {
@@ -76,7 +90,7 @@ func (store *FactStore) Apply(patch exchange.DerivativePatch) error {
 		store.owners[incoming.InstrumentID] = owner
 	}
 	store.sequence++
-	change := FactChange{Sequence: store.sequence, Owner: owner, Fields: patch.Fields}
+	change := FactChange{Sequence: store.sequence, Owner: owner, Generation: patch.Generation, Fields: patch.Fields}
 	for id, updates := range store.subs {
 		select {
 		case updates <- change:
@@ -88,6 +102,16 @@ func (store *FactStore) Apply(patch exchange.DerivativePatch) error {
 	store.observeLocked(owner, patch.Fields)
 	store.mu.Unlock()
 	return nil
+}
+
+func (store *FactStore) Generation(owner OwnerKey) uint64 {
+	if store == nil {
+		return 0
+	}
+	store.mu.RLock()
+	generation := store.generation[factOwnerID(owner)]
+	store.mu.RUnlock()
+	return generation
 }
 
 func normalizeDerivativeClocks(fact *exchange.DerivativeFact, fields exchange.DerivativeField, observedAt time.Time) {

@@ -13,6 +13,8 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/hotset"
+	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/shopspring/decimal"
@@ -367,6 +369,61 @@ func TestStreamManagerOpensOneAccountStreamPerDynamicRoute(t *testing.T) {
 	case <-streams.activated:
 	case <-time.After(time.Second):
 		t.Fatal("private activation barrier did not complete after every route reported active")
+	}
+}
+
+func TestAccountEventGenerationFenceDropsLateAndRejectsGap(t *testing.T) {
+	route := exchange.AccountRoute{AccountID: "account", RouteID: "perp-usdt", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT", NativeFamily: "perpetual"}
+	event := func(generation, sequence uint64) exchange.AccountEvent {
+		return exchange.AccountEvent{Kind: exchange.AccountEventResyncRequired, Route: route, Generation: generation, Sequence: sequence, Phase: exchange.AccountEventPhaseLive, ObservedAt: time.Now().UTC(), Reason: "test"}
+	}
+	var generation, sequence uint64
+	if accepted, err := acceptAccountEvent(event(2, 1), &generation, &sequence); err != nil || !accepted {
+		t.Fatalf("initial event accepted=%t err=%v", accepted, err)
+	}
+	if accepted, err := acceptAccountEvent(event(1, 99), &generation, &sequence); err != nil || accepted {
+		t.Fatalf("late generation accepted=%t err=%v", accepted, err)
+	}
+	if accepted, err := acceptAccountEvent(event(2, 1), &generation, &sequence); err != nil || accepted {
+		t.Fatalf("duplicate accepted=%t err=%v", accepted, err)
+	}
+	if _, err := acceptAccountEvent(event(2, 3), &generation, &sequence); err == nil {
+		t.Fatal("sequence gap accepted")
+	}
+	if _, err := acceptAccountEvent(event(3, 1), &generation, &sequence); err == nil {
+		t.Fatal("new generation accepted without resync")
+	}
+}
+
+type noOpHotActivator struct{}
+
+func (noOpHotActivator) SetActive(hotset.Key, bool) {}
+
+func TestRouteAccountEventsDrivePositionAndOpenOrderHotReasons(t *testing.T) {
+	manager, err := hotset.New(hotset.Options{Activator: noOpHotActivator{}, Capacity: func(markethub.OwnerKey) int { return 10 }, Grace: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	state := newRouteHotState(ctx, manager, exchange.AccountRoute{AccountID: "account", RouteID: "perp-usdt", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, NativeFamily: "perpetual"})
+	defer state.Close()
+	state.UpdateOrder("btc", exchange.Order{OrderID: "one", Status: "open"})
+	state.UpdateOrder("btc", exchange.Order{OrderID: "two", Status: "open"})
+	state.UpdatePositions("btc", exchange.PositionEvent{Kind: exchange.EventSnapshot, Positions: []exchange.Position{{PositionSlot: exchange.PositionSlotNet, Quantity: decimal.NewFromInt(1)}}})
+	snapshot := manager.Snapshot()
+	if len(snapshot) != 1 || snapshot[0].Reasons[hotset.ReasonOpenOrder] != 1 || snapshot[0].Reasons[hotset.ReasonPosition] != 1 || !snapshot[0].Protected {
+		t.Fatalf("hot snapshot=%+v", snapshot)
+	}
+	state.UpdateOrder("btc", exchange.Order{OrderID: "one", Status: "filled"})
+	if got := manager.Snapshot()[0].Reasons[hotset.ReasonOpenOrder]; got != 1 {
+		t.Fatalf("one terminal order released shared instrument lease: %d", got)
+	}
+	state.UpdateOrder("btc", exchange.Order{OrderID: "two", Status: "canceled"})
+	state.UpdatePositions("btc", exchange.PositionEvent{Kind: exchange.EventSnapshot})
+	if reasons := manager.Snapshot()[0].Reasons; len(reasons) != 0 {
+		t.Fatalf("released reasons=%+v", reasons)
 	}
 }
 

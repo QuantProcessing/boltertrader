@@ -117,6 +117,7 @@ type Service struct {
 	board       *marketdata.BoardService
 	boardStream marketdata.BoardStream
 	positions   *accountpositions.Service
+	arbitrage   *httpapi.ArbitrageProjection
 }
 
 // catalogTTL is how long the catalog projection's facts are considered fresh;
@@ -202,6 +203,10 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	arbitrageProjection, err := httpapi.NewArbitrageProjection(catalogProjection, boardService, dependencies.MarketTopics, now)
+	if err != nil {
+		return nil, err
+	}
 	// History spends under the venue's own key rather than the board's: it is
 	// one call to one venue, made when someone opens a pair, and charging it to
 	// the board's ledger would let a few pair pages exhaust the allowance the
@@ -255,6 +260,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		Readiness: readiness, Realtime: hub, Principal: dependencies.Principal,
 		MarketTopics: dependencies.MarketTopics, Connectivity: dependencies.VenueConnectivity,
 		RealtimeObserver: dependencies.RealtimeObserver,
+		Arbitrage:        arbitrageProjection,
 	})
 	if err != nil {
 		return nil, err
@@ -319,6 +325,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		board:       boardService,
 		boardStream: dependencies.FundingBoardStream,
 		positions:   accountPositionProjection,
+		arbitrage:   arbitrageProjection,
 	}, nil
 }
 
@@ -364,6 +371,11 @@ func (service *Service) Run(ctx context.Context) {
 		}
 		service.positions.Run(ctx)
 	}()
+	arbitrageDone := make(chan struct{})
+	go func() {
+		defer close(arbitrageDone)
+		service.arbitrage.Run(ctx)
+	}()
 	if service.reconciler != nil {
 		service.reconciler.Run(ctx)
 	} else {
@@ -372,6 +384,7 @@ func (service *Service) Run(ctx context.Context) {
 	<-refreshed
 	<-boardDone
 	<-positionsDone
+	<-arbitrageDone
 }
 
 // refreshCatalog renews the catalog projection for as long as ctx lives.

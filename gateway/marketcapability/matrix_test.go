@@ -55,3 +55,16 @@ func TestRuntimeRegistryConsumesEveryCapabilityOwnerAndDataset(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryHotCapacityUsesNativeFamilyLimits(t *testing.T) {
+	registry, err := DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.HotCapacity(exchange.VenueBitget, FamilyUSDTFutures); got != 50 {
+		t.Fatalf("Bitget hot capacity=%d want=50", got)
+	}
+	if got := registry.HotCapacity(exchange.VenueLighter, FamilyPerpetual); got < 1000 {
+		t.Fatalf("broad-feed capacity=%d, want effectively unbounded", got)
+	}
+}

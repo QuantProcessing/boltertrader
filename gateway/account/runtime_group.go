@@ -229,7 +229,7 @@ type accountRuntime struct {
 	active      atomic.Pointer[RoutingSnapshot]
 	activeGroup *RuntimeGroup
 	candidate   *RuntimeGroup
-	retiring    map[uint64]*RuntimeGroup
+	retiring    map[string]*RuntimeGroup
 	retirement  *runtimeRetirement
 }
 
@@ -334,7 +334,7 @@ func (manager *Manager) EnsureAccountOwnership(accountID domain.AccountID) error
 		manager.groups = make(map[domain.AccountID]*accountRuntime)
 	}
 	if _, exists := manager.groups[accountID]; !exists {
-		manager.groups[accountID] = &accountRuntime{retiring: make(map[uint64]*RuntimeGroup)}
+		manager.groups[accountID] = &accountRuntime{retiring: make(map[string]*RuntimeGroup)}
 	}
 	return nil
 }
@@ -656,7 +656,7 @@ func (manager *Manager) closeRetiringGeneration(ctx context.Context, request sto
 			return ErrStaleWriteFence
 		}
 	}
-	group := runtime.retiring[request.ExpectedRetiringFence.RuntimeGeneration]
+	group := runtime.retiring[request.ExpectedRetiringFence.RuntimeID]
 	if group != nil && group.Snapshot.Fence != request.ExpectedRetiringFence {
 		manager.groupMu.Unlock()
 		return ErrStaleWriteFence
@@ -675,7 +675,7 @@ func (manager *Manager) removeRetiringGeneration(ctx context.Context, request st
 		manager.groupMu.Unlock()
 		return nil
 	}
-	group := runtime.retiring[request.ExpectedRetiringFence.RuntimeGeneration]
+	group := runtime.retiring[request.ExpectedRetiringFence.RuntimeID]
 	if group == nil {
 		manager.groupMu.Unlock()
 		return nil
@@ -694,14 +694,14 @@ func (manager *Manager) removeRetiringGeneration(ctx context.Context, request st
 	if runtime == nil {
 		return nil
 	}
-	current := runtime.retiring[request.ExpectedRetiringFence.RuntimeGeneration]
+	current := runtime.retiring[request.ExpectedRetiringFence.RuntimeID]
 	if current == nil {
 		return nil
 	}
 	if current != group || current.Snapshot.Fence != request.ExpectedRetiringFence {
 		return ErrStaleWriteFence
 	}
-	delete(runtime.retiring, request.ExpectedRetiringFence.RuntimeGeneration)
+	delete(runtime.retiring, request.ExpectedRetiringFence.RuntimeID)
 	return nil
 }
 
@@ -943,7 +943,7 @@ func (manager *Manager) finishRuntimeRetirement(ctx context.Context, accountID d
 	}
 	current.activeGroup = nil
 	current.candidate = nil
-	current.retiring = make(map[uint64]*RuntimeGroup)
+	current.retiring = make(map[string]*RuntimeGroup)
 	current.retirement = nil
 	delete(manager.groups, accountID)
 	return nil
@@ -959,7 +959,7 @@ func (manager *Manager) publishApplied(group *RuntimeGroup, active store.ActiveS
 	old := runtime.activeGroup
 	if old != nil {
 		old.State = GroupRetiring
-		runtime.retiring[old.Snapshot.Fence.RuntimeGeneration] = old
+		runtime.retiring[old.Snapshot.Fence.RuntimeID] = old
 	}
 	routes := make(map[domain.RouteID]RouteView, len(group.Routes))
 	for routeID, route := range group.Routes {
@@ -1227,12 +1227,12 @@ func (manager *Manager) installRestoredRetiring(ctx context.Context, group *Runt
 	if runtime == nil || runtime.candidate != group || runtime.retirement != nil {
 		return ErrCandidateMismatch
 	}
-	if existing := runtime.retiring[group.Snapshot.Fence.RuntimeGeneration]; existing != nil {
+	if existing := runtime.retiring[group.Snapshot.Fence.RuntimeID]; existing != nil {
 		return ErrCandidateMismatch
 	}
 	group.State = GroupRetiring
 	runtime.candidate = nil
-	runtime.retiring[group.Snapshot.Fence.RuntimeGeneration] = group
+	runtime.retiring[group.Snapshot.Fence.RuntimeID] = group
 	return nil
 }
 
@@ -1685,7 +1685,7 @@ func selectRuntimeGroup(runtime *accountRuntime, purpose OrderRoutePurpose, fenc
 	if active != nil && runtime.activeGroup != nil && active.Fence == fence && runtime.activeGroup.Snapshot.Fence == fence {
 		return runtime.activeGroup, nil
 	}
-	retiring := runtime.retiring[fence.RuntimeGeneration]
+	retiring := runtime.retiring[fence.RuntimeID]
 	if retiring == nil || retiring.Snapshot.Fence != fence {
 		return nil, ErrRuntimeBlocked
 	}

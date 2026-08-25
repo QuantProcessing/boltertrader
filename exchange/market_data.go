@@ -159,6 +159,7 @@ type DerivativePatch struct {
 	Kind           EventKind        `json:"kind"`
 	Scope          CatalogScope     `json:"scope"`
 	NativeFamily   string           `json:"nativeFamily"`
+	Generation     uint64           `json:"generation"`
 	ObservedAt     time.Time        `json:"observedAt"`
 	SourceSequence string           `json:"sourceSequence,omitempty"`
 	Fields         DerivativeField  `json:"fields"`
@@ -169,7 +170,7 @@ func (patch DerivativePatch) Validate() error {
 	if patch.Kind != EventSnapshot && patch.Kind != EventDelta {
 		return fmt.Errorf("derivative patch kind is invalid")
 	}
-	if !knownVenue(patch.Scope.Venue) || patch.Scope.Environment != EnvironmentLive ||
+	if !knownVenue(patch.Scope.Venue) || patch.Scope.Environment != EnvironmentLive || patch.Generation == 0 ||
 		patch.Scope.Product != ProductPerp || strings.TrimSpace(patch.NativeFamily) == "" || patch.ObservedAt.IsZero() {
 		return fmt.Errorf("derivative patch scope is invalid")
 	}

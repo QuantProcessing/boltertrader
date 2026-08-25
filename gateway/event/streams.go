@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,9 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/hotset"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
+	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 )
@@ -60,6 +64,7 @@ type StreamOptions struct {
 	ReconnectBackoff   time.Duration
 	RecoveryTimeout    time.Duration
 	SubscriptionBuffer int
+	Hotset             *hotset.Manager
 }
 
 type FillPayload struct {
@@ -99,6 +104,7 @@ type StreamManager struct {
 	reconnectBackoff   time.Duration
 	recoveryTimeout    time.Duration
 	subscriptionBuffer int
+	hotset             *hotset.Manager
 
 	mu               sync.Mutex
 	versions         map[string]domain.ResourceVersion
@@ -148,7 +154,7 @@ func NewStreamManager(options StreamOptions) (*StreamManager, error) {
 	}
 	return &StreamManager{
 		accounts: options.Accounts, reconciler: options.Reconciler, hub: options.Hub,
-		positions: positions,
+		positions: positions, hotset: options.Hotset,
 		principal: options.PrincipalID, reconnectBackoff: options.ReconnectBackoff,
 		recoveryTimeout: options.RecoveryTimeout, subscriptionBuffer: options.SubscriptionBuffer,
 		versions: make(map[string]domain.ResourceVersion), barrierSequences: make(map[domain.AccountID]uint64),
@@ -1169,13 +1175,24 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 	if err != nil {
 		return err
 	}
+	hotState := newRouteHotState(ctx, manager.hotset, exchange.AccountRoute{AccountID: string(accountID), RouteID: string(routeID), Venue: identity.Venue, Environment: exchange.EnvironmentLive, Product: product, Settlement: identity.SettleAsset, NativeFamily: accountNativeFamily(identity)})
+	streams.add(hotState.Close)
+	var accountGeneration, accountSequence uint64
 	monitorSubscription(ctx, streams, stream, func(event exchange.AccountEvent) error {
+		accept, continuityErr := acceptAccountEvent(event, &accountGeneration, &accountSequence)
+		if continuityErr != nil {
+			return continuityErr
+		}
+		if !accept {
+			return nil
+		}
 		instrumentID := domain.InstrumentID(event.InstrumentID)
 		switch event.Kind {
 		case exchange.AccountEventOrder:
 			if event.Order == nil || instrumentID.Validate() != nil {
 				return fmt.Errorf("private account order event is invalid")
 			}
+			hotState.UpdateOrder(event.InstrumentID, event.Order.Order)
 			_, observeErr := manager.reconciler.ObserveVenueOrder(ctx, order.VenueOrderObservation{AccountID: accountID, InstrumentID: instrumentID, Product: product, Order: event.Order.Order})
 			if errors.Is(observeErr, store.ErrNotFound) {
 				return nil
@@ -1195,6 +1212,7 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 			if event.Position == nil || instrumentID.Validate() != nil {
 				return fmt.Errorf("private account position event is invalid")
 			}
+			hotState.UpdatePositions(event.InstrumentID, *event.Position)
 			return manager.publishPositions(accountID, routeID, instrumentID, *event.Position)
 		case exchange.AccountEventResyncRequired:
 			return fmt.Errorf("private account stream requires resync")
@@ -1208,98 +1226,143 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 	return nil
 }
 
-func accountNativeFamily(identity exchange.InstrumentIdentity) string {
-	if identity.Venue == exchange.VenueBybit && identity.Product == exchange.ProductPerp {
-		return "linear"
-	}
-	if identity.Venue == exchange.VenueOKX && identity.Product == exchange.ProductPerp {
-		return "SWAP"
-	}
-	family := string(identity.Product)
-	if identity.SettleAsset != "" {
-		family += ":" + identity.SettleAsset
-	}
-	return family
+type routeHotState struct {
+	ctx       context.Context
+	manager   *hotset.Manager
+	owner     markethub.OwnerKey
+	mu        sync.Mutex
+	orders    map[string]map[string]struct{}
+	positions map[string]map[exchange.PositionSlot]struct{}
+	leases    map[string]*hotset.Lease
 }
 
-func (manager *StreamManager) openSpotInstrument(
-	ctx context.Context,
-	streams *accountStreams,
-	socket exchange.SpotWebSocket,
-	accountID domain.AccountID,
-	instrumentID domain.InstrumentID,
-	instrument exchange.Instrument,
-) error {
-	request := exchange.WatchRequest{
-		Instrument: instrument, Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer},
+func newRouteHotState(ctx context.Context, manager *hotset.Manager, route exchange.AccountRoute) *routeHotState {
+	return &routeHotState{ctx: ctx, manager: manager, owner: markethub.OwnerKey{Venue: route.Venue, Environment: route.Environment, NativeFamily: route.NativeFamily}, orders: make(map[string]map[string]struct{}), positions: make(map[string]map[exchange.PositionSlot]struct{}), leases: make(map[string]*hotset.Lease)}
+}
+
+func (state *routeHotState) UpdateOrder(instrumentID string, order exchange.Order) {
+	if state == nil || state.manager == nil || strings.TrimSpace(instrumentID) == "" {
+		return
 	}
-	orders, err := socket.WatchOrders(ctx, request)
-	if err != nil {
-		return err
+	identity := firstNonEmptyOrderID(order.OrderID, order.ClientOrderID)
+	if identity == "" {
+		return
 	}
-	monitorSubscription(ctx, streams, orders, func(event exchange.OrderEvent) error {
-		_, observeErr := manager.reconciler.ObserveVenueOrder(ctx, order.VenueOrderObservation{
-			AccountID: accountID, InstrumentID: instrumentID,
-			Product: instrument.Identity.Product, Order: event.Order,
-		})
-		if errors.Is(observeErr, store.ErrNotFound) {
-			return nil
+	state.mu.Lock()
+	if state.orders[instrumentID] == nil {
+		state.orders[instrumentID] = make(map[string]struct{})
+	}
+	if terminalOrderStatus(order.Status) {
+		delete(state.orders[instrumentID], identity)
+	} else {
+		state.orders[instrumentID][identity] = struct{}{}
+	}
+	active := len(state.orders[instrumentID]) > 0
+	state.setLocked(instrumentID, hotset.ReasonOpenOrder, active)
+	state.mu.Unlock()
+}
+
+func (state *routeHotState) UpdatePositions(instrumentID string, event exchange.PositionEvent) {
+	if state == nil || state.manager == nil || strings.TrimSpace(instrumentID) == "" {
+		return
+	}
+	state.mu.Lock()
+	if event.Kind == exchange.EventSnapshot {
+		delete(state.positions, instrumentID)
+	}
+	if state.positions[instrumentID] == nil {
+		state.positions[instrumentID] = make(map[exchange.PositionSlot]struct{})
+	}
+	for _, position := range event.Positions {
+		slot := position.PositionSlot
+		if !slot.Valid() {
+			slot = exchange.PositionSlotNet
 		}
-		return observeErr
-	}, nil, "orders", accountID)
-	fills, err := socket.WatchFills(ctx, request)
-	if err != nil {
-		return err
+		if position.Quantity.IsZero() {
+			delete(state.positions[instrumentID], slot)
+		} else {
+			state.positions[instrumentID][slot] = struct{}{}
+		}
 	}
-	monitorSubscription(ctx, streams, fills, func(event exchange.FillEvent) error {
-		return manager.publishFill(accountID, instrumentID, event)
-	}, nil, "fills", accountID)
+	active := len(state.positions[instrumentID]) > 0
+	state.setLocked(instrumentID, hotset.ReasonPosition, active)
+	state.mu.Unlock()
+}
+
+func (state *routeHotState) setLocked(instrumentID string, reason hotset.Reason, active bool) {
+	leaseKey := string(reason) + "|" + instrumentID
+	if active && state.leases[leaseKey] == nil {
+		lease, err := state.manager.Acquire(state.ctx, hotset.Key{Owner: state.owner, InstrumentID: instrumentID}, reason)
+		if err == nil {
+			state.leases[leaseKey] = lease
+		}
+	} else if !active && state.leases[leaseKey] != nil {
+		state.leases[leaseKey].Release()
+		delete(state.leases, leaseKey)
+	}
+}
+
+func (state *routeHotState) Close() error {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	for key, lease := range state.leases {
+		lease.Release()
+		delete(state.leases, key)
+	}
+	state.mu.Unlock()
 	return nil
 }
 
-func (manager *StreamManager) openPerpInstrument(
-	ctx context.Context,
-	streams *accountStreams,
-	socket exchange.PerpWebSocket,
-	accountID domain.AccountID,
-	routeID domain.RouteID,
-	instrumentID domain.InstrumentID,
-	instrument exchange.Instrument,
-) error {
-	if err := manager.openSpotInstrument(ctx, streams, socket, accountID, instrumentID, instrument); err != nil {
-		return err
+func firstNonEmptyOrderID(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
 	}
-	positions, err := socket.WatchPositions(ctx, exchange.WatchRequest{
-		Instrument: instrument, Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer},
-	})
-	if err != nil {
-		return err
-	}
-	monitorSubscription(ctx, streams, positions, func(event exchange.PositionEvent) error {
-		return manager.publishPositions(accountID, routeID, instrumentID, event)
-	}, nil, "positions", accountID)
-	return nil
+	return ""
 }
 
-func (manager *StreamManager) openBalances(
-	ctx context.Context,
-	streams *accountStreams,
-	socket exchange.SpotWebSocket,
-	accountID domain.AccountID,
-	routeID domain.RouteID,
-) error {
-	balances, err := socket.WatchBalances(ctx, exchange.WatchAccountRequest{
-		Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer},
-	})
-	if err != nil {
-		return err
+func terminalOrderStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "filled", "canceled", "cancelled", "rejected", "expired", "failed", "closed":
+		return true
+	default:
+		return false
 	}
-	monitorSubscription(ctx, streams, balances, func(event exchange.BalanceEvent) error {
-		return manager.publishBalances(accountID, event)
-	}, func() {
-		streams.observeActivation(routeID)
-	}, "balances", accountID)
-	return nil
+}
+
+// acceptAccountEvent fences reconnect generations and enforces the adapter's
+// local monotonic sequence. Late events from an old native client are ignored;
+// a new generation or a sequence gap requires the route snapshot/reconciliation
+// startup to run again before any event is trusted.
+func acceptAccountEvent(event exchange.AccountEvent, generation, sequence *uint64) (bool, error) {
+	if event.Validate() != nil || generation == nil || sequence == nil {
+		return false, fmt.Errorf("private account event is invalid")
+	}
+	if *generation == 0 {
+		if event.Sequence != 1 {
+			return false, fmt.Errorf("private account stream initial sequence gap")
+		}
+		*generation, *sequence = event.Generation, event.Sequence
+		return true, nil
+	}
+	if event.Generation < *generation || event.Generation == *generation && event.Sequence <= *sequence {
+		return false, nil
+	}
+	if event.Generation > *generation {
+		return false, fmt.Errorf("private account stream generation changed")
+	}
+	if event.Sequence != *sequence+1 {
+		return false, fmt.Errorf("private account stream sequence gap")
+	}
+	*sequence = event.Sequence
+	return true, nil
+}
+
+func accountNativeFamily(identity exchange.InstrumentIdentity) string {
+	return marketcapability.NativeFamily(identity.Venue, identity.Product, identity.SettleAsset)
 }
 
 // monitorSubscription drains one subscription until ctx ends or it faults.

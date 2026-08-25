@@ -22,6 +22,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
+	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/shopspring/decimal"
 )
@@ -219,6 +220,19 @@ func (source *Source) SetMarketHub(hub *markethub.Hub) {
 	source.mu.Unlock()
 }
 
+// SetRequestCoordinator attaches the single process-wide public REST gate to
+// catalog refreshes and point-in-time market bootstraps.
+func (source *Source) SetRequestCoordinator(coordinator *ratelimit.MarketCoordinator) {
+	if source == nil {
+		return
+	}
+	for _, current := range source.columns {
+		current.mu.Lock()
+		current.requests = coordinator
+		current.mu.Unlock()
+	}
+}
+
 type CatalogRevision struct {
 	ScopeKey    string
 	Fingerprint string
@@ -346,6 +360,7 @@ type column struct {
 	mu        sync.Mutex
 	inFlight  chan struct{}
 	revisions CatalogRevisionStore
+	requests  *ratelimit.MarketCoordinator
 }
 
 type sourceOptions struct {
@@ -814,7 +829,15 @@ func (current *column) refresh(ctx context.Context) error {
 			current.inFlight = make(chan struct{})
 			wait := current.inFlight
 			current.mu.Unlock()
-			instruments, err := current.connector.Refresh(ctx)
+			load := func(callCtx context.Context) (any, error) { return current.connector.Refresh(callCtx) }
+			var value any
+			var err error
+			if current.requests != nil {
+				value, err = current.requests.Do(ctx, exchange.Venue(current.profile.Venue), "instruments", current.profile.ID, load)
+			} else {
+				value, err = load(ctx)
+			}
+			instruments, _ := value.([]exchange.Instrument)
 			if err == nil {
 				_, err = current.catalog.Publish(current.accountID, instruments)
 			} else {

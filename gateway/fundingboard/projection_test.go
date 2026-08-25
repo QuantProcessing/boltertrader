@@ -23,7 +23,7 @@ func TestProjectionReadsIndependentFieldsFromFactStore(t *testing.T) {
 	}
 	if err := store.Apply(exchange.DerivativePatch{
 		Kind: exchange.EventSnapshot, Scope: exchange.CatalogScope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"},
-		NativeFamily: "perpetual", ObservedAt: now, Fields: exchange.DerivativeFieldIdentity | exchange.DerivativeFieldFunding | exchange.DerivativeFieldMark, Facts: []exchange.DerivativeFact{fact},
+		NativeFamily: "perpetual", Generation: 1, ObservedAt: now, Fields: exchange.DerivativeFieldIdentity | exchange.DerivativeFieldFunding | exchange.DerivativeFieldMark, Facts: []exchange.DerivativeFact{fact},
 	}); err != nil {
 		t.Fatal(err)
 	}

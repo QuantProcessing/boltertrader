@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
+	"github.com/QuantProcessing/boltertrader/gateway/hotset"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/QuantProcessing/boltertrader/gateway/realtimewire"
@@ -360,12 +361,6 @@ func isSharedMarketTopic(topic realtimewire.Topic) bool {
 }
 
 func (handler *InternalHandler) runSharedMarketTopic(ctx context.Context, subscriptionID string, request realtimewire.TopicRequest, emit func(realtimewire.Message) bool) error {
-	if handler.fundingSettlements != nil {
-		stop, err := handler.fundingSettlements.TrackActive(ctx, request.InstrumentID, "market_subscription:"+subscriptionID)
-		if err == nil {
-			defer stop()
-		}
-	}
 	dataset := exchange.DatasetDepth
 	switch request.Topic {
 	case realtimewire.TopicBBO:
@@ -378,6 +373,17 @@ func (handler *InternalHandler) runSharedMarketTopic(ctx context.Context, subscr
 	key, err := handler.marketKeys.SubscriptionKey(ctx, request.InstrumentID, dataset, request.Interval, request.Depth)
 	if err != nil {
 		return err
+	}
+	if handler.hotset != nil {
+		reason := hotset.Reason(request.InternalPurpose)
+		if reason == "" || reason.Validate() != nil {
+			reason = hotset.ReasonBrowser
+		}
+		lease, leaseErr := handler.hotset.Acquire(ctx, hotset.Key{Owner: key.Owner, InstrumentID: request.InstrumentID}, reason)
+		if leaseErr != nil {
+			return leaseErr
+		}
+		defer lease.Release()
 	}
 	subscription, err := handler.marketHub.Subscribe(ctx, key, realtimewire.OutboundBuffer)
 	if err != nil {

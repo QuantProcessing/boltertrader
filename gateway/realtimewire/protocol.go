@@ -44,9 +44,18 @@ type TopicRequest struct {
 	Depth          int    `json:"depth,omitempty"`
 	Interval       string `json:"interval,omitempty"`
 	Cursor         string `json:"cursor,omitempty"`
+	// InternalPurpose is set only on Trading's authenticated Gateway hop. The
+	// browser handler overwrites it, so clients cannot raise their hotset
+	// priority. It does not define a second protocol or a second connection.
+	InternalPurpose string `json:"internalPurpose,omitempty"`
 }
 
 func (request TopicRequest) Validate() error {
+	switch request.InternalPurpose {
+	case "", "browser", "arbitrage_top", "position", "open_order", "execution", "funding_history":
+	default:
+		return fmt.Errorf("topic purpose is invalid")
+	}
 	switch request.Topic {
 	case TopicOrderBook:
 		if strings.TrimSpace(request.InstrumentID) == "" || request.Depth <= 0 || request.Depth > 100 || request.Interval != "" {

@@ -67,7 +67,41 @@ func TestFactStoreSnapshotReplacesOnlyItsNativeOwner(t *testing.T) {
 }
 
 func derivativeTestPatch(kind exchange.EventKind, fields exchange.DerivativeField, at time.Time, facts ...exchange.DerivativeFact) exchange.DerivativePatch {
-	return exchange.DerivativePatch{Kind: kind, Scope: exchange.CatalogScope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"}, NativeFamily: "perpetual", ObservedAt: at, Fields: fields, Facts: facts}
+	return exchange.DerivativePatch{Kind: kind, Scope: exchange.CatalogScope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"}, NativeFamily: "perpetual", Generation: 1, ObservedAt: at, Fields: fields, Facts: facts}
+}
+
+func TestFactStoreFencesGenerationsAndRequiresSnapshot(t *testing.T) {
+	store := NewFactStore(nil, nil)
+	at := time.Now().UTC()
+	fact := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	fact.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true}
+	fact.MarkObservedAt = at
+	initial := derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, at, fact)
+	if err := store.Apply(initial); err != nil {
+		t.Fatal(err)
+	}
+	invalidNext := derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, at.Add(time.Second), fact)
+	invalidNext.Generation = 2
+	if err := store.Apply(invalidNext); err == nil {
+		t.Fatal("new generation delta was accepted without snapshot")
+	}
+	next := derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, at.Add(time.Second), fact)
+	next.Generation = 2
+	next.Facts[0].MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(200), Valid: true}
+	next.Facts[0].MarkObservedAt = at.Add(time.Second)
+	if err := store.Apply(next); err != nil {
+		t.Fatal(err)
+	}
+	late := initial
+	late.Facts[0].MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(50), Valid: true}
+	late.Facts[0].MarkObservedAt = at.Add(2 * time.Second)
+	if err := store.Apply(late); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Get(fact.InstrumentID)
+	if !got.MarkPrice.Value.Equal(decimal.NewFromInt(200)) {
+		t.Fatalf("old generation overwrote current mark: %s", got.MarkPrice.Value)
+	}
 }
 
 func derivativeTestFact(id, route string) exchange.DerivativeFact {

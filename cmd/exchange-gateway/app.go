@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/fundingsettlement"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
+	"github.com/QuantProcessing/boltertrader/gateway/hotset"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
@@ -38,6 +40,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/process"
 	"github.com/QuantProcessing/boltertrader/gateway/publicconn"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
+	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
@@ -147,7 +150,11 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	var marketHub *markethub.Hub
 	var marketFacts *markethub.FactStore
 	var marketCapabilities *marketcapability.Registry
+	var hotsets *hotset.Manager
+	var hotActivator *marketowner.HotActivator
+	var marketRequests *ratelimit.MarketCoordinator
 	if !validationProfile {
+		marketRequests = ratelimit.NewMarketCoordinator(metrics, time.Now)
 		marketCapabilities, err = marketcapability.DefaultRegistry()
 		if err != nil {
 			return fmt.Errorf("market capability setup failed: %w", err)
@@ -160,12 +167,14 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		if marketErr != nil {
 			return fmt.Errorf("public market source setup failed")
 		}
+		publicMarkets.SetRequestCoordinator(marketRequests)
 		go func() { _ = publicMarkets.Run(ctx) }()
 		freshBBO, marketErr = markethub.NewBBOCache(publicMarkets, time.Now)
 		if marketErr != nil {
 			return fmt.Errorf("fresh BBO cache setup failed")
 		}
 		freshBBO.SetObserver(metrics)
+		freshBBO.SetRequestCoordinator(marketRequests)
 		defer publicMarkets.Close()
 	}
 	// fundingBoard is the resident DerivativeFact projection consumed by the
@@ -187,6 +196,9 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		if boardErr == nil {
 			marketFacts = markethub.NewFactStore(metrics, time.Now)
 			derivativeOwners, boardErr = marketowner.NewDerivativeOwners(boardFactory, routeprofile.DefaultRegistry(), marketCapabilities, publicMarkets, marketFacts, metrics)
+			if derivativeOwners != nil {
+				derivativeOwners.SetRequestCoordinator(marketRequests)
+			}
 		}
 		if boardErr == nil {
 			fundingBoard, boardErr = fundingboard.NewProjection(marketFacts, boardFactory, routeprofile.DefaultRegistry())
@@ -224,6 +236,19 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("market Hub setup failed")
 		}
 		publicMarkets.SetMarketHub(marketHub)
+		hotActivator = marketowner.NewHotActivator(marketHub)
+		hotsets, err = hotset.New(hotset.Options{
+			Activator: hotActivator,
+			Capacity: func(owner markethub.OwnerKey) int {
+				return marketCapabilities.HotCapacity(owner.Venue, owner.NativeFamily)
+			},
+			Grace: 30 * time.Second,
+		})
+		if err != nil {
+			return fmt.Errorf("market hotset setup failed")
+		}
+		defer hotsets.Close()
+		defer hotActivator.Close()
 		defer marketHub.Close()
 	}
 	var internalHandler http.Handler
@@ -240,7 +265,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, marketFacts, venueConnectivity, freshBBO, marketHub)
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, marketFacts, venueConnectivity, freshBBO, marketHub, hotsets)
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
@@ -277,7 +302,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			restoredAuthority = authority
 			return nil
 		},
-		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics),
+		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics, hotsets),
 		Listen:                defaultListen(deps.listen),
 		HandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
 			gatewayMonitor = monitor
@@ -403,6 +428,7 @@ func defaultInternalHandlerFactory(
 	venueConnectivity httpapi.InternalVenueConnectivity,
 	freshBBO httpapi.InternalFreshBBO,
 	marketHub httpapi.InternalMarketHub,
+	hotsets httpapi.InternalHotset,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
 		var handler http.Handler
@@ -427,6 +453,9 @@ func defaultInternalHandlerFactory(
 						return nil, fmt.Errorf("funding settlement tracker setup failed")
 					}
 					settlements = settlementHistoryTracker{tracker: tracker, history: history}
+					if observed, ok := hotsets.(interface{ SetObserver(hotset.Observer) }); ok {
+						observed.SetObserver(newSettlementHotsetObserver(ctx, settlements))
+					}
 					go func() { _ = tracker.Run(ctx) }()
 				}
 			}
@@ -440,6 +469,7 @@ func defaultInternalHandlerFactory(
 				FreshBBO:            freshBBO,
 				MarketHub:           marketHub,
 				FundingSettlements:  settlements,
+				Hotset:              hotsets,
 				Authenticate: func(request *http.Request) error {
 					if _, ok := auth.Principal(request.Context()); !ok {
 						return errors.New("internal authentication required")
@@ -475,6 +505,97 @@ func defaultInternalHandlerFactory(
 type settlementHistoryTracker struct {
 	tracker *fundingsettlement.Tracker
 	history fundingsettlement.VenueHistory
+}
+
+type settlementHotsetKey struct {
+	instrumentID string
+	reason       hotset.Reason
+}
+
+type settlementHotsetState struct {
+	desired bool
+	running bool
+	stop    func()
+}
+
+// settlementHotsetObserver mirrors stable hotset reasons into the durable
+// settlement tracker. Tracking may require a catalog/fact lookup and a database
+// write, so transitions run outside market/account event loops. A reason that
+// arrives before next-funding metadata is available retries while it remains
+// desired instead of being silently lost.
+type settlementHotsetObserver struct {
+	ctx      context.Context
+	tracking httpapi.InternalFundingSettlements
+	mu       sync.Mutex
+	states   map[settlementHotsetKey]*settlementHotsetState
+}
+
+func newSettlementHotsetObserver(ctx context.Context, tracking httpapi.InternalFundingSettlements) *settlementHotsetObserver {
+	return &settlementHotsetObserver{ctx: ctx, tracking: tracking, states: make(map[settlementHotsetKey]*settlementHotsetState)}
+}
+
+func (observer *settlementHotsetObserver) ReasonChanged(key hotset.Key, reason hotset.Reason, active bool) {
+	if observer == nil || observer.tracking == nil || strings.TrimSpace(key.InstrumentID) == "" {
+		return
+	}
+	trackingKey := settlementHotsetKey{instrumentID: key.InstrumentID, reason: reason}
+	observer.mu.Lock()
+	state := observer.states[trackingKey]
+	if state == nil {
+		state = &settlementHotsetState{}
+		observer.states[trackingKey] = state
+	}
+	state.desired = active
+	if !active && state.stop != nil {
+		stop := state.stop
+		state.stop = nil
+		delete(observer.states, trackingKey)
+		observer.mu.Unlock()
+		stop()
+		return
+	}
+	if !active || state.running || state.stop != nil {
+		if !active && !state.running {
+			delete(observer.states, trackingKey)
+		}
+		observer.mu.Unlock()
+		return
+	}
+	state.running = true
+	observer.mu.Unlock()
+	go observer.track(trackingKey)
+}
+
+func (observer *settlementHotsetObserver) track(key settlementHotsetKey) {
+	for observer.ctx.Err() == nil {
+		stop, err := observer.tracking.TrackActive(observer.ctx, key.instrumentID, string(key.reason))
+		observer.mu.Lock()
+		state := observer.states[key]
+		if state == nil || !state.desired || observer.ctx.Err() != nil {
+			if state != nil {
+				delete(observer.states, key)
+			}
+			observer.mu.Unlock()
+			if err == nil && stop != nil {
+				stop()
+			}
+			return
+		}
+		if err == nil {
+			state.running = false
+			state.stop = stop
+			observer.mu.Unlock()
+			return
+		}
+		observer.mu.Unlock()
+		timer := time.NewTimer(10 * time.Second)
+		select {
+		case <-observer.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 func (tracking settlementHistoryTracker) TrackNextSettlement(ctx context.Context, instrumentID string) error {
@@ -718,6 +839,7 @@ func defaultBuildOrderCoordinator(
 	override func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error),
 	principalID domain.PrincipalID,
 	metrics *observability.Metrics,
+	hotsets *hotset.Manager,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error) {
 	if override != nil {
 		return override
@@ -750,7 +872,7 @@ func defaultBuildOrderCoordinator(
 			return nil, fmt.Errorf("order coordinator setup")
 		}
 		streams, err := gatewayevent.NewStreamManager(gatewayevent.StreamOptions{
-			Accounts: manager, Reconciler: coordinator, Hub: events, PrincipalID: principalID,
+			Accounts: manager, Reconciler: coordinator, Hub: events, PrincipalID: principalID, Hotset: hotsets,
 		})
 		if err != nil {
 			events.Close()

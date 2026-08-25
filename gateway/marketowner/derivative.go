@@ -12,6 +12,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
+	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 )
 
@@ -25,8 +26,9 @@ type derivativeRouteFeed struct {
 }
 
 type derivativeVenueOwner struct {
-	key    markethub.OwnerKey
-	routes []derivativeRouteFeed
+	key        markethub.OwnerKey
+	routes     []derivativeRouteFeed
+	generation uint64
 }
 
 // DerivativeOwners is the process-wide resident owner set. One element exists
@@ -37,8 +39,15 @@ type DerivativeOwners struct {
 	markets  *publicmarket.Source
 	facts    *markethub.FactStore
 	observer markethub.Observer
+	requests *ratelimit.MarketCoordinator
 	mu       sync.Mutex
 	closed   bool
+}
+
+func (owners *DerivativeOwners) SetRequestCoordinator(coordinator *ratelimit.MarketCoordinator) {
+	if owners != nil {
+		owners.requests = coordinator
+	}
 }
 
 func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.Registry, capabilities *marketcapability.Registry, markets *publicmarket.Source, facts *markethub.FactStore, observer markethub.Observer) (*DerivativeOwners, error) {
@@ -96,8 +105,10 @@ func (owners *DerivativeOwners) runOwner(ctx context.Context, owner *derivativeV
 	backoff := time.Second
 	var reconnects uint64
 	for ctx.Err() == nil {
+		owner.generation++
+		generation := owner.generation
 		owners.observe(owner.key, "connecting", reconnects)
-		if err := owners.bootstrapOwner(ctx, owner); err != nil {
+		if err := owners.bootstrapOwner(ctx, owner, generation); err != nil {
 			owners.observe(owner.key, "unavailable", reconnects)
 			if !waitContext(ctx, backoff) {
 				return
@@ -113,7 +124,7 @@ func (owners *DerivativeOwners) runOwner(ctx context.Context, owner *derivativeV
 			route := &owner.routes[index]
 			go func() {
 				results <- route.feed.Stream(attempt, func(patch exchange.FundingMarketPatch) {
-					if projected, err := owners.project(attempt, owner.key, route.profile, patch); err == nil {
+					if projected, err := owners.project(attempt, owner.key, route.profile, generation, patch); err == nil {
 						_ = owners.facts.Apply(projected)
 					}
 				})
@@ -140,17 +151,25 @@ func (owners *DerivativeOwners) runOwner(ctx context.Context, owner *derivativeV
 	}
 }
 
-func (owners *DerivativeOwners) bootstrapOwner(ctx context.Context, owner *derivativeVenueOwner) error {
+func (owners *DerivativeOwners) bootstrapOwner(ctx context.Context, owner *derivativeVenueOwner, generation uint64) error {
 	results := make(chan error, len(owner.routes))
 	for index := range owner.routes {
 		route := &owner.routes[index]
 		go func() {
 			requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			patch, err := route.feed.Bootstrap(requestCtx)
+			load := func(callCtx context.Context) (any, error) { return route.feed.Bootstrap(callCtx) }
+			var value any
+			var err error
+			if owners.requests != nil {
+				value, err = owners.requests.Do(requestCtx, owner.key.Venue, "derivative_bootstrap", route.profile.ID, load)
+			} else {
+				value, err = load(requestCtx)
+			}
+			patch, _ := value.(exchange.FundingMarketPatch)
 			if err == nil {
 				var projected exchange.DerivativePatch
-				projected, err = owners.project(requestCtx, owner.key, route.profile, patch)
+				projected, err = owners.project(requestCtx, owner.key, route.profile, generation, patch)
 				if err == nil {
 					err = owners.facts.Apply(projected)
 				}
@@ -165,7 +184,7 @@ func (owners *DerivativeOwners) bootstrapOwner(ctx context.Context, owner *deriv
 	return result
 }
 
-func (owners *DerivativeOwners) project(ctx context.Context, owner markethub.OwnerKey, profile routeprofile.Profile, patch exchange.FundingMarketPatch) (exchange.DerivativePatch, error) {
+func (owners *DerivativeOwners) project(ctx context.Context, owner markethub.OwnerKey, profile routeprofile.Profile, generation uint64, patch exchange.FundingMarketPatch) (exchange.DerivativePatch, error) {
 	if err := patch.Validate(); err != nil {
 		return exchange.DerivativePatch{}, err
 	}
@@ -200,7 +219,7 @@ func (owners *DerivativeOwners) project(ctx context.Context, owner markethub.Own
 	}
 	return exchange.DerivativePatch{
 		Kind: kind, Scope: patch.Scope, NativeFamily: owner.NativeFamily, ObservedAt: patch.ObservedAt,
-		SourceSequence: strconv.FormatUint(patch.Sequence, 10), Fields: derivativeFields(patch.Fields), Facts: facts,
+		Generation: generation, SourceSequence: strconv.FormatUint(patch.Sequence, 10), Fields: derivativeFields(patch.Fields), Facts: facts,
 	}, nil
 }
 
