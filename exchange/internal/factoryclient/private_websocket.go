@@ -27,7 +27,9 @@ type perpPrivateWSBackend interface {
 
 type spotWebSocket struct {
 	*publicWebSocket
-	private *privateWebSocket
+	private          *privateWebSocket
+	accountCatalogMu sync.RWMutex
+	accountCatalog   []exchange.AccountInstrument
 }
 
 func (socket *spotWebSocket) String() string {
@@ -44,6 +46,34 @@ func newSpotWebSocket(public *publicWebSocket, backend privateWSBackend) *spotWe
 		publicWebSocket: public,
 		private:         newPrivateWebSocket(public, backend),
 	}
+}
+
+func (socket *spotWebSocket) SetAccountInstruments(instruments []exchange.AccountInstrument) error {
+	if socket == nil || socket.publicWebSocket == nil || len(instruments) == 0 {
+		return fmt.Errorf("account instrument index is invalid")
+	}
+	seen := make(map[string]struct{}, len(instruments))
+	copyOf := make([]exchange.AccountInstrument, 0, len(instruments))
+	for _, item := range instruments {
+		if item.InstrumentID == "" || item.Instrument.Validate() != nil || item.Instrument.Identity.Venue != socket.meta.venue || item.Instrument.Identity.Product != socket.meta.product {
+			return fmt.Errorf("account instrument index is invalid")
+		}
+		if _, duplicate := seen[item.InstrumentID]; duplicate {
+			return fmt.Errorf("account instrument index contains duplicate")
+		}
+		seen[item.InstrumentID] = struct{}{}
+		copyOf = append(copyOf, item)
+	}
+	socket.accountCatalogMu.Lock()
+	socket.accountCatalog = copyOf
+	socket.accountCatalogMu.Unlock()
+	return nil
+}
+
+func (socket *spotWebSocket) accountInstruments() []exchange.AccountInstrument {
+	socket.accountCatalogMu.RLock()
+	defer socket.accountCatalogMu.RUnlock()
+	return append([]exchange.AccountInstrument(nil), socket.accountCatalog...)
 }
 
 func (socket *spotWebSocket) WatchOrders(

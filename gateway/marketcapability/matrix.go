@@ -4,7 +4,9 @@
 package marketcapability
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -35,6 +37,10 @@ func Matrix() []exchange.MarketCapability {
 		add(venue, family, exchange.DatasetBBO, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, false, "")
 		add(venue, family, exchange.DatasetDepth, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, true, "")
 		add(venue, family, exchange.DatasetCandle, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, false, "")
+	}
+	for _, venue := range []exchange.Venue{exchange.VenueBinance, exchange.VenueAster, exchange.VenueLighter, exchange.VenueHyperliquid, exchange.VenueGate, exchange.VenueNado, exchange.VenueBybit, exchange.VenueBitget, exchange.VenueOKX} {
+		addHot(venue, FamilySpot, 100)
+		add(venue, FamilySpot, exchange.DatasetCatalog, exchange.TransportREST, exchange.GranularityAllMarket, time.Minute, 0, true, false, "instruments")
 	}
 
 	for _, venue := range []exchange.Venue{exchange.VenueBinance, exchange.VenueAster} {
@@ -90,9 +96,14 @@ func Matrix() []exchange.MarketCapability {
 	}
 	addHot(exchange.VenueOKX, FamilySwap, 100)
 
-	for _, venue := range []exchange.Venue{exchange.VenueBinance, exchange.VenueAster, exchange.VenueLighter, exchange.VenueHyperliquid, exchange.VenueGate, exchange.VenueNado, exchange.VenueBybit, exchange.VenueBitget, exchange.VenueOKX} {
-		family := defaultFamily(venue)
-		add(venue, family, exchange.DatasetCatalog, exchange.TransportREST, exchange.GranularityAllMarket, time.Minute, 0, true, false, "instruments")
+	owners := map[[2]string]struct{}{}
+	for _, capability := range capabilities {
+		if capability.NativeMarketFamily != FamilySpot {
+			owners[[2]string{string(capability.Venue), capability.NativeMarketFamily}] = struct{}{}
+		}
+	}
+	for owner := range owners {
+		add(exchange.Venue(owner[0]), owner[1], exchange.DatasetCatalog, exchange.TransportREST, exchange.GranularityAllMarket, time.Minute, 0, true, false, "instruments")
 	}
 
 	sort.Slice(capabilities, func(i, j int) bool {
@@ -111,11 +122,20 @@ func Matrix() []exchange.MarketCapability {
 	return capabilities
 }
 
-func defaultFamily(venue exchange.Venue) string {
+// NativeFamily maps route projections onto the exchange's physical connection
+// boundary. It is shared by catalog resolution and Feed Owner construction so
+// route-specific code cannot accidentally invent a second owner key.
+func NativeFamily(venue exchange.Venue, product exchange.Product, settlement string) string {
+	if product == exchange.ProductSpot {
+		return FamilySpot
+	}
 	switch venue {
 	case exchange.VenueBybit:
 		return FamilyLinear
 	case exchange.VenueBitget:
+		if strings.EqualFold(strings.TrimSpace(settlement), "USDC") {
+			return FamilyUSDCFutures
+		}
 		return FamilyUSDTFutures
 	case exchange.VenueOKX:
 		return FamilySwap
@@ -124,6 +144,74 @@ func defaultFamily(venue exchange.Venue) string {
 	default:
 		return FamilyPerpetual
 	}
+}
+
+type OwnerKey struct {
+	Venue        exchange.Venue
+	NativeFamily string
+}
+
+// Registry is the validated runtime view of Matrix. Production Feed Owners
+// resolve every upstream path through this registry; Matrix is no longer only
+// documentation exercised by tests.
+type Registry struct {
+	byOwner map[OwnerKey]map[exchange.MarketDataset][]exchange.MarketCapability
+	all     []exchange.MarketCapability
+}
+
+func NewRegistry(capabilities []exchange.MarketCapability) (*Registry, error) {
+	registry := &Registry{byOwner: make(map[OwnerKey]map[exchange.MarketDataset][]exchange.MarketCapability), all: append([]exchange.MarketCapability(nil), capabilities...)}
+	seen := make(map[[5]string]struct{}, len(capabilities))
+	for _, capability := range capabilities {
+		if err := capability.Validate(); err != nil {
+			return nil, err
+		}
+		identity := [5]string{string(capability.Venue), capability.NativeMarketFamily, string(capability.Dataset), string(capability.Transport), string(capability.Granularity)}
+		if _, duplicate := seen[identity]; duplicate {
+			return nil, fmt.Errorf("duplicate market capability")
+		}
+		seen[identity] = struct{}{}
+		owner := OwnerKey{Venue: capability.Venue, NativeFamily: capability.NativeMarketFamily}
+		if registry.byOwner[owner] == nil {
+			registry.byOwner[owner] = make(map[exchange.MarketDataset][]exchange.MarketCapability)
+		}
+		registry.byOwner[owner][capability.Dataset] = append(registry.byOwner[owner][capability.Dataset], capability)
+	}
+	if len(registry.all) == 0 {
+		return nil, fmt.Errorf("market capability matrix is empty")
+	}
+	return registry, nil
+}
+
+func DefaultRegistry() (*Registry, error) { return NewRegistry(Matrix()) }
+
+func (registry *Registry) Resolve(venue exchange.Venue, family string, dataset exchange.MarketDataset, instrumentScoped bool) (exchange.MarketCapability, error) {
+	if registry == nil {
+		return exchange.MarketCapability{}, fmt.Errorf("market capability registry is unavailable")
+	}
+	candidates := registry.byOwner[OwnerKey{Venue: venue, NativeFamily: family}][dataset]
+	if len(candidates) == 0 {
+		return exchange.MarketCapability{}, fmt.Errorf("market capability is unsupported")
+	}
+	preference := []exchange.MarketGranularity{exchange.GranularityAllMarket, exchange.GranularityMultiSymbol, exchange.GranularityPollOnly, exchange.GranularitySingleInstrument}
+	if instrumentScoped {
+		preference = []exchange.MarketGranularity{exchange.GranularitySingleInstrument, exchange.GranularityAllMarket, exchange.GranularityMultiSymbol, exchange.GranularityPollOnly}
+	}
+	for _, granularity := range preference {
+		for _, capability := range candidates {
+			if capability.Granularity == granularity {
+				return capability, nil
+			}
+		}
+	}
+	return exchange.MarketCapability{}, fmt.Errorf("market capability has no runnable strategy")
+}
+
+func (registry *Registry) All() []exchange.MarketCapability {
+	if registry == nil {
+		return nil
+	}
+	return append([]exchange.MarketCapability(nil), registry.all...)
 }
 
 func For(venue exchange.Venue, family string) []exchange.MarketCapability {

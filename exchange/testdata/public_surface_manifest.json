@@ -7172,6 +7172,24 @@
       "tests": ["TestAccountEventContractIsRouteScoped"]
     },
     {
+      "id": "exchange.AccountEventPhase",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventPhaseSnapshot",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountEventPhaseLive",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
       "id": "exchange.AccountEventOrder",
       "kind": "const",
       "coverage": "contract",
@@ -7223,6 +7241,18 @@
       "id": "exchange.AccountInstrument",
       "kind": "type",
       "coverage": "contract",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountInstrumentIndexer",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestAccountEventContractIsRouteScoped"]
+    },
+    {
+      "id": "exchange.AccountInstrumentIndexer.SetAccountInstruments",
+      "kind": "interface_method",
+      "coverage": "compile",
       "tests": ["TestAccountEventContractIsRouteScoped"]
     },
     {
@@ -7452,6 +7482,12 @@
       "kind": "type",
       "coverage": "unit",
       "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+    },
+    {
+      "id": "exchange.DerivativePatch.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": ["TestDerivativePatchValidateRequiresCanonicalIdentity"]
     },
     {
       "id": "exchange.ApplyDerivativePatch",

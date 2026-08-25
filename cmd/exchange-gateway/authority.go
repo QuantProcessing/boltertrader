@@ -423,7 +423,7 @@ type managerAuthorityReads struct {
 	// board serves the bulk funding matrix from its own public endpoint loaders.
 	// It stays separate from markets because it refreshes every venue as one
 	// comparable snapshot rather than resolving a selected instrument.
-	board *fundingboard.Source
+	board fundingboard.Board
 	now   func() time.Time
 }
 
@@ -579,7 +579,7 @@ type authorityOption func(*managerAuthorityReads)
 // matrix. A nil source leaves the board answering ErrBoardUnavailable, which is
 // what a test-injected account manager should see — an honest gap rather than a
 // board that silently has no venues.
-func withFundingBoard(board *fundingboard.Source) authorityOption {
+func withFundingBoard(board fundingboard.Board) authorityOption {
 	return func(reads *managerAuthorityReads) { reads.board = board }
 }
 

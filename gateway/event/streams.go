@@ -1151,27 +1151,11 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 		return fmt.Errorf("private account event stream unavailable")
 	}
 	if !ok {
-		// Compatibility for injected/third-party sockets that have not adopted
-		// AccountWebSocket. Built-in adapters all take the route-level path above.
-		spot, spotOK := socket.(exchange.SpotWebSocket)
-		if !spotOK {
-			return fmt.Errorf("private account event stream unavailable")
-		}
-		for _, item := range catalogItems {
-			instrumentID := domain.InstrumentID(item.InstrumentID)
-			if product == exchange.ProductPerp {
-				perp, perpOK := socket.(exchange.PerpWebSocket)
-				if !perpOK {
-					return fmt.Errorf("private account event stream unavailable")
-				}
-				if err := manager.openPerpInstrument(ctx, streams, perp, accountID, routeID, instrumentID, item.Instrument); err != nil {
-					return err
-				}
-			} else if err := manager.openSpotInstrument(ctx, streams, spot, accountID, instrumentID, item.Instrument); err != nil {
-				return err
-			}
-		}
-		return manager.openBalances(ctx, streams, spot, accountID, routeID)
+		return fmt.Errorf("private account event stream unavailable")
+	}
+	indexer, ok := socket.(exchange.AccountInstrumentIndexer)
+	if !ok || indexer.SetAccountInstruments(catalogItems) != nil {
+		return fmt.Errorf("private account instrument index unavailable")
 	}
 	identity := catalogItems[0].Instrument.Identity
 	stream, err := accountSocket.WatchAccountEvents(ctx, exchange.WatchAccountEventsRequest{
@@ -1180,7 +1164,7 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 			Environment: exchange.EnvironmentLive, Product: product, Settlement: identity.SettleAsset,
 			NativeFamily: accountNativeFamily(identity),
 		},
-		Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer}, Catalog: catalogItems,
+		Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer},
 	})
 	if err != nil {
 		return err

@@ -41,3 +41,24 @@ func TestDerivativeFactFreshnessUsesIndependentClocks(t *testing.T) {
 		t.Fatalf("unexpected freshness: %#v", fresh)
 	}
 }
+
+func TestDerivativePatchValidateRequiresCanonicalIdentity(t *testing.T) {
+	at := time.Now().UTC()
+	patch := DerivativePatch{
+		Kind:         EventSnapshot,
+		Scope:        CatalogScope{Venue: VenueBinance, Environment: EnvironmentLive, Product: ProductPerp, Settlement: "USDT"},
+		NativeFamily: "perpetual", ObservedAt: at,
+		Fields: DerivativeFieldIdentity,
+		Facts: []DerivativeFact{{
+			InstrumentID: "binance:perp:BTC-USDT", RouteProfileID: "binance-perp-usdt", Environment: EnvironmentLive,
+			Instrument: InstrumentIdentity{Venue: VenueBinance, Product: ProductPerp, Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT"},
+		}},
+	}
+	if err := patch.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	patch.Facts[0].InstrumentID = ""
+	if err := patch.Validate(); err == nil {
+		t.Fatal("missing canonical instrument ID was accepted")
+	}
+}

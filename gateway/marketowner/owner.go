@@ -9,18 +9,27 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 )
 
 type Owner struct {
-	Source     *publicmarket.Source
-	BoardMarks BoardMarks
+	Source       *publicmarket.Source
+	BoardMarks   BoardMarks
+	Capabilities *marketcapability.Registry
 }
 
 func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (markethub.NativeStream, error) {
 	if owner.Source == nil {
 		return markethub.NativeStream{}, markethub.ErrUnavailable
+	}
+	if owner.Capabilities == nil {
+		return markethub.NativeStream{}, fmt.Errorf("%w: capability registry unavailable", markethub.ErrUnavailable)
+	}
+	capability, err := owner.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, key.Dataset, key.InstrumentID != "")
+	if err != nil {
+		return markethub.NativeStream{}, fmt.Errorf("%w: %v", markethub.ErrUnavailable, err)
 	}
 	switch key.Dataset {
 	case exchange.DatasetDepth:
@@ -55,8 +64,11 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 		}
 		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, time.Now().UTC(), "", map[string]any{"interval": key.Interval, "candles": candles}), Events: events, Errors: failures, Close: stream.Subscription.Close}, nil
 	case exchange.DatasetMark:
-		if stream, supported, err := owner.BoardMarks.Open(ctx, key); supported || err != nil {
-			return stream, err
+		if capability.Granularity != exchange.GranularitySingleInstrument {
+			stream, supported, err := owner.BoardMarks.Open(ctx, key)
+			if supported || err != nil {
+				return stream, err
+			}
 		}
 		stream, err := owner.Source.WatchMarkPrice(ctx, key.InstrumentID)
 		if err != nil {

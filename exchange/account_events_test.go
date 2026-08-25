@@ -10,7 +10,7 @@ func TestAccountEventContractIsRouteScoped(t *testing.T) {
 		AccountID: "account-1", RouteID: "route-1", Venue: VenueBinance,
 		Environment: EnvironmentLive, Product: ProductPerp, Settlement: "USDT", NativeFamily: "perpetual",
 	}
-	event := AccountEvent{Kind: AccountEventResyncRequired, Route: route, ObservedAt: time.Now().UTC(), Reason: "sequence-gap"}
+	event := AccountEvent{Kind: AccountEventResyncRequired, Route: route, Generation: 1, Sequence: 1, Phase: AccountEventPhaseLive, ObservedAt: time.Now().UTC(), Reason: "sequence-gap"}
 	if err := event.Validate(); err != nil {
 		t.Fatal(err)
 	}

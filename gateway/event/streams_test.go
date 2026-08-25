@@ -283,7 +283,7 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 	}
 }
 
-func TestStreamManagerOpensDynamicRoutesFromAtomicSelectionsAndDeduplicatesBalances(t *testing.T) {
+func TestStreamManagerOpensOneAccountStreamPerDynamicRoute(t *testing.T) {
 	hub := newTestHub(t, 16, 8)
 	spotGeneration := newFakeStreamGeneration()
 	perpGeneration := newFakeStreamGeneration()
@@ -323,7 +323,10 @@ func TestStreamManagerOpensDynamicRoutesFromAtomicSelectionsAndDeduplicatesBalan
 
 	spotOrders, spotFills, spotBalances := spotSocket.Calls()
 	perpOrders, perpFills, perpBalances := perpSocket.spot.Calls()
-	if spotOrders != 2 || spotFills != 2 || spotBalances != 1 {
+	// The catalog contains two spot instruments, but Gateway opens exactly one
+	// route-level account stream. Growing the catalog must not grow Gateway's
+	// private subscription count.
+	if spotOrders != 1 || spotFills != 1 || spotBalances != 1 {
 		t.Fatalf("spot calls=(orders=%d fills=%d balances=%d)", spotOrders, spotFills, spotBalances)
 	}
 	if perpOrders != 1 || perpFills != 1 || perpBalances != 1 || perpSocket.PositionCalls() != 1 {
@@ -1294,6 +1297,35 @@ type fakeSpotSocket struct {
 	orderCalls   int
 	fillCalls    int
 	balanceCalls int
+	accountIndex []exchange.AccountInstrument
+}
+
+func (socket *fakeSpotSocket) SetAccountInstruments(instruments []exchange.AccountInstrument) error {
+	socket.mu.Lock()
+	socket.accountIndex = append([]exchange.AccountInstrument(nil), instruments...)
+	socket.mu.Unlock()
+	return nil
+}
+
+func (socket *fakeSpotSocket) WatchAccountEvents(ctx context.Context, request exchange.WatchAccountEventsRequest) (exchange.Subscription[exchange.AccountEvent], error) {
+	return socket.watchAccountEvents(ctx, request, false)
+}
+
+func (socket *fakeSpotSocket) watchAccountEvents(ctx context.Context, request exchange.WatchAccountEventsRequest, positions bool) (exchange.Subscription[exchange.AccountEvent], error) {
+	socket.mu.Lock()
+	current := socket.current()
+	socket.generation++
+	socket.orderCalls++
+	socket.fillCalls++
+	socket.balanceCalls++
+	index := append([]exchange.AccountInstrument(nil), socket.accountIndex...)
+	generation := uint64(socket.generation)
+	socket.mu.Unlock()
+	if len(index) == 0 {
+		return nil, errors.New("missing account index")
+	}
+	subscription := newFakeRouteSubscription(ctx, request.Route, generation, index[0].InstrumentID, current, positions)
+	return subscription, nil
 }
 
 func (socket *fakeSpotSocket) current() *fakeStreamGeneration {
@@ -1344,6 +1376,17 @@ type fakePerpSocket struct {
 	positionCalls int
 }
 
+func (socket *fakePerpSocket) SetAccountInstruments(instruments []exchange.AccountInstrument) error {
+	return socket.spot.SetAccountInstruments(instruments)
+}
+
+func (socket *fakePerpSocket) WatchAccountEvents(ctx context.Context, request exchange.WatchAccountEventsRequest) (exchange.Subscription[exchange.AccountEvent], error) {
+	socket.spot.mu.Lock()
+	socket.positionCalls++
+	socket.spot.mu.Unlock()
+	return socket.spot.watchAccountEvents(ctx, request, true)
+}
+
 func (socket *fakePerpSocket) WatchOrders(ctx context.Context, request exchange.WatchRequest) (exchange.Subscription[exchange.OrderEvent], error) {
 	return socket.spot.WatchOrders(ctx, request)
 }
@@ -1369,6 +1412,118 @@ func (socket *fakePerpSocket) PositionCalls() int {
 	return socket.positionCalls
 }
 
+type fakeRouteSubscription struct {
+	events chan exchange.AccountEvent
+	status chan exchange.StreamStatusEvent
+	errors chan error
+	cancel context.CancelFunc
+	close  func()
+	once   sync.Once
+}
+
+func newFakeRouteSubscription(parent context.Context, route exchange.AccountRoute, generation uint64, instrumentID string, source *fakeStreamGeneration, includePositions bool) *fakeRouteSubscription {
+	ctx, cancel := context.WithCancel(parent)
+	result := &fakeRouteSubscription{events: make(chan exchange.AccountEvent, 32), status: make(chan exchange.StreamStatusEvent, 32), errors: make(chan error, 8), cancel: cancel}
+	var sequence uint64
+	var sequenceMu sync.Mutex
+	emit := func(event exchange.AccountEvent) {
+		sequenceMu.Lock()
+		sequence++
+		event.Generation, event.Sequence = generation, sequence
+		sequenceMu.Unlock()
+		if event.Phase == "" {
+			event.Phase = exchange.AccountEventPhaseLive
+		}
+		select {
+		case result.events <- event:
+		case <-ctx.Done():
+		}
+	}
+	bridgeStatus := func(input <-chan exchange.StreamStatusEvent) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case status := <-input:
+				status.Generation = generation
+				select {
+				case result.status <- status:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}
+	go bridgeStatus(source.orders.status)
+	go bridgeStatus(source.fills.status)
+	go bridgeStatus(source.balances.status)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-source.orders.events:
+				emit(exchange.AccountEvent{Kind: exchange.AccountEventOrder, Route: route, InstrumentID: instrumentID, ObservedAt: time.Now().UTC(), Order: &event})
+			}
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-source.fills.events:
+				emit(exchange.AccountEvent{Kind: exchange.AccountEventFill, Route: route, InstrumentID: instrumentID, ObservedAt: time.Now().UTC(), Fill: &event})
+			}
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-source.balances.events:
+				emit(exchange.AccountEvent{Kind: exchange.AccountEventBalance, Route: route, ObservedAt: time.Now().UTC(), Balance: &event})
+			}
+		}
+	}()
+	if includePositions {
+		go bridgeStatus(source.positions.status)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case event := <-source.positions.events:
+					emit(exchange.AccountEvent{Kind: exchange.AccountEventPosition, Route: route, InstrumentID: instrumentID, ObservedAt: time.Now().UTC(), Position: &event})
+				}
+			}
+		}()
+	}
+	result.close = func() {
+		_ = source.orders.Close()
+		_ = source.fills.Close()
+		_ = source.balances.Close()
+		if includePositions {
+			_ = source.positions.Close()
+		}
+	}
+	return result
+}
+
+func (*fakeRouteSubscription) ID() string { return "fake-account-route" }
+func (subscription *fakeRouteSubscription) Events() <-chan exchange.AccountEvent {
+	return subscription.events
+}
+func (subscription *fakeRouteSubscription) Status() <-chan exchange.StreamStatusEvent {
+	return subscription.status
+}
+func (subscription *fakeRouteSubscription) Errors() <-chan error { return subscription.errors }
+func (subscription *fakeRouteSubscription) Close() error {
+	subscription.once.Do(func() { subscription.cancel(); subscription.close() })
+	return nil
+}
+
 type fakeStreamSpotClient struct {
 	exchange.SpotClient
 	socket *fakeSpotSocket
@@ -1392,8 +1547,12 @@ type fakeAccountRouteSocket struct {
 
 func (socket *fakeAccountRouteSocket) WatchAccountEvents(_ context.Context, request exchange.WatchAccountEventsRequest) (exchange.Subscription[exchange.AccountEvent], error) {
 	socket.calls++
-	socket.catalogSize = len(request.Catalog)
 	return socket.subscription, nil
+}
+
+func (socket *fakeAccountRouteSocket) SetAccountInstruments(instruments []exchange.AccountInstrument) error {
+	socket.catalogSize = len(instruments)
+	return nil
 }
 
 type fakeAccountRoutePerpClient struct {

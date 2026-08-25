@@ -20,6 +20,7 @@ import (
 	exchangefactory "github.com/QuantProcessing/boltertrader/exchange/factory"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/shopspring/decimal"
@@ -173,26 +174,7 @@ func (source *Source) SubscriptionKey(ctx context.Context, instrumentID string, 
 }
 
 func nativeMarketFamily(profile routeprofile.Profile) string {
-	if profile.Product == routeprofile.ProductSpot {
-		return "spot"
-	}
-	switch exchange.Venue(profile.Venue) {
-	case exchange.VenueBybit:
-		// Both USDT and USDC are projections of Bybit's one native linear
-		// market family and therefore must resolve to the same owner.
-		return "linear"
-	case exchange.VenueBitget:
-		return strings.ToLower(profile.SettlementAsset) + "-futures"
-	case exchange.VenueOKX:
-		return "swap"
-	case exchange.VenueNado:
-		return "usdt0-perpetual"
-	default:
-		// Binance/Aster all-market mark feeds and the resident Lighter,
-		// Hyperliquid and Gate feeds are product-family owners, not route
-		// profile owners; settlement must not split them.
-		return "perpetual"
-	}
+	return marketcapability.NativeFamily(exchange.Venue(profile.Venue), exchange.Product(profile.Product), profile.SettlementAsset)
 }
 
 func observedTime(value time.Time) time.Time {

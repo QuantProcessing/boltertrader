@@ -30,6 +30,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/fundingsettlement"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/marketowner"
 	"github.com/QuantProcessing/boltertrader/gateway/observability"
@@ -144,7 +145,13 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	var publicMarkets *publicmarket.Source
 	var freshBBO *markethub.BBOCache
 	var marketHub *markethub.Hub
+	var marketFacts *markethub.FactStore
+	var marketCapabilities *marketcapability.Registry
 	if !validationProfile {
+		marketCapabilities, err = marketcapability.DefaultRegistry()
+		if err != nil {
+			return fmt.Errorf("market capability setup failed: %w", err)
+		}
 		marketFactory, marketErr := publicmarket.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
 		if marketErr != nil {
 			return fmt.Errorf("public market factory setup failed")
@@ -170,34 +177,44 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	// exercise the internal plane. Nothing about it is account-derived, so it
 	// has no reason to live behind the manager anyway.
 	//
-	// A failure to build it is not a failure to boot. The board is one read of
-	// many, and refusing to start the gateway because a public rate feed could
-	// not be assembled would trade an entire trading surface for a table.
-	var fundingBoard *fundingboard.Source
+	// Construction failure is fatal because this is now the shared market fact
+	// authority for Trader marks, portfolio PnL and arbitrage as well as the
+	// board. Runtime venue failures still degrade independently after startup.
+	var fundingBoard *fundingboard.Projection
+	var derivativeOwners *marketowner.DerivativeOwners
 	if !validationProfile {
 		boardFactory, boardErr := fundingboard.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
 		if boardErr == nil {
-			fundingBoard, boardErr = fundingboard.NewSource(boardFactory, routeprofile.DefaultRegistry())
+			marketFacts = markethub.NewFactStore(metrics, time.Now)
+			derivativeOwners, boardErr = marketowner.NewDerivativeOwners(boardFactory, routeprofile.DefaultRegistry(), marketCapabilities, publicMarkets, marketFacts, metrics)
+		}
+		if boardErr == nil {
+			fundingBoard, boardErr = fundingboard.NewProjection(marketFacts, boardFactory, routeprofile.DefaultRegistry())
 		}
 		if boardErr != nil {
-			fundingBoard = nil
+			if derivativeOwners != nil {
+				_ = derivativeOwners.Close()
+			}
+			return fmt.Errorf("derivative market setup failed: %w", boardErr)
 		}
-		if fundingBoard != nil {
-			fundingBoard.SetObserver(metrics)
-			go func() { _ = fundingBoard.Run(ctx) }()
+		if derivativeOwners != nil {
+			go func() { _ = derivativeOwners.Run(ctx) }()
 		}
 		defer func() {
 			if fundingBoard != nil {
 				_ = fundingBoard.Close()
+			}
+			if derivativeOwners != nil {
+				_ = derivativeOwners.Close()
 			}
 		}()
 	}
 	if !validationProfile {
 		marketHub, err = markethub.New(markethub.Options{
 			Owner: marketowner.Owner{
-				Source: publicMarkets,
+				Source: publicMarkets, Capabilities: marketCapabilities,
 				BoardMarks: marketowner.BoardMarks{
-					Board: fundingBoard, Markets: publicMarkets,
+					Facts: marketFacts, Markets: publicMarkets, Capabilities: marketCapabilities,
 				},
 			},
 			IdleGrace: 30 * time.Second,
@@ -223,7 +240,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, venueConnectivity, freshBBO, marketHub)
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, marketFacts, venueConnectivity, freshBBO, marketHub)
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
@@ -382,6 +399,7 @@ func defaultInternalHandlerFactory(
 	accountDeps accountLifecycleDeps,
 	publicMarkets httpapi.InternalPublicMarketStreams,
 	fundingBoardChanges httpapi.InternalFundingBoardChanges,
+	marketFacts httpapi.InternalMarketFacts,
 	venueConnectivity httpapi.InternalVenueConnectivity,
 	freshBBO httpapi.InternalFreshBBO,
 	marketHub httpapi.InternalMarketHub,
@@ -397,7 +415,7 @@ func defaultInternalHandlerFactory(
 				return nil, fmt.Errorf("internal authority is unavailable")
 			}
 			var settlements httpapi.InternalFundingSettlements
-			boardSource, _ := fundingBoardChanges.(*fundingboard.Source)
+			boardSource, _ := fundingBoardChanges.(fundingboard.Board)
 			marketSource, _ := publicMarkets.(*publicmarket.Source)
 			if realPool, ok := pool.(*pgxpool.Pool); ok {
 				if boardSource != nil && marketSource != nil {
@@ -417,7 +435,7 @@ func defaultInternalHandlerFactory(
 				WriteReady:          writeReady,
 				PublicMarkets:       publicMarkets,
 				FundingBoardChanges: fundingBoardChanges,
-				MarketFacts:         marketowner.Facts{Board: boardSource, Markets: marketSource},
+				MarketFacts:         marketFacts,
 				VenueConnectivity:   venueConnectivity,
 				FreshBBO:            freshBBO,
 				MarketHub:           marketHub,

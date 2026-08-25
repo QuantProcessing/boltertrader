@@ -18,6 +18,13 @@ const (
 	AccountEventResyncRequired AccountEventKind = "resync_required"
 )
 
+type AccountEventPhase string
+
+const (
+	AccountEventPhaseSnapshot AccountEventPhase = "snapshot"
+	AccountEventPhaseLive     AccountEventPhase = "live"
+)
+
 // AccountRoute is the native private-stream boundary. Instrument is
 // intentionally absent: a Gateway account route owns one private event stream
 // regardless of catalog size.
@@ -44,7 +51,10 @@ type AccountEvent struct {
 	Kind           AccountEventKind   `json:"kind"`
 	Route          AccountRoute       `json:"route"`
 	InstrumentID   string             `json:"instrumentId,omitempty"`
+	Generation     uint64             `json:"generation"`
+	Sequence       uint64             `json:"sequence"`
 	SourceSequence string             `json:"sourceSequence,omitempty"`
+	Phase          AccountEventPhase  `json:"phase"`
 	ObservedAt     time.Time          `json:"observedAt"`
 	Order          *OrderEvent        `json:"order,omitempty"`
 	Fill           *FillEvent         `json:"fill,omitempty"`
@@ -55,8 +65,11 @@ type AccountEvent struct {
 }
 
 func (event AccountEvent) Validate() error {
-	if err := event.Route.Validate(); err != nil || event.ObservedAt.IsZero() {
+	if err := event.Route.Validate(); err != nil || event.ObservedAt.IsZero() || event.Generation == 0 || event.Sequence == 0 {
 		return fmt.Errorf("account event identity is invalid")
+	}
+	if event.Phase != AccountEventPhaseSnapshot && event.Phase != AccountEventPhaseLive {
+		return fmt.Errorf("account event phase is invalid")
 	}
 	payloads := 0
 	for _, present := range []bool{event.Order != nil, event.Fill != nil, event.Balance != nil, event.Position != nil, event.Status != nil} {
@@ -98,10 +111,6 @@ func (event AccountEvent) Validate() error {
 type WatchAccountEventsRequest struct {
 	Route   AccountRoute `json:"route"`
 	Options WatchOptions `json:"options,omitempty"`
-	// Catalog is adapter bootstrap metadata, not subscription scope. It is
-	// never serialized on the wire; adapters that need native symbol handlers
-	// manage those registrations behind the one account-route stream.
-	Catalog []AccountInstrument `json:"-"`
 }
 
 type AccountInstrument struct {
@@ -111,4 +120,11 @@ type AccountInstrument struct {
 
 type AccountWebSocket interface {
 	WatchAccountEvents(context.Context, WatchAccountEventsRequest) (Subscription[AccountEvent], error)
+}
+
+// AccountInstrumentIndexer injects the immutable native-to-canonical index
+// when a route client is assembled. It is deliberately separate from the
+// subscription request: catalog size must not define private stream scope.
+type AccountInstrumentIndexer interface {
+	SetAccountInstruments([]AccountInstrument) error
 }

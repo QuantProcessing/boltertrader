@@ -165,6 +165,41 @@ type DerivativePatch struct {
 	Facts          []DerivativeFact `json:"facts"`
 }
 
+func (patch DerivativePatch) Validate() error {
+	if patch.Kind != EventSnapshot && patch.Kind != EventDelta {
+		return fmt.Errorf("derivative patch kind is invalid")
+	}
+	if !knownVenue(patch.Scope.Venue) || patch.Scope.Environment != EnvironmentLive ||
+		patch.Scope.Product != ProductPerp || strings.TrimSpace(patch.NativeFamily) == "" || patch.ObservedAt.IsZero() {
+		return fmt.Errorf("derivative patch scope is invalid")
+	}
+	if patch.Fields == 0 || patch.Fields&^DerivativeFieldAll != 0 {
+		return fmt.Errorf("derivative patch field mask is invalid")
+	}
+	if patch.Kind == EventSnapshot && !patch.Fields.Has(DerivativeFieldIdentity) {
+		return fmt.Errorf("derivative snapshot is missing identity fields")
+	}
+	seen := make(map[string]struct{}, len(patch.Facts))
+	for _, fact := range patch.Facts {
+		if strings.TrimSpace(fact.InstrumentID) == "" || strings.TrimSpace(fact.RouteProfileID) == "" ||
+			fact.Environment != patch.Scope.Environment || fact.Instrument.Venue != patch.Scope.Venue ||
+			fact.Instrument.Product != ProductPerp || strings.TrimSpace(fact.Instrument.NativeSymbol) == "" {
+			return fmt.Errorf("derivative patch fact identity is invalid")
+		}
+		if patch.Scope.Settlement != "" && fact.Instrument.SettleAsset != "" && fact.Instrument.SettleAsset != patch.Scope.Settlement {
+			return fmt.Errorf("derivative patch fact settlement is invalid")
+		}
+		if _, duplicate := seen[fact.InstrumentID]; duplicate {
+			return fmt.Errorf("derivative patch contains a duplicate instrument")
+		}
+		seen[fact.InstrumentID] = struct{}{}
+		if fact.OpenInterestNotional.Valid && strings.TrimSpace(fact.OpenInterestNotionalAsset) == "" {
+			return fmt.Errorf("derivative patch OI notional asset is missing")
+		}
+	}
+	return nil
+}
+
 func ApplyDerivativePatch(current DerivativeFact, patch DerivativeFact, fields DerivativeField) DerivativeFact {
 	if fields.Has(DerivativeFieldIdentity) {
 		current.InstrumentID = patch.InstrumentID
@@ -172,30 +207,34 @@ func ApplyDerivativePatch(current DerivativeFact, patch DerivativeFact, fields D
 		current.Instrument = patch.Instrument
 		current.Environment = patch.Environment
 	}
-	if fields.Has(DerivativeFieldFunding) {
+	if fields.Has(DerivativeFieldFunding) && observationCurrent(current.FundingObservedAt, patch.FundingObservedAt) {
 		current.FundingRate, current.FundingObservedAt = patch.FundingRate, patch.FundingObservedAt
 	}
-	if fields.Has(DerivativeFieldFundingInterval) {
+	if fields.Has(DerivativeFieldFundingInterval) && observationCurrent(current.FundingObservedAt, patch.FundingObservedAt) {
 		current.FundingIntervalHours = patch.FundingIntervalHours
 	}
-	if fields.Has(DerivativeFieldNextFundingTime) {
+	if fields.Has(DerivativeFieldNextFundingTime) && observationCurrent(current.FundingObservedAt, patch.FundingObservedAt) {
 		current.NextFundingTime = patch.NextFundingTime
 	}
-	if fields.Has(DerivativeFieldMark) {
+	if fields.Has(DerivativeFieldMark) && observationCurrent(current.MarkObservedAt, patch.MarkObservedAt) {
 		current.MarkPrice, current.MarkObservedAt = patch.MarkPrice, patch.MarkObservedAt
 	}
-	if fields.Has(DerivativeFieldIndex) {
+	if fields.Has(DerivativeFieldIndex) && observationCurrent(current.IndexObservedAt, patch.IndexObservedAt) {
 		current.IndexPrice, current.IndexObservedAt = patch.IndexPrice, patch.IndexObservedAt
 	}
-	if fields.Has(DerivativeFieldOpenInterest) {
+	if fields.Has(DerivativeFieldOpenInterest) && observationCurrent(current.OpenInterestObservedAt, patch.OpenInterestObservedAt) {
 		current.OpenInterest, current.OpenInterestObservedAt = patch.OpenInterest, patch.OpenInterestObservedAt
 	}
-	if fields.Has(DerivativeFieldOpenInterestNotional) {
+	if fields.Has(DerivativeFieldOpenInterestNotional) && observationCurrent(current.OpenInterestObservedAt, patch.OpenInterestObservedAt) {
 		current.OpenInterestNotional = patch.OpenInterestNotional
 		current.OpenInterestNotionalAsset = patch.OpenInterestNotionalAsset
 		current.OpenInterestObservedAt = patch.OpenInterestObservedAt
 	}
 	return current
+}
+
+func observationCurrent(current, incoming time.Time) bool {
+	return !incoming.IsZero() && (current.IsZero() || !incoming.Before(current))
 }
 
 type FieldFreshness struct {

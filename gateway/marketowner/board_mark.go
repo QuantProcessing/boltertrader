@@ -3,11 +3,10 @@ package marketowner
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
-	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 )
@@ -17,35 +16,45 @@ import (
 // per-symbol mark subscription when Trader, PnL, funding and arbitrage ask for
 // the same value.
 type BoardMarks struct {
-	Board   *fundingboard.Source
-	Markets *publicmarket.Source
+	Facts        *markethub.FactStore
+	Markets      *publicmarket.Source
+	Capabilities *marketcapability.Registry
 }
 
 func (source BoardMarks) PublishMark(ctx context.Context, instrumentID string, price exchange.OptionalDecimal, observedAt time.Time) {
-	if source.Board == nil || source.Markets == nil || !price.Valid {
+	if source.Facts == nil || source.Markets == nil || !price.Valid {
 		return
 	}
-	instrument, ok, err := source.instrument(ctx, instrumentID)
-	if err != nil || !ok {
+	fact, ok := source.Facts.Get(instrumentID)
+	if !ok {
 		return
 	}
-	identity := instrument.Canonical.Identity
-	_ = source.Board.UpdateMark(instrument.RouteProfileID, identity.NativeID, identity.NativeSymbol, price.Value, observedAt)
+	fact.MarkPrice, fact.MarkObservedAt = price, observedAt.UTC()
+	_ = source.Facts.Apply(exchange.DerivativePatch{
+		Kind:         exchange.EventDelta,
+		Scope:        exchange.CatalogScope{Venue: fact.Instrument.Venue, Environment: fact.Environment, Product: exchange.ProductPerp, Settlement: fact.Instrument.SettleAsset},
+		NativeFamily: marketcapability.NativeFamily(fact.Instrument.Venue, exchange.ProductPerp, fact.Instrument.SettleAsset),
+		ObservedAt:   observedAt.UTC(), Fields: exchange.DerivativeFieldMark, Facts: []exchange.DerivativeFact{fact},
+	})
 }
 
 func (source BoardMarks) Open(ctx context.Context, key markethub.SubscriptionKey) (markethub.NativeStream, bool, error) {
-	if source.Board == nil || source.Markets == nil {
+	if source.Facts == nil || source.Markets == nil {
 		return markethub.NativeStream{}, false, nil
 	}
 	instrument, ok, err := source.instrument(ctx, key.InstrumentID)
-	if err != nil || !ok || !broadMarkVenue(instrument.Canonical.Identity.Venue) {
+	if err != nil || !ok || source.Capabilities == nil {
 		return markethub.NativeStream{}, false, err
 	}
-	changes, cancel, err := source.Board.Subscribe(ctx)
+	capability, capabilityErr := source.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, exchange.DatasetMark, false)
+	if capabilityErr != nil || capability.Granularity == exchange.GranularitySingleInstrument {
+		return markethub.NativeStream{}, false, capabilityErr
+	}
+	changes, cancel, err := source.Facts.Subscribe(ctx, 64)
 	if err != nil {
 		return markethub.NativeStream{}, true, err
 	}
-	price, at, err := source.snapshot(ctx, instrument)
+	price, at, err := source.snapshot(instrument)
 	if err != nil {
 		cancel()
 		return markethub.NativeStream{}, true, err
@@ -74,43 +83,15 @@ func (source BoardMarks) instrument(ctx context.Context, instrumentID string) (p
 	return instrument, ok, nil
 }
 
-func broadMarkVenue(venue exchange.Venue) bool {
-	switch venue {
-	case exchange.VenueBinance, exchange.VenueAster, exchange.VenueLighter, exchange.VenueHyperliquid, exchange.VenueGate:
-		return true
-	default:
-		return false
-	}
-}
-
-func (source BoardMarks) snapshot(ctx context.Context, instrument publicmarket.Instrument) (string, time.Time, error) {
-	snapshot, err := source.Board.Snapshot(ctx)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	identity := instrument.Canonical.Identity
-	for _, column := range snapshot.Venues {
-		if column.RouteProfileID != instrument.RouteProfileID {
-			continue
-		}
-		for _, entry := range column.Entries {
-			matches := identity.NativeID != "" && entry.NativeID == identity.NativeID
-			if !matches {
-				matches = strings.EqualFold(strings.TrimSpace(entry.NativeSymbol), strings.TrimSpace(identity.NativeSymbol))
-			}
-			observedAt := entry.MarkObservedAt
-			if observedAt.IsZero() {
-				observedAt = entry.PriceObservedAt
-			}
-			if matches && entry.MarkPrice.Valid && !observedAt.IsZero() {
-				return entry.MarkPrice.Value.String(), observedAt.UTC(), nil
-			}
-		}
+func (source BoardMarks) snapshot(instrument publicmarket.Instrument) (string, time.Time, error) {
+	fact, ok := source.Facts.Get(string(instrument.Catalog.ID))
+	if ok && fact.MarkPrice.Valid && !fact.MarkObservedAt.IsZero() {
+		return fact.MarkPrice.Value.String(), fact.MarkObservedAt.UTC(), nil
 	}
 	return "", time.Time{}, fmt.Errorf("%w: broad mark is absent", markethub.ErrUnavailable)
 }
 
-func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.Instrument, lastPrice string, lastAt time.Time, changes <-chan fundingboard.Change, events chan<- markethub.Message, failures chan<- error) {
+func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.Instrument, lastPrice string, lastAt time.Time, changes <-chan markethub.FactChange, events chan<- markethub.Message, failures chan<- error) {
 	defer close(events)
 	defer close(failures)
 	for {
@@ -125,7 +106,7 @@ func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.In
 				}
 				return
 			}
-			price, at, err := source.snapshot(ctx, instrument)
+			price, at, err := source.snapshot(instrument)
 			if err != nil || (price == lastPrice && at.Equal(lastAt)) {
 				continue
 			}

@@ -13,6 +13,8 @@ import { Num } from "@/components/ui/num";
 import { Metric } from "@/components/ui/panel";
 import { Tag } from "@/components/ui/state-badge";
 import { useLedger, usePortfolioPositions } from "@/features/portfolio/queries";
+import { applyFundingBoardMarks, summarizeLivePositions } from "@/features/portfolio/live-positions";
+import { useFundingBoard } from "@/features/funding/queries";
 import { liquidationPrice } from "@/features/trade/live-position";
 import { useTradeRealtime } from "@/features/trade/realtime";
 import { decimalSign, formatDecimal, formatTimestamp } from "@/lib/format";
@@ -54,15 +56,18 @@ export function PortfolioPage() {
     product: search.product,
   }), [search.account, search.product, search.venue]);
   const positions = usePortfolioPositions(query);
+  const fundingBoard = useFundingBoard();
   const snapshot = positions.data;
   useTradeRealtime(Boolean(snapshot?.cursor), snapshot?.cursor);
 
   const needle = search.query?.toLowerCase() ?? "";
-  const rows = useMemo(() => (snapshot?.items ?? []).filter((position) => {
+  const livePositions = useMemo(() => applyFundingBoardMarks(snapshot?.items ?? [], fundingBoard.data), [fundingBoard.data, snapshot?.items]);
+  const rows = useMemo(() => livePositions.filter((position) => {
     if (needle === "") return true;
     return [position.symbol, position.instrumentId, position.accountLabel, position.accountId, position.venue]
       .some((candidate) => candidate?.toLowerCase().includes(needle));
-  }), [needle, snapshot?.items]);
+  }), [livePositions, needle]);
+	const liveSummaries = useMemo(() => summarizeLivePositions(livePositions), [livePositions]);
   const group = search.group ?? "account";
   const groups = useMemo(() => groupPositions(rows, group), [group, rows]);
   const accounts = useMemo(() => unique([
@@ -108,7 +113,7 @@ export function PortfolioPage() {
         </Button>
       </header>
 
-      <SummaryStrip summaries={snapshot?.summary.bySettlementAsset ?? []} staleAccounts={snapshot?.summary.staleAccountCount ?? 0} t={t} />
+      <SummaryStrip summaries={liveSummaries} staleAccounts={snapshot?.summary.staleAccountCount ?? 0} t={t} />
 
       {snapshot && snapshot.summary.staleAccountCount > 0 ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-warn/30 bg-warn/5 px-3 py-1.5 text-meta text-warn" role="status">

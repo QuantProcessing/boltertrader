@@ -11,7 +11,7 @@ import (
 )
 
 type VenueHistory struct {
-	Board   *fundingboard.Source
+	Board   fundingboard.Board
 	Markets *publicmarket.Source
 }
 
