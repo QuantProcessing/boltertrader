@@ -393,36 +393,12 @@ func (c *WsMarketClient) SubscribeIncrementOrderBook(symbol string, interval str
 func (c *WsMarketClient) SubscribeLimitOrderBook(symbol string, levels int, interval string, callback func(*WsDepthEvent) error) error {
 	channel := fmt.Sprintf("%s@depth%d@%s", symbol, levels, interval)
 	return c.subscribeRoute(binancePerpWSRoutePublic, channel, func(data []byte) error {
-		var partial struct {
-			LastUpdateID    int64      `json:"lastUpdateId"`
-			EventTime       int64      `json:"E"`
-			TransactionTime int64      `json:"T"`
-			Bids            [][]string `json:"bids"`
-			Asks            [][]string `json:"asks"`
-		}
-		if err := json.Unmarshal(data, &partial); err != nil {
+		var wsData WsDepthEvent
+		if err := json.Unmarshal(data, &wsData); err != nil {
 			return err
 		}
-		return callback(&WsDepthEvent{
-			EventTime:       partial.EventTime,
-			TransactionTime: partial.TransactionTime,
-			Symbol:          strings.ToUpper(symbol),
-			FinalUpdateID:   partial.LastUpdateID,
-			Bids:            stringLevelsToInterface(partial.Bids),
-			Asks:            stringLevelsToInterface(partial.Asks),
-		})
+		return callback(&wsData)
 	})
-}
-
-func stringLevelsToInterface(levels [][]string) [][]interface{} {
-	out := make([][]interface{}, 0, len(levels))
-	for _, level := range levels {
-		if len(level) < 2 {
-			continue
-		}
-		out = append(out, []interface{}{level[0], level[1]})
-	}
-	return out
 }
 
 func (c *WsMarketClient) SubscribeBookTicker(symbol string, callback func(*WsBookTickerEvent) error) error {

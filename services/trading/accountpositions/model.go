@@ -96,9 +96,6 @@ type SourceItem struct {
 
 type SourceSnapshot struct {
 	AccountID  string       `json:"account_id"`
-	BootID     string       `json:"boot_id"`
-	Sequence   uint64       `json:"sequence"`
-	Cursor     string       `json:"cursor"`
 	Freshness  Freshness    `json:"freshness"`
 	Reason     string       `json:"reason,omitempty"`
 	VerifiedAt time.Time    `json:"verified_at"`
@@ -106,9 +103,7 @@ type SourceSnapshot struct {
 }
 
 type SourceEvent struct {
-	BootID          string
-	Sequence        uint64
-	Cursor          string
+	EventID         string
 	ResourceVersion uint64
 	Kind            string
 	OccurredAt      time.Time
@@ -138,7 +133,7 @@ const (
 type Source interface {
 	ListAccounts(context.Context, string) ([]Account, error)
 	PositionSnapshot(context.Context, string, string) (SourceSnapshot, error)
-	WatchAccountEvents(context.Context, string, string, string, func(SourceEvent) error) error
+	WatchAccountEvents(context.Context, string, string, func(SourceEvent) error) error
 }
 
 type Key struct {
@@ -181,8 +176,6 @@ type Item struct {
 	Freshness             Freshness   `json:"freshness"`
 	WriteReady            bool        `json:"writeReady"`
 	BlockedReason         string      `json:"blockedReason,omitempty"`
-	SourceBootID          string      `json:"sourceBootId"`
-	SourceSequence        uint64      `json:"sourceSequence"`
 	ResourceVersion       uint64      `json:"resourceVersion"`
 	ObservedAt            time.Time   `json:"observedAt"`
 	VerifiedAt            time.Time   `json:"verifiedAt"`
@@ -191,15 +184,12 @@ type Item struct {
 
 type AccountState struct {
 	Account
-	RouteHealth    RouteHealth `json:"routeHealth"`
-	Freshness      Freshness   `json:"freshness"`
-	WriteReady     bool        `json:"writeReady"`
-	Reason         string      `json:"reason,omitempty"`
-	SourceBootID   string      `json:"sourceBootId,omitempty"`
-	SourceSequence uint64      `json:"sourceSequence"`
-	SourceCursor   string      `json:"sourceCursor,omitempty"`
-	VerifiedAt     time.Time   `json:"verifiedAt,omitempty"`
-	ReceivedAt     time.Time   `json:"receivedAt"`
+	RouteHealth RouteHealth `json:"routeHealth"`
+	Freshness   Freshness   `json:"freshness"`
+	WriteReady  bool        `json:"writeReady"`
+	Reason      string      `json:"reason,omitempty"`
+	VerifiedAt  time.Time   `json:"verifiedAt,omitempty"`
+	ReceivedAt  time.Time   `json:"receivedAt"`
 }
 
 type SettlementSummary struct {
@@ -220,7 +210,6 @@ type Summary struct {
 
 type Snapshot struct {
 	ProjectionRevision uint64         `json:"projectionRevision"`
-	Cursor             string         `json:"cursor"`
 	VerifiedAt         time.Time      `json:"verifiedAt"`
 	Summary            Summary        `json:"summary"`
 	Accounts           []AccountState `json:"accounts"`

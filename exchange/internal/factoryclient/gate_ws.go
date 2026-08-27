@@ -215,12 +215,17 @@ func gateWSCandleInstrument(name, interval string) string {
 
 func (backend *gateSpotWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
 	native := instrument.Identity.NativeSymbol
+	first := true
 	return backend.subscribe(ctx, gate.ChannelSpotOrderBook, gateSpotOrderBookSubscription(native), func(raw json.RawMessage) {
 		event, err := gateSpotOrderBookEvent(raw, instrument)
 		if err != nil {
 			callbacks.Error(err)
 			return
 		}
+		if !first {
+			event.Kind = exchange.EventFull
+		}
+		first = false
 		callbacks.Event(event)
 	})
 }
@@ -435,12 +440,17 @@ func (backend *gatePerpWSBackend) StartOrderBook(ctx context.Context, instrument
 	if err != nil {
 		return nil, err
 	}
+	first := true
 	return backend.subscribe(ctx, gate.ChannelFuturesOrderBook, gatePerpOrderBookSubscription(native), func(raw json.RawMessage) {
 		event, err := gatePerpOrderBookEvent(raw, instrument, multiplier)
 		if err != nil {
 			callbacks.Error(err)
 			return
 		}
+		if !first {
+			event.Kind = exchange.EventFull
+		}
+		first = false
 		callbacks.Event(event)
 	})
 }

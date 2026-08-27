@@ -349,14 +349,9 @@ func exerciseNadoSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, f
 	ctx := context.Background()
 
 	book, err := ws.WatchOrderBook(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
-	if err != nil {
-		t.Fatalf("Nado spot WatchOrderBook: %v", err)
+	if !errors.Is(err, exchange.ErrUnsupported) || book != nil {
+		t.Fatalf("Nado spot WatchOrderBook = (%v, %v), want explicit pure-WS unsupported", book, err)
 	}
-	fixture.requireFrame("subscribe", fmt.Sprintf("book_depth:%d", productID))
-	fixture.requireFrame("write", fmt.Sprintf("book_depth:%d", productID))
-	requireSubscriptionEventOrError(t, book, "Nado spot book")
-	_ = book.Close()
-	fixture.requireFrame("unsubscribe", fmt.Sprintf("book_depth:%d", productID))
 
 	bbo, err := ws.WatchBBO(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {

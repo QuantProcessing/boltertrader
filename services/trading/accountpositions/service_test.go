@@ -2,12 +2,9 @@ package accountpositions
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
 
 func TestServiceKeepsHealthyAccountsWhenSiblingSnapshotFails(t *testing.T) {
@@ -15,12 +12,11 @@ func TestServiceKeepsHealthyAccountsWhenSiblingSnapshotFails(t *testing.T) {
 	source := &fakeSource{
 		accounts: []Account{testAccount("acct-a", "Binance"), testAccount("acct-b", "OKX")},
 		snapshots: map[string]SourceSnapshot{
-			"acct-a": testSourceSnapshot("acct-a", "boot-a", "0.1", "long", now),
+			"acct-a": testSourceSnapshot("acct-a", "0.1", "long", now),
 		},
 		errors: map[string]error{"acct-b": errors.New("venue unavailable")},
 	}
-	hub, _ := realtime.NewHub(32, func() time.Time { return now })
-	service, err := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
+	service, err := NewService(source, NewMemoryStore(), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +43,7 @@ func TestServiceDoesNotPromoteFailedInitialSnapshotWhenStreamConnects(t *testing
 		accounts: []Account{testAccount("acct-a", "Binance")},
 		errors:   map[string]error{"acct-a": errors.New("position snapshot unavailable")},
 	}
-	hub, _ := realtime.NewHub(8, func() time.Time { return now })
-	service, err := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
+	service, err := NewService(source, NewMemoryStore(), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,10 +51,10 @@ func TestServiceDoesNotPromoteFailedInitialSnapshotWhenStreamConnects(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(initial.Accounts) != 1 || initial.Accounts[0].Freshness != FreshnessUnavailable || initial.Accounts[0].SourceCursor != "" {
+	if len(initial.Accounts) != 1 || initial.Accounts[0].Freshness != FreshnessUnavailable {
 		t.Fatalf("initial=%+v", initial)
 	}
-	if err := service.applySourceEvent(context.Background(), "principal-a", "acct-a", SourceEvent{Kind: SourceEventConnected}); !errors.Is(err, ErrResyncRequired) {
+	if err := service.applySourceEvent(context.Background(), "principal-a", "acct-a", SourceEvent{Kind: SourceEventConnected}); err != nil {
 		t.Fatalf("connected event error=%v", err)
 	}
 	service.markAccountStale(context.Background(), "principal-a", "acct-a", "event_resync_required")
@@ -75,17 +70,16 @@ func TestServiceDoesNotPromoteFailedInitialSnapshotWhenStreamConnects(t *testing
 func TestServiceAppliesGatewayPositionEventWithStableSlotAndRevision(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	source := &fakeSource{accounts: []Account{testAccount("acct-a", "Binance")}, snapshots: map[string]SourceSnapshot{
-		"acct-a": testSourceSnapshot("acct-a", "boot-a", "0.1", "long", now),
+		"acct-a": testSourceSnapshot("acct-a", "0.1", "long", now),
 	}}
-	hub, _ := realtime.NewHub(32, func() time.Time { return now })
-	service, _ := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
+	service, _ := NewService(source, NewMemoryStore(), func() time.Time { return now })
 	first, err := service.Snapshot(context.Background(), "principal-a", Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Second)
 	err = service.applySourceEvent(context.Background(), "principal-a", "acct-a", SourceEvent{
-		Kind: SourceEventPosition, BootID: "boot-a", Sequence: 2, Cursor: "boot-a:2", ResourceVersion: 2,
+		Kind: SourceEventPosition, EventID: "position-2", ResourceVersion: 2,
 		Operation: OperationUpsert, AccountID: "acct-a", RouteID: "perp-usdt",
 		InstrumentID: "binance:live:perp:USDT:BTC-USDT", PositionSlot: "long", OccurredAt: now,
 		Position: SourcePosition{PositionSlot: "long", Side: "buy", Quantity: "0.2", EntryPrice: "70000", MarkPrice: "71000", UnrealizedPnL: "200"},
@@ -97,42 +91,31 @@ func TestServiceAppliesGatewayPositionEventWithStableSlotAndRevision(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.ProjectionRevision <= first.ProjectionRevision || second.Cursor == first.Cursor || second.Items[0].Quantity != "0.2" {
+	if second.ProjectionRevision <= first.ProjectionRevision || second.Items[0].Quantity != "0.2" {
 		t.Fatalf("first=%+v second=%+v", first, second)
 	}
 }
 
-func TestServicePublishesAccountNotificationAndAdvancesSharedCursor(t *testing.T) {
+func TestServiceIgnoresNonPositionNotificationWithoutMutatingProjection(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	source := &fakeSource{accounts: []Account{testAccount("acct-a", "Binance")}, snapshots: map[string]SourceSnapshot{
-		"acct-a": testSourceSnapshot("acct-a", "boot-a", "0.1", "long", now),
+		"acct-a": testSourceSnapshot("acct-a", "0.1", "long", now),
 	}}
-	hub, _ := realtime.NewHub(32, func() time.Time { return now })
-	service, _ := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
-	if _, err := service.Snapshot(context.Background(), "principal-a", Filter{}); err != nil {
+	service, _ := NewService(source, NewMemoryStore(), func() time.Time { return now })
+	before, err := service.Snapshot(context.Background(), "principal-a", Filter{})
+	if err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Second)
 	if err := service.applySourceEvent(context.Background(), "principal-a", "acct-a", SourceEvent{
-		Kind: SourceEventBalance, BootID: "boot-a", Sequence: 2, Cursor: "boot-a:2", ResourceVersion: 3,
-		AccountID: "acct-a", OccurredAt: now, Payload: json.RawMessage(`{"asset":"USDT"}`),
+		Kind: SourceEventBalance, EventID: "balance-2", ResourceVersion: 3,
+		AccountID: "acct-a", OccurredAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := service.Snapshot(context.Background(), "principal-a", Filter{})
-	if err != nil || len(snapshot.Accounts) != 1 || snapshot.Accounts[0].SourceCursor != "boot-a:2" {
-		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
-	}
-	events, err := hub.ReplayScoped("", "principal-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, event := range events {
-		found = found || event.Kind == "account.balance"
-	}
-	if !found {
-		t.Fatalf("account balance notification missing from realtime events: %+v", events)
+	after, err := service.Snapshot(context.Background(), "principal-a", Filter{})
+	if err != nil || len(after.Accounts) != 1 || after.ProjectionRevision != before.ProjectionRevision {
+		t.Fatalf("before=%+v after=%+v err=%v", before, after, err)
 	}
 }
 
@@ -145,8 +128,7 @@ func TestServiceHydratesLastKnownRowsAsStaleAndKeepsPrincipalsIsolated(t *testin
 		t.Fatal(err)
 	}
 	source := &fakeSource{listErr: errors.New("directory down")}
-	hub, _ := realtime.NewHub(32, func() time.Time { return now })
-	service, _ := NewService(source, store, hub, func() time.Time { return now })
+	service, _ := NewService(source, store, func() time.Time { return now })
 	snapshot, err := service.Snapshot(context.Background(), "principal-a", Filter{})
 	if err != nil {
 		t.Fatal(err)
@@ -162,16 +144,15 @@ func TestServiceHydratesLastKnownRowsAsStaleAndKeepsPrincipalsIsolated(t *testin
 func TestServiceKeepsRemovalTombstoneAgainstRegressedResourceVersion(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	source := &fakeSource{accounts: []Account{testAccount("acct-a", "Binance")}, snapshots: map[string]SourceSnapshot{
-		"acct-a": testSourceSnapshot("acct-a", "boot-a", "0.1", "long", now),
+		"acct-a": testSourceSnapshot("acct-a", "0.1", "long", now),
 	}}
-	hub, _ := realtime.NewHub(32, func() time.Time { return now })
-	service, _ := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
+	service, _ := NewService(source, NewMemoryStore(), func() time.Time { return now })
 	if _, err := service.Snapshot(context.Background(), "principal-a", Filter{}); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Second)
 	remove := SourceEvent{
-		Kind: SourceEventPosition, BootID: "boot-a", Sequence: 2, Cursor: "boot-a:2", ResourceVersion: 2,
+		Kind: SourceEventPosition, EventID: "position-remove", ResourceVersion: 2,
 		Operation: OperationRemove, AccountID: "acct-a", RouteID: "perp-usdt",
 		InstrumentID: "binance:live:perp:USDT:BTC-USDT", PositionSlot: "long", OccurredAt: now,
 		Position: SourcePosition{PositionSlot: "long", Quantity: "0", EntryPrice: "0", MarkPrice: "0", UnrealizedPnL: "0"},
@@ -180,7 +161,7 @@ func TestServiceKeepsRemovalTombstoneAgainstRegressedResourceVersion(t *testing.
 		t.Fatal(err)
 	}
 	regressed := remove
-	regressed.Sequence, regressed.Cursor, regressed.ResourceVersion, regressed.Operation = 3, "boot-a:3", 1, OperationUpsert
+	regressed.EventID, regressed.ResourceVersion, regressed.Operation = "position-regressed", 1, OperationUpsert
 	regressed.Position = SourcePosition{PositionSlot: "long", Side: "buy", Quantity: "0.1", EntryPrice: "70000", MarkPrice: "71000", UnrealizedPnL: "100"}
 	if err := service.applySourceEvent(context.Background(), "principal-a", "acct-a", regressed); err != nil {
 		t.Fatal(err)
@@ -191,13 +172,49 @@ func TestServiceKeepsRemovalTombstoneAgainstRegressedResourceVersion(t *testing.
 	}
 }
 
+func TestServiceDoesNotLetOlderRESTSnapshotOverwriteWebSocketUpdate(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	account := testAccount("acct-a", "Binance")
+	source := &fakeSource{accounts: []Account{account}, snapshots: map[string]SourceSnapshot{
+		"acct-a": testSourceSnapshot("acct-a", "0.1", "long", now),
+	}}
+	service, _ := NewService(source, NewMemoryStore(), func() time.Time { return now })
+	if _, err := service.Snapshot(context.Background(), "principal-a", Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Second)
+	if err := service.applySourceEvent(context.Background(), "principal-a", "acct-a", SourceEvent{
+		Kind: SourceEventPosition, EventID: "position-2", ResourceVersion: 2,
+		Operation: OperationUpsert, AccountID: "acct-a", RouteID: "perp-usdt",
+		InstrumentID: "binance:live:perp:USDT:BTC-USDT", PositionSlot: "long", OccurredAt: now,
+		Position: SourcePosition{PositionSlot: "long", Side: "buy", Quantity: "0.2", EntryPrice: "70000", MarkPrice: "71000", UnrealizedPnL: "200"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	older := SourceSnapshot{AccountID: "acct-a", Freshness: FreshnessLive, VerifiedAt: now.Add(-time.Second)}
+	if err := service.replaceSnapshot(context.Background(), "principal-a", account, older); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Snapshot(context.Background(), "principal-a", Filter{})
+	if err != nil || len(snapshot.Items) != 1 || snapshot.Items[0].Quantity != "0.2" {
+		t.Fatalf("older REST snapshot overwrote WebSocket state: snapshot=%+v err=%v", snapshot, err)
+	}
+	newer := SourceSnapshot{AccountID: "acct-a", Freshness: FreshnessLive, VerifiedAt: now.Add(time.Second)}
+	if err := service.replaceSnapshot(context.Background(), "principal-a", account, newer); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = service.Snapshot(context.Background(), "principal-a", Filter{})
+	if err != nil || len(snapshot.Items) != 0 {
+		t.Fatalf("newer REST absence did not remove position: snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
 func TestServicePropagatesDelayedSnapshotAsDegradedAndNotWriteReady(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
-	delayed := testSourceSnapshot("acct-a", "boot-a", "1", "net", now)
+	delayed := testSourceSnapshot("acct-a", "1", "net", now)
 	delayed.Freshness = FreshnessDelayed
 	source := &fakeSource{accounts: []Account{testAccount("acct-a", "Binance")}, snapshots: map[string]SourceSnapshot{"acct-a": delayed}}
-	hub, _ := realtime.NewHub(8, func() time.Time { return now })
-	service, _ := NewService(source, NewMemoryStore(), hub, func() time.Time { return now })
+	service, _ := NewService(source, NewMemoryStore(), func() time.Time { return now })
 	snapshot, err := service.Snapshot(context.Background(), "principal-a", Filter{})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +232,7 @@ func TestProjectSourceItemRejectsInvalidOptionalDecimals(t *testing.T) {
 		AccountID: "acct-a", RouteID: "perp-usdt", InstrumentID: "binance:live:perp:USDT:BTC-USDT", PositionSlot: "net",
 		ResourceVersion: 1, ObservedAt: now, VerifiedAt: now,
 		Position: SourcePosition{PositionSlot: "net", Side: "buy", Quantity: "1", EntryPrice: "1", MarkPrice: "1", UnrealizedPnL: "0", Leverage: OptionalDecimal{Valid: true, Value: "not-a-decimal"}},
-	}, "boot-a", 1, now)
+	}, now)
 	if err == nil {
 		t.Fatal("invalid leverage was accepted")
 	}
@@ -239,7 +256,7 @@ func (source *fakeSource) PositionSnapshot(_ context.Context, _ string, accountI
 	return source.snapshots[accountID], nil
 }
 
-func (*fakeSource) WatchAccountEvents(ctx context.Context, _, _, _ string, _ func(SourceEvent) error) error {
+func (*fakeSource) WatchAccountEvents(ctx context.Context, _, _ string, _ func(SourceEvent) error) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -251,9 +268,9 @@ func testAccount(accountID, venue string) Account {
 	}
 }
 
-func testSourceSnapshot(accountID, bootID, quantity, slot string, now time.Time) SourceSnapshot {
+func testSourceSnapshot(accountID, quantity, slot string, now time.Time) SourceSnapshot {
 	return SourceSnapshot{
-		AccountID: accountID, BootID: bootID, Sequence: 1, Cursor: bootID + ":1", Freshness: FreshnessLive, VerifiedAt: now,
+		AccountID: accountID, Freshness: FreshnessLive, VerifiedAt: now,
 		Items: []SourceItem{{
 			AccountID: accountID, RouteID: "perp-usdt", InstrumentID: "binance:live:perp:USDT:BTC-USDT",
 			PositionSlot: slot, ResourceVersion: 1, ObservedAt: now, VerifiedAt: now,

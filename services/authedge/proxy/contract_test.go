@@ -53,6 +53,9 @@ func TestTableMatchesWhatTheGatewayServes(t *testing.T) {
 	for _, route := range gatewayhttp.InternalPublicMarketRoutes() {
 		want = append(want, route.Method+" "+route.Pattern)
 	}
+	for _, route := range gatewayhttp.InternalPrivateRealtimeRoutes() {
+		want = append(want, route.Method+" "+route.Pattern)
+	}
 	sort.Strings(want)
 
 	var got []string
@@ -150,30 +153,37 @@ func TestPublicRoutesAreReads(t *testing.T) {
 	}
 }
 
-// The one socket is public at connection level. Authentication is evaluated
-// per topic so anonymous market viewers can connect while account.events is
-// rejected with AUTH_REQUIRED.
-func TestRealtimeWebSocketIsPublicAndOwnedByTrading(t *testing.T) {
+func TestRealtimeWebSocketsFollowDataOwnership(t *testing.T) {
 	t.Parallel()
-	const pattern = "GET /api/v1/realtime/ws"
-	found := false
+	want := map[string]struct {
+		upstream UpstreamName
+		public   bool
+	}{
+		"GET /api/v1/market/realtime/ws":  {Gateway, true},
+		"GET /api/v1/account/realtime/ws": {Gateway, false},
+		"GET /api/v1/realtime/ws":         {Trading, true},
+	}
+	found := make(map[string]bool)
 	for _, route := range Routes() {
-		if route.Pattern() != pattern {
+		expected, exists := want[route.Pattern()]
+		if !exists {
 			continue
 		}
-		found = true
-		if !route.Public || !route.WebSocket || route.Upstream != Trading {
-			t.Errorf("%s must be a public Trading websocket: %+v", pattern, route)
+		found[route.Pattern()] = true
+		if route.Public != expected.public || !route.WebSocket || route.Upstream != expected.upstream {
+			t.Errorf("%s has wrong ownership: %+v", route.Pattern(), route)
 		}
 	}
-	if !found {
-		t.Fatalf("%s is not in the forwarding table", pattern)
+	for pattern := range want {
+		if !found[pattern] {
+			t.Errorf("%s is not in the forwarding table", pattern)
+		}
 	}
 }
 
 // Nothing outside the trading service's public-data group is Public. Stated as a count so that a
 // Public flag landing on a route this file has never heard of still fails.
-func TestPublicRoutesAreExactlyTheElevenExpected(t *testing.T) {
+func TestPublicRoutesAreExactlyTheExpectedReads(t *testing.T) {
 	t.Parallel()
 	want := []string{
 		"GET /api/v1/candles",
@@ -182,6 +192,7 @@ func TestPublicRoutesAreExactlyTheElevenExpected(t *testing.T) {
 		"GET /api/v1/funding-board",
 		"GET /api/v1/funding-history",
 		"GET /api/v1/market-data",
+		"GET /api/v1/market/realtime/ws",
 		"GET /api/v1/products/arbitrage/opportunities",
 		"GET /api/v1/realtime/ws",
 		"GET /api/v1/system/readiness",

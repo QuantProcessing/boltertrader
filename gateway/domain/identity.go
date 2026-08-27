@@ -48,11 +48,6 @@ func (generator *IdentityGenerator) EventID() (EventID, error) {
 	return EventID(id), err
 }
 
-func (generator *IdentityGenerator) BootID() (BootID, error) {
-	id, err := generator.uuidv7()
-	return BootID(id), err
-}
-
 func (generator *IdentityGenerator) uuidv7() (string, error) {
 	generator.mu.Lock()
 	defer generator.mu.Unlock()

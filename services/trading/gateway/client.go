@@ -90,14 +90,6 @@ const (
 	// kinds of response to one limit therefore turns a healthy Gateway into an
 	// unready service the moment its catalog is no longer empty.
 	catalogResponseLimit = 8 << 20
-	// candleResponseLimit bounds one candle page. It cannot share the 64 KiB
-	// ceiling above: a bar carries two RFC 3339 timestamps and five decimal
-	// strings, which is close to 190 bytes of JSON, so the 500-bar maximum page
-	// lands near 95 KiB and would be truncated into a decode failure — reported,
-	// misleadingly, as invalid Gateway facts. One MiB is an order of magnitude
-	// above the worst case, which leaves room for venues that quote more
-	// precision than the arithmetic above assumes.
-	candleResponseLimit = 1 << 20
 	// fundingBoardResponseLimit bounds the whole cross-venue funding matrix,
 	// which is the second bulk document on this client and for the same reason
 	// as the catalog: its size tracks how many perpetuals the Gateway's ten
@@ -108,16 +100,6 @@ const (
 	// surface as a decode failure and be reported as an unavailable board, so
 	// the ceiling matches the catalog's rather than the control plane's.
 	fundingBoardResponseLimit = 8 << 20
-	// fundingHistoryResponseLimit bounds one settled-funding series. Its worst
-	// case is arithmetic rather than open-ended: the widest window the surface
-	// offers is thirty days, the shortest settlement anyone on the board runs is
-	// hourly, and a point is one timestamp, one decimal string and a small
-	// integer — under 90 bytes. Seven hundred and twenty of those is around
-	// 64 KiB, close enough to the control plane's ceiling to be truncated by it
-	// on a venue that quotes more precision, and far enough from the bulk
-	// documents above that borrowing their 8 MiB would say nothing true about
-	// this read.
-	fundingHistoryResponseLimit = 1 << 20
 	// balanceResponseLimit bounds the Gateway's advertised maximum of 500
 	// balance resources. Some venues return a long tail of legacy assets; even
 	// after the Gateway removes exact zeroes, a real multi-asset account can be
@@ -405,21 +387,6 @@ func (source MarketDataSource) Fetch(ctx context.Context, query marketdata.Query
 	return source.client.fetchMarketData(ctx, query)
 }
 
-// CandleSource adapts the client to marketdata.CandleSource. It is separate
-// from MarketDataSource for the same reason that one is separate from Client:
-// the two answer different interfaces, and a single type cannot hold both.
-type CandleSource struct{ client *Client }
-
-// Candles views the client as a candle source.
-func (client *Client) Candles() CandleSource { return CandleSource{client: client} }
-
-func (source CandleSource) FetchCandles(ctx context.Context, query marketdata.CandleQuery) (marketdata.CandlePage, error) {
-	if source.client == nil {
-		return marketdata.CandlePage{}, fmt.Errorf("Gateway candle source is unavailable")
-	}
-	return source.client.fetchCandles(ctx, query)
-}
-
 // FundingBoardSource is a compatibility view over the unified Gateway market
 // connection for hosts that still request a BoardStream from Client.
 type FundingBoardSource struct{ realtime *RealtimeMarketSource }
@@ -437,30 +404,6 @@ func (source FundingBoardSource) RunFundingBoard(ctx context.Context, replace fu
 		return fmt.Errorf("Gateway funding-board stream is unavailable")
 	}
 	return source.realtime.RunFundingBoard(ctx, replace)
-}
-
-// FundingHistorySource adapts the client to marketdata.FundingHistorySource,
-// alongside the three adapters above and for the same reason.
-type FundingHistorySource struct{ client *Client }
-
-// FundingHistory views the client as a funding-history source.
-func (client *Client) FundingHistory() FundingHistorySource {
-	return FundingHistorySource{client: client}
-}
-
-func (source FundingHistorySource) FetchFundingHistory(ctx context.Context, read marketdata.FundingHistoryRead) (marketdata.FundingHistorySeries, error) {
-	if source.client == nil {
-		return marketdata.FundingHistorySeries{}, fmt.Errorf("Gateway funding-history source is unavailable")
-	}
-	return source.client.fetchFundingHistory(ctx, read)
-}
-
-func (client *Client) VenueConnectivity(ctx context.Context) ([]tradinghttp.VenueConnectivity, error) {
-	var result readEnvelope[[]tradinghttp.VenueConnectivity]
-	if err := client.read(ctx, "/internal/v1/venues/connectivity", nil, &result); err != nil {
-		return nil, fmt.Errorf("read Gateway venue connectivity: %w", err)
-	}
-	return result.Data, nil
 }
 
 type orderIntent struct {
@@ -991,63 +934,6 @@ func (client *Client) fetchMarketData(ctx context.Context, query marketdata.Quer
 		return marketdata.Fact{}, fmt.Errorf("Gateway market-data response is invalid")
 	}
 	result.Data.ObservedAt = result.Data.ObservedAt.UTC()
-	return result.Data, nil
-}
-
-// fetchCandles reads the chart's bars from the Gateway's internal plane.
-//
-// It sends no account: the internal candle route is keyed by the instrument and
-// Gateway resolves it through its credential-free public market source. The
-// browser asks for an instrument's bars, never for one account's view of them.
-func (client *Client) fetchCandles(ctx context.Context, query marketdata.CandleQuery) (marketdata.CandlePage, error) {
-	values := url.Values{
-		"venue": {query.Venue}, "environment": {query.Environment}, "product": {query.Product},
-		"instrumentId": {query.InstrumentID}, "interval": {query.Interval},
-	}
-	// An absent limit is the Gateway's default rather than a missing argument,
-	// so a zero here means "a screenful" and must not be sent as "limit=0",
-	// which the Gateway reads as an invalid bound.
-	if query.Limit > 0 {
-		values.Set("limit", strconv.Itoa(query.Limit))
-	}
-	var result readEnvelope[marketdata.CandlePage]
-	if err := client.readLimit(ctx, "", "/internal/v1/candles", values, &result, candleResponseLimit); err != nil {
-		return marketdata.CandlePage{}, fmt.Errorf("read Gateway candles: %w", err)
-	}
-	if result.Data.Venue != query.Venue || result.Data.Environment != query.Environment ||
-		result.Data.Product != query.Product || result.Data.InstrumentID != query.InstrumentID ||
-		result.Data.Interval != query.Interval || result.Data.ObservedAt.IsZero() {
-		return marketdata.CandlePage{}, fmt.Errorf("Gateway candles response is invalid")
-	}
-	result.Data.ObservedAt = result.Data.ObservedAt.UTC()
-	for index := range result.Data.Candles {
-		result.Data.Candles[index].OpenTime = result.Data.Candles[index].OpenTime.UTC()
-		result.Data.Candles[index].CloseTime = result.Data.Candles[index].CloseTime.UTC()
-	}
-	return result.Data, nil
-}
-
-func (client *Client) fetchFundingHistory(ctx context.Context, read marketdata.FundingHistoryRead) (marketdata.FundingHistorySeries, error) {
-	values := url.Values{
-		"instrumentId": {read.InstrumentID},
-		"since":        {read.Since.UTC().Format(time.RFC3339)}, "until": {read.Until.UTC().Format(time.RFC3339)},
-	}
-	var result readEnvelope[marketdata.FundingHistorySeries]
-	if err := client.readLimit(ctx, "", "/internal/v1/funding-history", values, &result, fundingHistoryResponseLimit); err != nil {
-		var rejected readStatusError
-		if errors.As(err, &rejected) && rejected.status == http.StatusNotFound {
-			// The internal plane spends 404 on two facts. Only the code tells
-			// them apart, and a body that arrived without one is read as the
-			// narrower claim: saying "not listed" about a venue that publishes
-			// nothing costs an operator a retry, where the reverse costs them a
-			// false statement about the venue.
-			if rejected.code == "FUNDING_HISTORY_UNSUPPORTED" {
-				return marketdata.FundingHistorySeries{}, marketdata.ErrFundingHistoryUnsupported
-			}
-			return marketdata.FundingHistorySeries{}, marketdata.ErrFundingHistoryUnknownInstrument
-		}
-		return marketdata.FundingHistorySeries{}, fmt.Errorf("read Gateway funding history: %w", err)
-	}
 	return result.Data, nil
 }
 

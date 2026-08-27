@@ -374,7 +374,7 @@ function PositionsTable({
       header: t("col.side"),
       accessorFn: (position) => position.side ?? (decimalSign(position.quantity) < 0 ? "sell" : "buy"),
       cell: (context) => <PositionSide side={String(context.getValue() ?? "")} t={t} />,
-      meta: { width: "72px" },
+      meta: { width: "128px" },
     },
     {
       id: "quantity",
@@ -403,7 +403,7 @@ function PositionsTable({
       accessorFn: (position) => positionUnrealizedPnl(position, liveMark?.price, liveMark?.stale).value,
       cell: ({ row }) => {
         const pnl = positionUnrealizedPnl(row.original, liveMark?.price, liveMark?.stale);
-        return <span title={pnl.estimated ? t("portfolio.source.estimated") : undefined}>{pnl.estimated ? "≈ " : ""}<Num value={pnl.value} directional signed /></span>;
+        return <span title={pnl.estimated ? t("portfolio.source.estimated") : undefined}>{pnl.estimated ? "≈ " : ""}<Num value={pnl.value} decimals={2} directional signed /></span>;
       },
       meta: { numeric: true },
     },
@@ -449,7 +449,7 @@ function positionFreshnessLabel(value: PositionFreshness | undefined, t: Transla
 
 function PositionSide({ side, t }: { side: string; t: Translate }) {
   const sell = side.toLowerCase() === "sell" || side.toLowerCase() === "short";
-  return <span className={cn("font-medium", sell ? "text-down" : "text-up")}>{t(sell ? "ticket.side.sell" : "ticket.side.buy")}</span>;
+  return <span className={cn("whitespace-nowrap font-medium", sell ? "text-down" : "text-up")}>{t(sell ? "ticket.side.sell" : "ticket.side.buy")}</span>;
 }
 
 function positionQuantityUnit(position: AccountPosition): string | undefined {

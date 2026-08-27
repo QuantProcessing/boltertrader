@@ -11,9 +11,9 @@
 **市场数据**描述一个 instrument **正在做什么**：盘口、深度、mark price、funding。它时刻在
 变，并且从不被存储。
 
-两者穿过的是同一条边界。浏览器问 trading 服务，trading 服务问
-[gateway](exchange-gateway.md)，而只有 gateway 持有 venue client。gateway 之上的任何一层都
-不知道原生 symbol 长什么样。
+两者终止在同一条边界。浏览器经 Auth Edge 直达 [gateway](exchange-gateway.md)，而只有
+gateway 持有 venue client。Trading 消费同一批 Gateway 事实来生成业务投影，但不再充当浏览器
+代理。gateway 之上的任何一层都不知道原生 symbol 长什么样。
 
 ## 参考数据
 
@@ -21,7 +21,7 @@ Gateway 直接按每个受信 route profile 加载并刷新公开 Catalog；这�
 凭证。之后配置账户只会增加交易资格，不会增加 instrument。Gateway 还提供账户范围内的
 `/v1/rules`、`/v1/capabilities` 和 `/v1/risk-limits`。
 
-Trading 服务把界面需要的部分重新发布为 `/api/v1/catalog/venues` 与
+Gateway 通过浏览器请求适配提供 `/api/v1/catalog/venues` 与
 `/api/v1/catalog/instruments`。Instrument 标识全程使用规范的分段形式——venue、
 environment、product、可选的结算资产，然后才是规范 symbol——绝不使用某个 venue 自己的 symbol
 字符串。见[Account 与 instrument](../concepts/accounts-instruments.md)。
@@ -31,7 +31,7 @@ environment、product、可选的结算资产，然后才是规范 symbol——�
 输入身份和输出格式各自只有一套：
 
 - 浏览器或 product API 只提交 `instrumentId`，不再并列提交 `venue`、`product`、
-  `settlement` 或 `symbol`。Trading Catalog 负责解析这些事实，因此不可能在一个字段写 Binance、
+  `settlement` 或 `symbol`。Gateway Catalog 负责解析这些事实，因此不可能在一个字段写 Binance、
   另一个字段却写 OKX 合约。
 - Gateway 的公开 instrument directory 把这个 ID 映射到唯一的 route profile，以及交易所的
   `nativeId`/`nativeSymbol`。原生身份到 Gateway 为止，绝不再根据展示 symbol 猜回来。
@@ -112,10 +112,11 @@ Instrument picker、行情、K 线、资金费历史、手工下单预览、套�
 
 ## 实时更新
 
-上面两者都不由界面轮询。一条多路复用 WebSocket `/api/v1/realtime/ws` 承载全部公共与私有
-topic；Trading 自身只保持一条到 Gateway `/internal/v1/market/ws` 的连接。公共 topic 首帧
-必须是权威 snapshot；venue gap 会切换 generation，先发送 `resync_required`，再发送替换
-snapshot。只有 `account.events` 支持有界 cursor replay。
+上面两者都不由界面轮询。Gateway 的 `/api/v1/market/realtime/ws` 承载公共市场 topic，
+`/api/v1/account/realtime/ws` 承载私有变更通知；Trading 的 `/api/v1/realtime/ws` 只承载业务
+投影。最新值 topic 首帧为 snapshot；订单簿同样只走 WS，以 WebSocket 快照开始，随后接收
+原生 `delta` 或自包含 `full`。gap 时发送 `resync_required`，原生流重开后给出新快照。
+账户事件不做 cursor replay，重连后读取权威 REST 投影。
 
 ## 什么在哪里可用
 

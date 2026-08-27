@@ -33,12 +33,12 @@ type binancePerpPublicWSClient interface {
 	Connect() error
 	Close()
 	SetPostReconnect(func())
-	SubscribeIncrementOrderBook(string, string, func(*binanceperp.WsDepthEvent) error) error
+	SubscribeLimitOrderBook(string, int, string, func(*binanceperp.WsDepthEvent) error) error
 	SubscribeBookTicker(string, func(*binanceperp.WsBookTickerEvent) error) error
 	SubscribeAggTrade(string, func(*binanceperp.WsAggTradeEvent) error) error
 	SubscribeKline(string, string, func(*binanceperp.WsKlineEvent) error) error
 	SubscribeMarkPrice(string, string, func(*binanceperp.WsMarkPriceEvent) error) error
-	UnsubscribeIncrementOrderBook(string, string) error
+	UnsubscribeLimitOrderBook(string, int, string) error
 	UnsubscribeBookTicker(string) error
 	UnsubscribeAggTrade(string) error
 	UnsubscribeKline(string, string) error
@@ -206,7 +206,7 @@ func (backend *binancePublicWSBackend) StartOrderBook(
 	})
 
 	first := true
-	err = backend.ws.SubscribeLimitOrderBook(venueSymbol, 5, "100ms", func(row *binancespot.DepthEvent) error {
+	err = backend.ws.SubscribeLimitOrderBook(venueSymbol, 20, "100ms", func(row *binancespot.DepthEvent) error {
 		event, err := binanceSpotWSBookEvent(canonical, row, &first, backend.popResyncNextBook)
 		if err != nil {
 			emitBinanceWSError(callbacks, err)
@@ -222,7 +222,7 @@ func (backend *binancePublicWSBackend) StartOrderBook(
 
 	return func() error {
 		removeLifecycle()
-		if err := backend.ws.UnsubscribeLimitOrderBook(venueSymbol, 5, "100ms"); err != nil {
+		if err := backend.ws.UnsubscribeLimitOrderBook(venueSymbol, 20, "100ms"); err != nil {
 			return websocketError(backend.meta, "WatchOrderBook", exchange.KindTransport, err.Error())
 		}
 		return nil
@@ -419,8 +419,9 @@ func (backend *binancePerpPublicWSBackend) StartOrderBook(
 	removeLifecycle := backend.lifecycle.Register("book:"+venueSymbol, callbacks.Status, func() {
 		backend.markResyncNextBook()
 	})
-	err = backend.ws.SubscribeIncrementOrderBook(venueSymbol, "100ms", func(row *binanceperp.WsDepthEvent) error {
-		event, err := binancePerpWSBookEvent(canonical, row, backend.popResyncNextBook)
+	first := true
+	err = backend.ws.SubscribeLimitOrderBook(venueSymbol, 20, "100ms", func(row *binanceperp.WsDepthEvent) error {
+		event, err := binancePerpWSFullBookEvent(canonical, row, &first, backend.popResyncNextBook)
 		if err != nil {
 			emitBinanceWSError(callbacks, err)
 			return nil
@@ -434,7 +435,7 @@ func (backend *binancePerpPublicWSBackend) StartOrderBook(
 	}
 	return func() error {
 		removeLifecycle()
-		if err := backend.ws.UnsubscribeIncrementOrderBook(venueSymbol, "100ms"); err != nil {
+		if err := backend.ws.UnsubscribeLimitOrderBook(venueSymbol, 20, "100ms"); err != nil {
 			return websocketError(backend.meta, "WatchOrderBook", exchange.KindTransport, err.Error())
 		}
 		return nil
@@ -664,10 +665,11 @@ func binanceSpotWSBookEvent(
 		return exchange.BookEvent{}, binanceSpotMalformed("WatchOrderBook", err.Error())
 	}
 
-	kind := exchange.EventSnapshot
+	kind := exchange.EventFull
 	previous := ""
 	if *first {
 		*first = false
+		kind = exchange.EventSnapshot
 	}
 	resync := false
 	if popResync != nil {
@@ -686,6 +688,49 @@ func binanceSpotWSBookEvent(
 		Bids:       bids,
 		Asks:       asks,
 		Time:       observedAt,
+	}, nil
+}
+
+func binancePerpWSFullBookEvent(
+	instrument exchange.Instrument,
+	row *binanceperp.WsDepthEvent,
+	first *bool,
+	popResync func() bool,
+) (exchange.BookEvent, error) {
+	if row == nil || row.FinalUpdateID <= 0 {
+		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "invalid partial order book push")
+	}
+	if row.Symbol != instrument.Identity.NativeSymbol {
+		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "order book instrument mismatch")
+	}
+	bids, err := binancePerpWSBookLevels(row.Bids)
+	if err != nil {
+		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", err.Error())
+	}
+	asks, err := binancePerpWSBookLevels(row.Asks)
+	if err != nil {
+		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", err.Error())
+	}
+	if len(bids) == 0 || len(asks) == 0 {
+		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "partial order book must contain both sides")
+	}
+	kind := exchange.EventFull
+	if first != nil && *first {
+		*first = false
+		kind = exchange.EventSnapshot
+	}
+	resync := false
+	if popResync != nil {
+		resync = popResync()
+	}
+	ts := firstPositiveInt64(row.TransactionTime, row.EventTime)
+	observedAt := time.Now().UTC()
+	if ts > 0 {
+		observedAt = time.UnixMilli(ts).UTC()
+	}
+	return exchange.BookEvent{
+		Kind: kind, Instrument: instrument, Sequence: strconv.FormatInt(row.FinalUpdateID, 10),
+		Resync: resync, Bids: bids, Asks: asks, Time: observedAt,
 	}, nil
 }
 

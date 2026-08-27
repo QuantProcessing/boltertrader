@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/shopspring/decimal"
@@ -27,7 +28,11 @@ func TestProjectionReadsIndependentFieldsFromFactStore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	projection, err := NewProjection(store, nil, routeprofile.DefaultRegistry())
+	capabilities, capabilityErr := marketcapability.DefaultRegistry()
+	if capabilityErr != nil {
+		t.Fatal(capabilityErr)
+	}
+	projection, err := NewProjection(store, nil, routeprofile.DefaultRegistry(), capabilities)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +53,46 @@ func TestProjectionReadsIndependentFieldsFromFactStore(t *testing.T) {
 	if containsField(entry.StaleFields, "funding") || !containsField(entry.StaleFields, "mark") {
 		t.Fatalf("freshness clocks were coupled: %#v", entry.StaleFields)
 	}
+}
+
+func TestProjectionUsesNativeCadenceForMarkFreshness(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	store := markethub.NewFactStore(nil, func() time.Time { return now })
+	fact := exchange.DerivativeFact{
+		InstrumentID: "bybit:live:perp:USDT:BTC-USDT", RouteProfileID: "bybit.perp.usdt.v1",
+		Environment: exchange.EnvironmentLive,
+		Instrument:  exchange.InstrumentIdentity{Venue: exchange.VenueBybit, Product: exchange.ProductPerp, Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT"},
+		MarkPrice:   exchange.OptionalDecimal{Value: decimal.NewFromInt(77_000), Valid: true}, MarkObservedAt: now.Add(-20 * time.Second),
+	}
+	if err := store.Apply(exchange.DerivativePatch{
+		Kind: exchange.EventSnapshot, Scope: exchange.CatalogScope{Venue: exchange.VenueBybit, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"},
+		NativeFamily: marketcapability.FamilyLinear, Generation: 1, ObservedAt: now,
+		Fields: exchange.DerivativeFieldIdentity | exchange.DerivativeFieldMark, Facts: []exchange.DerivativeFact{fact},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := marketcapability.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := NewProjection(store, nil, routeprofile.DefaultRegistry(), capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection.now = func() time.Time { return now }
+	snapshot, err := projection.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, venue := range snapshot.Venues {
+		if venue.RouteProfileID == fact.RouteProfileID && len(venue.Entries) == 1 {
+			if containsField(venue.Entries[0].StaleFields, "mark") {
+				t.Fatalf("20-second Bybit mark was stale inside its 45-second cadence window: %#v", venue.Entries[0])
+			}
+			return
+		}
+	}
+	t.Fatal("Bybit funding-board row was not projected")
 }
 
 func containsField(fields []string, wanted string) bool {

@@ -43,8 +43,12 @@ func TestDerivativeOwnersMergeRoutesAtNativeFamilyBoundary(t *testing.T) {
 				t.Fatalf("Bybit physical feed projections=%d", len(call.profiles))
 			}
 		}
-		if len(call.capabilities) != 4 {
-			t.Fatalf("%s capabilities=%d", call.profiles[0].ID, len(call.capabilities))
+		wantCapabilities := 4
+		if call.profiles[0].Venue == string(exchange.VenueBinance) || call.profiles[0].Venue == string(exchange.VenueAster) {
+			wantCapabilities = 3
+		}
+		if len(call.capabilities) != wantCapabilities {
+			t.Fatalf("%s capabilities=%d want=%d", call.profiles[0].ID, len(call.capabilities), wantCapabilities)
 		}
 		family := marketcapability.NativeFamily(exchange.Venue(call.profiles[0].Venue), exchange.ProductPerp, call.profiles[0].SettlementAsset)
 		for _, capability := range call.capabilities {

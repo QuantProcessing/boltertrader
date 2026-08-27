@@ -23,7 +23,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestHandlerPositionSnapshotReturnsCompleteProjectionAndCursor(t *testing.T) {
+func TestHandlerPositionSnapshotReturnsCompleteProjection(t *testing.T) {
 	instrumentID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	spotInstrumentID := domain.InstrumentID("binance:live:spot::BTC-USDT")
 	unresolvedID := domain.InstrumentID("binance:live:perp:USDT:UNRESOLVED-USDT")
@@ -108,7 +108,7 @@ func TestHandlerPositionSnapshotReturnsCompleteProjectionAndCursor(t *testing.T)
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
 		t.Fatal(err)
 	}
-	if len(envelope.Data.Items) != 1 || envelope.Data.Items[0].InstrumentID != instrumentID || envelope.Data.Cursor == "" {
+	if len(envelope.Data.Items) != 1 || envelope.Data.Items[0].InstrumentID != instrumentID {
 		t.Fatalf("snapshot=%+v", envelope.Data)
 	}
 }

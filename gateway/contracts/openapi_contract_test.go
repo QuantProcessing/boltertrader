@@ -133,8 +133,8 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 			properties: []string{"error", "existing_command_id"},
 		},
 		"PrivateEvent": {
-			required:   []string{"account_id", "boot_id", "event_id", "kind", "occurred_at", "payload", "resource_version", "sequence"},
-			properties: []string{"account_id", "boot_id", "event_id", "kind", "occurred_at", "payload", "resource_version", "sequence"},
+			required:   []string{"account_id", "event_id", "kind", "occurred_at", "payload", "resource_version"},
+			properties: []string{"account_id", "event_id", "kind", "occurred_at", "payload", "resource_version"},
 		},
 		"BookLevel": {
 			required:   []string{"price", "quantity"},
@@ -209,8 +209,8 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 			properties: []string{"data"},
 		},
 		"PositionSnapshot": {
-			required:   []string{"account_id", "boot_id", "cursor", "freshness", "items", "sequence", "verified_at"},
-			properties: []string{"account_id", "boot_id", "cursor", "freshness", "items", "reason", "sequence", "verified_at"},
+			required:   []string{"account_id", "freshness", "items", "verified_at"},
+			properties: []string{"account_id", "freshness", "items", "reason", "verified_at"},
 		},
 		"ProjectedPosition": {
 			required:   []string{"account_id", "instrument_id", "observed_at", "position", "position_slot", "resource_version", "route_id", "verified_at"},

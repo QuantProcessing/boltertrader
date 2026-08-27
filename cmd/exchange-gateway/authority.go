@@ -189,6 +189,7 @@ type authorityMarketData struct {
 	NextFundingTime   time.Time               `json:"nextFundingTime,omitzero"`
 	FundingHistory    []authorityFundingPoint `json:"fundingHistory,omitempty"`
 	OpenInterest      string                  `json:"openInterest,omitempty"`
+	SourceSequence    string                  `json:"sourceSequence,omitempty"`
 	ObservedAt        time.Time               `json:"observedAt"`
 }
 
@@ -1794,6 +1795,7 @@ func (reads managerAuthorityReads) publicMarketData(ctx context.Context, query p
 	}
 	result.BestBid, result.BestBidSize = result.Bids[0].Price, result.Bids[0].Quantity
 	result.BestAsk, result.BestAskSize = result.Asks[0].Price, result.Asks[0].Quantity
+	result.SourceSequence = book.Sequence
 	if book.Time.IsZero() {
 		if result.ObservedAt.IsZero() {
 			result.ObservedAt = reads.clock()

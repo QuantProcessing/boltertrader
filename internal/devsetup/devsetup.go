@@ -438,20 +438,19 @@ func resolveConfig(envStackPath string) (Config, error) {
 	return config, nil
 }
 
-// resolveGatewayHTTPProxy carries an operator's local development proxy across
-// the host/container boundary. A loopback proxy is reachable from Docker
-// Desktop as host.docker.internal, not as 127.0.0.1 inside the Gateway
-// container. Credentials are deliberately rejected because .env.stack is a
-// generated configuration artifact, not a secret store.
+// resolveGatewayHTTPProxy carries an explicitly configured local development
+// proxy across the host/container boundary. It deliberately does not inherit
+// HTTP_PROXY, HTTPS_PROXY, or ALL_PROXY: those variables are commonly managed
+// by shells and VPN clients, while Gateway is a long-lived container whose
+// network path must not change because make up happened to run from one such
+// shell. Operators that really need a proxy opt in with GATEWAY_HTTP_PROXY.
+//
+// A loopback proxy is reachable from Docker Desktop as host.docker.internal,
+// not as 127.0.0.1 inside the Gateway container. Credentials are deliberately
+// rejected because .env.stack is a generated configuration artifact, not a
+// secret store.
 func resolveGatewayHTTPProxy() (string, error) {
 	raw := strings.TrimSpace(os.Getenv(gatewayHTTPProxyVar))
-	if raw == "" {
-		for _, name := range []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
-			if raw = strings.TrimSpace(os.Getenv(name)); raw != "" {
-				break
-			}
-		}
-	}
 	if raw == "" {
 		return "", nil
 	}

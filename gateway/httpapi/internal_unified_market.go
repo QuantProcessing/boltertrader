@@ -289,6 +289,8 @@ func (handler *InternalHandler) runSharedMarketTopic(ctx context.Context, subscr
 			switch message.Kind {
 			case markethub.MessageSnapshot:
 				kind = realtimewire.MessageSnapshot
+			case markethub.MessageFull:
+				kind = realtimewire.MessageFull
 			case markethub.MessageResyncRequired:
 				kind = realtimewire.MessageResyncRequired
 			}
@@ -298,13 +300,6 @@ func (handler *InternalHandler) runSharedMarketTopic(ctx context.Context, subscr
 			}
 			if dataset == exchange.DatasetBBO {
 				handler.publishWireBBO(request.InstrumentID, message)
-			} else if dataset == exchange.DatasetDepth {
-				// A live depth feed already contains the freshest executable top
-				// of book. Feed FreshBBO from the Hub's materialized snapshot so
-				// previews do not spend a REST request while the chart is open.
-				if latest, ok := handler.marketHub.Latest(key); ok {
-					handler.publishWireDepthBBO(request.InstrumentID, latest)
-				}
 			}
 			if !emit(wire) {
 				return nil
@@ -328,23 +323,6 @@ func (handler *InternalHandler) publishWireBBO(instrumentID string, message mark
 		return
 	}
 	_ = publisher.Publish(markethub.BBOQuote{InstrumentID: instrumentID, Bid: value.Bid, Ask: value.Ask, ObservedAt: message.ObservedAt, SourceSequence: message.SourceSequence})
-}
-
-func (handler *InternalHandler) publishWireDepthBBO(instrumentID string, message markethub.Message) {
-	publisher, ok := handler.freshBBO.(interface {
-		Publish(markethub.BBOQuote) error
-	})
-	if !ok || message.Kind != markethub.MessageSnapshot {
-		return
-	}
-	var value struct {
-		Bids []exchange.BookLevel `json:"bids"`
-		Asks []exchange.BookLevel `json:"asks"`
-	}
-	if json.Unmarshal(message.Data, &value) != nil || len(value.Bids) == 0 || len(value.Asks) == 0 {
-		return
-	}
-	_ = publisher.Publish(markethub.BBOQuote{InstrumentID: instrumentID, Bid: value.Bids[0], Ask: value.Asks[0], ObservedAt: message.ObservedAt, SourceSequence: message.SourceSequence})
 }
 
 type connectivityWireItem struct {

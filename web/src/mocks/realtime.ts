@@ -21,7 +21,7 @@ let nextSocketId = 0;
 let nextSubscriptionId = 0;
 
 /**
- * Browser-only implementation of the one multiplexed realtime socket.
+ * Browser-only implementation shared by the three ownership-scoped sockets.
  *
  * MSW deliberately owns HTTP only. This class mirrors the control protocol so
  * mock mode exercises the production topic manager while all public values are
@@ -102,8 +102,8 @@ class MockRealtimeSocket extends EventTarget {
 
   async #snapshot(subscriptionId: string, topic: SubscribeTopic): Promise<void> {
     try {
-      if (topic.topic === "account.events") {
-        this.#data(subscriptionId, topic.topic, "checkpoint", { cursor: "mock-account-1" });
+	  if (topic.topic === "account.events") {
+		this.#data(subscriptionId, topic.topic, "checkpoint", {});
         return;
       }
       const instrument = topic.instrumentId ? instrumentOf(topic.instrumentId) : undefined;

@@ -237,13 +237,13 @@ func TestWsMarketClient_SubscribeLimitOrderBookParsesPartialDepthPayload(t *test
 		t.Fatalf("SubscribeLimitOrderBook: %v", err)
 	}
 
-	client.CallSubscription("btcusdt@depth5@100ms", []byte(`{"lastUpdateId":123,"E":1700000000000,"T":1700000000001,"bids":[["100.1","1.5"]],"asks":[["100.2","2.5"]]}`))
+	client.CallSubscription("btcusdt@depth5@100ms", []byte(`{"e":"depthUpdate","E":1700000000000,"T":1700000000001,"s":"BTCUSDT","U":121,"u":123,"pu":120,"b":[["100.1","1.5"]],"a":[["100.2","2.5"]]}`))
 
 	if got == nil {
 		t.Fatal("expected partial depth event")
 	}
-	if got.FinalUpdateID != 123 {
-		t.Fatalf("expected final update id 123, got %d", got.FinalUpdateID)
+	if got.Symbol != "BTCUSDT" || got.FirstUpdateID != 121 || got.FinalUpdateID != 123 || got.FinalUpdateIDLast != 120 {
+		t.Fatalf("unexpected partial depth identity/sequence: %+v", got)
 	}
 	if len(got.Bids) != 1 || got.Bids[0][0] != "100.1" || got.Bids[0][1] != "1.5" {
 		t.Fatalf("unexpected bids: %#v", got.Bids)

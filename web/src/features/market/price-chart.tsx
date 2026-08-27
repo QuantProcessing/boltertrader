@@ -17,6 +17,7 @@ import { useEffect, useRef } from "react";
 
 import { CANDLE_INTERVALS, type AccountPosition, type Candle, type CandleInterval, type Instrument } from "@/api/types";
 import { Num } from "@/components/ui/num";
+import type { LiveMarkPrice } from "@/features/market/stream";
 import { readChartPalette } from "@/lib/chart-palette";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -42,6 +43,7 @@ const INITIAL_VISIBLE_BARS = 170;
 export function PriceChart({
   candles,
   liveCandle,
+  mark,
   instrument,
   positions = [],
   interval,
@@ -50,6 +52,8 @@ export function PriceChart({
   candles: Candle[] | undefined;
   /** The venue's forming bar, delivered by the public WebSocket. */
   liveCandle?: Candle | null;
+  /** Public mark-price stream used by PnL and rendered independently from the last traded candle. */
+  mark?: LiveMarkPrice | null;
   instrument: Instrument | null;
   /** Current selected-account positions; entry and venue liquidation prices are drawn. */
   positions?: AccountPosition[];
@@ -61,12 +65,14 @@ export function PriceChart({
   const priceRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const liveLineRef = useRef<IPriceLine | null>(null);
+  const markLineRef = useRef<IPriceLine | null>(null);
   const positionLinesRef = useRef(new Map<string, IPriceLine>());
   const fittedRef = useRef("");
   const t = useT();
   const latestHistory = candles?.at(-1);
   const latest = isSameOrNewerCandle(liveCandle, latestHistory) ? liveCandle : latestHistory;
   const currentLine = currentCandlePriceLine(latest);
+  const markLine = markPriceLine(mark);
   const { price, quantity } = precisionOf(instrument);
 
   // Built once. The library takes resolved colours rather than CSS variables,
@@ -154,6 +160,7 @@ export function PriceChart({
       priceRef.current = null;
       volumeRef.current = null;
       liveLineRef.current = null;
+      markLineRef.current = null;
       positionLinesRef.current.clear();
     };
   }, []);
@@ -247,6 +254,27 @@ export function PriceChart({
     if (liveLineRef.current) liveLineRef.current.applyOptions(options);
     else liveLineRef.current = series.createPriceLine(options);
   }, [currentLine?.direction, currentLine?.price]);
+
+  useEffect(() => {
+    const series = priceRef.current;
+    if (!series) return;
+    if (!markLine) {
+      if (markLineRef.current) series.removePriceLine(markLineRef.current);
+      markLineRef.current = null;
+      return;
+    }
+    const palette = readChartPalette();
+    const options = {
+      price: markLine.price,
+      color: markLine.stale ? palette.dim : palette.muted,
+      lineWidth: 1 as const,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: [t("chart.markPrice"), markLine.stale ? t("chart.position.stale") : ""].filter(Boolean).join(" · "),
+    };
+    if (markLineRef.current) markLineRef.current.applyOptions(options);
+    else markLineRef.current = series.createPriceLine(options);
+  }, [markLine?.price, markLine?.stale, t]);
 
   useEffect(() => {
     const series = priceRef.current;
@@ -354,6 +382,11 @@ export interface CurrentCandlePriceLine {
   direction: "up" | "down";
 }
 
+export interface MarkPriceLine {
+  price: number;
+  stale: boolean;
+}
+
 /** The current-price line belongs to the forming candle's closing body edge. */
 export function currentCandlePriceLine(candle: Candle | null | undefined): CurrentCandlePriceLine | null {
   if (!candle) return null;
@@ -361,6 +394,13 @@ export function currentCandlePriceLine(candle: Candle | null | undefined): Curre
   const close = Number.parseFloat(candle.close);
   if (!Number.isFinite(open) || !Number.isFinite(close)) return null;
   return { price: close, direction: close < open ? "down" : "up" };
+}
+
+/** Mark is a separate reference line; zero and malformed values remain absent. */
+export function markPriceLine(mark: Pick<LiveMarkPrice, "price" | "stale"> | null | undefined): MarkPriceLine | null {
+  const price = Number.parseFloat(mark?.price ?? "");
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return { price, stale: mark?.stale ?? false };
 }
 
 /** Position overlays exclude flat, unavailable rows and all order history by construction. */

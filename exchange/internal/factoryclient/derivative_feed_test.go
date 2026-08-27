@@ -63,6 +63,37 @@ func TestDerivativeFeedProjectsOneNativeSnapshotAcrossRoutes(t *testing.T) {
 	}
 }
 
+func TestDerivativeFeedCachesCanonicalResolutionForRealtimeDeltas(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	scope := exchange.CatalogScope{Venue: exchange.VenueBybit, Product: exchange.ProductPerp, Environment: exchange.EnvironmentLive, Settlement: "USDT"}
+	native := exchange.InstrumentIdentity{Venue: exchange.VenueBybit, Product: exchange.ProductPerp, Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT"}
+	loader := staticDerivativeLoader{snapshot: DerivativeSnapshot{SchemaVersion: 1, Scope: scope, ObservedAt: now, Entries: []DerivativeSnapshotEntry{{
+		Symbol: native.Symbol, NativeSymbol: native.NativeSymbol, BaseAsset: native.BaseAsset, QuoteAsset: native.QuoteAsset,
+		MarkPrice: exchange.OptionalDecimal{Value: decimal.NewFromInt(78_000), Valid: true}, MarkObservedAt: now,
+	}}}}
+	resolver := &countingCanonicalResolver{}
+	feed := NewDerivativeFeed(scope, []string{"bybit.perp.usdt.v1"}, "linear", loader, resolver, Settings{}).(*derivativeMarketFeed)
+	if _, err := feed.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("bootstrap resolver calls=%d want=1", resolver.calls)
+	}
+	for index := 1; index <= 3; index++ {
+		projected, err := feed.project(context.Background(), nativeDerivativePatch{
+			Kind: nativeDerivativePatchDelta, Scope: scope, ObservedAt: now.Add(time.Duration(index) * time.Second),
+			Fields: nativeDerivativeFieldMarkPrice,
+			Facts:  []nativeDerivativeFact{{Instrument: native, MarkPrice: exchange.OptionalDecimal{Value: decimal.NewFromInt(int64(78_000 + index)), Valid: true}, MarkObservedAt: now.Add(time.Duration(index) * time.Second)}},
+		})
+		if err != nil || len(projected.Facts) != 1 {
+			t.Fatalf("delta %d projected=%+v err=%v", index, projected, err)
+		}
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("realtime deltas rebuilt the catalog resolution %d times", resolver.calls)
+	}
+}
+
 type staticDerivativeLoader struct{ snapshot DerivativeSnapshot }
 
 func (loader staticDerivativeLoader) LoadDerivativeSnapshot(context.Context, exchange.CatalogScope) (DerivativeSnapshot, error) {
@@ -79,6 +110,13 @@ func (canonicalResolver) ResolveDerivativeInstrument(_ context.Context, route, n
 		InstrumentID: "bybit:live:perp:USDT:BTC-USDT", RouteProfileID: route, Environment: exchange.EnvironmentLive,
 		Instrument: exchange.InstrumentIdentity{Venue: exchange.VenueBybit, Product: exchange.ProductPerp, Symbol: "BTC-USDT", NativeSymbol: nativeSymbol, NativeID: nativeID, BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT"},
 	}, true
+}
+
+type countingCanonicalResolver struct{ calls int }
+
+func (resolver *countingCanonicalResolver) ResolveDerivativeInstrument(_ context.Context, route, nativeSymbol, nativeID string) (exchange.DerivativeFact, bool) {
+	resolver.calls++
+	return canonicalResolver{}.ResolveDerivativeInstrument(context.Background(), route, nativeSymbol, nativeID)
 }
 
 type multiRouteResolver struct{}

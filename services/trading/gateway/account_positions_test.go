@@ -31,14 +31,14 @@ func TestProjectGatewayPositionEventPreservesIdentityAndRemove(t *testing.T) {
 	}
 
 	projected, err := projectGatewayPositionEvent(gatewayPrivateEvent{
-		BootID: "boot-a", Sequence: 42, AccountID: "account-a", ResourceVersion: 9,
+		EventID: "position-42", AccountID: "account-a", ResourceVersion: 9,
 		Kind: "position", OccurredAt: occurredAt, Payload: payload,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if projected.Kind != accountpositions.SourceEventPosition || projected.Operation != accountpositions.OperationRemove ||
-		projected.Cursor != "boot-a:42" || projected.ResourceVersion != 9 || projected.PositionSlot != "short" ||
+		projected.EventID != "position-42" || projected.ResourceVersion != 9 || projected.PositionSlot != "short" ||
 		projected.Position.PositionSlot != "short" || projected.Position.Quantity != "-0.001" || projected.Reason != "position_closed" ||
 		!projected.OccurredAt.Equal(occurredAt) {
 		t.Fatalf("projected event = %+v", projected)
@@ -47,13 +47,14 @@ func TestProjectGatewayPositionEventPreservesIdentityAndRemove(t *testing.T) {
 
 func TestProjectGatewayPositionEventRequiresResnapshotOnGap(t *testing.T) {
 	projected, err := projectGatewayPositionEvent(gatewayPrivateEvent{
-		BootID: "boot-a", Sequence: 43, AccountID: "account-a", Kind: "resync_required",
-		Payload: json.RawMessage(`{"reason":"cursor_too_old"}`),
+		EventID: "resync-43", AccountID: "account-a", Kind: "resync_required",
+		OccurredAt: time.Date(2026, 8, 24, 8, 31, 30, 0, time.UTC),
+		Payload:    json.RawMessage(`{"reason":"venue_stream_gap"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projected.Kind != accountpositions.SourceEventResync || projected.Reason != "cursor_too_old" || projected.Cursor != "boot-a:43" {
+	if projected.Kind != accountpositions.SourceEventResync || projected.Reason != "venue_stream_gap" || projected.EventID != "resync-43" {
 		t.Fatalf("projected event = %+v", projected)
 	}
 }
@@ -61,13 +62,13 @@ func TestProjectGatewayPositionEventRequiresResnapshotOnGap(t *testing.T) {
 func TestProjectGatewayAccountEventPreservesNonPositionNotification(t *testing.T) {
 	payload := json.RawMessage(`{"account_id":"account-a","balance":{"asset":"USDT","available":"10"}}`)
 	projected, err := projectGatewayAccountEvent(gatewayPrivateEvent{
-		BootID: "boot-a", Sequence: 44, AccountID: "account-a", ResourceVersion: 7,
+		EventID: "balance-44", AccountID: "account-a", ResourceVersion: 7,
 		Kind: "balance", OccurredAt: time.Date(2026, 8, 24, 8, 32, 0, 0, time.UTC), Payload: payload,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projected.Kind != accountpositions.SourceEventBalance || projected.Cursor != "boot-a:44" ||
+	if projected.Kind != accountpositions.SourceEventBalance || projected.EventID != "balance-44" ||
 		projected.ResourceVersion != 7 || string(projected.Payload) != string(payload) {
 		t.Fatalf("projected account event = %+v", projected)
 	}

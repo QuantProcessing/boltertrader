@@ -2,9 +2,10 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 
 import { accountData, manual, trading } from "@/api/endpoints";
 import type { AccountBalance, AccountPositionSnapshot, Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
-import { isResumable } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
+
+import { applyOrderOverlays, applyPositionOverlays } from "./account-realtime-overlay";
 
 /* ---------------------------------------------------------------------------
  * The order path, and the ledgers it moves.
@@ -32,24 +33,23 @@ export const tradeKeys = {
   portfolioPositions: () => ["trading", "portfolio-positions"] as const,
 };
 
-let realtimeConnected = false;
-
-export function setTradeRealtimeConnected(connected: boolean): void {
-  realtimeConnected = connected;
-}
-
 export function privateFallbackInterval(): number | false {
-  return realtimeConnected ? false : 5_000;
+  // Reconciliation is deliberately periodic rather than event-triggered.
+  // Private WebSocket events update the visible entities in-place; this REST
+  // read repairs missed/de-duplicated events without coupling stream reconnects
+  // to request bursts.
+  return 60_000;
 }
 
 /**
- * All three ledgers below belong to a principal. Account events invalidate
- * their REST snapshots; polling is enabled only while realtime is unavailable.
+ * All three ledgers below belong to a principal. Account events update their
+ * client projections in-place; REST reconciles every 60 seconds regardless of
+ * stream state.
  *
  * `enabled` is what keeps a read-only visitor from asking for them. Not because
  * the answer would leak anything — the server refuses an anonymous read of
  * someone's orders whatever the browser does — but because the alternative is a
- * 401 every five seconds, forever, and a blotter whose three tabs all say
+ * 401 every minute, forever, and a blotter whose three tabs all say
  * something went wrong when nothing did.
  *
  * The gate is here rather than at the call sites so that a fourth ledger added
@@ -63,11 +63,9 @@ export function useOrders(): UseQueryResult<Command[]> {
     queryFn: ({ signal }) => manual.orders(signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    // The multiplexed account topic is the prompt path. Polling is only the
-    // continuity fallback, and tightens while an order can still change state.
-    refetchInterval: (query) =>
-      realtimeConnected ? false : query.state.data?.some((order) => isResumable(order.state)) ? 2_000 : 15_000,
+    refetchInterval: privateFallbackInterval,
     refetchOnWindowFocus: "always",
+    select: applyOrderOverlays,
   });
 }
 
@@ -104,6 +102,7 @@ export function useAccountPositions(accountId: string, instrumentId: string): Us
     meta: PRIVATE_QUERY_META,
     refetchInterval: privateFallbackInterval,
     refetchOnWindowFocus: "always",
+    select: (snapshot) => applyPositionOverlays(snapshot, { accountId, instrumentId }),
   });
 }
 

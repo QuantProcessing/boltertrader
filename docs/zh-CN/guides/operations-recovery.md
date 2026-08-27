@@ -95,12 +95,17 @@ Trading 服务的命令账本有一个显式的 `uncertain` 状态；只要 gate
 
 ## 数据流缺口
 
-Gateway 的公开流按设计没有 cursor replay。每个连接都从一份全新的权威 snapshot 开始，
-检测到缺口时发出 `resync_required` 并关闭，而不是默默跳过事件。
+Gateway 的公开流按设计没有 cursor replay。每个逻辑 topic 都从一份全新的权威 snapshot 开始。
+检测到原生缺口时发出 `resync_required`；feed owner 重连后发布新 generation 的 snapshot，
+不会中断浏览器 socket 上其他正常 topic。
 
-把这个事件当作权威：重连，取新的 snapshot。不要用你收到的那些事件去重建订单或持仓。缺口
+把这个事件当作权威：丢弃不完整的 generation，取新的 snapshot。不要用你收到的那些事件去重建订单或持仓。缺口
 意味着你手上的序列不完整，而把不完整的序列当作完整的来应用，会得到一个看起来已经结算、
 实际并没有的持仓。
+
+私有账户通知不同：它是建立在 REST 权威状态上的变更提示，不是用来重建状态的事件日志。原生
+账户流出现缺口时只把对应账户标为降级，principal 级浏览器订阅保持打开；固定 60 秒 REST
+reconciliation 会修复漏掉的实体。
 
 ## Cleanup 是有界的
 

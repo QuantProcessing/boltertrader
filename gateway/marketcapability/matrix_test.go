@@ -2,9 +2,25 @@ package marketcapability
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
+
+func TestFreshnessWindowAllowsThreeMissedNativeObservations(t *testing.T) {
+	for _, test := range []struct {
+		cadence time.Duration
+		want    time.Duration
+	}{
+		{cadence: 0, want: 5 * time.Second},
+		{cadence: time.Second, want: 5 * time.Second},
+		{cadence: 15 * time.Second, want: 45 * time.Second},
+	} {
+		if got := FreshnessWindow(exchange.MarketCapability{NominalCadence: test.cadence}); got != test.want {
+			t.Fatalf("FreshnessWindow(%s) = %s, want %s", test.cadence, got, test.want)
+		}
+	}
+}
 
 func TestMatrixIsValidAndHasNoDuplicateNativePath(t *testing.T) {
 	seen := make(map[[5]string]struct{})
@@ -66,5 +82,28 @@ func TestRegistryHotCapacityUsesNativeFamilyLimits(t *testing.T) {
 	}
 	if got := registry.HotCapacity(exchange.VenueLighter, FamilyPerpetual); got < 1000 {
 		t.Fatalf("broad-feed capacity=%d, want effectively unbounded", got)
+	}
+}
+
+func TestMatrixDoesNotInventCatalogWideOIOrRESTJoinedDepth(t *testing.T) {
+	registry, err := DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, venue := range []exchange.Venue{exchange.VenueBinance, exchange.VenueAster} {
+		if capability, resolveErr := registry.Resolve(venue, FamilyPerpetual, exchange.DatasetOpenInterest, false); resolveErr == nil {
+			t.Fatalf("%s broad OI capability unexpectedly present: %+v", venue, capability)
+		}
+	}
+	for _, venue := range []exchange.Venue{exchange.VenueHyperliquid, exchange.VenueLighter} {
+		capability, resolveErr := registry.Resolve(venue, FamilyPerpetual, exchange.DatasetOpenInterest, false)
+		if resolveErr != nil || capability.Transport != exchange.TransportWebSocket || capability.Granularity != exchange.GranularityAllMarket {
+			t.Fatalf("%s all-market OI capability=%+v err=%v", venue, capability, resolveErr)
+		}
+	}
+	for _, family := range []string{FamilySpot, FamilyUSDT0Perpetual} {
+		if capability, resolveErr := registry.Resolve(exchange.VenueNado, family, exchange.DatasetDepth, true); resolveErr == nil {
+			t.Fatalf("Nado REST-joined depth capability unexpectedly present: %+v", capability)
+		}
 	}
 }

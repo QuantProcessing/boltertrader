@@ -334,6 +334,10 @@ func (c *PrivateWSClient) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := conn.SetReadDeadline(time.Now().Add(bybitWSReadIdleTimeout)); err != nil {
+		_ = conn.Close()
+		return err
+	}
 
 	authCh := make(chan error, 1)
 	c.mu.Lock()
@@ -430,6 +434,7 @@ func (c *PrivateWSClient) pingLoop(conn *websocket.Conn) {
 		err := conn.WriteJSON(map[string]string{"op": "ping"})
 		c.writeMu.Unlock()
 		if err != nil {
+			_ = conn.Close()
 			return
 		}
 	}
@@ -442,6 +447,7 @@ func (c *PrivateWSClient) readLoop(conn *websocket.Conn, authCh chan<- error) {
 			c.handlePrivateWSConnectionLoss(conn, authCh, err)
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(bybitWSReadIdleTimeout))
 
 		var authResp struct {
 			Success bool   `json:"success"`

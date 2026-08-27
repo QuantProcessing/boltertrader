@@ -48,6 +48,7 @@ type typedSubscription[T any] struct {
 	events    *wsstream.Stream[T]
 	status    *wsstream.Stream[exchange.StreamStatusEvent]
 	errors    *wsstream.Stream[error]
+	replay    func() (T, bool)
 	closeFn   func() error
 	closeOnce sync.Once
 	closeErr  error
@@ -96,6 +97,14 @@ func (subscription *typedSubscription[T]) Errors() <-chan error {
 		return nil
 	}
 	return subscription.errors.C()
+}
+
+func (subscription *typedSubscription[T]) Replay() (T, bool) {
+	var zero T
+	if subscription == nil || subscription.closed.Load() || subscription.replay == nil {
+		return zero, false
+	}
+	return subscription.replay()
 }
 
 func (subscription *typedSubscription[T]) Close() error {
@@ -161,15 +170,19 @@ func (subscription *typedSubscription[T]) emitStatusUnchecked(status backendStat
 type websocketTopic[T any] struct {
 	mu            sync.Mutex
 	subscriptions map[string]*typedSubscription[T]
+	process       func(T) (bool, error)
+	replay        func() (T, bool)
 	stop          func() error
 	ready         chan struct{}
 	starting      bool
 	startErr      error
 }
 
-func newWebSocketTopic[T any]() *websocketTopic[T] {
+func newWebSocketTopic[T any](process func(T) (bool, error), replay func() (T, bool)) *websocketTopic[T] {
 	return &websocketTopic[T]{
 		subscriptions: make(map[string]*typedSubscription[T]),
+		process:       process,
+		replay:        replay,
 		ready:         make(chan struct{}),
 		starting:      true,
 	}
@@ -178,6 +191,14 @@ func newWebSocketTopic[T any]() *websocketTopic[T] {
 func (topic *websocketTopic[T]) add(subscription *typedSubscription[T]) {
 	topic.mu.Lock()
 	topic.subscriptions[subscription.id] = subscription
+	// Adding and replaying happen under the same topic lock used to publish
+	// native events. A late subscriber therefore observes one current WS-only
+	// snapshot before any subsequent delta from the shared physical topic.
+	if topic.replay != nil {
+		if event, ok := topic.replay(); ok {
+			subscription.emit(event)
+		}
+	}
 	topic.mu.Unlock()
 }
 
@@ -208,7 +229,27 @@ func (topic *websocketTopic[T]) count() int {
 func (topic *websocketTopic[T]) callbacks() streamCallbacks[T] {
 	return streamCallbacks[T]{
 		Event: func(event T) {
-			for _, subscription := range topic.snapshot() {
+			topic.mu.Lock()
+			emit := true
+			var err error
+			if topic.process != nil {
+				emit, err = topic.process(event)
+			}
+			subscriptions := make([]*typedSubscription[T], 0, len(topic.subscriptions))
+			for _, subscription := range topic.subscriptions {
+				subscriptions = append(subscriptions, subscription)
+			}
+			topic.mu.Unlock()
+			if err != nil {
+				for _, subscription := range subscriptions {
+					subscription.emitError(err)
+				}
+				return
+			}
+			if !emit {
+				return
+			}
+			for _, subscription := range subscriptions {
 				subscription.emit(event)
 			}
 		},
@@ -275,24 +316,9 @@ func (socket *publicWebSocket) WatchOrderBook(
 		websocketInstrumentKey(request.Instrument),
 		request,
 		socket.books,
-		func(
-			startCtx context.Context,
-			instrument exchange.Instrument,
-			callbacks streamCallbacks[exchange.BookEvent],
-		) (func() error, error) {
-			validated := callbacks
-			validated.Event = func(event exchange.BookEvent) {
-				emit, err := contract.accept(event)
-				if err != nil {
-					callbacks.Error(err)
-					return
-				}
-				if emit {
-					callbacks.Event(event)
-				}
-			}
-			return socket.backend.StartOrderBook(startCtx, instrument, validated)
-		},
+		socket.backend.StartOrderBook,
+		contract.accept,
+		contract.snapshot,
 	)
 }
 
@@ -312,6 +338,8 @@ func (socket *publicWebSocket) WatchBBO(
 		request,
 		socket.bbos,
 		socket.backend.StartBBO,
+		nil,
+		nil,
 	)
 }
 
@@ -331,6 +359,8 @@ func (socket *publicWebSocket) WatchPublicTrades(
 		request,
 		socket.trades,
 		socket.backend.StartPublicTrades,
+		nil,
+		nil,
 	)
 }
 
@@ -369,6 +399,8 @@ func (socket *publicWebSocket) WatchCandles(
 		) (func() error, error) {
 			return socket.backend.StartCandles(startCtx, instrument, request.Interval, callbacks)
 		},
+		nil,
+		nil,
 	)
 }
 
@@ -423,6 +455,8 @@ func watchWebSocketTopic[T any](
 	request exchange.WatchRequest,
 	topics map[string]*websocketTopic[T],
 	start func(context.Context, exchange.Instrument, streamCallbacks[T]) (func() error, error),
+	process func(T) (bool, error),
+	replay func() (T, bool),
 ) (exchange.Subscription[T], error) {
 	buffer := request.Options.Buffer
 	if buffer == 0 {
@@ -445,13 +479,14 @@ func watchWebSocketTopic[T any](
 	topic := topics[topicKey]
 	first := topic == nil
 	if first {
-		topic = newWebSocketTopic[T]()
+		topic = newWebSocketTopic(process, replay)
 		topics[topicKey] = topic
 	}
 	var subscription *typedSubscription[T]
 	subscription = newTypedSubscription[T](id, socket.meta, buffer, func() error {
 		return removeWebSocketTopicSubscription(socket, topicKey, id, topics)
 	})
+	subscription.replay = topic.replay
 	topic.add(subscription)
 	subscription.emitStatus(backendStatus{State: exchange.SubscriptionConnecting})
 	socket.mu.Unlock()

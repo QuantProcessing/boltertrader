@@ -81,13 +81,6 @@ func TestVenueOrderBookClassifiersPreserveWireSemantics(t *testing.T) {
 		t.Fatal("Bitget books5 accepted an incremental event")
 	}
 
-	if got := asterDepthPrevious(101, 0); got != "100" {
-		t.Fatalf("Aster first-update predecessor=%q, want 100", got)
-	}
-	if got := asterDepthPrevious(101, 99); got != "99" {
-		t.Fatalf("Aster explicit predecessor=%q, want 99", got)
-	}
-
 	nadoInstrument := exchange.Instrument{Identity: exchange.InstrumentIdentity{
 		Venue: exchange.VenueNado, Product: exchange.ProductSpot, Symbol: "BTC-USDT",
 		NativeSymbol: "BTC-USDT", NativeID: "7", BaseAsset: "BTC", QuoteAsset: "USDT",

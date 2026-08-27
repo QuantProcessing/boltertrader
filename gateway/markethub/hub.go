@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +23,11 @@ var (
 	ErrQuoteUnavailable = errors.New("QUOTE_UNAVAILABLE")
 	ErrQuoteStale       = errors.New("QUOTE_STALE")
 )
+
+// BBO updates are complete latest values, unlike an order-book delta. A liquid
+// venue can publish hundreds per second, so fanout is bounded while the Hub's
+// latest value and freshness clock still observe every native update.
+const bboFanoutMinInterval = 50 * time.Millisecond
 
 type OwnerKey struct {
 	Venue        exchange.Venue       `json:"venue"`
@@ -56,6 +61,7 @@ type MessageKind string
 const (
 	MessageSnapshot       MessageKind = "snapshot"
 	MessageDelta          MessageKind = "delta"
+	MessageFull           MessageKind = "full"
 	MessageCheckpoint     MessageKind = "checkpoint"
 	MessageResyncRequired MessageKind = "resync_required"
 )
@@ -78,6 +84,7 @@ type NativeStream struct {
 	Snapshot Message
 	Events   <-chan Message
 	Errors   <-chan error
+	Replay   func() (Message, bool)
 	Close    func() error
 }
 
@@ -89,6 +96,12 @@ type Options struct {
 	Owner            FeedOwner
 	Observer         Observer
 	IdleGrace        time.Duration
+	ReconnectMinimum time.Duration
+	ReconnectMaximum time.Duration
+	ReconnectJitter  func(time.Duration) time.Duration
+	// ReconnectBackoff is retained as a test/backward-compatible alias for a
+	// fixed reconnect delay. New production wiring should use the minimum and
+	// maximum bounds above.
 	ReconnectBackoff time.Duration
 	Now              func() time.Time
 }
@@ -106,23 +119,29 @@ type feedState struct {
 	key        SubscriptionKey
 	ctx        context.Context
 	cancel     context.CancelFunc
-	ready      chan struct{}
-	readyOnce  sync.Once
-	startErr   error
 	generation uint64
 	sequence   uint64
 	latest     Message
-	subs       map[uint64]chan Message
-	idle       *time.Timer
-	close      func() error
-	reconnects uint64
+	// lastSourceSequence is continuity metadata, not a retained order book.
+	// Depth payloads are forwarded and forgotten after fanout.
+	lastSourceSequence string
+	lastObservedAt     time.Time
+	lastFanoutAt       time.Time
+	outageNotified     bool
+	subs               map[uint64]chan Message
+	idle               *time.Timer
+	close              func() error
+	replay             func() (Message, bool)
+	reconnects         uint64
 }
 
 type Hub struct {
 	owner            FeedOwner
 	observer         Observer
 	idleGrace        time.Duration
-	reconnectBackoff time.Duration
+	reconnectMinimum time.Duration
+	reconnectMaximum time.Duration
+	reconnectJitter  func(time.Duration) time.Duration
 	now              func() time.Time
 
 	mu      sync.Mutex
@@ -138,15 +157,38 @@ func New(options Options) (*Hub, error) {
 	if options.IdleGrace <= 0 {
 		options.IdleGrace = 30 * time.Second
 	}
-	if options.ReconnectBackoff <= 0 {
-		options.ReconnectBackoff = time.Second
+	if options.ReconnectBackoff > 0 {
+		options.ReconnectMinimum = options.ReconnectBackoff
+		options.ReconnectMaximum = options.ReconnectBackoff
+	}
+	if options.ReconnectMinimum <= 0 {
+		options.ReconnectMinimum = time.Second
+	}
+	if options.ReconnectMaximum <= 0 {
+		options.ReconnectMaximum = 30 * time.Second
+	}
+	if options.ReconnectMaximum < options.ReconnectMinimum {
+		return nil, fmt.Errorf("market Hub reconnect bounds are invalid")
+	}
+	if options.ReconnectJitter == nil {
+		options.ReconnectJitter = func(base time.Duration) time.Duration {
+			// Full outages across several venues should not all reconnect on the
+			// same millisecond. Keep the jitter bounded so the configured maximum
+			// remains meaningful to operators.
+			spread := base / 5
+			if spread <= 0 {
+				return base
+			}
+			return base - spread + time.Duration(rand.Int64N(int64(2*spread)+1))
+		}
 	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
 	return &Hub{
 		owner: options.Owner, observer: options.Observer, idleGrace: options.IdleGrace,
-		reconnectBackoff: options.ReconnectBackoff, now: options.Now,
+		reconnectMinimum: options.ReconnectMinimum, reconnectMaximum: options.ReconnectMaximum,
+		reconnectJitter: options.ReconnectJitter, now: options.Now,
 		feeds: make(map[SubscriptionKey]*feedState),
 	}, nil
 }
@@ -186,7 +228,7 @@ func (hub *Hub) Subscribe(ctx context.Context, key SubscriptionKey, buffer int) 
 	state := hub.feeds[key]
 	if state == nil {
 		feedCtx, cancel := context.WithCancel(context.Background())
-		state = &feedState{key: key, ctx: feedCtx, cancel: cancel, ready: make(chan struct{}), generation: 1, subs: make(map[uint64]chan Message)}
+		state = &feedState{key: key, ctx: feedCtx, cancel: cancel, generation: 1, subs: make(map[uint64]chan Message)}
 		hub.feeds[key] = state
 		go hub.run(state)
 	}
@@ -197,27 +239,21 @@ func (hub *Hub) Subscribe(ctx context.Context, key SubscriptionKey, buffer int) 
 	hub.nextSub++
 	id := hub.nextSub
 	updates := make(chan Message, buffer)
-	ready := state.ready
-	hub.mu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-ready:
-	}
-
-	hub.mu.Lock()
-	if current := hub.feeds[key]; current != state || state.startErr != nil {
-		err := state.startErr
-		if err == nil {
-			err = ErrUnavailable
-		}
-		hub.mu.Unlock()
-		return nil, err
-	}
 	state.subs[id] = updates
 	hub.observeFactLocked(state)
-	latest := cloneMessage(state.latest)
+	// Depth is not retained by Gateway. A late subscriber receives a bounded
+	// snapshot replayed by the Exchange WS adapter while the Hub lock fences it
+	// against later deltas already queued from the same native topic.
+	latest := Message{}
+	if key.Dataset == exchange.DatasetDepth && state.replay != nil {
+		if replay, ok := state.replay(); ok {
+			latest = cloneMessage(replay)
+			latest.Kind, latest.Key = MessageSnapshot, key
+			latest.Generation, latest.Sequence = state.generation, state.sequence
+		}
+	} else if key.Dataset != exchange.DatasetDepth {
+		latest = cloneMessage(state.latest)
+	}
 	if latest.Kind != "" {
 		select {
 		case updates <- latest:
@@ -241,19 +277,26 @@ func (hub *Hub) Subscribe(ctx context.Context, key SubscriptionKey, buffer int) 
 }
 
 func (hub *Hub) run(state *feedState) {
+	backoff := hub.reconnectMinimum
 	for state.ctx.Err() == nil {
 		hub.observeFeed(state, "connecting")
 		stream, err := hub.owner.Open(state.ctx, state.key)
 		if err != nil {
-			hub.failStart(state, err)
-			return
+			if !hub.noteOutage(state, "upstream-open-failed") || !waitContext(state.ctx, hub.reconnectJitter(backoff)) {
+				return
+			}
+			backoff = nextBackoff(backoff, hub.reconnectMaximum)
+			continue
 		}
 		if stream.Close == nil || stream.Snapshot.Kind != MessageSnapshot || stream.Snapshot.ObservedAt.IsZero() {
 			if stream.Close != nil {
 				_ = stream.Close()
 			}
-			hub.failStart(state, fmt.Errorf("%w: native stream has no valid snapshot", ErrUnavailable))
-			return
+			if !hub.noteOutage(state, "invalid-upstream-snapshot") || !waitContext(state.ctx, hub.reconnectJitter(backoff)) {
+				return
+			}
+			backoff = nextBackoff(backoff, hub.reconnectMaximum)
+			continue
 		}
 		hub.mu.Lock()
 		if hub.feeds[state.key] != state || hub.closed {
@@ -262,33 +305,60 @@ func (hub *Hub) run(state *feedState) {
 			return
 		}
 		state.close = stream.Close
+		state.replay = stream.Replay
 		hub.publishLocked(state, stream.Snapshot, MessageSnapshot)
+		state.outageNotified = false
 		hub.observeFeed(state, "live")
-		state.readyOnce.Do(func() { close(state.ready) })
 		hub.mu.Unlock()
+		backoff = hub.reconnectMinimum
 
 		needsReopen := hub.consume(state, stream)
 		hub.mu.Lock()
 		closeStream := state.close
 		state.close = nil
+		state.replay = nil
 		active := hub.feeds[state.key] == state && !hub.closed && state.ctx.Err() == nil
-		if active && needsReopen {
+		if active && needsReopen && !state.outageNotified {
 			state.reconnects++
 			if hub.observer != nil {
 				hub.observer.RecordMarketGap(string(state.key.Owner.Venue), state.key.Owner.NativeFamily, string(state.key.Dataset), true)
 			}
 			state.generation++
 			state.sequence = 0
+			state.outageNotified = true
 			hub.publishLocked(state, Message{ObservedAt: hub.now().UTC(), Reason: "upstream-gap"}, MessageResyncRequired)
 		}
 		hub.mu.Unlock()
 		if closeStream != nil {
 			_ = closeStream()
 		}
-		if !active || !needsReopen || !waitContext(state.ctx, hub.reconnectBackoff) {
+		if !active || !needsReopen || !waitContext(state.ctx, hub.reconnectJitter(backoff)) {
 			return
 		}
+		backoff = nextBackoff(backoff, hub.reconnectMaximum)
 	}
+}
+
+func (hub *Hub) noteOutage(state *feedState, reason string) bool {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.feeds[state.key] != state || hub.closed || state.ctx.Err() != nil {
+		return false
+	}
+	state.reconnects++
+	hub.observeFeed(state, "unavailable")
+	if !state.outageNotified {
+		state.outageNotified = true
+		hub.publishLocked(state, Message{ObservedAt: hub.now().UTC(), Reason: reason}, MessageResyncRequired)
+	}
+	return true
+}
+
+func nextBackoff(current, maximum time.Duration) time.Duration {
+	if current >= maximum || current > maximum/2 {
+		return maximum
+	}
+	return current * 2
 }
 
 func (hub *Hub) consume(state *feedState, stream NativeStream) bool {
@@ -315,11 +385,15 @@ func (hub *Hub) consume(state *feedState, stream NativeStream) bool {
 			}
 			hub.mu.Lock()
 			if hub.feeds[state.key] == state {
-				if sourceSequenceGap(state.latest, message) {
+				kind := message.Kind
+				if kind != MessageSnapshot && kind != MessageDelta && kind != MessageFull {
+					kind = MessageDelta
+				}
+				if kind == MessageDelta && sourceSequenceGap(state.key.Dataset, state.lastSourceSequence, message) {
 					hub.mu.Unlock()
 					return true
 				}
-				hub.publishLocked(state, message, MessageDelta)
+				hub.publishLocked(state, message, kind)
 			}
 			hub.mu.Unlock()
 		case _, open := <-streamErrors:
@@ -333,18 +407,6 @@ func (hub *Hub) consume(state *feedState, stream NativeStream) bool {
 	return state.ctx.Err() == nil
 }
 
-func (hub *Hub) failStart(state *feedState, err error) {
-	hub.mu.Lock()
-	defer hub.mu.Unlock()
-	if hub.feeds[state.key] != state {
-		return
-	}
-	state.startErr = errors.Join(ErrUnavailable, err)
-	hub.observeFeed(state, "unavailable")
-	delete(hub.feeds, state.key)
-	state.readyOnce.Do(func() { close(state.ready) })
-}
-
 func (hub *Hub) publishLocked(state *feedState, source Message, kind MessageKind) {
 	state.sequence++
 	message := Message{
@@ -352,12 +414,27 @@ func (hub *Hub) publishLocked(state *feedState, source Message, kind MessageKind
 		SourceSequence: source.SourceSequence, ObservedAt: source.ObservedAt.UTC(),
 		Data: append(json.RawMessage(nil), source.Data...), Reason: source.Reason,
 	}
-	if kind == MessageSnapshot {
-		state.latest = cloneMessage(message)
-	} else if kind == MessageDelta {
-		state.latest = materializeLatest(state.latest, message)
+	if kind == MessageSnapshot || kind == MessageDelta || kind == MessageFull {
+		state.lastSourceSequence = source.SourceSequence
+		state.lastObservedAt = source.ObservedAt.UTC()
+		if state.key.Dataset != exchange.DatasetDepth {
+			if kind == MessageSnapshot || kind == MessageFull {
+				state.latest = cloneMessage(message)
+			} else {
+				state.latest = materializeLatest(state.latest, message)
+			}
+		}
 	}
 	hub.observeFactLocked(state)
+	if state.key.Dataset == exchange.DatasetBBO && kind == MessageDelta {
+		now := hub.now().UTC()
+		if !state.lastFanoutAt.IsZero() && now.Before(state.lastFanoutAt.Add(bboFanoutMinInterval)) {
+			return
+		}
+		state.lastFanoutAt = now
+	} else if kind == MessageSnapshot || kind == MessageFull {
+		state.lastFanoutAt = hub.now().UTC()
+	}
 	for id, updates := range state.subs {
 		select {
 		case updates <- cloneMessage(message):
@@ -385,35 +462,23 @@ func (hub *Hub) observeFeed(state *feedState, status string) {
 }
 
 func (hub *Hub) observeFactLocked(state *feedState) {
-	if hub == nil || hub.observer == nil || state == nil || state.latest.ObservedAt.IsZero() {
+	if hub == nil || hub.observer == nil || state == nil || state.lastObservedAt.IsZero() {
 		return
 	}
-	age := hub.now().UTC().Sub(state.latest.ObservedAt.UTC())
+	age := hub.now().UTC().Sub(state.lastObservedAt.UTC())
 	if age < 0 {
 		age = 0
 	}
 	hub.observer.SetMarketFact(string(state.key.Owner.Venue), state.key.Owner.NativeFamily, string(state.key.Dataset), age, 1)
 }
 
-// materializeLatest keeps the first message for every future consumer a full
-// snapshot. Native streams continue to deliver deltas to existing consumers;
-// only the retained in-memory state is folded here.
+// materializeLatest retains only low-frequency latest-value datasets. Depth is
+// deliberately excluded by publishLocked so Gateway never becomes an order
+// book engine merely to relay the venue stream.
 func materializeLatest(current, delta Message) Message {
 	latest := cloneMessage(delta)
 	latest.Kind = MessageSnapshot
 	switch delta.Key.Dataset {
-	case exchange.DatasetDepth:
-		var snapshot, update wireBook
-		if json.Unmarshal(current.Data, &snapshot) != nil || json.Unmarshal(delta.Data, &update) != nil {
-			return current
-		}
-		if strings.EqualFold(update.Kind, string(exchange.EventSnapshot)) {
-			snapshot.Bids, snapshot.Asks = update.Bids, update.Asks
-		} else {
-			snapshot.Bids = applyBookLevels(snapshot.Bids, update.Bids, true, delta.Key.Depth)
-			snapshot.Asks = applyBookLevels(snapshot.Asks, update.Asks, false, delta.Key.Depth)
-		}
-		latest.Data = Encode(wireBook{Bids: nonNilLevels(snapshot.Bids), Asks: nonNilLevels(snapshot.Asks)})
 	case exchange.DatasetCandle:
 		var snapshot wireCandles
 		var update wireCandleDelta
@@ -454,15 +519,15 @@ type wireBook struct {
 	Asks     []exchange.BookLevel `json:"asks"`
 }
 
-func sourceSequenceGap(current, incoming Message) bool {
-	if incoming.Key.Dataset != exchange.DatasetDepth || current.SourceSequence == "" || incoming.SourceSequence == "" {
+func sourceSequenceGap(dataset exchange.MarketDataset, previousSequence string, incoming Message) bool {
+	if dataset != exchange.DatasetDepth || previousSequence == "" || incoming.SourceSequence == "" {
 		return false
 	}
 	var update wireBook
 	if json.Unmarshal(incoming.Data, &update) != nil || update.Previous == "" {
 		return false
 	}
-	return update.Previous != current.SourceSequence
+	return update.Previous != previousSequence
 }
 
 type wireCandles struct {
@@ -475,46 +540,11 @@ type wireCandleDelta struct {
 	Candle   json.RawMessage `json:"candle"`
 }
 
-func applyBookLevels(current, updates []exchange.BookLevel, bids bool, limit int) []exchange.BookLevel {
-	levels := make(map[string]exchange.BookLevel, len(current)+len(updates))
-	for _, level := range current {
-		levels[level.Price.String()] = level
-	}
-	for _, level := range updates {
-		if level.Quantity.IsZero() {
-			delete(levels, level.Price.String())
-		} else {
-			levels[level.Price.String()] = level
-		}
-	}
-	result := make([]exchange.BookLevel, 0, len(levels))
-	for _, level := range levels {
-		result = append(result, level)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if bids {
-			return result[i].Price.GreaterThan(result[j].Price)
-		}
-		return result[i].Price.LessThan(result[j].Price)
-	})
-	if limit > 0 && len(result) > limit {
-		result = result[:limit]
-	}
-	return result
-}
-
-func nonNilLevels(levels []exchange.BookLevel) []exchange.BookLevel {
-	if levels == nil {
-		return []exchange.BookLevel{}
-	}
-	return levels
-}
-
 func (hub *Hub) Latest(key SubscriptionKey) (Message, bool) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	state := hub.feeds[key]
-	if state == nil || state.latest.Kind == "" {
+	if state == nil || key.Dataset == exchange.DatasetDepth || state.latest.Kind == "" {
 		return Message{}, false
 	}
 	return cloneMessage(state.latest), true

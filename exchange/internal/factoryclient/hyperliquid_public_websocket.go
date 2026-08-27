@@ -160,6 +160,7 @@ func (backend *hyperliquidPublicWSBackend) StartOrderBook(
 	key := websocketInstrumentKey(instrument)
 	subscription := map[string]string{"type": "l2Book", "coin": meta.nativeCoin}
 	var resyncNext atomic.Bool
+	first := true
 	removeLifecycle := backend.lifecycle.Register(
 		"book:"+key,
 		callbacks.Status,
@@ -177,6 +178,10 @@ func (backend *hyperliquidPublicWSBackend) StartOrderBook(
 			return
 		}
 		event.Resync = resyncNext.Swap(false)
+		if !first {
+			event.Kind = exchange.EventFull
+		}
+		first = false
 		callbacks.Event(event)
 	})
 	if err != nil {

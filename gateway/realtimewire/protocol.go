@@ -124,6 +124,7 @@ const (
 	MessageAck            MessageType = "ack"
 	MessageSnapshot       MessageType = "snapshot"
 	MessageDelta          MessageType = "delta"
+	MessageFull           MessageType = "full"
 	MessageCheckpoint     MessageType = "checkpoint"
 	MessageResyncRequired MessageType = "resync_required"
 	MessageError          MessageType = "error"

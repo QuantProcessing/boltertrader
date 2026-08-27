@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 )
@@ -21,22 +22,23 @@ type Board interface {
 }
 
 type Projection struct {
-	facts       *markethub.FactStore
-	profiles    map[string]routeprofile.Profile
-	history     map[string]HistoryConnector
-	now         func() time.Time
-	maxAge      time.Duration
-	fieldMaxAge map[exchange.MarketDataset]time.Duration
-	mu          sync.Mutex
-	closed      bool
+	facts        *markethub.FactStore
+	profiles     map[string]routeprofile.Profile
+	history      map[string]HistoryConnector
+	now          func() time.Time
+	maxAge       time.Duration
+	fieldMaxAge  map[exchange.MarketDataset]time.Duration
+	capabilities *marketcapability.Registry
+	mu           sync.Mutex
+	closed       bool
 }
 
-func NewProjection(facts *markethub.FactStore, histories HistoryFactory, profiles *routeprofile.Registry) (*Projection, error) {
-	if facts == nil || profiles == nil {
+func NewProjection(facts *markethub.FactStore, histories HistoryFactory, profiles *routeprofile.Registry, capabilities *marketcapability.Registry) (*Projection, error) {
+	if facts == nil || profiles == nil || capabilities == nil {
 		return nil, ErrBoardUnavailable
 	}
 	projection := &Projection{
-		facts: facts, profiles: make(map[string]routeprofile.Profile), history: make(map[string]HistoryConnector), now: time.Now, maxAge: defaultMaxAge,
+		facts: facts, profiles: make(map[string]routeprofile.Profile), history: make(map[string]HistoryConnector), now: time.Now, maxAge: defaultMaxAge, capabilities: capabilities,
 		fieldMaxAge: map[exchange.MarketDataset]time.Duration{
 			exchange.DatasetFunding: 2 * time.Minute, exchange.DatasetMark: 5 * time.Second,
 			exchange.DatasetIndex: 15 * time.Second, exchange.DatasetOpenInterest: 2 * time.Minute,
@@ -83,7 +85,7 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 		venue := VenueSnapshot{Venue: profile.Venue, Environment: string(exchange.EnvironmentLive), Product: string(profile.Product), Settlement: profile.SettlementAsset, RouteProfileID: routeID, Status: VenueUnavailable, Unavailable: true}
 		for _, fact := range byRoute[routeID] {
 			entry := derivativeBoardEntry(fact)
-			entry.StaleFields, entry.MissingFields = derivativeFactFieldState(fact, now, projection.fieldMaxAge)
+			entry.StaleFields, entry.MissingFields = derivativeFactFieldState(fact, now, projection.freshnessFor(fact))
 			if len(entry.StaleFields) > 0 {
 				venue.Stale = true
 			}
@@ -105,6 +107,22 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 	}
 	sort.Slice(result.Venues, func(i, j int) bool { return result.Venues[i].RouteProfileID < result.Venues[j].RouteProfileID })
 	return result, nil
+}
+
+func (projection *Projection) freshnessFor(fact exchange.DerivativeFact) map[exchange.MarketDataset]time.Duration {
+	result := make(map[exchange.MarketDataset]time.Duration, len(projection.fieldMaxAge))
+	for dataset, fallback := range projection.fieldMaxAge {
+		result[dataset] = fallback
+		family := marketcapability.NativeFamily(fact.Instrument.Venue, fact.Instrument.Product, fact.Instrument.SettleAsset)
+		capability, err := projection.capabilities.Resolve(fact.Instrument.Venue, family, dataset, false)
+		if err != nil {
+			continue
+		}
+		if window := marketcapability.FreshnessWindow(capability); window > result[dataset] {
+			result[dataset] = window
+		}
+	}
+	return result
 }
 
 func (projection *Projection) Subscribe(ctx context.Context) (<-chan Change, func(), error) {

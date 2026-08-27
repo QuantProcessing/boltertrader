@@ -33,7 +33,7 @@ func NewCoordinator(options Options) (*Coordinator, error) {
 		options.ReconciliationDelay = 5 * time.Second
 	}
 	if options.ReconciliationInterval <= 0 {
-		options.ReconciliationInterval = time.Second
+		options.ReconciliationInterval = 60 * time.Second
 	}
 	if options.ReconciliationLease <= 0 {
 		options.ReconciliationLease = 30 * time.Second
@@ -328,12 +328,6 @@ func (coordinator *Coordinator) ObserveVenueOrder(ctx context.Context, observati
 	updated, err := coordinator.transition(ctx, command, target, observation.Order.OrderID, "")
 	if err != nil {
 		return resultFromStored(command), err
-	}
-	if command.State == domain.StateUncertain && terminalOrderState(updated.State) {
-		report, recoveryErr := coordinator.recoverAccount(ctx, command.AccountID)
-		if recoveryErr != nil || !report.WriteReady {
-			return resultFromStored(updated), ErrRecoveryIncomplete
-		}
 	}
 	return resultFromStored(updated), nil
 }

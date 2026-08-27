@@ -58,7 +58,10 @@ type WSClient struct {
 	callbackDispatcher   *wsCallbackDispatcher
 }
 
-const websocketWriteTimeout = 2 * time.Second
+const (
+	websocketWriteTimeout = 2 * time.Second
+	websocketReadTimeout  = 90 * time.Second
+)
 
 type WsClient = WSClient
 
@@ -198,8 +201,13 @@ func validateWebSocketURL(rawURL string) error {
 }
 
 func (c *WSClient) setupPingHandlers(conn *websocket.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(websocketReadTimeout))
 	conn.SetPingHandler(func(appData string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(websocketReadTimeout))
 		return c.writeMessageOnConn(conn, websocket.PongMessage, []byte(appData))
+	})
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(websocketReadTimeout))
 	})
 }
 
@@ -223,6 +231,7 @@ func (c *WSClient) keepAlive(conn *websocket.Conn) {
 			err := c.writeMessageOnConn(conn, websocket.PongMessage, []byte{})
 			if err != nil {
 				c.Logger.Errorw("Failed to send pong", "error", err)
+				_ = conn.Close()
 				return
 			}
 		}
@@ -267,6 +276,7 @@ func (c *WSClient) readLoop(conn *websocket.Conn) {
 			}
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(websocketReadTimeout))
 
 		// Trim space
 		message = bytes.TrimSpace(message)

@@ -22,6 +22,21 @@ const (
 	FamilyUSDT0Perpetual = "usdt0-perpetual"
 )
 
+const defaultRealtimeFreshness = 5 * time.Second
+
+// FreshnessWindow converts a venue's native cadence into the amount of silence
+// a consumer may tolerate before a realtime value is no longer trustworthy.
+// Three missed observations distinguishes a delayed packet from a dead feed;
+// the floor also avoids flapping on event-driven streams whose matrix cadence
+// is intentionally unspecified.
+func FreshnessWindow(capability exchange.MarketCapability) time.Duration {
+	window := 3 * capability.NominalCadence
+	if window < defaultRealtimeFreshness {
+		return defaultRealtimeFreshness
+	}
+	return window
+}
+
 // Matrix returns a copy so callers cannot mutate global capability truth.
 func Matrix() []exchange.MarketCapability {
 	capabilities := make([]exchange.MarketCapability, 0, 96)
@@ -35,11 +50,22 @@ func Matrix() []exchange.MarketCapability {
 	}
 	addHot := func(venue exchange.Venue, family string, maxTopics int) {
 		add(venue, family, exchange.DatasetBBO, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, false, "")
-		add(venue, family, exchange.DatasetDepth, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, true, "")
+		add(venue, family, exchange.DatasetDepth, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, true, true, "")
+		add(venue, family, exchange.DatasetCandle, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, false, "")
+	}
+	addHotWithoutDepth := func(venue exchange.Venue, family string, maxTopics int) {
+		add(venue, family, exchange.DatasetBBO, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, false, "")
 		add(venue, family, exchange.DatasetCandle, exchange.TransportWebSocket, exchange.GranularitySingleInstrument, 0, maxTopics, false, false, "")
 	}
 	for _, venue := range []exchange.Venue{exchange.VenueBinance, exchange.VenueAster, exchange.VenueLighter, exchange.VenueHyperliquid, exchange.VenueGate, exchange.VenueNado, exchange.VenueBybit, exchange.VenueBitget, exchange.VenueOKX} {
-		addHot(venue, FamilySpot, 100)
+		if venue == exchange.VenueNado {
+			// Nado book_depth is delta-only and officially requires a REST
+			// MarketLiquidity join. The pure-WS browser depth contract therefore
+			// advertises it as unsupported instead of hiding that REST dependency.
+			addHotWithoutDepth(venue, FamilySpot, 100)
+		} else {
+			addHot(venue, FamilySpot, 100)
+		}
 		add(venue, FamilySpot, exchange.DatasetCatalog, exchange.TransportREST, exchange.GranularityAllMarket, time.Minute, 0, true, false, "instruments")
 	}
 
@@ -47,7 +73,6 @@ func Matrix() []exchange.MarketCapability {
 		add(venue, FamilyPerpetual, exchange.DatasetMark, exchange.TransportWebSocket, exchange.GranularityAllMarket, time.Second, 0, true, false, "")
 		add(venue, FamilyPerpetual, exchange.DatasetIndex, exchange.TransportWebSocket, exchange.GranularityAllMarket, time.Second, 0, true, false, "")
 		add(venue, FamilyPerpetual, exchange.DatasetFunding, exchange.TransportWebSocket, exchange.GranularityAllMarket, time.Second, 0, true, false, "")
-		add(venue, FamilyPerpetual, exchange.DatasetOpenInterest, exchange.TransportREST, exchange.GranularityPollOnly, time.Minute, 0, true, false, "open_interest")
 		addHot(venue, FamilyPerpetual, 1024)
 	}
 	for _, item := range []struct {
@@ -70,7 +95,7 @@ func Matrix() []exchange.MarketCapability {
 	for _, dataset := range []exchange.MarketDataset{exchange.DatasetMark, exchange.DatasetIndex, exchange.DatasetOpenInterest} {
 		add(exchange.VenueNado, FamilyUSDT0Perpetual, dataset, exchange.TransportREST, exchange.GranularityMultiSymbol, 15*time.Second, 0, true, false, "contracts")
 	}
-	addHot(exchange.VenueNado, FamilyUSDT0Perpetual, 100)
+	addHotWithoutDepth(exchange.VenueNado, FamilyUSDT0Perpetual, 100)
 
 	for _, dataset := range []exchange.MarketDataset{exchange.DatasetMark, exchange.DatasetIndex, exchange.DatasetFunding, exchange.DatasetOpenInterest} {
 		add(exchange.VenueBybit, FamilyLinear, dataset, exchange.TransportREST, exchange.GranularityAllMarket, 15*time.Second, 0, true, false, "linear_tickers")

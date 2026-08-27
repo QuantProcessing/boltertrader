@@ -376,6 +376,7 @@ export interface MarketFact {
   markPrice?: string;
   fundingRate?: string;
   openInterest?: string;
+  sourceSequence?: string;
   fundingObservedAt?: string;
   fundingTime?: string;
   nextFundingTime?: string;
@@ -666,8 +667,6 @@ export interface AccountPosition {
   freshness?: PositionFreshness;
   writeReady?: boolean;
   blockedReason?: string;
-  sourceBootId?: string;
-  sourceSequence?: number;
   resourceVersion?: number;
   observedAt?: string;
   verifiedAt?: string;
@@ -699,7 +698,6 @@ export interface PositionSettlementSummary {
 
 export interface AccountPositionSnapshot {
   projectionRevision: number;
-  cursor: string;
   verifiedAt?: string;
   summary: {
     positionCount: number;
@@ -1014,23 +1012,12 @@ export interface ArbitrageExecution {
 export interface ActivityEvent {
   eventId: string;
   sequence: number;
-  cursor: string;
   kind: string;
   productId: string | null;
   accountId: string | null;
   resourceId: string | null;
   payload: unknown;
   observedAt: string;
-}
-
-/** `realtime.Event`, as delivered over SSE. Same shape, different transport. */
-export interface RealtimeEvent {
-  eventId: string;
-  sequence: number;
-  cursor: string;
-  kind: string;
-  observedAt: string;
-  payload: unknown;
 }
 
 /* --- Accounts ------------------------------------------------------------ */

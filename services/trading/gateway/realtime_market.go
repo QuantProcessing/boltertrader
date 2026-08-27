@@ -25,6 +25,7 @@ type RealtimeMarketSource struct {
 	writeMu    sync.Mutex
 	mu         sync.Mutex
 	connection *websocket.Conn
+	heartbeat  context.CancelFunc
 	pending    map[string]*marketSubscription
 	active     map[string]*marketSubscription
 	next       uint64
@@ -161,8 +162,11 @@ func (source *RealtimeMarketSource) ensureConnected(ctx context.Context) error {
 		return fmt.Errorf("Gateway realtime market source is closed")
 	}
 	source.connection = connection
+	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
+	source.heartbeat = heartbeatCancel
 	source.mu.Unlock()
 	go source.read(connection)
+	go monitorGatewayWebSocket(heartbeatCtx, connection, gatewayWebSocketHeartbeatInterval, gatewayWebSocketHeartbeatTimeout, &source.writeMu)
 	return nil
 }
 
@@ -174,7 +178,7 @@ func (source *RealtimeMarketSource) read(connection *websocket.Conn) {
 			source.failConnection(connection, fmt.Errorf("read Gateway market stream"))
 			return
 		}
-		if source.observer != nil && (message.Type == realtimewire.MessageSnapshot || message.Type == realtimewire.MessageDelta) {
+		if source.observer != nil && (message.Type == realtimewire.MessageSnapshot || message.Type == realtimewire.MessageDelta || message.Type == realtimewire.MessageFull) {
 			source.observer.ObserveMarketMessage(message.Topic, message.ObservedAt)
 		}
 		source.mu.Lock()
@@ -259,6 +263,10 @@ func (source *RealtimeMarketSource) failConnection(connection *websocket.Conn, r
 		return
 	}
 	source.connection = nil
+	if source.heartbeat != nil {
+		source.heartbeat()
+		source.heartbeat = nil
+	}
 	for requestID, subscription := range source.pending {
 		delete(source.pending, requestID)
 		subscription.err = reason

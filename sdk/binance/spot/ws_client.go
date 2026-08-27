@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	WSBaseURL = "wss://stream.binance.com:9443/ws"
+	WSBaseURL          = "wss://stream.binance.com:9443/ws"
+	websocketReadLimit = 90 * time.Second
 )
 
 type WSClient struct {
@@ -137,12 +138,17 @@ func (c *WSClient) IsConnected() bool {
 }
 
 func (c *WSClient) setupPingHandlers(conn *websocket.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 	conn.SetPingHandler(func(appData string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 		c.Logger.Debugw("Received ping message", "data", appData)
 		c.WriteMu.Lock()
 		err := conn.WriteMessage(websocket.PongMessage, []byte(appData))
 		c.WriteMu.Unlock()
 		return err
+	})
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 	})
 }
 
@@ -164,6 +170,7 @@ func (c *WSClient) keepAlive(conn *websocket.Conn) {
 			c.WriteMu.Unlock()
 			if err != nil {
 				c.Logger.Errorw("Failed to send pong", "error", err)
+				_ = conn.Close()
 				return
 			}
 		}
@@ -202,6 +209,7 @@ func (c *WSClient) readLoop(conn *websocket.Conn) {
 			}
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 
 		// Trim space
 		message = bytes.TrimSpace(message)

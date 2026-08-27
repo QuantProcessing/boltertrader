@@ -1724,26 +1724,8 @@ func nadoWSLifecycleContext(ctx context.Context) (context.Context, context.Cance
 }
 
 func (backend *nadoSpotWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
-	product, err := backend.base.product(ctx, instrument, "WatchOrderBook")
-	if err != nil {
-		return nil, err
-	}
-	ws, err := backend.ensureMarket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	err = ws.SubscribeOrderBook(product.productID, func(book *nadosdk.OrderBook) {
-		event, err := nadoBookEvent(book, product, backend.base.meta.product, "WatchOrderBook")
-		if err != nil {
-			emitNadoWSError(callbacks, err)
-			return
-		}
-		callbacks.Event(event)
-	})
-	if err != nil {
-		return nil, backend.base.normalize("WatchOrderBook", err)
-	}
-	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribeOrderBook(product.productID) }), nil
+	return nil, websocketError(backend.base.meta, "WatchOrderBook", exchange.KindUnsupported,
+		"Nado book_depth is delta-only and requires a REST snapshot; pure WebSocket depth is unsupported")
 }
 func (backend *nadoSpotWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchBBO")

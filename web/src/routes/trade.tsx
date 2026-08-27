@@ -60,7 +60,12 @@ export function TradePage() {
   const fact = useMarketFact(query);
   const candles = useCandles(query ? { ...query, interval, limit: CHART_BARS } : null);
   const today = useCandles(query ? { ...query, interval: "1d", limit: 1 } : null);
-  const stream = usePublicMarketStreams(instrument?.instrumentId, interval, instrument?.product);
+  const restFact = fact.data?.value;
+  const stream = usePublicMarketStreams(
+    instrument?.instrumentId,
+    interval,
+    instrument?.product,
+  );
 
   // Disabling a private query does not erase a previously cached response.
   // Filter at the write surface as well so signing out cannot retain an account
@@ -76,8 +81,7 @@ export function TradePage() {
 
   const accountPositions = useAccountPositions(accountId, instrument?.instrumentId ?? "");
   const positionItems = accountPositions.data?.items ?? [];
-  useTradeRealtime(!readOnly && Boolean(accountPositions.data?.cursor), accountPositions.data?.cursor);
-  const restFact = fact.data?.value;
+  useTradeRealtime(!readOnly && Boolean(accountPositions.data));
   const marketFact = useMemo(() => {
     if (!stream.book) return restFact;
     return {
@@ -128,6 +132,7 @@ export function TradePage() {
           <PriceChart
             candles={candles.data?.value.candles}
             liveCandle={stream.candle}
+            mark={stream.mark}
             instrument={instrument}
             positions={positionItems}
             interval={interval}

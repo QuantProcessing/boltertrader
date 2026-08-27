@@ -71,7 +71,7 @@ func TestOpenAPIDocumentsImplementedFiltersPaginationBodiesAndStatuses(t *testin
 		"get /v1/bbo":                          {"query:account_id!", "query:instrument_id!"},
 		"get /v1/mark-price":                   {"query:account_id!", "query:instrument_id!"},
 		"put /v1/accounts/{account_id}/instruments/{instrument_id}/leverage": {"path:account_id!", "path:instrument_id!"},
-		"get /v1/ws": {"query:account_id!", "query:cursor", "query:kind"},
+		"get /v1/ws": {"query:account_id!", "query:kind"},
 	}
 	for key, want := range wantParameters {
 		method, path, _ := strings.Cut(key, " ")
@@ -171,8 +171,7 @@ func TestOpenAPIPrivateEventDocumentsEnvelopeAndClosedKinds(t *testing.T) {
 	privateEvent := schemas["PrivateEvent"].(map[string]any)
 	required := stringSlice(privateEvent["required"])
 	wantRequired := []string{
-		"account_id", "boot_id", "event_id", "kind", "occurred_at",
-		"payload", "resource_version", "sequence",
+		"account_id", "event_id", "kind", "occurred_at", "payload", "resource_version",
 	}
 	sort.Strings(wantRequired)
 	if !reflect.DeepEqual(required, wantRequired) {

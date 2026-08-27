@@ -52,7 +52,18 @@ export function ArbitragePairs({ accounts }: { accounts: Account[] }) {
         )
         : (
           <div className="min-h-0 flex-1 overflow-auto">
-            <table className="w-full min-w-[980px] border-collapse text-left">
+            <table className="w-full min-w-[980px] table-fixed border-collapse text-left">
+              <colgroup>
+                <col style={{ width: "13.58%" }} />
+                <col style={{ width: "12.35%" }} />
+                <col style={{ width: "12.35%" }} />
+                <col style={{ width: "12.35%" }} />
+                <col style={{ width: "8.64%" }} />
+                <col style={{ width: "9.88%" }} />
+                <col style={{ width: "9.88%" }} />
+                <col style={{ width: "12.35%" }} />
+                <col style={{ width: "8.62%" }} />
+              </colgroup>
               <PairTableHead />
               <tbody>
                 {[...pairs].sort(byUrgency).map((pair) => {

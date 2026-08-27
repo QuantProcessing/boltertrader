@@ -18,11 +18,19 @@ type FactStore struct {
 	facts      map[string]exchange.DerivativeFact
 	owners     map[string]OwnerKey
 	generation map[string]uint64
+	fields     map[string]exchange.DerivativeField
 	sequence   uint64
 	nextSub    uint64
-	subs       map[uint64]chan FactChange
+	subs       map[uint64]factSubscriber
 	observer   Observer
 	now        func() time.Time
+}
+
+type factSubscriber struct {
+	updates      chan FactChange
+	owner        *OwnerKey
+	instrumentID string
+	fields       exchange.DerivativeField
 }
 
 type FactChange struct {
@@ -38,7 +46,8 @@ func NewFactStore(observer Observer, now func() time.Time) *FactStore {
 	}
 	return &FactStore{
 		facts: make(map[string]exchange.DerivativeFact), owners: make(map[string]OwnerKey),
-		generation: make(map[string]uint64), subs: make(map[uint64]chan FactChange), observer: observer, now: now,
+		generation: make(map[string]uint64), fields: make(map[string]exchange.DerivativeField),
+		subs: make(map[uint64]factSubscriber), observer: observer, now: now,
 	}
 }
 
@@ -63,7 +72,9 @@ func (store *FactStore) Apply(patch exchange.DerivativePatch) error {
 			return fmt.Errorf("%w: derivative generation requires snapshot", ErrResyncRequired)
 		}
 		store.generation[ownerID] = patch.Generation
+		store.fields[ownerID] = 0
 	}
+	store.fields[ownerID] |= patch.Fields
 	if patch.Kind == exchange.EventSnapshot && patch.Fields.Has(exchange.DerivativeFieldIdentity) {
 		seen := make(map[string]struct{}, len(patch.Facts))
 		for _, fact := range patch.Facts {
@@ -82,20 +93,33 @@ func (store *FactStore) Apply(patch exchange.DerivativePatch) error {
 			}
 		}
 	}
+	changed := make(map[string]struct{}, len(patch.Facts))
 	for _, incoming := range patch.Facts {
 		normalizeDerivativeClocks(&incoming, patch.Fields, patch.ObservedAt)
 		current := store.facts[incoming.InstrumentID]
 		current = exchange.ApplyDerivativePatch(current, incoming, patch.Fields)
 		store.facts[incoming.InstrumentID] = current
 		store.owners[incoming.InstrumentID] = owner
+		changed[incoming.InstrumentID] = struct{}{}
 	}
 	store.sequence++
 	change := FactChange{Sequence: store.sequence, Owner: owner, Generation: patch.Generation, Fields: patch.Fields}
-	for id, updates := range store.subs {
+	for id, subscriber := range store.subs {
+		if subscriber.owner != nil && *subscriber.owner != owner {
+			continue
+		}
+		if subscriber.fields != 0 && patch.Fields&subscriber.fields == 0 {
+			continue
+		}
+		if subscriber.instrumentID != "" {
+			if _, ok := changed[subscriber.instrumentID]; !ok {
+				continue
+			}
+		}
 		select {
-		case updates <- change:
+		case subscriber.updates <- change:
 		default:
-			close(updates)
+			close(subscriber.updates)
 			delete(store.subs, id)
 		}
 	}
@@ -176,6 +200,20 @@ func (store *FactStore) Get(instrumentID string) (exchange.DerivativeFact, bool)
 }
 
 func (store *FactStore) Subscribe(ctx context.Context, buffer int) (<-chan FactChange, func(), error) {
+	return store.subscribe(ctx, nil, "", 0, buffer)
+}
+
+// SubscribeInstrument delivers only patches that can change one instrument's
+// requested fields. It prevents every per-instrument mark projection from
+// waking on every venue and every other instrument in the shared FactStore.
+func (store *FactStore) SubscribeInstrument(ctx context.Context, owner OwnerKey, instrumentID string, fields exchange.DerivativeField, buffer int) (<-chan FactChange, func(), error) {
+	if owner.Venue == "" || owner.Environment == "" || owner.NativeFamily == "" || instrumentID == "" || fields == 0 {
+		return nil, nil, ErrUnavailable
+	}
+	return store.subscribe(ctx, &owner, instrumentID, fields, buffer)
+}
+
+func (store *FactStore) subscribe(ctx context.Context, owner *OwnerKey, instrumentID string, fields exchange.DerivativeField, buffer int) (<-chan FactChange, func(), error) {
 	if store == nil || ctx == nil || ctx.Err() != nil {
 		return nil, nil, ErrUnavailable
 	}
@@ -186,7 +224,7 @@ func (store *FactStore) Subscribe(ctx context.Context, buffer int) (<-chan FactC
 	store.nextSub++
 	id := store.nextSub
 	updates := make(chan FactChange, buffer)
-	store.subs[id] = updates
+	store.subs[id] = factSubscriber{updates: updates, owner: owner, instrumentID: instrumentID, fields: fields}
 	store.mu.Unlock()
 	var once sync.Once
 	cancel := func() {
@@ -194,7 +232,7 @@ func (store *FactStore) Subscribe(ctx context.Context, buffer int) (<-chan FactC
 			store.mu.Lock()
 			if current, ok := store.subs[id]; ok {
 				delete(store.subs, id)
-				close(current)
+				close(current.updates)
 			}
 			store.mu.Unlock()
 		})
@@ -226,7 +264,7 @@ func (store *FactStore) RunMetrics(ctx context.Context, interval time.Duration) 
 				owners[owner] = struct{}{}
 			}
 			for owner := range owners {
-				store.observeLocked(owner, exchange.DerivativeFieldFunding|exchange.DerivativeFieldMark|exchange.DerivativeFieldIndex|exchange.DerivativeFieldOpenInterest|exchange.DerivativeFieldOpenInterestNotional)
+				store.observeLocked(owner, store.fields[factOwnerID(owner)])
 			}
 			store.mu.Unlock()
 		}

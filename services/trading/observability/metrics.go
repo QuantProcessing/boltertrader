@@ -49,21 +49,27 @@ func (metrics *Metrics) ObserveMarketMessage(topic realtimewire.Topic, observedA
 	if age < 0 {
 		age = 0
 	}
-	metrics.consumerLag.WithLabelValues(safeTopic(topic)).Set(age.Seconds())
+	metrics.consumerLag.WithLabelValues(safeMarketDataset(topic)).Set(age.Seconds())
 }
 
 func (metrics *Metrics) ObserveRealtimeResync(topic realtimewire.Topic) {
 	if metrics != nil {
-		metrics.resync.WithLabelValues(safeTopic(topic)).Inc()
+		metrics.resync.WithLabelValues(safeBusinessTopic(topic)).Inc()
 	}
 }
 
-func safeTopic(topic realtimewire.Topic) string {
+func safeMarketDataset(topic realtimewire.Topic) string {
 	switch topic {
-	case realtimewire.TopicOrderBook, realtimewire.TopicBBO, realtimewire.TopicCandles,
-		realtimewire.TopicMarkPrice, realtimewire.TopicFundingBoard,
-		realtimewire.TopicArbitrageOpportunities, realtimewire.TopicVenueConnectivity,
-		realtimewire.TopicAccountEvents:
+	case realtimewire.TopicMarkPrice, realtimewire.TopicFundingBoard:
+		return string(topic)
+	default:
+		return "unknown"
+	}
+}
+
+func safeBusinessTopic(topic realtimewire.Topic) string {
+	switch topic {
+	case realtimewire.TopicArbitrageOpportunities:
 		return string(topic)
 	default:
 		return "unknown"

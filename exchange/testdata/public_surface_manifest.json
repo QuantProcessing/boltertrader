@@ -1855,7 +1855,7 @@
       ],
       "tests": [
         "TestWebSocketFacetMethodSets",
-        "TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth5",
+        "TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth20",
         "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
         "TestOKXPublicWSBackendIsLazyConnectsOnceAndUsesBooks5",
         "TestOKXPublicWSBackendSurfacesRawDecodeErrorsForEveryPublicStream",
@@ -4173,14 +4173,14 @@
     {
       "id": "exchange.DerivativeHotsetFeed",
       "kind": "interface",
-      "coverage": "contract",
-      "tests": ["TestBinanceHotOpenInterestSelectsOnlyAdmittedSymbols"]
+      "coverage": "compile",
+      "tests": ["TestPublicDerivativeFeedConstruction"]
     },
     {
       "id": "exchange.DerivativeHotsetFeed.SetHotInstrument",
       "kind": "interface_method",
-      "coverage": "contract",
-      "tests": ["TestBinanceHotOpenInterestSelectsOnlyAdmittedSymbols"]
+      "coverage": "compile",
+      "tests": ["TestPublicDerivativeFeedConstruction"]
     },
     {
       "id": "exchange.DerivativeInstrumentResolver",
@@ -4651,6 +4651,14 @@
       "coverage": "contract",
       "tests": [
         "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.EventFull",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestPublicWebSocketReplaysMaterializedBookWithoutSecondNativeTopic"
       ]
     },
     {
@@ -6083,6 +6091,22 @@
       "coverage": "contract",
       "tests": [
         "TestRESTPageRequestShapesRemainBoundedAndTyped"
+      ]
+    },
+    {
+      "id": "exchange.ReplaySubscription",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestPublicWebSocketReplaysMaterializedBookWithoutSecondNativeTopic"
+      ]
+    },
+    {
+      "id": "exchange.ReplaySubscription.Replay",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestPublicWebSocketReplaysMaterializedBookWithoutSecondNativeTopic"
       ]
     },
     {

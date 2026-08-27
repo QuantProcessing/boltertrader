@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -38,7 +37,6 @@ const (
 	ReasonExactLookupUnavailable = "exact_lookup_unavailable"
 	ReasonManagerClosed          = "manager_closed"
 	ReasonPrivateStreamGap       = "private_stream_gap"
-	ReasonPrivateStreamStarting  = "private_stream_starting"
 )
 
 type Options struct {
@@ -174,17 +172,12 @@ type Manager struct {
 	requirePublicConnectors bool
 	observerMu              sync.RWMutex
 	runtimeObserver         RuntimeAccountObserver
-	streamSupervision       atomic.Bool
 }
 
 type entry struct {
-	resource            Resource
-	capability          capability.Row
-	handle              clientHandle
-	privateStreamReady  bool
-	privateStreamReason string
-	privateSnapshotID   string
-	privateSequence     uint64
+	resource   Resource
+	capability capability.Row
+	handle     clientHandle
 }
 
 type clientHandle interface {
@@ -260,8 +253,7 @@ func newManager(ctx context.Context, accounts []config.AccountConfig, options Op
 				AccountID: accountID, Venue: scope.Venue, Product: scope.Product,
 				Environment: scope.Environment, Settlement: scope.Settlement,
 			},
-			capability:         row,
-			privateStreamReady: true,
+			capability: row,
 		}
 		manager.order = append(manager.order, accountID)
 	}
@@ -520,211 +512,6 @@ func (manager *Manager) Capabilities(accountID domain.AccountID) ([]capability.R
 	return rows, nil
 }
 
-func (manager *Manager) SetPrivateStreamState(accountID domain.AccountID, ready bool, reason string) error {
-	if err := accountID.Validate(); err != nil {
-		return err
-	}
-	if ready && reason != "" {
-		return fmt.Errorf("ready private stream cannot have a reason")
-	}
-	if !ready && strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("private stream reason is required")
-	}
-	manager.mu.Lock()
-	if manager.closed {
-		manager.mu.Unlock()
-		return ErrManagerClosed
-	}
-	entry, ok := manager.entries[accountID]
-	if ok {
-		setPrivateStreamState(
-			&entry.privateStreamReady, &entry.privateStreamReason,
-			&entry.privateSnapshotID, &entry.privateSequence,
-			ready, reason,
-		)
-		manager.mu.Unlock()
-		return nil
-	}
-	manager.mu.Unlock()
-
-	manager.groupMu.Lock()
-	defer manager.groupMu.Unlock()
-	runtime := manager.groups[accountID]
-	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil {
-		return ErrUnknownAccount
-	}
-	resetPrivateStreamRouteStates(runtime.activeGroup, ready, reason)
-	return nil
-}
-
-func (manager *Manager) SetPrivateStreamRouteState(fence domain.WriteFence, ready bool, reason string) error {
-	if err := fence.Validate(); err != nil {
-		return err
-	}
-	if ready && reason != "" {
-		return fmt.Errorf("ready private stream cannot have a reason")
-	}
-	if !ready && strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("private stream reason is required")
-	}
-	manager.mu.RLock()
-	closed := manager.closed
-	manager.mu.RUnlock()
-	if closed {
-		return ErrManagerClosed
-	}
-
-	manager.groupMu.Lock()
-	defer manager.groupMu.Unlock()
-	group, state, err := manager.activePrivateStreamRouteLocked(fence)
-	if err != nil {
-		return err
-	}
-	setPrivateStreamRouteState(&state, ready, reason)
-	group.privateStreams[fence.RouteID] = state
-	return nil
-}
-
-func setPrivateStreamState(readyState *bool, currentReason *string, snapshotID *string, sequence *uint64, ready bool, reason string) {
-	*readyState = false
-	if ready {
-		*currentReason = ReasonPrivateStreamStarting
-	} else {
-		*currentReason = reason
-	}
-	*snapshotID = ""
-	*sequence = 0
-}
-
-func (manager *Manager) ObservePrivateStreamBarrier(accountID domain.AccountID, snapshotID string, sequence uint64) error {
-	if err := accountID.Validate(); err != nil {
-		return err
-	}
-	if err := validatePrivateStreamBarrier(snapshotID, sequence); err != nil {
-		return err
-	}
-	manager.mu.Lock()
-	if manager.closed {
-		manager.mu.Unlock()
-		return ErrManagerClosed
-	}
-	entry, ok := manager.entries[accountID]
-	if ok {
-		err := observePrivateStreamBarrier(
-			&entry.privateStreamReady, &entry.privateStreamReason,
-			&entry.privateSnapshotID, &entry.privateSequence,
-			snapshotID, sequence,
-		)
-		manager.mu.Unlock()
-		return err
-	}
-	manager.mu.Unlock()
-
-	manager.groupMu.Lock()
-	defer manager.groupMu.Unlock()
-	runtime := manager.groups[accountID]
-	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil {
-		return ErrUnknownAccount
-	}
-	for routeID, state := range runtime.activeGroup.privateStreams {
-		if err := observePrivateStreamRouteBarrier(&state, snapshotID, sequence); err != nil {
-			return err
-		}
-		runtime.activeGroup.privateStreams[routeID] = state
-	}
-	return nil
-}
-
-func (manager *Manager) ObservePrivateStreamRouteBarrier(fence domain.WriteFence, snapshotID string, sequence uint64) error {
-	if err := fence.Validate(); err != nil {
-		return err
-	}
-	if err := validatePrivateStreamBarrier(snapshotID, sequence); err != nil {
-		return err
-	}
-	manager.mu.RLock()
-	closed := manager.closed
-	manager.mu.RUnlock()
-	if closed {
-		return ErrManagerClosed
-	}
-
-	manager.groupMu.Lock()
-	defer manager.groupMu.Unlock()
-	group, state, err := manager.activePrivateStreamRouteLocked(fence)
-	if err != nil {
-		return err
-	}
-	if err := observePrivateStreamRouteBarrier(&state, snapshotID, sequence); err != nil {
-		return err
-	}
-	group.privateStreams[fence.RouteID] = state
-	return nil
-}
-
-func (manager *Manager) activePrivateStreamRouteLocked(fence domain.WriteFence) (*RuntimeGroup, privateStreamState, error) {
-	runtime := manager.groups[fence.AccountID]
-	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil ||
-		runtime.activeGroup.Snapshot.Fence != fence.AccountFence || runtime.active.Load().Fence != fence.AccountFence {
-		return nil, privateStreamState{}, ErrStaleWriteFence
-	}
-	state, ok := runtime.activeGroup.privateStreams[fence.RouteID]
-	if !ok {
-		return nil, privateStreamState{}, ErrStaleWriteFence
-	}
-	return runtime.activeGroup, state, nil
-}
-
-func observePrivateStreamBarrier(ready *bool, reason *string, currentSnapshotID *string, currentSequence *uint64, snapshotID string, sequence uint64) error {
-	if *reason != ReasonPrivateStreamStarting {
-		return fmt.Errorf("private stream barrier is not expected")
-	}
-	*currentSnapshotID = snapshotID
-	*currentSequence = sequence
-	*ready = true
-	*reason = ""
-	return nil
-}
-
-func resetPrivateStreamRouteStates(group *RuntimeGroup, ready bool, reason string) {
-	if group == nil {
-		return
-	}
-	for routeID, state := range group.privateStreams {
-		setPrivateStreamRouteState(&state, ready, reason)
-		group.privateStreams[routeID] = state
-	}
-}
-
-func setPrivateStreamRouteState(state *privateStreamState, ready bool, reason string) {
-	state.ready = false
-	if ready {
-		state.reason = ReasonPrivateStreamStarting
-	} else {
-		state.reason = reason
-	}
-	state.snapshotID = ""
-	state.sequence = 0
-}
-
-func observePrivateStreamRouteBarrier(state *privateStreamState, snapshotID string, sequence uint64) error {
-	if state.reason != ReasonPrivateStreamStarting {
-		return fmt.Errorf("private stream barrier is not expected")
-	}
-	state.snapshotID = snapshotID
-	state.sequence = sequence
-	state.ready = true
-	state.reason = ""
-	return nil
-}
-
-func validatePrivateStreamBarrier(snapshotID string, sequence uint64) error {
-	if snapshotID == "" || snapshotID != strings.TrimSpace(snapshotID) || len(snapshotID) > 256 || strings.ContainsAny(snapshotID, "\n\r\t") || sequence == 0 {
-		return fmt.Errorf("private stream barrier is invalid")
-	}
-	return nil
-}
-
 func (manager *Manager) Status(accountID domain.AccountID) (Status, error) {
 	manager.mu.RLock()
 	_, static := manager.entries[accountID]
@@ -740,9 +527,8 @@ func (manager *Manager) Status(accountID domain.AccountID) (Status, error) {
 	return manager.dynamicStatus(accountID, true)
 }
 
-// RecoveryStatus reports whether the account can perform exact reconciliation
-// while deliberately ignoring private-stream continuity. New writes continue
-// to use Status and therefore remain blocked until the stream is restored.
+// RecoveryStatus reports whether the account can perform exact reconciliation.
+// Private-stream continuity is deliberately independent from write admission.
 func (manager *Manager) RecoveryStatus(accountID domain.AccountID) (Status, error) {
 	manager.mu.RLock()
 	_, static := manager.entries[accountID]
@@ -758,7 +544,7 @@ func (manager *Manager) RecoveryStatus(accountID domain.AccountID) (Status, erro
 	return manager.dynamicStatus(accountID, false)
 }
 
-func (manager *Manager) statusLocked(accountID domain.AccountID, requirePrivateStream bool) (Status, error) {
+func (manager *Manager) statusLocked(accountID domain.AccountID, _ bool) (Status, error) {
 	entry, ok := manager.entries[accountID]
 	if !ok {
 		return Status{}, ErrUnknownAccount
@@ -777,10 +563,6 @@ func (manager *Manager) statusLocked(accountID domain.AccountID, requirePrivateS
 		return status, nil
 	}
 	status.ReadReady = true
-	if requirePrivateStream && !entry.privateStreamReady {
-		status.Reason = entry.privateStreamReason
-		return status, nil
-	}
 	// No row is promoted for writes until exact reconciliation evidence exists.
 	status.WriteReady = entry.capability.WriteReadyDefault
 	if !status.WriteReady {
@@ -1036,11 +818,6 @@ func (manager *Manager) dynamicRouteStatus(access activeRouteAccess, enforceWrit
 		status.ReadReady = true
 		row, promoted := routeCapability(access.venue, access.definition.Product, access.definition.SettlementAsset)
 		switch {
-		case enforceWritePolicy && !access.privateStreamReady:
-			status.Reason = access.privateStreamReason
-			if status.Reason == "" {
-				status.Reason = ReasonPrivateStreamStarting
-			}
 		case !promoted || !row.WriteReadyDefault:
 			status.Reason = ReasonCapabilityNotPromoted
 		case !clientRoute.ExactLookupReady():

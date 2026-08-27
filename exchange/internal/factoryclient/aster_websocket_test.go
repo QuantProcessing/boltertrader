@@ -213,8 +213,8 @@ func (fixture *asterWSFixture) serveAsterAccountWS(conn *websocket.Conn, path st
 func asterMarketPayload(t *testing.T, stream string) []byte {
 	t.Helper()
 	switch stream {
-	case "asterusdt@depth":
-		return asterReadFixture(t, "sdk/aster/spot/testdata/v3/depth_stream.json")
+	case "asterusdt@depth20@100ms":
+		return []byte(`{"e":"depthUpdate","E":1783641600010,"T":1783641600009,"s":"ASTERUSDT","U":2027025,"u":2027026,"pu":2027024,"b":[["1.2499","151.00"]],"a":[["1.2501","120.00"]]}`)
 	case "asterusdt@bookTicker":
 		return asterReadFixture(t, "sdk/aster/spot/testdata/v3/book_ticker_stream.json")
 	case "asterusdt@aggTrade":
@@ -284,8 +284,8 @@ func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, 
 	if err != nil {
 		t.Fatalf("Aster spot WatchOrderBook: %v", err)
 	}
-	fixture.requireFrame("SUBSCRIBE", "asterusdt@depth")
-	fixture.requireFrame("WRITE", "asterusdt@depth")
+	fixture.requireFrame("SUBSCRIBE", "asterusdt@depth20@100ms")
+	fixture.requireFrame("WRITE", "asterusdt@depth20@100ms")
 	requireSubscriptionEvent(t, book.Events(), "Aster spot book")
 	_ = book.Close()
 
@@ -351,7 +351,7 @@ func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, 
 	if err != nil {
 		t.Fatalf("Aster perp WatchOrderBook: %v", err)
 	}
-	fixture.requireFrame("SUBSCRIBE", "asterusdt@depth")
+	fixture.requireFrame("SUBSCRIBE", "asterusdt@depth20@100ms")
 	requireSubscriptionEvent(t, book.Events(), "Aster perp book")
 	_ = book.Close()
 

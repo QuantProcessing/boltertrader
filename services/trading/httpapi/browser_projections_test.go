@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
-	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
 
 type runtimeProjectionFixture struct {
@@ -71,11 +69,7 @@ func (fixture *commandProjectionFixture) ListOwned(_ context.Context, principal 
 
 func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	now := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
-	hub, err := realtime.NewHub(16, func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	activity, err := NewActivityLog(16, func() time.Time { return now }, hub)
+	activity, err := NewActivityLog(16, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,17 +151,13 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 			t.Fatalf("unscoped command projection call=%+v", call)
 		}
 	}
-	replayed, err := hub.ReplayScoped("", testPrincipalID)
-	if err != nil || len(replayed) != 1 {
-		t.Fatalf("SSE replay=%+v err=%v", replayed, err)
+	principalEvents, err := activity.ListActivity(context.Background(), testPrincipalID, ActivityQuery{})
+	if err != nil || len(principalEvents) != 1 || principalEvents[0].Kind != "account.runtime.updated" {
+		t.Fatalf("principal activity=%+v err=%v", principalEvents, err)
 	}
-	otherReplay, err := hub.ReplayScoped("", "other-principal")
-	if err != nil || len(otherReplay) != 1 || otherReplay[0].EventID == replayed[0].EventID {
-		t.Fatalf("other-principal SSE replay=%+v err=%v", otherReplay, err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(replayed[0].Payload, &payload); err != nil || payload["accountId"] != "account-a" {
-		t.Fatalf("SSE activity payload=%s err=%v", replayed[0].Payload, err)
+	otherEvents, err := activity.ListActivity(context.Background(), "other-principal", ActivityQuery{})
+	if err != nil || len(otherEvents) != 1 || otherEvents[0].EventID == principalEvents[0].EventID {
+		t.Fatalf("other-principal activity=%+v err=%v", otherEvents, err)
 	}
 }
 
@@ -187,7 +177,7 @@ func TestBrowserProjectionRoutesRejectUnknownFilters(t *testing.T) {
 
 func TestBrowserPortfolioPositionsExposeGlobalAndExactScopeFromOneProjection(t *testing.T) {
 	fixture := &portfolioPositionFixture{snapshot: accountpositions.Snapshot{
-		ProjectionRevision: 7, Cursor: "AAAAAAAAAAc", Summary: accountpositions.Summary{PositionCount: 1, AccountCount: 1},
+		ProjectionRevision: 7, Summary: accountpositions.Summary{PositionCount: 1, AccountCount: 1},
 		Items: []accountpositions.Item{{
 			Key:          accountpositions.Key{AccountID: "account-a", RouteID: "perp-usdt", InstrumentID: "binance:live:perp:USDT:BTC-USDT", PositionSlot: "long"},
 			AccountLabel: "Main", Venue: "binance", Product: "perp", SettlementAsset: "USDT", Symbol: "BTC-USDT",
@@ -226,8 +216,7 @@ func TestBrowserPortfolioPositionsExposeGlobalAndExactScopeFromOneProjection(t *
 
 func mustActivityLog(t *testing.T) *ActivityLog {
 	t.Helper()
-	hub, _ := realtime.NewHub(4, time.Now)
-	log, err := NewActivityLog(4, time.Now, hub)
+	log, err := NewActivityLog(4, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

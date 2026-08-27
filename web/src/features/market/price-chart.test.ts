@@ -1,7 +1,7 @@
 import { MismatchDirection } from "lightweight-charts";
 import { describe, expect, it } from "vitest";
 
-import { crosshairWhitespaceDirection, currentCandlePriceLine, positionLineDescriptors } from "@/features/market/price-chart";
+import { crosshairWhitespaceDirection, currentCandlePriceLine, markPriceLine, positionLineDescriptors } from "@/features/market/price-chart";
 
 describe("current candle price line", () => {
   const candle = (open: string, close: string) => ({
@@ -25,6 +25,22 @@ describe("current candle price line", () => {
 
   it("rejects invalid candle values", () => {
     expect(currentCandlePriceLine(candle("bad", "97"))).toBeNull();
+  });
+});
+
+describe("mark-price overlay", () => {
+  it("keeps the public mark separate from the last traded candle", () => {
+    expect(markPriceLine({ price: "78338.9", stale: false })).toEqual({ price: 78338.9, stale: false });
+  });
+
+  it("retains a stale mark as an explicitly stale reference line", () => {
+    expect(markPriceLine({ price: "78338.9", stale: true })).toEqual({ price: 78338.9, stale: true });
+  });
+
+  it("does not draw unavailable or zero marks", () => {
+    expect(markPriceLine(null)).toBeNull();
+    expect(markPriceLine({ price: "0", stale: false })).toBeNull();
+    expect(markPriceLine({ price: "bad", stale: false })).toBeNull();
   });
 });
 

@@ -138,8 +138,16 @@ native symbol、native ID、instrument encoding 或原始交易所错误。
 BBO、K 线、标记价、资费看板和交易所连接状态。生产能力矩阵决定每个 dataset 的
 transport、原生 market family 边界、cadence 与 rate-limit operation。Gateway 按
 venue、environment 与原生 market family 唯一持有一个物理 `VenueFeedOwner`；route
-profile 只是输出投影，不会增加连接。Market Hub 维护可重建的最新 snapshot，并扇出给
-所有逻辑消费者。出现 gap 时 generation 增加，发送 `resync_required` 并重建 snapshot。
+profile 只是输出投影，不会增加连接。Market Hub 维护低频最新值，但不会物化完整订单簿。
+Exchange 适配层只通过 WebSocket 建立订单簿，校验原生连续性，并只保存共享 topic 为后来
+消费者重放所需的有限深度快照。Gateway 随后转发 `snapshot`、`delta` 或自包含的 `full`
+事件，不再把 REST 深度拼进另一个 WS 序列。出现 gap 时 generation 增加并发送
+`resync_required`，原生流重开并产生新快照。无法仅靠 WS 提供初始订单簿的 venue（目前为
+Nado）会明确标记为不支持深度，不会静默退化到 REST。
+
+OI 必须保留交易所归属。Hyperliquid 与 Lighter 从全市场流提供 OI；Bybit、Bitget、Gate、
+OKX 和 Nado 使用各自批量能力。Binance 与 Aster 只有逐 symbol 当前 OI，因此全市场 feed
+将该字段留空，不再遍历 catalog 触发大量请求，也不会把其他交易所 OI 冒充为其 OI。
 
 热点订单簿、BBO、K 线与 mark topic 在每个 feed owner 内共用一个原生 socket。引用计数
 hotset 依次按 position、open-order、execution、browser、arbitrage-top 与
@@ -152,6 +160,13 @@ funding-history 排序；position、open-order 与 execution 不会因交易所 
 `/internal/v1/funding-history` 与 `/internal/v1/venues/connectivity`。它们不收 `account_id`，因为 Gateway 使用
 免凭证的交易所 client 回答。它们仍由内部 bearer token 保护，也不会暴露凭证、
 原生交易所错误等内部细节。
+
+Auth Edge 将市场流公开为 `/api/v1/market/realtime/ws`，将需要会话的账户通知公开为
+`/api/v1/account/realtime/ws`。账户流只负责实时变更通知，启动或重连后仍读取权威 REST
+快照；Trading 可以消费这些数据，但不再充当浏览器行情转发层。浏览器每 20 秒发送一次应用层
+ping，并要求 10 秒内收到 pong，因此浏览器到 Gateway 的半开连接不会长期显示为在线。交易所
+原生 client 独立执行 read-idle deadline；heartbeat 或读取失败会关闭原生 socket，并进入 owner
+有上限的指数退避重连。
 
 资金费看板是常驻 `DerivativeFact` 的纯业务投影。Gateway 启动时对所有支持的永续原生
 family 做一次 bootstrap，随后按能力矩阵选择全市场 WebSocket 或有界批量 REST，持续
@@ -186,16 +201,17 @@ GET /v1/ws?account_id=binance-spot
 Authorization: Bearer <token>
 ```
 
-事件携带 boot ID、账户内 sequence、event ID、resource version、标准化 payload
-和 kind。订单、成交、余额、仓位、账户健康及 `resync_required` 都是统一模型。
-boot cursor 过期、replay 被淘汰、stream gap 或进程重启时会发出
-`resync_required`；调用方必须重新获取 REST snapshot。
+每个账户 route 只持有一个产品/账户级原生流，数量不随 catalog 增长。订单、成交、余额、
+仓位、账户健康及 `resync_required` 都会被标准化，并携带稳定实体 ID、resource version 与
+来源事件时间。消费者按实体身份和来源时间合并，不依赖 Gateway 自造的 stream sequence，
+也不需要 snapshot barrier。
 
-每个账户 route 只持有一个产品/账户级原生流，数量不随 catalog 增长。启动时先建立原生
-流并缓存增量，再加载余额与仓位 snapshot、发布 snapshot、重放缓存增量，最后发布
-connected barrier；Gateway 随后执行订单/成交 REST reconciliation。事件携带
-generation、source sequence 与 snapshot/live phase；重连、listen-key 失效或 sequence
-gap 必须 resync，旧 generation 的迟到事件会被丢弃。
+内部 `/v1/ws` 保留给服务投影。浏览器经 Auth Edge 使用 Gateway 的 live-only
+`/internal/v1/account/ws`，重连时不会回放一段无界的浏览器 backlog。流故障只会把账户实时
+状态标为不可用，并以带 jitter 的指数退避重连；它不会暂停下单，也不会触发 REST。
+固定的 60 秒 reconciliation 负责修复漏掉的状态。单个账户故障只发送该账户范围的
+`UPSTREAM_GAP`，不会关闭 principal 级浏览器订阅，也不会把其他账户标为降级；后续
+account-health 事件只恢复对应账户。
 
 ## 恢复与 reconciliation
 
@@ -207,9 +223,9 @@ durable event、交易所精确 correlation、reconciliation task 和 audit。
 2. 连接 PostgreSQL，在 advisory lock 下完成 migration 校验；
 3. 获取 account ownership；
 4. 构造长期 exchange client 并加载 Catalog；
-5. 对 prepared、dispatching、uncertain command 做精确只读 reconciliation；
+5. 对 prepared、dispatching、uncertain command 做精确只读 reconciliation，之后每 60 秒重复；
 6. 建立私有 stream；
-7. 所有 gate 证明后才开放 write readiness。
+7. 写就绪由账户与路由能力决定，不依赖私有 stream 是否在线。
 
 若交易所在进程崩溃前已接受订单，重启后使用原 portable client order ID 和
 venue correlation 精确查询；禁止 generic write retry。

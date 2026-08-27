@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -104,6 +105,89 @@ func TestSourceRestoresCatalogAsStaleUntilVenueRefresh(t *testing.T) {
 	}
 }
 
+func TestDerivativeResolverUsesAtomicResidentCatalogIndex(t *testing.T) {
+	const route = "binance.perp.usdt.v1"
+	instruments := make([]exchange.Instrument, 0, 601)
+	for index := 0; index < 600; index++ {
+		base := fmt.Sprintf("ASSET%04d", index)
+		instruments = append(instruments, publicPerpInstrument(base, base+"USDT"))
+	}
+	instruments = append(instruments, publicPerpInstrument("BTC", "BTCUSDT"))
+	connector := &fakeConnector{instruments: instruments}
+	source, err := newSource(fakeFactory{connector: connector}, routeprofile.DefaultRegistry(), sourceOptions{
+		interval: time.Minute, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: time.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if err := source.columns[0].refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	fact, ok := source.ResolveDerivativeInstrument(t.Context(), route, "BTCUSDT", "wrong-native-id")
+	if !ok || fact.InstrumentID != "binance:live:perp:USDT:BTC-USDT" || fact.Instrument.NativeSymbol != "BTCUSDT" {
+		t.Fatalf("BTC derivative resolution = %+v, ok=%v", fact, ok)
+	}
+	source.derivativeMu.RLock()
+	indexed := len(source.derivativeIndex[route])
+	source.derivativeMu.RUnlock()
+	if indexed != len(instruments) {
+		t.Fatalf("native index entries=%d, want %d", indexed, len(instruments))
+	}
+
+	connector.instruments = []exchange.Instrument{publicPerpInstrument("ETH", "ETHUSDT")}
+	if err := source.columns[0].refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := source.ResolveDerivativeInstrument(t.Context(), route, "BTCUSDT", ""); ok {
+		t.Fatal("retired BTC identity survived an atomic catalog replacement")
+	}
+	if fact, ok := source.ResolveDerivativeInstrument(t.Context(), route, "ETHUSDT", ""); !ok || fact.InstrumentID != "binance:live:perp:USDT:ETH-USDT" {
+		t.Fatalf("ETH derivative resolution = %+v, ok=%v", fact, ok)
+	}
+}
+
+func TestDurableRestoreCannotReplaceLiveDerivativeIndex(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	connector := &fakeConnector{instruments: []exchange.Instrument{publicPerpInstrument("BTC", "BTCUSDT")}}
+	source, err := newSource(fakeFactory{connector: connector}, routeprofile.DefaultRegistry(), sourceOptions{
+		interval: time.Minute, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if err := source.columns[0].refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	stale, _ := json.Marshal([]exchange.Instrument{publicPerpInstrument("ETH", "ETHUSDT")})
+	if err := source.RestoreCatalogRevisions(t.Context(), catalogRevisionLoaderStub{revision: CatalogRevision{
+		ScopeKey: "binance.perp.usdt.v1", ObservedAt: now.Add(-time.Hour), Instruments: stale,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := source.ResolveDerivativeInstrument(t.Context(), "binance.perp.usdt.v1", "BTCUSDT", ""); !ok {
+		t.Fatal("live derivative identity was replaced by an older durable revision")
+	}
+	if _, ok := source.ResolveDerivativeInstrument(t.Context(), "binance.perp.usdt.v1", "ETHUSDT", ""); ok {
+		t.Fatal("older durable identity entered a live derivative index")
+	}
+}
+
+func publicPerpInstrument(base, native string) exchange.Instrument {
+	return exchange.Instrument{
+		Identity: exchange.InstrumentIdentity{
+			Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: base + "-USDT", NativeSymbol: native,
+			BaseAsset: base, QuoteAsset: "USDT", SettleAsset: "USDT",
+		},
+		Rules: exchange.InstrumentRules{
+			PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"),
+			MinQuantity: decimal.RequireFromString("0.001"),
+		},
+	}
+}
+
 func TestSnapshotOwnsPublicToNativeFundingIdentity(t *testing.T) {
 	instrumentID := domain.InstrumentID("okx:live:perp:USDT:BTC-USDT-SWAP")
 	snapshot := Snapshot{Instruments: []Instrument{{
@@ -126,6 +210,12 @@ func TestSnapshotOwnsPublicToNativeFundingIdentity(t *testing.T) {
 	})
 	if !ok || matched.Catalog.ID != instrumentID {
 		t.Fatalf("matched=%+v ok=%v", matched, ok)
+	}
+	matched, ok = snapshot.MatchFundingEntry("okx.perp.usdt.v1", exchange.FundingBoardEntry{
+		NativeSymbol: "BTC-USDT-SWAP", NativeID: "stale-native-id",
+	})
+	if !ok || matched.Catalog.ID != instrumentID {
+		t.Fatalf("native-symbol fallback matched=%+v ok=%v", matched, ok)
 	}
 	if _, ok := snapshot.MatchFundingEntry("okx.perp.usdc.v1", exchange.FundingBoardEntry{NativeID: "swap-1"}); ok {
 		t.Fatal("native id from another route profile was accepted")
@@ -207,7 +297,10 @@ func TestMarketDataReadsResidentHubWithoutJoiningFundingHistory(t *testing.T) {
 		BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT",
 	}, Rules: exchange.InstrumentRules{
 		PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"), MinQuantity: decimal.RequireFromString("0.001"),
-	}}}
+	}}, book: exchange.OrderBook{Time: observedAt, Sequence: "rest-10",
+		Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(99), Quantity: decimal.NewFromInt(2)}},
+		Asks: []exchange.BookLevel{{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(3)}},
+	}}
 	source, err := NewSource(fakeFactory{connector: connector}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -228,8 +321,11 @@ func TestMarketDataReadsResidentHubWithoutJoiningFundingHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fact.Book.Bids) != 1 || fact.Book.Bids[0].Price.String() != "99" || !fact.HasMark || fact.Mark.Price.String() != "100.5" || fact.HasFunding || len(fact.FundingHistory.Rates) != 0 {
+	if len(fact.Book.Bids) != 1 || fact.Book.Bids[0].Price.String() != "99" || fact.Book.Sequence != "resident-1" || !fact.HasMark || fact.Mark.Price.String() != "100.5" || fact.HasFunding || len(fact.FundingHistory.Rates) != 0 {
 		t.Fatalf("resident fact=%+v", fact)
+	}
+	if connector.bookReads != 0 {
+		t.Fatalf("resident market data performed %d REST order-book reads", connector.bookReads)
 	}
 }
 
@@ -325,7 +421,7 @@ func TestSourceKeepsDepthWhenOptionalMarketFacetsFail(t *testing.T) {
 	}
 }
 
-func TestSourceJoinsMarkPriceSnapshotToPublicPerpStream(t *testing.T) {
+func TestSourceBootstrapsMarkPriceFromPublicPerpStream(t *testing.T) {
 	instrument := exchange.Instrument{Identity: exchange.InstrumentIdentity{
 		Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT",
 		BaseAsset: "BTC", QuoteAsset: "USDT", SettleAsset: "USDT", NativeSymbol: "BTCUSDT",
@@ -334,6 +430,9 @@ func TestSourceJoinsMarkPriceSnapshotToPublicPerpStream(t *testing.T) {
 		MinQuantity: decimal.RequireFromString("0.001"),
 	}}
 	subscription := newInertSubscription[exchange.MarkPriceEvent]()
+	subscription.events <- exchange.MarkPriceEvent{
+		Instrument: instrument, Price: decimal.RequireFromString("77103.2"), Time: time.Now().UTC(),
+	}
 	socket := &fakeMarkSocket{subscription: subscription}
 	connector := &fakeConnector{
 		instrument: instrument,
@@ -413,17 +512,19 @@ func (factory bybitRouteFactory) Build(profile routeprofile.Profile) (Connector,
 }
 
 type fakeConnector struct {
-	instrument exchange.Instrument
-	book       exchange.OrderBook
-	mark       exchange.MarkPriceEvent
-	funding    exchange.FundingRate
-	history    exchange.FundingRatePage
-	candles    exchange.CandlePage
-	markErr    error
-	fundingErr error
-	historyErr error
-	refreshes  int
-	socket     exchange.SpotWebSocket
+	instrument  exchange.Instrument
+	instruments []exchange.Instrument
+	book        exchange.OrderBook
+	mark        exchange.MarkPriceEvent
+	funding     exchange.FundingRate
+	history     exchange.FundingRatePage
+	candles     exchange.CandlePage
+	markErr     error
+	fundingErr  error
+	historyErr  error
+	refreshes   int
+	bookReads   int
+	socket      exchange.SpotWebSocket
 }
 
 type signalingConnector struct {
@@ -441,10 +542,14 @@ func (connector *signalingConnector) Refresh(ctx context.Context) ([]exchange.In
 
 func (connector *fakeConnector) Refresh(context.Context) ([]exchange.Instrument, error) {
 	connector.refreshes++
+	if len(connector.instruments) > 0 {
+		return append([]exchange.Instrument(nil), connector.instruments...), nil
+	}
 	return []exchange.Instrument{connector.instrument}, nil
 }
 
 func (connector *fakeConnector) OrderBook(context.Context, exchange.OrderBookRequest) (exchange.OrderBook, error) {
+	connector.bookReads++
 	return connector.book, nil
 }
 
@@ -486,7 +591,7 @@ type inertSubscription[T any] struct {
 }
 
 func newInertSubscription[T any]() *inertSubscription[T] {
-	return &inertSubscription[T]{events: make(chan T), statuses: make(chan exchange.StreamStatusEvent), errors: make(chan error)}
+	return &inertSubscription[T]{events: make(chan T, 1), statuses: make(chan exchange.StreamStatusEvent), errors: make(chan error)}
 }
 
 func (*inertSubscription[T]) ID() string                    { return "public-mark" }

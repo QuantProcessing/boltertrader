@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/gateway/realtimewire"
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
-	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -28,17 +26,13 @@ type browserActiveTopic struct {
 }
 
 func (api *PublicDataAPI) unifiedRealtime(w http.ResponseWriter, r *http.Request) {
-	if api.dependencies.MarketTopics == nil || len(r.URL.Query()) != 0 {
-		if api.dependencies.MarketTopics == nil {
+	if api.dependencies.Arbitrage == nil || len(r.URL.Query()) != 0 {
+		if api.dependencies.Arbitrage == nil {
 			httpx.WriteError(w, http.StatusServiceUnavailable, "REALTIME_UNAVAILABLE", "realtime projection is unavailable", nil, true, httpx.RequestID(r))
 		} else {
 			httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", nil, false, httpx.RequestID(r))
 		}
 		return
-	}
-	principal, principalErr := api.dependencies.Principal(r)
-	if principalErr != nil {
-		principal = ""
 	}
 	connection, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -135,8 +129,8 @@ func (api *PublicDataAPI) unifiedRealtime(w http.ResponseWriter, r *http.Request
 					continue
 				}
 				for _, request := range control.Topics {
-					if request.Topic == realtimewire.TopicAccountEvents && strings.TrimSpace(principal) == "" {
-						emit(realtimewire.Message{Type: realtimewire.MessageError, RequestID: control.RequestID, Topic: request.Topic, Code: "AUTH_REQUIRED", ObservedAt: time.Now().UTC()})
+					if request.Topic != realtimewire.TopicArbitrageOpportunities {
+						emit(realtimewire.Message{Type: realtimewire.MessageError, RequestID: control.RequestID, Topic: request.Topic, Code: "TOPIC_MOVED_TO_GATEWAY", ObservedAt: time.Now().UTC()})
 						continue
 					}
 					next++
@@ -151,14 +145,7 @@ func (api *PublicDataAPI) unifiedRealtime(w http.ResponseWriter, r *http.Request
 							case <-ctx.Done():
 							}
 						}()
-						var streamErr error
-						if request.Topic == realtimewire.TopicAccountEvents {
-							streamErr = api.runBrowserAccountTopic(subCtx, principal, id, request, emit)
-						} else if request.Topic == realtimewire.TopicArbitrageOpportunities {
-							streamErr = api.runBrowserArbitrageTopic(subCtx, id, request, emit)
-						} else {
-							streamErr = api.runBrowserMarketTopic(subCtx, id, request, emit)
-						}
+						streamErr := api.runBrowserArbitrageTopic(subCtx, id, request, emit)
 						if streamErr != nil && subCtx.Err() == nil {
 							if api.dependencies.RealtimeObserver != nil {
 								api.dependencies.RealtimeObserver.ObserveRealtimeResync(request.Topic)
@@ -221,79 +208,6 @@ func readBrowserControls(ctx context.Context, connection *websocket.Conn, target
 		}
 		if err != nil {
 			return
-		}
-	}
-}
-
-func (api *PublicDataAPI) runBrowserMarketTopic(ctx context.Context, id string, request realtimewire.TopicRequest, emit func(realtimewire.Message) bool) error {
-	// Never trust a browser-supplied internal purpose. Browser demand has one
-	// fixed hotset priority on the authenticated Trading -> Gateway hop.
-	request.InternalPurpose = "browser"
-	subscription, err := api.dependencies.MarketTopics.Subscribe(ctx, request, realtimewire.OutboundBuffer)
-	if err != nil {
-		return err
-	}
-	defer subscription.Close()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case message, open := <-subscription.Events():
-			if !open {
-				return fmt.Errorf("Gateway market topic closed")
-			}
-			message.SubscriptionID = id
-			if message.Type == realtimewire.MessageResyncRequired && api.dependencies.RealtimeObserver != nil {
-				api.dependencies.RealtimeObserver.ObserveRealtimeResync(request.Topic)
-			}
-			if !emit(message) {
-				return nil
-			}
-		}
-	}
-}
-
-func (api *PublicDataAPI) runBrowserAccountTopic(ctx context.Context, principal, id string, request realtimewire.TopicRequest, emit func(realtimewire.Message) bool) error {
-	events, updates, unsubscribe, err := api.dependencies.Realtime.ReplayAndSubscribeScoped(request.Cursor, realtimewire.OutboundBuffer, principal)
-	if err != nil {
-		if err == realtime.ErrResnapshotRequired {
-			if api.dependencies.RealtimeObserver != nil {
-				api.dependencies.RealtimeObserver.ObserveRealtimeResync(request.Topic)
-			}
-			emit(realtimewire.Message{Type: realtimewire.MessageResyncRequired, SubscriptionID: id, Topic: request.Topic, Code: "CURSOR_EXPIRED", Reason: "replay-buffer-expired", ObservedAt: time.Now().UTC()})
-			return nil
-		}
-		return err
-	}
-	defer unsubscribe()
-	checkpoint := ""
-	if current, ok := api.dependencies.Realtime.(interface{ Cursor() string }); ok {
-		checkpoint = current.Cursor()
-	}
-	if !emit(realtimewire.Message{Type: realtimewire.MessageCheckpoint, SubscriptionID: id, Topic: request.Topic, Generation: 1, ObservedAt: time.Now().UTC(), Data: realtimewire.EncodeData(map[string]string{"cursor": checkpoint})}) {
-		return nil
-	}
-	sequence := uint64(0)
-	send := func(event realtime.Event) bool {
-		sequence++
-		return emit(realtimewire.Message{Type: realtimewire.MessageDelta, SubscriptionID: id, Topic: request.Topic, Generation: 1, Sequence: sequence, ObservedAt: event.ObservedAt, Data: realtimewire.EncodeData(event)})
-	}
-	for _, event := range events {
-		if !send(event) {
-			return nil
-		}
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case event, open := <-updates:
-			if !open {
-				return realtime.ErrResnapshotRequired
-			}
-			if !send(event) {
-				return nil
-			}
 		}
 	}
 }

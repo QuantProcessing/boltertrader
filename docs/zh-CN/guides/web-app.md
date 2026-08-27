@@ -55,9 +55,16 @@ account 之间给对儿排名，一个都没选中时它就没有什么可排的
 
 ## 数据流
 
-读取经由 `react-query` 打到 `src/api/endpoints.ts` 里的那些端点。实时更新走一条多路复用
-WebSocket——`/api/v1/realtime/ws`——由单例 topic manager 持有并分发。行情、资费、套利、
-连接状态和账户事件只是这一条连接上的逻辑 topic，不再由组件各自建立连接或轮询。
+读取经由 `react-query` 打到 `src/api/endpoints.ts` 里的那些端点。实时连接按归属共享，而不是
+每个组件各建一条：Gateway 市场数据使用 `/api/v1/market/realtime/ws`，Gateway 账户通知使用
+`/api/v1/account/realtime/ws`，Trading 业务投影使用 `/api/v1/realtime/ws`。同一 topic 的组件
+订阅仍会合并。订单簿从 WS 快照开始，由浏览器应用连续增量或自包含 full 事件重建；Gateway
+不保存完整深度，也不会把交易所 REST 订单簿拼进实时流。
+账户实体按实体 ID、来源时间戳和 resource version 覆盖，因此较旧的飞行中 REST 响应不能把
+较新的 WebSocket 状态回滚。REST reconciliation 固定每 60 秒执行，不会由每个事件或重连触发。
+每条归属连接还带应用层 ping/pong 看门狗。Gateway 仍可达、但某条交易所市场流或账户流正在恢复
+时，外壳显示 `degraded`；只有浏览器连接本身不可用时才显示 reconnecting。账户降级按账户分别
+记录，只能由同一账户的健康恢复事件清除。
 
 下单是那个两步的票据：**Review order** 请求一份封签预览并开始它的有效期倒计时，
 **Confirm** 提交这个封签对象。封签过期时按钮会直接这么说。理由见

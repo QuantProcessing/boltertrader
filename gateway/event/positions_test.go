@@ -2,7 +2,6 @@ package event
 
 import (
 	"encoding/json"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,14 +31,18 @@ func TestPositionProjectionPreservesHedgeSlotsAndPublishesExplicitRemoval(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Items) != 2 || snapshot.Sequence != 2 || snapshot.Freshness != PositionLive || snapshot.VerifiedAt != now {
+	if len(snapshot.Items) != 2 || snapshot.Freshness != PositionLive || snapshot.VerifiedAt != now {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
 	if snapshot.Items[1].Position.Quantity.String() != "-0.2" {
 		t.Fatalf("short quantity=%s, want -0.2", snapshot.Items[1].Position.Quantity)
 	}
 
-	subscription := subscribeTest(t, hub, "principal-a", accountID, snapshot.Cursor)
+	subscription, err := hub.Subscribe(t.Context(), SubscribeRequest{PrincipalID: "principal-a", AccountID: accountID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(subscription.Close)
 	now = now.Add(time.Second)
 	if err := projection.Apply("principal-a", accountID, "perp-usdt", instrumentID, exchange.PositionEvent{
 		Kind: exchange.EventSnapshot, Time: now, Positions: []exchange.Position{
@@ -85,7 +88,7 @@ func TestPositionProjectionCompleteEmptySnapshotRemovesLastKnownRows(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Items) != 0 || snapshot.Sequence != 2 {
+	if len(snapshot.Items) != 0 {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
 	if _, err := projection.Snapshot("principal-b", accountID); err == nil {
@@ -93,7 +96,7 @@ func TestPositionProjectionCompleteEmptySnapshotRemovesLastKnownRows(t *testing.
 	}
 }
 
-func TestPositionProjectionSynchronizeQueuesStreamUpdatesBehindSnapshot(t *testing.T) {
+func TestPositionProjectionSynchronizeDoesNotBlockAndCannotOverwriteNewerStreamUpdate(t *testing.T) {
 	hub := newTestHub(t, 8, 8)
 	projection, err := NewPositionProjection(hub, time.Now)
 	if err != nil {
@@ -117,7 +120,6 @@ func TestPositionProjectionSynchronizeQueuesStreamUpdatesBehindSnapshot(t *testi
 	}()
 	<-loaderStarted
 
-	var updateFinished atomic.Bool
 	updateDone := make(chan error, 1)
 	go func() {
 		updateErr := projection.Apply("principal-a", accountID, "perp-usdt", instrumentID, exchange.PositionEvent{
@@ -126,18 +128,18 @@ func TestPositionProjectionSynchronizeQueuesStreamUpdatesBehindSnapshot(t *testi
 				Side: exchange.SideBuy, Quantity: decimal.NewFromInt(2),
 			}},
 		})
-		updateFinished.Store(true)
 		updateDone <- updateErr
 	}()
-	time.Sleep(20 * time.Millisecond)
-	if updateFinished.Load() {
-		t.Fatal("stream update passed the account gate while snapshot was loading")
+	select {
+	case err := <-updateDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream update was blocked by the in-flight REST snapshot")
 	}
 	close(releaseLoader)
 	if err := <-syncDone; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-updateDone; err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := projection.Snapshot("principal-a", accountID)
@@ -145,7 +147,7 @@ func TestPositionProjectionSynchronizeQueuesStreamUpdatesBehindSnapshot(t *testi
 		t.Fatal(err)
 	}
 	if len(snapshot.Items) != 1 || snapshot.Items[0].Position.Quantity.String() != "2" {
-		t.Fatalf("snapshot=%+v, want queued stream update to win", snapshot)
+		t.Fatalf("snapshot=%+v, want newer stream update to win", snapshot)
 	}
 }
 

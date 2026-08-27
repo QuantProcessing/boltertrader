@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
@@ -195,10 +194,9 @@ func projectAccountBackendEvent(route exchange.AccountRoute, index accountInstru
 
 type spotWebSocket struct {
 	*publicWebSocket
-	private           *privateWebSocket
-	accountCatalogMu  sync.RWMutex
-	accountCatalog    []exchange.AccountInstrument
-	accountGeneration atomic.Uint64
+	private          *privateWebSocket
+	accountCatalogMu sync.RWMutex
+	accountCatalog   []exchange.AccountInstrument
 }
 
 func (socket *spotWebSocket) String() string {
@@ -599,7 +597,7 @@ func watchPrivateWebSocketTopic[T any](
 	topic := topics[topicKey]
 	first := topic == nil
 	if first {
-		topic = newWebSocketTopic[T]()
+		topic = newWebSocketTopic[T](nil, nil)
 		topics[topicKey] = topic
 	}
 	var subscription *typedSubscription[T]

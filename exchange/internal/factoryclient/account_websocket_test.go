@@ -67,19 +67,19 @@ func TestAccountEventRouteSubscriptionCountDoesNotGrowWithCatalog(t *testing.T) 
 		t.Fatalf("route starts=%d indexed=%d, want 1 and 1000", starts, indexed)
 	}
 	first := receiveAccountEvent(t, subscription.Events())
-	if first.Kind != exchange.AccountEventStreamStatus || first.Generation != 1 || first.Sequence != 1 {
+	if first.Kind != exchange.AccountEventStreamStatus {
 		t.Fatalf("initial account barrier = %+v", first)
 	}
 	order := exchange.OrderEvent{Kind: exchange.EventDelta, Order: exchange.Order{NativeSymbol: "ASSET0999-USDC", OrderID: "order-1", UpdatedAt: time.Now().UTC()}}
 	callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &order})
 	got := receiveAccountEvent(t, subscription.Events())
-	if got.Kind != exchange.AccountEventOrder || got.InstrumentID != "lighter:live:spot:ASSET0999-USDC" || got.Generation != 1 || got.Sequence != 2 {
+	if got.Kind != exchange.AccountEventOrder || got.InstrumentID != "lighter:live:spot:ASSET0999-USDC" {
 		t.Fatalf("projected account order = %+v", got)
 	}
 	callbacks.Status(exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted, Generation: 1, Reason: "test-gap", Time: time.Now().UTC()})
 	gap := receiveAccountEvent(t, subscription.Events())
 	resync := receiveAccountEvent(t, subscription.Events())
-	if gap.Kind != exchange.AccountEventStreamStatus || gap.Generation != 2 || gap.Sequence != 1 || resync.Kind != exchange.AccountEventResyncRequired || resync.Generation != 2 || resync.Sequence != 2 {
+	if gap.Kind != exchange.AccountEventStreamStatus || resync.Kind != exchange.AccountEventResyncRequired {
 		t.Fatalf("gap=%+v resync=%+v", gap, resync)
 	}
 	unknown := exchange.OrderEvent{Kind: exchange.EventDelta, Order: exchange.Order{NativeSymbol: "UNKNOWN-USDC", OrderID: "order-2", UpdatedAt: time.Now().UTC()}}
@@ -109,8 +109,8 @@ func TestAccountEventRouteSubscriptionCountDoesNotGrowWithCatalog(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if barrier := receiveAccountEvent(t, second.Events()); barrier.Generation != 3 || barrier.Sequence != 1 {
-		t.Fatalf("reconnected account barrier = %+v, want generation 3 sequence 1", barrier)
+	if barrier := receiveAccountEvent(t, second.Events()); barrier.Kind != exchange.AccountEventStreamStatus {
+		t.Fatalf("reconnected account barrier = %+v", barrier)
 	}
 	_ = second.Close()
 }

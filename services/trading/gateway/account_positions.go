@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -72,7 +71,6 @@ func (client *Client) WatchAccountEvents(
 	ctx context.Context,
 	principal string,
 	accountID string,
-	cursor string,
 	apply func(accountpositions.SourceEvent) error,
 ) error {
 	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || apply == nil {
@@ -94,9 +92,6 @@ func (client *Client) WatchAccountEvents(
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/v1/ws"
 	query := parsed.Query()
 	query.Set("account_id", accountID)
-	if cursor != "" {
-		query.Set("cursor", cursor)
-	}
 	parsed.RawQuery = query.Encode()
 	headers := http.Header{
 		"Authorization":      []string{"Bearer " + string(token)},
@@ -110,6 +105,9 @@ func (client *Client) WatchAccountEvents(
 		return fmt.Errorf("Gateway account stream connection failed")
 	}
 	defer connection.CloseNow()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	defer stopHeartbeat()
+	go monitorGatewayWebSocket(heartbeatCtx, connection, gatewayWebSocketHeartbeatInterval, gatewayWebSocketHeartbeatTimeout, nil)
 	if err := apply(accountpositions.SourceEvent{Kind: accountpositions.SourceEventConnected}); err != nil {
 		return err
 	}
@@ -129,8 +127,6 @@ func (client *Client) WatchAccountEvents(
 }
 
 type gatewayPrivateEvent struct {
-	BootID          string          `json:"boot_id"`
-	Sequence        uint64          `json:"sequence"`
 	EventID         string          `json:"event_id"`
 	AccountID       string          `json:"account_id"`
 	ResourceVersion uint64          `json:"resource_version"`
@@ -144,12 +140,11 @@ func projectGatewayPositionEvent(event gatewayPrivateEvent) (accountpositions.So
 }
 
 func projectGatewayAccountEvent(event gatewayPrivateEvent) (accountpositions.SourceEvent, error) {
-	if strings.TrimSpace(event.BootID) == "" || event.Sequence == 0 || strings.TrimSpace(event.AccountID) == "" {
+	if strings.TrimSpace(event.EventID) == "" || strings.TrimSpace(event.AccountID) == "" || event.OccurredAt.IsZero() {
 		return accountpositions.SourceEvent{}, fmt.Errorf("Gateway private event identity is invalid")
 	}
 	projected := accountpositions.SourceEvent{
-		BootID: event.BootID, Sequence: event.Sequence,
-		Cursor:          event.BootID + ":" + strconv.FormatUint(event.Sequence, 10),
+		EventID:         event.EventID,
 		ResourceVersion: event.ResourceVersion, AccountID: event.AccountID, OccurredAt: event.OccurredAt.UTC(),
 	}
 	switch event.Kind {

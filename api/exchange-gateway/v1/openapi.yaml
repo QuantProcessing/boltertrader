@@ -132,7 +132,7 @@ paths:
   /v1/position-snapshot:
     get:
       operationId: getPositionSnapshot
-      description: Returns a complete account position projection and a cursor from the same private-event sequence. An empty items array proves no positions only when this request succeeds.
+      description: Returns a complete account position projection. An empty items array proves no positions only when this request succeeds; concurrent stream changes are merged by entity observation time.
       parameters:
         - {name: account_id, in: query, required: true, schema: {type: string}}
       responses:
@@ -273,7 +273,6 @@ paths:
     get:
       operationId: streamPrivateEvents
       parameters:
-        - {name: cursor, in: query, schema: {type: string}}
         - {name: account_id, in: query, required: true, schema: {type: string}}
         - name: kind
           in: query
@@ -597,13 +596,10 @@ components:
         data: {$ref: '#/components/schemas/PositionSnapshot'}
     PositionSnapshot:
       type: object
-      required: [account_id, boot_id, sequence, cursor, freshness, verified_at, items]
+      required: [account_id, freshness, verified_at, items]
       additionalProperties: false
       properties:
         account_id: {type: string}
-        boot_id: {type: string}
-        sequence: {type: integer, minimum: 0}
-        cursor: {type: string}
         freshness: {type: string, enum: [syncing, live, delayed, stale, unavailable]}
         reason: {type: string}
         verified_at: {type: string, format: date-time}
@@ -625,11 +621,9 @@ components:
         verified_at: {type: string, format: date-time}
     PrivateEvent:
       type: object
-      required: [boot_id, sequence, event_id, account_id, resource_version, kind, occurred_at, payload]
+      required: [event_id, account_id, resource_version, kind, occurred_at, payload]
       additionalProperties: false
       properties:
-        boot_id: {type: string}
-        sequence: {type: integer, minimum: 1}
         event_id: {type: string}
         account_id: {type: string}
         resource_version: {type: integer, minimum: 0}

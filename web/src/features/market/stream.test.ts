@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import type { Candle } from "@/api/types";
-import { applyBookEvent, mergeLiveCandle } from "@/features/market/stream";
+import { applyBookEvent, markStaleDelay, mergeLiveCandle, OrderBookSynchronizer } from "@/features/market/stream";
 
 describe("public market stream reducers", () => {
+  it("uses the Gateway-provided mark freshness window instead of a fixed two-second timeout", () => {
+    const now = Date.parse("2026-08-20T00:00:10Z");
+    expect(markStaleDelay("2026-08-20T00:00:00Z", 45_000, now)).toBe(35_000);
+    expect(markStaleDelay("2026-08-20T00:00:00Z", undefined, now)).toBe(0);
+  });
+
   it("applies a one-sided order-book delta without erasing the other side", () => {
     const current = {
       bids: [{ price: "100", quantity: "2" }],
@@ -38,5 +44,49 @@ describe("public market stream reducers", () => {
       2,
     );
     expect(merged?.map((entry) => entry.close)).toEqual(["1", "2.5"]);
+  });
+
+  it("joins buffered native deltas to the WebSocket snapshot sequence", () => {
+    const sync = new OrderBookSynchronizer();
+    sync.push({
+      eventType: "delta", observedAt: "2026-08-20T00:00:01Z",
+      sourceSequence: "11", previous: "10",
+      bids: [{ price: "100", quantity: "2" }], asks: [],
+    });
+    const result = sync.seed({
+      eventType: "snapshot", observedAt: "2026-08-20T00:00:00Z", sourceSequence: "10",
+      bids: [{ price: "100", quantity: "1" }], asks: [{ price: "101", quantity: "3" }],
+    });
+    expect(result.needsSnapshot).toBe(false);
+    expect(result.book?.bids).toEqual([{ price: "100", quantity: "2" }]);
+    expect(result.book?.asks).toEqual([{ price: "101", quantity: "3" }]);
+  });
+
+  it("replaces the visible book on a self-contained full event", () => {
+    const sync = new OrderBookSynchronizer();
+    sync.seed({
+      eventType: "snapshot", observedAt: "2026-08-20T00:00:00Z", sourceSequence: "10",
+      bids: [{ price: "100", quantity: "1" }], asks: [{ price: "101", quantity: "3" }],
+    });
+    const result = sync.push({
+      eventType: "full", observedAt: "2026-08-20T00:00:01Z", sourceSequence: "11",
+      bids: [{ price: "99", quantity: "2" }], asks: [{ price: "102", quantity: "4" }],
+    });
+    expect(result.needsSnapshot).toBe(false);
+    expect(result.book?.bids).toEqual([{ price: "99", quantity: "2" }]);
+    expect(result.book?.asks).toEqual([{ price: "102", quantity: "4" }]);
+  });
+
+  it("rejects a delta gap instead of inventing a partial order book", () => {
+    const sync = new OrderBookSynchronizer();
+    sync.seed({
+      eventType: "snapshot", observedAt: "2026-08-20T00:00:00Z", sourceSequence: "10",
+      bids: [{ price: "100", quantity: "1" }], asks: [{ price: "101", quantity: "3" }],
+    });
+    const result = sync.push({
+      eventType: "delta", observedAt: "2026-08-20T00:00:02Z",
+      sourceSequence: "12", previous: "11", bids: [], asks: [],
+    });
+    expect(result).toEqual({ book: null, needsSnapshot: true });
   });
 });

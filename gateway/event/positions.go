@@ -49,9 +49,6 @@ type PositionSeed struct {
 
 type PositionSnapshot struct {
 	AccountID  domain.AccountID    `json:"account_id"`
-	BootID     domain.BootID       `json:"boot_id"`
-	Sequence   uint64              `json:"sequence"`
-	Cursor     string              `json:"cursor"`
 	Freshness  PositionFreshness   `json:"freshness"`
 	Reason     string              `json:"reason,omitempty"`
 	VerifiedAt time.Time           `json:"verified_at"`
@@ -80,19 +77,13 @@ type positionMutation struct {
 	reason    string
 }
 
-// PositionProjection is the Gateway-owned account position truth used for
-// snapshot-to-stream handoff. The stream manager applies a position before it
-// publishes the matching event. Snapshot holds this projection's read lock
-// while it captures the Hub cursor, so a caller can observe either the old row
-// and old cursor, or the new row and an old cursor that replays one harmless
-// duplicate. It can never observe an old row beside a cursor that has already
-// skipped the corresponding event.
+// PositionProjection is the Gateway-owned current-position view. REST
+// snapshots and WebSocket events are merged by entity observation time; a REST
+// request never blocks the live stream and cannot overwrite a newer event.
 type PositionProjection struct {
 	hub *Hub
 	now func() time.Time
 
-	gateMu   sync.Mutex
-	gates    map[domain.AccountID]*sync.Mutex
 	mu       sync.RWMutex
 	accounts map[domain.AccountID]*positionAccount
 	versions map[positionKey]domain.ResourceVersion
@@ -107,7 +98,7 @@ func NewPositionProjection(hub *Hub, now func() time.Time) (*PositionProjection,
 	}
 	return &PositionProjection{
 		hub: hub, now: now, accounts: make(map[domain.AccountID]*positionAccount),
-		gates: make(map[domain.AccountID]*sync.Mutex), versions: make(map[positionKey]domain.ResourceVersion),
+		versions: make(map[positionKey]domain.ResourceVersion),
 	}, nil
 }
 
@@ -130,9 +121,6 @@ func (projection *PositionProjection) mark(principal domain.PrincipalID, account
 	if err := accountID.Validate(); err != nil {
 		return err
 	}
-	gate := projection.accountGate(accountID)
-	gate.Lock()
-	defer gate.Unlock()
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
 	account, err := projection.accountLocked(principal, accountID)
@@ -148,9 +136,6 @@ func (projection *PositionProjection) mark(principal domain.PrincipalID, account
 }
 
 func (projection *PositionProjection) RemoveAccount(accountID domain.AccountID) {
-	gate := projection.accountGate(accountID)
-	gate.Lock()
-	defer gate.Unlock()
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
 	delete(projection.accounts, accountID)
@@ -187,9 +172,6 @@ func (projection *PositionProjection) Apply(
 		return err
 	}
 
-	gate := projection.accountGate(accountID)
-	gate.Lock()
-	defer gate.Unlock()
 	projection.mu.Lock()
 	account, err := projection.accountLocked(principal, accountID)
 	if err != nil {
@@ -199,7 +181,9 @@ func (projection *PositionProjection) Apply(
 	account.initialized = true
 	account.freshness = PositionLive
 	account.reason = ""
-	account.verifiedAt = verifiedAt
+	if verifiedAt.After(account.verifiedAt) {
+		account.verifiedAt = verifiedAt
+	}
 	mutations := projection.applyLocked(account, accountID, routeID, instrumentID, event.Kind, positions, observedAt, verifiedAt)
 	projection.mu.Unlock()
 	return projection.publish(principal, mutations)
@@ -214,17 +198,12 @@ func (projection *PositionProjection) ReplaceAccount(
 	accountID domain.AccountID,
 	seeds []PositionSeed,
 ) (PositionSnapshot, error) {
-	gate := projection.accountGate(accountID)
-	gate.Lock()
-	defer gate.Unlock()
-	return projection.replaceAccount(principal, accountID, seeds)
+	return projection.replaceAccount(principal, accountID, seeds, projection.now().UTC())
 }
 
-// SynchronizeAccount holds the account event gate while the venue snapshot is
-// loaded and installed. Events received before synchronization are reflected
-// by the REST snapshot; events received during it wait and are applied after
-// the snapshot, so an older REST response cannot overwrite a newer stream
-// update.
+// SynchronizeAccount records the REST request boundary, loads without holding
+// a projection lock, then merges the response. Rows changed by WebSocket after
+// the boundary win even when the REST response arrives later.
 func (projection *PositionProjection) SynchronizeAccount(
 	principal domain.PrincipalID,
 	accountID domain.AccountID,
@@ -233,20 +212,19 @@ func (projection *PositionProjection) SynchronizeAccount(
 	if load == nil {
 		return PositionSnapshot{}, fmt.Errorf("position snapshot loader is required")
 	}
-	gate := projection.accountGate(accountID)
-	gate.Lock()
-	defer gate.Unlock()
+	boundary := projection.now().UTC()
 	seeds, err := load()
 	if err != nil {
 		return PositionSnapshot{}, err
 	}
-	return projection.replaceAccount(principal, accountID, seeds)
+	return projection.replaceAccount(principal, accountID, seeds, boundary)
 }
 
 func (projection *PositionProjection) replaceAccount(
 	principal domain.PrincipalID,
 	accountID domain.AccountID,
 	seeds []PositionSeed,
+	boundary time.Time,
 ) (PositionSnapshot, error) {
 	if err := principal.Validate(); err != nil {
 		return PositionSnapshot{}, err
@@ -254,8 +232,11 @@ func (projection *PositionProjection) replaceAccount(
 	if err := accountID.Validate(); err != nil {
 		return PositionSnapshot{}, err
 	}
-	verifiedAt := projection.now().UTC()
-	normalized, err := normalizePositionSeeds(seeds, verifiedAt)
+	if boundary.IsZero() {
+		boundary = projection.now().UTC()
+	}
+	boundary = boundary.UTC()
+	normalized, err := normalizePositionSeeds(seeds, boundary)
 	if err != nil {
 		return PositionSnapshot{}, err
 	}
@@ -267,34 +248,42 @@ func (projection *PositionProjection) replaceAccount(
 		return PositionSnapshot{}, err
 	}
 	incoming := make(map[positionKey]PositionSeed, len(normalized))
+	seen := make(map[positionKey]struct{}, len(normalized))
 	for _, seed := range normalized {
 		key := positionKey{accountID: accountID, routeID: seed.RouteID, instrumentID: seed.InstrumentID, slot: seed.Position.PositionSlot}
-		if _, duplicate := incoming[key]; duplicate {
+		if _, duplicate := seen[key]; duplicate {
 			projection.mu.Unlock()
 			return PositionSnapshot{}, fmt.Errorf("position snapshot contains a duplicate slot")
 		}
-		incoming[key] = seed
+		seen[key] = struct{}{}
+		if !seed.Position.Quantity.IsZero() {
+			incoming[key] = seed
+		}
 	}
 	mutations := make([]positionMutation, 0, len(account.items)+len(incoming))
 	for key, existing := range account.items {
 		if _, keep := incoming[key]; keep {
 			continue
 		}
+		if existing.ObservedAt.After(boundary) {
+			continue
+		}
 		version := projection.nextVersionLocked(key)
 		existing.ResourceVersion = version
-		existing.VerifiedAt = verifiedAt
+		existing.ObservedAt = boundary
+		existing.VerifiedAt = boundary
 		delete(account.items, key)
 		mutations = append(mutations, positionMutation{operation: PositionRemove, item: existing, reason: "snapshot_absent"})
 	}
 	for key, seed := range incoming {
-		if seed.Position.Quantity.IsZero() {
+		if existing, exists := account.items[key]; exists && seed.ObservedAt.Before(existing.ObservedAt) {
 			continue
 		}
 		version := projection.nextVersionLocked(key)
 		item := ProjectedPosition{
 			AccountID: accountID, RouteID: seed.RouteID, InstrumentID: seed.InstrumentID,
 			PositionSlot: seed.Position.PositionSlot, Position: seed.Position, ResourceVersion: version,
-			ObservedAt: seed.ObservedAt, VerifiedAt: verifiedAt,
+			ObservedAt: seed.ObservedAt, VerifiedAt: boundary,
 		}
 		account.items[key] = item
 		mutations = append(mutations, positionMutation{operation: PositionUpsert, item: item})
@@ -302,7 +291,9 @@ func (projection *PositionProjection) replaceAccount(
 	account.initialized = true
 	account.freshness = PositionLive
 	account.reason = ""
-	account.verifiedAt = verifiedAt
+	if boundary.After(account.verifiedAt) {
+		account.verifiedAt = boundary
+	}
 	projection.mu.Unlock()
 
 	if err := projection.publish(principal, mutations); err != nil {
@@ -312,9 +303,6 @@ func (projection *PositionProjection) replaceAccount(
 }
 
 func (projection *PositionProjection) Snapshot(principal domain.PrincipalID, accountID domain.AccountID) (PositionSnapshot, error) {
-	gate := projection.accountGate(accountID)
-	gate.Lock()
-	defer gate.Unlock()
 	return projection.snapshot(principal, accountID)
 }
 
@@ -344,22 +332,10 @@ func (projection *PositionProjection) snapshot(principal domain.PrincipalID, acc
 		}
 		return items[i].PositionSlot < items[j].PositionSlot
 	})
-	bootID, sequence, cursor := projection.hub.AccountCursor(accountID)
 	return PositionSnapshot{
-		AccountID: accountID, BootID: bootID, Sequence: sequence, Cursor: cursor,
+		AccountID: accountID,
 		Freshness: account.freshness, Reason: account.reason, VerifiedAt: account.verifiedAt, Items: items,
 	}, nil
-}
-
-func (projection *PositionProjection) accountGate(accountID domain.AccountID) *sync.Mutex {
-	projection.gateMu.Lock()
-	defer projection.gateMu.Unlock()
-	gate := projection.gates[accountID]
-	if gate == nil {
-		gate = &sync.Mutex{}
-		projection.gates[accountID] = gate
-	}
-	return gate
 }
 
 func (projection *PositionProjection) applyLocked(
@@ -386,13 +362,24 @@ func (projection *PositionProjection) applyLocked(
 			if _, keep := incoming[key]; keep {
 				continue
 			}
+			if existing.ObservedAt.After(observedAt) {
+				continue
+			}
 			existing.ResourceVersion = projection.nextVersionLocked(key)
+			existing.ObservedAt = observedAt
 			existing.VerifiedAt = verifiedAt
 			delete(account.items, key)
 			mutations = append(mutations, positionMutation{operation: PositionRemove, item: existing, reason: "snapshot_absent"})
 		}
 	}
 	for key, position := range incoming {
+		existing, exists := account.items[key]
+		if exists && observedAt.Before(existing.ObservedAt) {
+			continue
+		}
+		if position.Quantity.IsZero() && !exists {
+			continue
+		}
 		version := projection.nextVersionLocked(key)
 		item := ProjectedPosition{
 			AccountID: accountID, RouteID: routeID, InstrumentID: instrumentID,
@@ -400,7 +387,7 @@ func (projection *PositionProjection) applyLocked(
 			ObservedAt: observedAt, VerifiedAt: verifiedAt,
 		}
 		if position.Quantity.IsZero() {
-			if existing, ok := account.items[key]; ok {
+			if exists {
 				existing.ResourceVersion = version
 				existing.ObservedAt = observedAt
 				existing.VerifiedAt = verifiedAt

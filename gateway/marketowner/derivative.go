@@ -46,7 +46,7 @@ func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.R
 			continue
 		}
 		key := markethub.OwnerKey{Venue: exchange.Venue(profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: marketcapability.NativeFamily(exchange.Venue(profile.Venue), exchange.ProductPerp, profile.SettlementAsset)}
-		for _, dataset := range []exchange.MarketDataset{exchange.DatasetFunding, exchange.DatasetMark, exchange.DatasetIndex, exchange.DatasetOpenInterest} {
+		for _, dataset := range []exchange.MarketDataset{exchange.DatasetFunding, exchange.DatasetMark, exchange.DatasetIndex} {
 			if _, err := capabilities.Resolve(key.Venue, key.NativeFamily, dataset, false); err != nil {
 				return nil, fmt.Errorf("%s %s capability: %w", profile.ID, dataset, err)
 			}
@@ -60,6 +60,12 @@ func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.R
 		for _, dataset := range []exchange.MarketDataset{exchange.DatasetFunding, exchange.DatasetMark, exchange.DatasetIndex, exchange.DatasetOpenInterest} {
 			capability, resolveErr := capabilities.Resolve(key.Venue, key.NativeFamily, dataset, false)
 			if resolveErr != nil {
+				// OI is optional and venue-attributable. Binance/Aster do not have
+				// an all-market OI source, so absence must remain absence instead of
+				// triggering a catalog-wide per-symbol poll.
+				if dataset == exchange.DatasetOpenInterest {
+					continue
+				}
 				return nil, fmt.Errorf("%s %s capability: %w", ownerProfiles[0].ID, dataset, resolveErr)
 			}
 			runtimeCapabilities = append(runtimeCapabilities, capability)

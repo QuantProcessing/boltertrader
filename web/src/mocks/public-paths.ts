@@ -7,10 +7,9 @@
  * rate — so guarding them with a login protects nothing while costing the
  * product the only screen worth opening on a fresh install.
  *
- * `/api/v1/realtime/stream` is deliberately absent. It is public *data*, and
- * the trading service groups it with the rest, but it replays a
- * principal-scoped buffer and answers 401 on an empty identity by itself:
- * opening it here would mock a refusal rather than a read.
+ * Gateway's market socket is public. Its account socket is deliberately
+ * absent because it carries private venue events. Trading's remaining socket
+ * is public because it only publishes derived arbitrage opportunities.
  *
  * It lives in its own module rather than inside `handlers.ts` so the drift test
  * can import it without waking the mock database. The list is duplicated across
@@ -25,6 +24,7 @@ export const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/api/v1/catalog/instruments",
   "/api/v1/market-data",
   "/api/v1/candles",
+  "/api/v1/market/realtime/ws",
   "/api/v1/funding-board",
   "/api/v1/funding-history",
   "/api/v1/venues/connectivity",

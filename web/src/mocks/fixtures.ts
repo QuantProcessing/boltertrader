@@ -470,7 +470,6 @@ export const BALANCES: AccountBalance[] = [
 
 export const ACCOUNT_POSITIONS: AccountPositionSnapshot = {
   projectionRevision: 1,
-  cursor: "mock-account-1",
   verifiedAt: OBSERVED_AT,
   summary: {
     positionCount: 2,
@@ -537,8 +536,6 @@ export const ACCOUNT_POSITIONS: AccountPositionSnapshot = {
       routeHealth: "live",
       freshness: "live",
       writeReady: true,
-      sourceBootId: "mock-boot",
-      sourceSequence: 1,
       resourceVersion: 1,
       observedAt: OBSERVED_AT,
       verifiedAt: OBSERVED_AT,
@@ -568,8 +565,6 @@ export const ACCOUNT_POSITIONS: AccountPositionSnapshot = {
       routeHealth: "live",
       freshness: "live",
       writeReady: true,
-      sourceBootId: "mock-boot",
-      sourceSequence: 1,
       resourceVersion: 1,
       observedAt: OBSERVED_AT,
       verifiedAt: OBSERVED_AT,

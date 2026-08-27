@@ -18,6 +18,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const websocketReadLimit = 90 * time.Second
+
 type WSClient struct {
 	URL     string
 	Conn    *websocket.Conn
@@ -127,12 +129,17 @@ func (c *WSClient) Connect() error {
 func (c *WSClient) setupPingHandlers(conn *websocket.Conn) {
 	defer c.wg.Done()
 
+	_ = conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 	conn.SetPingHandler(func(appData string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 		c.Logger.Debugw("Received ping message", "data", appData)
 		c.WriteMu.Lock()
 		err := conn.WriteMessage(websocket.PongMessage, []byte(appData))
 		c.WriteMu.Unlock()
 		return err
+	})
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 	})
 }
 
@@ -154,6 +161,7 @@ func (c *WSClient) keepAlive(conn *websocket.Conn) {
 			c.WriteMu.Unlock()
 			if err != nil {
 				c.Logger.Errorw("Failed to send pong", "error", err)
+				_ = conn.Close()
 				return
 			}
 		}
@@ -213,6 +221,7 @@ func (c *WSClient) readLoop(conn *websocket.Conn) {
 			}
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(websocketReadLimit))
 
 		// Trim space
 		message = bytes.TrimSpace(message)

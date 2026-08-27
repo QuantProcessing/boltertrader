@@ -58,7 +58,8 @@ describe("the mock's public carve-out", () => {
     expect(publicPathsInGoTable(source)).toEqual([...PUBLIC_PATHS].sort());
   });
 
-  it("contains the unified public realtime socket and excludes the retired stream", () => {
+  it("contains the public market and business sockets and excludes the retired stream", () => {
+    expect(PUBLIC_PATHS.has("/api/v1/market/realtime/ws")).toBe(true);
     expect(PUBLIC_PATHS.has("/api/v1/realtime/ws")).toBe(true);
     expect(PUBLIC_PATHS.has("/api/v1/realtime/stream")).toBe(false);
   });

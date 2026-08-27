@@ -34,14 +34,15 @@ Auth edge 是浏览器唯一会直接对话的服务。它只终结会话，别�
 
 其余全是查表。这张表是显式的——每个方法加路径一条——而不是前缀规则，这是刻意的。
 
-一共声明了四十条路由。三十五条去 trading 服务，五条去 gateway：
-
 | 前缀 | 上游 | 说明 |
 | --- | --- | --- |
 | `/api/v1/accounts`、`/api/v1/accounts/{accountId}` 及其动作 | Gateway | 被重写到内部面 |
 | `/api/v1/accounts/{accountId}/runtimes` | Trading | 这是投影，不是 account 本身 |
-| `/api/v1/catalog/*`、`/api/v1/market-data`、`/api/v1/candles` | Trading | |
-| `/api/v1/realtime/ws`、`/api/v1/venues/connectivity` | Trading | 单条多路复用 WebSocket 与 REST 快照 |
+| `/api/v1/catalog/*`、`/api/v1/market-data`、`/api/v1/candles`、资金费读取 | Gateway | 内部面提供浏览器请求适配 |
+| `/api/v1/market/realtime/ws` | Gateway | 公共交易所行情流 |
+| `/api/v1/account/realtime/ws` | Gateway | 需要会话的私有账户通知 |
+| `/api/v1/realtime/ws` | Trading | 套利机会等业务投影 |
+| `/api/v1/venues/connectivity` | Gateway | REST 快照；实时更新走 Gateway 行情连接 |
 | `/api/v1/commands`、`/api/v1/reservations`、`/api/v1/products/manual/*` | Trading | |
 | `/api/v1/positions`、`/api/v1/ledger`、`/api/v1/pnl`、`/api/v1/fills`、`/api/v1/activity` | Trading | |
 | `/api/v1/system/status`、`/api/v1/system/readiness`、`/api/v1/audit` | Trading | |
@@ -79,9 +80,10 @@ Gateway 的这些路由也是唯一会改变路径的：`/api/v1/accounts` 在�
 
 ## 实时 WebSocket
 
-`GET /api/v1/realtime/ws` 是浏览器唯一的实时连接。Edge 将 WebSocket upgrade 双向转发给
-Trading，升级后的连接不使用普通请求超时。公共行情 topic 可以匿名订阅；未认证连接订阅
-`account.events` 时，Trading 只拒绝该 topic，并返回 `AUTH_REQUIRED`。
+Edge 按数据归属转发三类 WebSocket：公共市场数据经
+`/api/v1/market/realtime/ws` 直达 Gateway，私有账户通知经
+`/api/v1/account/realtime/ws` 直达 Gateway，Trading 的
+`/api/v1/realtime/ws` 只承载套利机会等业务投影。账户连接要求会话，市场连接允许匿名。
 
 ## 它不做的事
 

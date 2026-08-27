@@ -151,9 +151,22 @@ board, and venue connectivity. The production capability matrix selects each
 dataset's transport, native-family boundary, cadence, and rate-limit operation.
 Gateway owns exactly one physical `VenueFeedOwner` per venue, environment, and
 native market family; route profiles are output projections, not additional
-connections. Market Hub materializes current snapshots and fans them out to
-every logical consumer. A gap increments generation, emits `resync_required`,
-and rebuilds the snapshot.
+connections. Market Hub caches latest-value facts such as BBO and mark, but it
+does not materialize a full order book. The Exchange adapter bootstraps depth
+from WebSocket only, validates native continuity, and keeps only the bounded
+visible snapshot needed to seed a late logical consumer of the shared topic.
+Gateway then relays `snapshot`, `delta`, or self-contained `full` events. No
+REST depth is joined to a WS sequence; a gap emits `resync_required`, reopens
+the native stream, and starts a new generation. A venue whose protocol cannot
+produce an initial WS book (currently Nado) is explicitly unsupported for
+depth rather than silently falling back to REST.
+
+Open interest remains venue-attributable. Hyperliquid and Lighter provide it
+through their all-market streams, while Bybit, Bitget, Gate, OKX, and Nado use
+their native batch surfaces. Binance and Aster expose only per-symbol current
+OI, so the broad feed leaves OI absent instead of scanning the whole catalog
+and risking IP rate limits. OI from another venue is never relabeled as
+Binance/Aster OI.
 
 Hot order-book, BBO, candle, and mark topics share one pooled native socket per
 feed owner. A reference-counted hotset ranks position, open-order, execution,
@@ -170,6 +183,17 @@ account rule: `/internal/v1/market/ws`, `/internal/v1/market-facts`,
 answers them with credential-free venue clients. They remain authenticated by
 the internal bearer token and never expose credential material or raw venue
 errors.
+
+Auth Edge exposes `/internal/v1/market/ws` to browsers as the anonymous-capable
+`/api/v1/market/realtime/ws`. Private exchange account notifications are
+exposed separately as `/api/v1/account/realtime/ws`; they are live change
+notifications, while REST snapshots remain authoritative after startup or a
+reconnect. Trading may consume both streams but is no longer a browser relay.
+Browser sockets send an application ping every 20 seconds and require a pong
+within 10 seconds, so a half-open browser-to-Gateway connection cannot remain
+visibly online. Native venue clients independently enforce read-idle deadlines;
+their heartbeat or read failure closes the native socket and enters the owner's
+bounded exponential reconnect loop.
 
 The funding board is a pure projection of resident `DerivativeFact` data. At
 startup Gateway bootstraps every supported native perpetual family once and
@@ -218,19 +242,21 @@ GET /v1/ws?account_id=binance-spot
 Authorization: Bearer <token>
 ```
 
-Events carry a process boot ID, per-account sequence, event ID, resource
-version, safe resource payload, and kind. Orders, fills, balances, positions,
-account health, and `resync_required` are normalized. A stale boot cursor,
-evicted replay cursor, stream gap, or process restart emits
-`resync_required`; clients must fetch REST snapshots before resuming.
-
 Each account route owns one product/account-level native stream regardless of
-catalog size. Startup first opens that stream and buffers deltas, loads balance
-and position snapshots, publishes the snapshots, replays buffered deltas, and
-then publishes the connected barrier. Gateway performs order/fill REST
-reconciliation after the barrier. Events carry generation, source sequence,
-and snapshot/live phase; reconnect, listen-key expiry, or sequence gaps require
-resync, and late events from an older generation are discarded.
+catalog size. Orders, fills, balances, positions, account health, and
+`resync_required` are normalized with a stable entity ID, resource version and
+the source event time. Consumers merge by entity identity and source time; they
+do not depend on a Gateway-generated stream sequence or a snapshot barrier.
+
+The internal `/v1/ws` endpoint is retained for server projections. The browser
+uses Gateway's live-only `/internal/v1/account/ws` through Auth Edge, so a
+reconnect never replays an unbounded browser backlog. A stream fault marks
+account realtime unavailable and reconnects with exponential backoff and
+jitter. It does not suspend order submission and does not trigger REST. The
+periodic reconciliation loop repairs missed state every 60 seconds. A fault on
+one account emits an account-scoped `UPSTREAM_GAP` but does not close the
+principal-wide browser subscription or degrade unrelated accounts. The later
+account-health event clears only that account's degraded state.
 
 ## Recovery and reconciliation
 
@@ -244,9 +270,10 @@ audit records. On startup the service:
 3. acquires per-account ownership;
 4. constructs long-lived exchange clients and loads Catalog snapshots;
 5. performs exact read-only reconciliation for prepared, dispatching, or
-   uncertain commands;
+   uncertain commands, then repeats it every 60 seconds;
 6. establishes private streams;
-7. opens write readiness only after all account gates are proven.
+7. derives write readiness from account and route capability, independently of
+   private-stream connectivity.
 
 If a venue accepted an order before the process crashed, the original portable
 client order ID and venue correlation are reused for exact lookup. A generic

@@ -28,7 +28,6 @@ func TestTypedResourceIDsValidateShape(t *testing.T) {
 		"command":       func(v string) error { return CommandID(v).Validate() },
 		"gateway_order": func(v string) error { return GatewayOrderID(v).Validate() },
 		"event":         func(v string) error { return EventID(v).Validate() },
-		"boot":          func(v string) error { return BootID(v).Validate() },
 		"instrument_id": func(v string) error { return InstrumentID(v).Validate() },
 		"resource_version": func(string) error {
 			return ResourceVersion(0).Validate()
@@ -36,7 +35,7 @@ func TestTypedResourceIDsValidateShape(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			value := "principal-a"
-			if strings.Contains(name, "command") || strings.Contains(name, "order") || name == "event" || name == "boot" {
+			if strings.Contains(name, "command") || strings.Contains(name, "order") || name == "event" {
 				value = validUUIDv7
 			}
 			if name == "instrument_id" {
@@ -45,7 +44,7 @@ func TestTypedResourceIDsValidateShape(t *testing.T) {
 			if err := run(value); err != nil {
 				t.Fatalf("valid %s rejected: %v", name, err)
 			}
-			if name == "command" || name == "gateway_order" || name == "event" || name == "boot" {
+			if name == "command" || name == "gateway_order" || name == "event" {
 				for _, valid := range validUUIDv7Variants {
 					if err := run(valid); err != nil {
 						t.Fatalf("%s rejected valid uuidv7 variant %q: %v", name, valid, err)

@@ -56,6 +56,7 @@ type Fact struct {
 	NextFundingTime   time.Time      `json:"nextFundingTime,omitzero"`
 	FundingHistory    []FundingPoint `json:"fundingHistory,omitempty"`
 	OpenInterest      string         `json:"openInterest,omitempty"`
+	SourceSequence    string         `json:"sourceSequence,omitempty"`
 	ObservedAt        time.Time      `json:"observedAt"`
 }
 

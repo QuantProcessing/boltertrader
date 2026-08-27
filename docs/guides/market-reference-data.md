@@ -12,9 +12,10 @@ changes rarely and is loaded as a Catalog snapshot.
 **Market data** describes what an instrument is *doing*: top of book, depth,
 mark price, funding. It changes constantly and is never stored.
 
-Both cross the same boundary. The browser asks the trading service, the trading
-service asks [the gateway](exchange-gateway.md), and only the gateway holds a
-venue client. No layer above the gateway knows a native symbol.
+Both terminate at the same boundary. The browser reaches [the gateway](exchange-gateway.md)
+through Auth Edge, and only the gateway holds a venue client. Trading consumes
+the same Gateway facts for business projections but is not a browser proxy. No
+layer above the gateway knows a native symbol.
 
 ## Reference data
 
@@ -23,8 +24,8 @@ route profile. This discovery uses no account and no credentials; configuring
 an account later adds trading eligibility, not instruments. The gateway also
 exposes account-scoped `/v1/rules`, `/v1/capabilities`, and `/v1/risk-limits`.
 
-The trading service republishes what the interface needs as
-`/api/v1/catalog/venues` and `/api/v1/catalog/instruments`. Instrument
+The Gateway exposes what the interface needs as `/api/v1/catalog/venues` and
+`/api/v1/catalog/instruments` through browser-shaped internal adapters. Instrument
 identifiers are the canonical segmented form throughout — venue, environment,
 product, an optional settlement asset, then the canonical symbol — never a
 venue's own symbol string. See
@@ -35,7 +36,7 @@ venue's own symbol string. See
 There is one input identity and one output formatter:
 
 - A browser or product API submits only `instrumentId`. It does not submit
-  `venue`, `product`, `settlement`, or `symbol` beside it. The trading Catalog
+  `venue`, `product`, `settlement`, or `symbol` beside it. The Gateway Catalog
   resolves those facts, so a request cannot name Binance in one field and an
   OKX contract in another.
 - The Gateway's public instrument directory maps that id to exactly one route
@@ -142,12 +143,15 @@ third surface again, resolving on four product rows only; see
 
 ## Live updates
 
-Neither of the above is polled by the interface. One multiplexed WebSocket,
-`/api/v1/realtime/ws`, carries all subscribed public and private topics.
-Trading itself holds one `/internal/v1/market/ws` connection to Gateway.
-Public topics start with an authoritative snapshot; a venue gap changes the
-generation and emits `resync_required` before the replacement snapshot.
-`account.events` alone supports bounded cursor replay.
+Neither of the above is polled by the interface. Gateway serves public venue
+topics at `/api/v1/market/realtime/ws` and private change notifications at
+`/api/v1/account/realtime/ws`; Trading's `/api/v1/realtime/ws` carries only
+business projections. Latest-value topics start with a snapshot. Order-book
+depth is also WS-only: it starts with a WebSocket-derived snapshot and then
+uses native `delta` or self-contained `full` events. A gap emits
+`resync_required` before the native stream reopens with a new snapshot. Account
+events intentionally have no cursor replay; reconnecting clients reread
+authoritative REST projections.
 
 ## What is available where
 

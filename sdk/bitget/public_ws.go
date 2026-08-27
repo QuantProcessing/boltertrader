@@ -10,6 +10,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const bitgetPublicWSReadIdleTimeout = 75 * time.Second
+
 type PublicWSClient struct {
 	url string
 
@@ -95,6 +97,10 @@ func (c *PublicWSClient) Connect(ctx context.Context) error {
 
 	conn, _, err := websocketDialerFromEnvironment().DialContext(ctx, c.url, nil)
 	if err != nil {
+		return err
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(bitgetPublicWSReadIdleTimeout)); err != nil {
+		_ = conn.Close()
 		return err
 	}
 
@@ -242,6 +248,7 @@ func (c *PublicWSClient) pingLoop(conn *websocket.Conn) {
 		err := conn.WriteMessage(websocket.TextMessage, []byte("ping"))
 		c.writeMu.Unlock()
 		if err != nil {
+			_ = conn.Close()
 			return
 		}
 	}
@@ -262,6 +269,7 @@ func (c *PublicWSClient) readLoop(conn *websocket.Conn) {
 			}
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(bitgetPublicWSReadIdleTimeout))
 
 		if string(payload) == "pong" {
 			continue

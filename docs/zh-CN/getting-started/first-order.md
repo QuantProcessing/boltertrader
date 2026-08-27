@@ -61,7 +61,8 @@ version。下面的 **Runtime** 面板报告 trading 服务给出的两个独立
 ## 5. 打开交易终端
 
 **Trade** 针对所选 instrument 展示：行情条、K 线图、订单簿、下单票和 blotter。
-实时更新通过 `/api/v1/realtime/ws` 上的单条多路复用 WebSocket 到达。
+市场更新通过 Gateway 的 `/api/v1/market/realtime/ws` 到达；账户通知使用另一条需要认证的
+Gateway WebSocket。
 
 挑一个你的 account product policy 允许的 instrument。
 

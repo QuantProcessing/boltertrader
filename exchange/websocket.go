@@ -12,6 +12,10 @@ type EventKind string
 const (
 	EventSnapshot EventKind = "snapshot"
 	EventDelta    EventKind = "delta"
+	// EventFull is a self-contained replacement delivered after the initial
+	// snapshot. Some venues (for example partial-depth and l2Book channels)
+	// publish a complete visible book on every push rather than level deltas.
+	EventFull EventKind = "full"
 )
 
 type SubscriptionState string
@@ -69,10 +73,19 @@ type Subscription[T any] interface {
 	Close() error
 }
 
+// ReplaySubscription is implemented by shared public topics that can replay a
+// current WebSocket-derived value to a late logical subscriber. Order books use
+// it to avoid a REST snapshot while still sharing one native venue topic.
+type ReplaySubscription[T any] interface {
+	Subscription[T]
+	Replay() (T, bool)
+}
+
 // BookEvent is the venue-neutral order-book contract exposed by Exchange.
-// EventSnapshot replaces the complete visible book. EventDelta mutates only
-// the supplied levels, and a delta level whose quantity is zero deletes that
-// price. Sequence and Previous are opaque venue tokens; when Previous is
+// EventSnapshot starts or replaces the complete visible book. EventFull is a
+// later self-contained replacement in the same generation. EventDelta mutates
+// only the supplied levels, and a delta level whose quantity is zero deletes
+// that price. Sequence and Previous are opaque venue tokens; when Previous is
 // present it must equal the last accepted Sequence. A snapshot starts a new
 // sequence generation and may therefore reset that relationship.
 type BookEvent struct {

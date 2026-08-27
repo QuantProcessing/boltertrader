@@ -1,10 +1,6 @@
 package factoryclient
 
 import (
-	"context"
-	"errors"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,68 +59,17 @@ func TestLighterMarketStatCarriesComparableFundingPeriodAndPrices(t *testing.T) 
 	}
 }
 
-func TestOpenInterestEnrichmentIsBoundedAndIsolatesSymbolFailure(t *testing.T) {
-	identities := map[string]exchange.InstrumentIdentity{}
-	marks := map[string]exchange.OptionalDecimal{}
-	for _, symbol := range []string{"AUSDT", "BUSDT", "CUSDT", "DUSDT", "EUSDT"} {
-		identity := fundingTestIdentity()
-		identity.Symbol = symbol
-		identity.NativeSymbol = symbol
-		identities[symbol] = identity
-		marks[symbol] = exchange.OptionalDecimal{Value: decimal.NewFromInt(10), Valid: true}
+func TestDerivativeSnapshotDoesNotClaimAbsentOpenInterest(t *testing.T) {
+	fields := nativeDerivativeSnapshotFields([]nativeDerivativeFact{{
+		FundingRate: exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true},
+		MarkPrice:   exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true},
+		IndexPrice:  exchange.OptionalDecimal{Value: decimal.NewFromInt(99), Valid: true},
+	}})
+	if !fields.Has(nativeDerivativeFieldIdentity) || !fields.Has(nativeDerivativeFieldFunding) || !fields.Has(nativeDerivativeFieldMarkPrice) || !fields.Has(nativeDerivativeFieldIndexPrice) {
+		t.Fatalf("snapshot fields missing available values: %b", fields)
 	}
-	var marksMu sync.RWMutex
-	var active atomic.Int32
-	var maximum atomic.Int32
-	var emitted atomic.Int32
-	load := func(ctx context.Context, symbol string) (string, time.Time, error) {
-		current := active.Add(1)
-		defer active.Add(-1)
-		for {
-			old := maximum.Load()
-			if current <= old || maximum.CompareAndSwap(old, current) {
-				break
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return "", time.Time{}, ctx.Err()
-		case <-time.After(5 * time.Millisecond):
-		}
-		if symbol == "CUSDT" {
-			return "", time.Time{}, errors.New("one symbol failed")
-		}
-		return "3", time.Now().UTC(), nil
-	}
-	runOpenInterestEnrichmentRound(context.Background(), exchange.CatalogScope{
-		Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
-		Product: exchange.ProductPerp, Settlement: "USDT",
-	}, identities, marks, &marksMu, func(nativeDerivativePatch) {
-		emitted.Add(1)
-	}, load, 2, 0)
-	if maximum.Load() > 2 || maximum.Load() < 2 {
-		t.Fatalf("maximum concurrency=%d", maximum.Load())
-	}
-	if emitted.Load() != 4 {
-		t.Fatalf("successful emissions=%d", emitted.Load())
-	}
-}
-
-func TestBinanceHotOpenInterestSelectsOnlyAdmittedSymbols(t *testing.T) {
-	watcher := &binanceDerivativeWatcher{}
-	watcher.setHotInstrument("BTCUSDT", true)
-	watcher.setHotInstrument("MISSING", true)
-	all := map[string]exchange.InstrumentIdentity{
-		"BTCUSDT": {Venue: exchange.VenueBinance, Product: exchange.ProductPerp, NativeSymbol: "BTCUSDT"},
-		"ETHUSDT": {Venue: exchange.VenueBinance, Product: exchange.ProductPerp, NativeSymbol: "ETHUSDT"},
-	}
-	hot := watcher.hotIdentities(all)
-	if len(hot) != 1 || hot["BTCUSDT"].NativeSymbol != "BTCUSDT" {
-		t.Fatalf("hot identities = %+v", hot)
-	}
-	watcher.setHotInstrument("BTCUSDT", false)
-	if got := watcher.hotIdentities(all); len(got) != 0 {
-		t.Fatalf("released hot identities = %+v", got)
+	if fields.Has(nativeDerivativeFieldOpenInterest) || fields.Has(nativeDerivativeFieldOpenInterestNotional) {
+		t.Fatalf("snapshot claims absent open interest: %b", fields)
 	}
 }
 

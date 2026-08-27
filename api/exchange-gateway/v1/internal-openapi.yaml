@@ -52,6 +52,16 @@ paths:
     get: {operationId: listInternalVenues, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/catalog/instruments:
     get: {operationId: listInternalInstruments, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/browser/catalog/venues:
+    get: {operationId: listBrowserVenues, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/browser/catalog/instruments:
+    get: {operationId: listBrowserInstruments, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/browser/market-data:
+    get: {operationId: getBrowserMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/browser/candles:
+    get: {operationId: getBrowserCandles, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/browser/funding-history:
+    get: {operationId: getBrowserFundingHistory, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/market-data:
     get: {operationId: getInternalMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/candles:
@@ -61,7 +71,17 @@ paths:
       operationId: streamInternalMarket
       responses:
         '101':
-          description: Multiplexed Gateway-to-Trading market stream. Every topic starts with a complete snapshot; gaps emit resync_required and continue with a new generation snapshot. Control frames use subscribe, unsubscribe, and ping.
+          description: Multiplexed Gateway market stream. Topics start from a WebSocket-derived snapshot; order books then carry native deltas or self-contained full replacements. No REST book is joined to the stream. Gaps emit resync_required and reopen the logical subscription with a new generation. Control frames use subscribe, unsubscribe, and ping.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RealtimeMessage'}
+        default: {$ref: '#/components/responses/Error'}
+  /internal/v1/account/ws:
+    get:
+      operationId: streamInternalAccountEvents
+      responses:
+        '101':
+          description: Live Gateway account change notifications. The client reads authoritative REST snapshots after each checkpoint or reconnect; no account event replay or venue sequence is required.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/RealtimeMessage'}
@@ -125,7 +145,7 @@ components:
       additionalProperties: false
       required: [type]
       properties:
-        type: {type: string, enum: [ack, snapshot, delta, checkpoint, resync_required, error, pong]}
+        type: {type: string, enum: [ack, snapshot, delta, full, checkpoint, resync_required, error, pong]}
         requestId: {type: string}
         subscriptionId: {type: string}
         topic: {type: string, enum: [market.order_book, market.bbo, market.candles, market.mark_price, funding.board, system.venue_connectivity]}

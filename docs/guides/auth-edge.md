@@ -44,15 +44,17 @@ session had expired. The distinction is not the caller's business.
 Everything else is a table lookup. The table is explicit — one entry per method
 and path — rather than a prefix rule, and that is deliberate.
 
-Forty routes are declared. Thirty-five go to the trading service and five to
-the gateway:
+Routes are declared explicitly and sent to the service that owns the data:
 
 | Prefix | Upstream | Notes |
 | --- | --- | --- |
 | `/api/v1/accounts`, `/api/v1/accounts/{accountId}` and its actions | Gateway | Rewritten onto the internal plane |
 | `/api/v1/accounts/{accountId}/runtimes` | Trading | A projection, not the account itself |
-| `/api/v1/catalog/*`, `/api/v1/market-data`, `/api/v1/candles` | Trading | |
-| `/api/v1/realtime/ws`, `/api/v1/venues/connectivity` | Trading | One multiplexed WebSocket plus a REST snapshot |
+| `/api/v1/catalog/*`, `/api/v1/market-data`, `/api/v1/candles`, funding reads | Gateway | Browser-shaped adapters on the internal plane |
+| `/api/v1/market/realtime/ws` | Gateway | Public venue market stream |
+| `/api/v1/account/realtime/ws` | Gateway | Session-required private account notifications |
+| `/api/v1/realtime/ws` | Trading | Business projections such as arbitrage opportunities |
+| `/api/v1/venues/connectivity` | Gateway | REST snapshot; live updates use the Gateway market socket |
 | `/api/v1/commands`, `/api/v1/reservations`, `/api/v1/products/manual/*` | Trading | |
 | `/api/v1/positions`, `/api/v1/ledger`, `/api/v1/pnl`, `/api/v1/fills`, `/api/v1/activity` | Trading | |
 | `/api/v1/system/status`, `/api/v1/system/readiness`, `/api/v1/audit` | Trading | |
@@ -99,11 +101,12 @@ only for the session.
 
 ## Realtime WebSocket
 
-`GET /api/v1/realtime/ws` is the only browser realtime connection. The edge
-relays its WebSocket upgrade bidirectionally to Trading and does not apply the
-ordinary request deadline to the upgraded connection. Public market topics may
-be anonymous; Trading rejects only an unauthenticated `account.events`
-subscription with `AUTH_REQUIRED`.
+The edge relays three WebSocket ownership boundaries without applying the
+ordinary request deadline: public venue data goes directly to Gateway at
+`/api/v1/market/realtime/ws`, private account notifications go directly to
+Gateway at `/api/v1/account/realtime/ws`, and Trading serves only business
+projections at `/api/v1/realtime/ws`. The account socket requires a browser
+session; the market socket may be anonymous.
 
 ## What it does not do
 

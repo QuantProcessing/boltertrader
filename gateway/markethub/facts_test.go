@@ -58,6 +58,38 @@ func TestFactStoreMetricsAgeAdvancesWhileFeedIsSilent(t *testing.T) {
 	}
 }
 
+func TestFactStoreMetricsDoNotClaimFieldsAbsentFromOwner(t *testing.T) {
+	base := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	observer := &factObserver{facts: make(chan observedFact, 16)}
+	store := NewFactStore(observer, func() time.Time { return base.Add(time.Second) })
+	fact := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	fact.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true}
+	fact.MarkObservedAt = base
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, base, fact)); err != nil {
+		t.Fatal(err)
+	}
+	for len(observer.facts) > 0 {
+		<-observer.facts
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go store.RunMetrics(ctx, time.Millisecond)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case observed := <-observer.facts:
+			if observed.dataset == string(exchange.DatasetOpenInterest) {
+				t.Fatal("owner without OI capability emitted an OI metric")
+			}
+			if observed.dataset == string(exchange.DatasetMark) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("owner mark metric was not emitted")
+		}
+	}
+}
+
 type observedFact struct {
 	dataset  string
 	age      time.Duration
@@ -165,6 +197,61 @@ func TestFactStoreFencesGenerationsAndRequiresSnapshot(t *testing.T) {
 	got, _ := store.Get(fact.InstrumentID)
 	if !got.MarkPrice.Value.Equal(decimal.NewFromInt(200)) {
 		t.Fatalf("old generation overwrote current mark: %s", got.MarkPrice.Value)
+	}
+}
+
+func TestFactStoreInstrumentSubscriptionIgnoresUnrelatedChanges(t *testing.T) {
+	store := NewFactStore(nil, nil)
+	at := time.Now().UTC()
+	btc := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	eth := derivativeTestFact("binance:perp:ETH-USDT", "binance-perp-usdt")
+	eth.Instrument.Symbol, eth.Instrument.NativeSymbol, eth.Instrument.BaseAsset = "ETH-USDT", "ETHUSDT", "ETH"
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity, at, btc, eth)); err != nil {
+		t.Fatal(err)
+	}
+	aster := derivativeTestFact("aster:perp:BTC-USDT", "aster-perp-usdt")
+	aster.Instrument.Venue = exchange.VenueAster
+	asterPatch := derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity, at, aster)
+	asterPatch.Scope.Venue, asterPatch.NativeFamily = exchange.VenueAster, "perpetual"
+	if err := store.Apply(asterPatch); err != nil {
+		t.Fatal(err)
+	}
+
+	owner := OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"}
+	updates, cancel, err := store.SubscribeInstrument(t.Context(), owner, btc.InstrumentID, exchange.DerivativeFieldMark, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	aster.MarkPrice, aster.MarkObservedAt = exchange.OptionalDecimal{Value: decimal.NewFromInt(1), Valid: true}, at.Add(time.Second)
+	asterPatch = derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, at.Add(time.Second), aster)
+	asterPatch.Scope.Venue, asterPatch.NativeFamily = exchange.VenueAster, "perpetual"
+	if err := store.Apply(asterPatch); err != nil {
+		t.Fatal(err)
+	}
+	btc.FundingRate, btc.FundingObservedAt = exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true}, at.Add(time.Second)
+	if err := store.Apply(derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldFunding, at.Add(time.Second), btc)); err != nil {
+		t.Fatal(err)
+	}
+	eth.MarkPrice, eth.MarkObservedAt = exchange.OptionalDecimal{Value: decimal.NewFromInt(2), Valid: true}, at.Add(time.Second)
+	if err := store.Apply(derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, at.Add(time.Second), eth)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case change := <-updates:
+		t.Fatalf("unrelated fact change delivered: %+v", change)
+	default:
+	}
+
+	btc.MarkPrice, btc.MarkObservedAt = exchange.OptionalDecimal{Value: decimal.NewFromInt(3), Valid: true}, at.Add(2*time.Second)
+	if err := store.Apply(derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, at.Add(2*time.Second), btc)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-updates:
+	case <-time.After(time.Second):
+		t.Fatal("matching instrument mark change was not delivered")
 	}
 }
 

@@ -9,11 +9,13 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 )
 
-// HotActivator materializes selected Hotset instruments as background Hub
-// consumers. Hub reference counting guarantees these leases share one native
-// topic with browser and execution consumers.
+// HotActivator turns selected Hotset instruments into richer derivative
+// reference streams when a venue offers them. It deliberately does not create
+// BBO, depth, candle, or mark Hub subscriptions: those datasets are owned by
+// their real consumers (browser topics and execution quotes). A generic
+// position/arbitrage hot reason must never fan out into an unrelated high-rate
+// bookTicker subscription for every selected symbol.
 type HotActivator struct {
-	hub         *markethub.Hub
 	marks       BoardMarks
 	derivatives interface {
 		SetHot(hotset.Key, bool)
@@ -28,17 +30,17 @@ type HotActivator struct {
 	counts map[markethub.OwnerKey]int
 }
 
-func NewHotActivator(hub *markethub.Hub, marks BoardMarks, derivatives interface {
+func NewHotActivator(marks BoardMarks, derivatives interface {
 	SetHot(hotset.Key, bool)
 }, metrics interface {
 	SetMarketHot(venue, family, dataset string, hot int)
 }) *HotActivator {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &HotActivator{hub: hub, marks: marks, derivatives: derivatives, metrics: metrics, ctx: ctx, cancel: cancel, active: make(map[hotset.Key]context.CancelFunc), counts: make(map[markethub.OwnerKey]int)}
+	return &HotActivator{marks: marks, derivatives: derivatives, metrics: metrics, ctx: ctx, cancel: cancel, active: make(map[hotset.Key]context.CancelFunc), counts: make(map[markethub.OwnerKey]int)}
 }
 
 func (activator *HotActivator) SetActive(key hotset.Key, active bool) {
-	if activator == nil || activator.hub == nil {
+	if activator == nil {
 		return
 	}
 	activator.mu.Lock()
@@ -75,18 +77,14 @@ func (activator *HotActivator) observeLocked(owner markethub.OwnerKey) {
 		return
 	}
 	count := activator.counts[owner]
-	for _, dataset := range []exchange.MarketDataset{exchange.DatasetMark, exchange.DatasetBBO} {
+	for _, dataset := range []exchange.MarketDataset{exchange.DatasetFunding, exchange.DatasetMark, exchange.DatasetIndex, exchange.DatasetOpenInterest} {
 		activator.metrics.SetMarketHot(string(owner.Venue), owner.NativeFamily, string(dataset), count)
 	}
 }
 
 func (activator *HotActivator) run(ctx context.Context, key hotset.Key) {
-	var subscriptions []*markethub.Subscription
 	var reference exchange.Subscription[exchange.DerivativeReferenceEvent]
 	defer func() {
-		for _, subscription := range subscriptions {
-			subscription.Close()
-		}
 		if reference != nil {
 			_ = reference.Close()
 		}
@@ -97,14 +95,6 @@ func (activator *HotActivator) run(ctx context.Context, key hotset.Key) {
 			activator.marks.PublishReference(ctx, key.InstrumentID, stream.Snapshot)
 			go activator.drainReference(ctx, key.InstrumentID, reference)
 		}
-	}
-	for _, dataset := range []exchange.MarketDataset{exchange.DatasetMark, exchange.DatasetBBO} {
-		subscription, err := activator.hub.Subscribe(ctx, markethub.SubscriptionKey{Owner: key.Owner, Dataset: dataset, InstrumentID: key.InstrumentID}, 4)
-		if err != nil {
-			continue
-		}
-		subscriptions = append(subscriptions, subscription)
-		go drainHotSubscription(ctx, subscription)
 	}
 	<-ctx.Done()
 }
@@ -137,19 +127,6 @@ func (activator *HotActivator) drainReference(ctx context.Context, instrumentID 
 				return
 			}
 			return
-		}
-	}
-}
-
-func drainHotSubscription(ctx context.Context, subscription *markethub.Subscription) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case _, open := <-subscription.Events():
-			if !open {
-				return
-			}
 		}
 	}
 }

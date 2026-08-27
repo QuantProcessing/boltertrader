@@ -33,8 +33,9 @@ The single origin is what lets the session cookie stay `HttpOnly` and
 keeps the browser's `Host` header so the edge sees the origin the cookie was set
 for. See [the auth edge](auth-edge.md).
 
-Realtime needs no special Caddy buffering rule: `/api/v1/realtime/ws` is a
-standard WebSocket upgrade and Caddy relays it bidirectionally.
+Realtime needs no special Caddy buffering rule. The market, account, and
+business paths are standard WebSocket upgrades and Caddy relays them
+bidirectionally.
 
 ## Routes
 
@@ -62,10 +63,22 @@ instruments and routes.
 ## Data flow
 
 Reads go through `react-query` against the endpoints in `src/api/endpoints.ts`.
-Live updates arrive on one multiplexed WebSocket — `/api/v1/realtime/ws` — held
-open by a singleton topic manager and fanned out to mounted consumers. Market,
-funding, arbitrage, connectivity, and account events are logical topics on that
-one connection rather than component-owned sockets or polling loops.
+Live updates use one shared socket per ownership boundary rather than one socket
+per component: Gateway market data at `/api/v1/market/realtime/ws`, Gateway
+account notifications at `/api/v1/account/realtime/ws`, and Trading business
+projections at `/api/v1/realtime/ws`. Duplicate component subscriptions still
+share one logical topic. Depth starts from a WebSocket-derived snapshot and is
+rebuilt from native deltas or self-contained full replacements; Gateway never
+stores a full book or joins a venue REST book to the stream.
+Account entities are overlaid by entity ID, source timestamp, and resource
+version, so an older in-flight REST response cannot roll a newer WebSocket
+update backward. REST reconciliation runs on a fixed 60-second cadence and is
+never triggered by each event or reconnect. Each ownership socket also uses an
+application ping/pong watchdog. The shell reports `degraded` when Gateway is
+still reachable but a venue market or account stream is recovering; it reports
+reconnecting only when the browser socket itself is unavailable. Account
+degradation is tracked per account and clears only on that account's health
+recovery event.
 
 Placement is the two-step ticket: **Review order** requests a sealed preview and
 starts its expiry countdown, **Confirm** submits that sealed object. The button

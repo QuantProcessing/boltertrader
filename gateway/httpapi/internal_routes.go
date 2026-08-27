@@ -13,6 +13,8 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
+	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
 	"github.com/QuantProcessing/boltertrader/gateway/hotset"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
@@ -233,8 +235,11 @@ type InternalOptions struct {
 	FreshBBO            InternalFreshBBO
 	MarketHub           InternalMarketHub
 	MarketKeys          InternalMarketKeys
+	AccountEvents       InternalAccountEvents
+	AccountEventOwner   domain.PrincipalID
 	FundingSettlements  InternalFundingSettlements
 	Hotset              InternalHotset
+	Now                 func() time.Time
 	// Lifecycle is optional. A gateway without a durable account store can
 	// still serve the runtime and catalog surfaces, so the account lifecycle
 	// routes are only mounted when something can answer them.
@@ -258,8 +263,11 @@ type InternalHandler struct {
 	freshBBO            InternalFreshBBO
 	marketHub           InternalMarketHub
 	marketKeys          InternalMarketKeys
+	accountEvents       InternalAccountEvents
+	accountEventOwner   domain.PrincipalID
 	fundingSettlements  InternalFundingSettlements
 	hotset              InternalHotset
+	now                 func() time.Time
 	mux                 *http.ServeMux
 }
 
@@ -278,9 +286,15 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/accounts/runtime/{accountId}/events"},
 	{http.MethodGet, "/internal/v1/catalog/venues"},
 	{http.MethodGet, "/internal/v1/catalog/instruments"},
+	{http.MethodGet, "/internal/v1/browser/catalog/venues"},
+	{http.MethodGet, "/internal/v1/browser/catalog/instruments"},
+	{http.MethodGet, "/internal/v1/browser/market-data"},
+	{http.MethodGet, "/internal/v1/browser/candles"},
+	{http.MethodGet, "/internal/v1/browser/funding-history"},
 	{http.MethodGet, "/internal/v1/market-data"},
 	{http.MethodGet, "/internal/v1/candles"},
 	{http.MethodGet, "/internal/v1/market/ws"},
+	{http.MethodGet, "/internal/v1/account/ws"},
 	{http.MethodGet, "/internal/v1/market-facts"},
 	{http.MethodGet, "/internal/v1/fresh-bbo"},
 	{http.MethodGet, "/internal/v1/private-events"},
@@ -296,7 +310,23 @@ func InternalRoutes() []Route { return append([]Route(nil), internalRoutes...) }
 // order capabilities remain absent from the auth edge's Gateway forwarding
 // table.
 func InternalPublicMarketRoutes() []Route {
-	return nil
+	return []Route{
+		{Method: http.MethodGet, Pattern: "/internal/v1/browser/catalog/venues"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/browser/catalog/instruments"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/browser/market-data"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/browser/candles"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/funding-board"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/browser/funding-history"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/venues/connectivity"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/market/ws"},
+	}
+}
+
+// InternalPrivateRealtimeRoutes is reachable only after Auth Edge has resolved
+// a browser session. It is separate from account lifecycle so route audits do
+// not accidentally classify a private stream as a public market read.
+func InternalPrivateRealtimeRoutes() []Route {
+	return []Route{{Method: http.MethodGet, Pattern: "/internal/v1/account/ws"}}
 }
 
 func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
@@ -306,10 +336,16 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.Lifecycle != nil && options.Blockers == nil {
 		return nil, fmt.Errorf("internal HTTP API account lifecycle requires a blockers source")
 	}
+	if options.AccountEvents != nil && options.AccountEventOwner.Validate() != nil {
+		return nil, fmt.Errorf("internal HTTP API account events require an owner")
+	}
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, marketFacts: options.MarketFacts, venueConnectivity: options.VenueConnectivity, freshBBO: options.FreshBBO, marketHub: options.MarketHub, marketKeys: options.MarketKeys, fundingSettlements: options.FundingSettlements, hotset: options.Hotset, mux: http.NewServeMux()}
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, marketFacts: options.MarketFacts, venueConnectivity: options.VenueConnectivity, freshBBO: options.FreshBBO, marketHub: options.MarketHub, marketKeys: options.MarketKeys, accountEvents: options.AccountEvents, accountEventOwner: options.AccountEventOwner, fundingSettlements: options.FundingSettlements, hotset: options.Hotset, now: options.Now, mux: http.NewServeMux()}
 	handler.register()
 	if handler.lifecycle != nil {
 		handler.registerAccountLifecycle()
@@ -344,9 +380,15 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/accounts/runtime/{accountId}/events", handler.accountRead(AuthorityRuntimeEvents))
 	handler.mux.HandleFunc("GET /internal/v1/catalog/venues", handler.read(AuthorityCatalogVenues))
 	handler.mux.HandleFunc("GET /internal/v1/catalog/instruments", handler.read(AuthorityCatalogInstruments))
+	handler.mux.HandleFunc("GET /internal/v1/browser/catalog/venues", handler.browserCatalogVenues)
+	handler.mux.HandleFunc("GET /internal/v1/browser/catalog/instruments", handler.browserCatalogInstruments)
+	handler.mux.HandleFunc("GET /internal/v1/browser/market-data", handler.browserMarketData)
+	handler.mux.HandleFunc("GET /internal/v1/browser/candles", handler.browserCandles)
+	handler.mux.HandleFunc("GET /internal/v1/browser/funding-history", handler.browserFundingHistory)
 	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.read(AuthorityMarketData))
 	handler.mux.HandleFunc("GET /internal/v1/candles", handler.read(AuthorityCandles))
 	handler.mux.HandleFunc("GET /internal/v1/market/ws", handler.unifiedMarketStream)
+	handler.mux.HandleFunc("GET /internal/v1/account/ws", handler.accountEventStream)
 	handler.mux.HandleFunc("GET /internal/v1/market-facts", handler.marketFactsSnapshot)
 	handler.mux.HandleFunc("GET /internal/v1/fresh-bbo", handler.freshBBOSnapshot)
 	handler.mux.HandleFunc("GET /internal/v1/private-events", handler.read(AuthorityPrivateEvents))
@@ -364,21 +406,32 @@ type InternalHotset interface {
 	Acquire(context.Context, hotset.Key, hotset.Reason) (*hotset.Lease, error)
 }
 
+type InternalAccountEvents interface {
+	SubscribePrincipal(context.Context, domain.PrincipalID, int) (*gatewayevent.Subscription, error)
+}
+
 func (handler *InternalHandler) fundingHistoryRead(w http.ResponseWriter, r *http.Request) {
 	instrumentID := strings.TrimSpace(r.URL.Query().Get("instrumentId"))
+	release := handler.trackFundingHistory(r.Context(), instrumentID)
+	defer release()
+	handler.execute(w, r, http.StatusOK, AuthorityRequest{Operation: AuthorityFundingHistory, Query: r.URL.Query()})
+}
+
+func (handler *InternalHandler) trackFundingHistory(ctx context.Context, instrumentID string) func() {
+	release := func() {}
 	if handler.hotset != nil && handler.marketKeys != nil && instrumentID != "" {
-		if key, keyErr := handler.marketKeys.SubscriptionKey(r.Context(), instrumentID, exchange.DatasetMark, "", 0); keyErr == nil {
-			if lease, leaseErr := handler.hotset.Acquire(r.Context(), hotset.Key{Owner: key.Owner, InstrumentID: instrumentID}, hotset.ReasonFundingHistory); leaseErr == nil {
-				defer lease.Release()
+		if key, keyErr := handler.marketKeys.SubscriptionKey(ctx, instrumentID, exchange.DatasetMark, "", 0); keyErr == nil {
+			if lease, leaseErr := handler.hotset.Acquire(ctx, hotset.Key{Owner: key.Owner, InstrumentID: instrumentID}, hotset.ReasonFundingHistory); leaseErr == nil {
+				release = lease.Release
 			}
 		}
 	}
 	if handler.fundingSettlements != nil {
 		if instrumentID != "" {
-			_ = handler.fundingSettlements.TrackNextSettlement(r.Context(), instrumentID)
+			_ = handler.fundingSettlements.TrackNextSettlement(ctx, instrumentID)
 		}
 	}
-	handler.execute(w, r, http.StatusOK, AuthorityRequest{Operation: AuthorityFundingHistory, Query: r.URL.Query()})
+	return release
 }
 
 func (handler *InternalHandler) marketFactsSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -514,19 +567,8 @@ func (handler *InternalHandler) accountRead(operation AuthorityOperation) http.H
 }
 
 func (handler *InternalHandler) execute(w http.ResponseWriter, r *http.Request, status int, request AuthorityRequest) {
-	response, err := handler.authority.Execute(r.Context(), request)
-	if err != nil {
-		var authorityErr AuthorityError
-		if errors.As(err, &authorityErr) && authorityErr.Status >= 400 && authorityErr.Code != "" {
-			handler.writeError(w, r, authorityErr.Status, authorityErr.Code, authorityErr.Retryable)
-			return
-		}
-		var authorityErrPointer *AuthorityError
-		if errors.As(err, &authorityErrPointer) && authorityErrPointer.Status >= 400 && authorityErrPointer.Code != "" {
-			handler.writeError(w, r, authorityErrPointer.Status, authorityErrPointer.Code, authorityErrPointer.Retryable)
-			return
-		}
-		handler.writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", true)
+	response, ok := handler.executeAuthority(w, r, request)
+	if !ok {
 		return
 	}
 	if response.DesiredStateRevision > 0 {
@@ -544,6 +586,25 @@ func (handler *InternalHandler) execute(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	writeJSON(w, status, map[string]any{"data": response.Body})
+}
+
+func (handler *InternalHandler) executeAuthority(w http.ResponseWriter, r *http.Request, request AuthorityRequest) (AuthorityResponse, bool) {
+	response, err := handler.authority.Execute(r.Context(), request)
+	if err != nil {
+		var authorityErr AuthorityError
+		if errors.As(err, &authorityErr) && authorityErr.Status >= 400 && authorityErr.Code != "" {
+			handler.writeError(w, r, authorityErr.Status, authorityErr.Code, authorityErr.Retryable)
+			return AuthorityResponse{}, false
+		}
+		var authorityErrPointer *AuthorityError
+		if errors.As(err, &authorityErrPointer) && authorityErrPointer.Status >= 400 && authorityErrPointer.Code != "" {
+			handler.writeError(w, r, authorityErrPointer.Status, authorityErrPointer.Code, authorityErrPointer.Retryable)
+			return AuthorityResponse{}, false
+		}
+		handler.writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", true)
+		return AuthorityResponse{}, false
+	}
+	return response, true
 }
 
 func (desired DesiredApplyRequest) validate(accountID, operationID string) error {

@@ -70,9 +70,9 @@ import type {
 
 /* --- Envelopes ----------------------------------------------------------- */
 
-/** `{meta, data}` — the common case. */
+/** `{data}` with optional Trading metadata. */
 interface DataEnvelope<T> {
-  meta: ResponseMeta;
+  meta?: ResponseMeta;
   data: T;
 }
 
@@ -82,18 +82,18 @@ interface ItemsEnvelope<T> {
   data: { items: T[] };
 }
 
-/** `{meta, data: [...], projection}` — catalog, where `data` is a bare array. */
+/** `{data: [...], projection}` — Gateway catalog, where `data` is a bare array. */
 interface ProjectionEnvelope<T> {
-  meta: ResponseMeta;
+  meta?: ResponseMeta;
   data: T[];
   projection: CatalogProjectionMeta;
 }
 
-/** `{meta, data, rateLimit}` — market data and candles, which spend venue budget. */
+/** Public market reads. Gateway may expose a venue budget when one is meaningful. */
 interface RateLimitedEnvelope<T> {
-  meta: ResponseMeta;
+  meta?: ResponseMeta;
   data: T;
-  rateLimit: RateLimitStatus;
+  rateLimit?: RateLimitStatus;
 }
 
 /**
@@ -132,10 +132,10 @@ export interface Projected<T> {
   projection: CatalogProjectionMeta;
 }
 
-/** What a market read carries besides its value: the venue's remaining budget. */
+/** What a market read carries besides its value. */
 export interface Metered<T> {
   value: T;
-  rateLimit: RateLimitStatus;
+  rateLimit?: RateLimitStatus;
 }
 
 /* --- Paths --------------------------------------------------------------- */
@@ -160,6 +160,10 @@ export const paths = {
   catalogInstruments: "/api/v1/catalog/instruments",
   marketData: "/api/v1/market-data",
   candles: "/api/v1/candles",
+  marketRealtimeSocket: "/api/v1/market/realtime/ws",
+  accountRealtimeSocket: "/api/v1/account/realtime/ws",
+  // Trading retains this socket only for business projections such as
+  // arbitrage opportunities. Venue market/account streams terminate at Gateway.
   realtimeSocket: "/api/v1/realtime/ws",
   fundingBoard: "/api/v1/funding-board",
   fundingHistory: "/api/v1/funding-history",
@@ -333,8 +337,8 @@ export const funding = {
    * per-period/APR switch — is therefore client-side by construction, which is
    * also what lets them all be instant.
    *
-   * The read only copies Trading's local projection. It carries no venue
-   * rate-limit budget because no exchange request happens on this path.
+   * Gateway answers from its resident derivative-fact projection. No Trading
+   * cache or second venue request is involved.
    */
   async board(signal?: AbortSignal): Promise<FundingBoardSnapshot> {
     const body = await apiRequest<DataEnvelope<FundingBoardSnapshot>>(paths.fundingBoard, { signal });

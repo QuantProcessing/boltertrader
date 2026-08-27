@@ -112,7 +112,6 @@ func (manager *Manager) SetRuntimeAccountObserver(observer RuntimeAccountObserve
 	if manager.runtimeObserver != nil {
 		return nil
 	}
-	manager.streamSupervision.Store(true)
 
 	manager.groupMu.Lock()
 	accountIDs := make([]domain.AccountID, 0, len(manager.groups))
@@ -120,7 +119,7 @@ func (manager *Manager) SetRuntimeAccountObserver(observer RuntimeAccountObserve
 		if runtime == nil || runtime.active.Load() == nil {
 			continue
 		}
-		resetPrivateStreamRouteStates(runtime.activeGroup, true, "")
+		runtime.supervisionRegistered = false
 		accountIDs = append(accountIDs, accountID)
 	}
 	manager.groupMu.Unlock()
@@ -131,9 +130,11 @@ func (manager *Manager) SetRuntimeAccountObserver(observer RuntimeAccountObserve
 			attemptedAccountIDs = append(attemptedAccountIDs, accountID)
 			for _, attemptedID := range attemptedAccountIDs {
 				observer.UnregisterAccount(attemptedID)
+				manager.setSupervisionRegistered(attemptedID, false)
 			}
 			return fmt.Errorf("runtime account supervision failed")
 		}
+		manager.setSupervisionRegistered(accountID, true)
 		attemptedAccountIDs = append(attemptedAccountIDs, accountID)
 	}
 	manager.runtimeObserver = observer
@@ -145,11 +146,30 @@ func (manager *Manager) notifyRuntimePromoted(accountID domain.AccountID) error 
 	observer := manager.runtimeObserver
 	manager.observerMu.RUnlock()
 	if observer != nil {
+		if manager.supervisionIsRegistered(accountID) {
+			return nil
+		}
 		if err := observer.RegisterAccount(accountID); err != nil {
 			return fmt.Errorf("runtime account supervision failed")
 		}
+		manager.setSupervisionRegistered(accountID, true)
 	}
 	return nil
+}
+
+func (manager *Manager) supervisionIsRegistered(accountID domain.AccountID) bool {
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	runtime := manager.groups[accountID]
+	return runtime != nil && runtime.active.Load() != nil && runtime.supervisionRegistered
+}
+
+func (manager *Manager) setSupervisionRegistered(accountID domain.AccountID, registered bool) {
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	if runtime := manager.groups[accountID]; runtime != nil && runtime.active.Load() != nil {
+		runtime.supervisionRegistered = registered
+	}
 }
 
 func (manager *Manager) notifyRuntimeRetired(accountID domain.AccountID) {
@@ -202,20 +222,12 @@ type SelectedOrderRoute struct {
 }
 
 type RuntimeGroup struct {
-	Snapshot       store.DesiredSnapshot
-	Routes         map[domain.RouteID]*RouteRuntime
-	privateStreams map[domain.RouteID]privateStreamState
-	Admission      *GenerationAdmission
-	State          GroupState
-	cleanupMu      sync.Mutex
-	cleanup        *runtimeCleanupAttempt
-}
-
-type privateStreamState struct {
-	ready      bool
-	reason     string
-	snapshotID string
-	sequence   uint64
+	Snapshot  store.DesiredSnapshot
+	Routes    map[domain.RouteID]*RouteRuntime
+	Admission *GenerationAdmission
+	State     GroupState
+	cleanupMu sync.Mutex
+	cleanup   *runtimeCleanupAttempt
 }
 
 type runtimeCleanupAttempt struct {
@@ -230,11 +242,12 @@ type RoutingSnapshot struct {
 }
 
 type accountRuntime struct {
-	active      atomic.Pointer[RoutingSnapshot]
-	activeGroup *RuntimeGroup
-	candidate   *RuntimeGroup
-	retiring    map[string]*RuntimeGroup
-	retirement  *runtimeRetirement
+	active                atomic.Pointer[RoutingSnapshot]
+	activeGroup           *RuntimeGroup
+	candidate             *RuntimeGroup
+	retiring              map[string]*RuntimeGroup
+	retirement            *runtimeRetirement
+	supervisionRegistered bool
 }
 
 type runtimeRetirement struct {
@@ -401,11 +414,10 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 		return nil, ErrCandidateFailed
 	}
 	group := &RuntimeGroup{
-		Snapshot:       pending.DesiredSnapshot,
-		Routes:         make(map[domain.RouteID]*RouteRuntime, len(pending.Routes)),
-		privateStreams: make(map[domain.RouteID]privateStreamState, len(pending.Routes)),
-		Admission:      newGenerationAdmission(pending.DesiredSnapshot),
-		State:          GroupCandidate,
+		Snapshot:  pending.DesiredSnapshot,
+		Routes:    make(map[domain.RouteID]*RouteRuntime, len(pending.Routes)),
+		Admission: newGenerationAdmission(pending.DesiredSnapshot),
+		State:     GroupCandidate,
 	}
 	for _, definition := range pending.Routes {
 		runtime := &RouteRuntime{Definition: definition}
@@ -413,11 +425,6 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 		if definition.RequestedState == store.RouteDisabled {
 			continue
 		}
-		state := privateStreamState{ready: !manager.streamSupervision.Load()}
-		if !state.ready {
-			state.reason = ReasonPrivateStreamStarting
-		}
-		group.privateStreams[definition.RouteID] = state
 		if manager.publicConnectors != nil {
 			key := routeprofile.Key{Venue: pending.Venue, RouteProfileID: definition.RouteProfileID}
 			lease, err := manager.publicConnectors.Acquire(ctx, key)
@@ -976,11 +983,9 @@ func (manager *Manager) publishApplied(group *RuntimeGroup, active store.ActiveS
 		}
 	}
 	group.State = GroupActive
-	if manager.streamSupervision.Load() {
-		resetPrivateStreamRouteStates(group, true, "")
-	}
 	runtime.activeGroup = group
 	runtime.candidate = nil
+	runtime.supervisionRegistered = false
 	runtime.active.Store(&RoutingSnapshot{Fence: active.Fence, Routes: routes})
 	return manager.publishControlPlaneRuntime(active.DesiredSnapshot)
 }
@@ -1064,7 +1069,7 @@ func (manager *Manager) restoreActiveRuntimeLocked(ctx context.Context, expected
 		active := runtime.active.Load()
 		exact := active.Fence == durable.Fence && runtime.activeGroup.Snapshot.SnapshotID == durable.SnapshotID &&
 			runtime.activeGroup.Snapshot.OperationID == durable.OperationID && runtime.activeGroup.Snapshot.Fence == durable.Fence
-		supervisionHealthy := privateStreamRoutesReady(runtime.activeGroup)
+		supervisionHealthy := runtime.supervisionRegistered
 		manager.groupMu.Unlock()
 		if !exact {
 			return ErrCandidateMismatch
@@ -1099,18 +1104,6 @@ func (manager *Manager) restoreActiveRuntimeLocked(ctx context.Context, expected
 	return nil
 }
 
-func privateStreamRoutesReady(group *RuntimeGroup) bool {
-	if group == nil || len(group.privateStreams) == 0 {
-		return false
-	}
-	for _, state := range group.privateStreams {
-		if !state.ready {
-			return false
-		}
-	}
-	return true
-}
-
 func sameDurableActive(actual, expected store.ActiveSnapshot) bool {
 	if actual.SnapshotID != expected.SnapshotID || actual.OperationID != expected.OperationID ||
 		actual.AccountID != expected.AccountID || actual.Fence != expected.Fence ||
@@ -1140,10 +1133,8 @@ func (manager *Manager) publishRestoredActive(group *RuntimeGroup, active store.
 		}
 	}
 	group.State = GroupActive
-	if manager.streamSupervision.Load() {
-		resetPrivateStreamRouteStates(group, true, "")
-	}
 	runtime.activeGroup = group
+	runtime.supervisionRegistered = false
 	runtime.active.Store(&RoutingSnapshot{Fence: active.Fence, Routes: routes})
 	manager.groupMu.Unlock()
 	return manager.publishControlPlaneRuntime(active.DesiredSnapshot)
@@ -1397,16 +1388,14 @@ func (manager *Manager) activeProductClient(accountID domain.AccountID, product 
 }
 
 type activeRouteAccess struct {
-	accountID           domain.AccountID
-	venue               exchange.Venue
-	environment         exchange.Environment
-	definition          store.RouteDefinition
-	handle              CandidateRoute
-	publicLease         publicconn.Lease
-	admission           *GenerationAdmission
-	runtimeGeneration   uint64
-	privateStreamReady  bool
-	privateStreamReason string
+	accountID         domain.AccountID
+	venue             exchange.Venue
+	environment       exchange.Environment
+	definition        store.RouteDefinition
+	handle            CandidateRoute
+	publicLease       publicconn.Lease
+	admission         *GenerationAdmission
+	runtimeGeneration uint64
 }
 
 func (manager *Manager) activeRouteAccesses(accountID domain.AccountID) ([]activeRouteAccess, error) {
@@ -1422,13 +1411,11 @@ func (manager *Manager) activeRouteAccesses(accountID domain.AccountID) ([]activ
 		if route.Definition.RequestedState != store.RouteActive {
 			continue
 		}
-		privateStream := group.privateStreams[route.Definition.RouteID]
 		result = append(result, activeRouteAccess{
 			accountID: accountID, venue: exchange.Venue(group.Snapshot.Venue),
 			environment: exchange.Environment(group.Snapshot.NativeEnvironment),
 			definition:  route.Definition, handle: route.Handle, publicLease: route.publicLease,
 			admission: group.Admission, runtimeGeneration: group.Snapshot.Fence.RuntimeGeneration,
-			privateStreamReady: privateStream.ready, privateStreamReason: privateStream.reason,
 		})
 	}
 	if len(result) == 0 {
@@ -1569,7 +1556,6 @@ func (manager *Manager) SelectOrderRoute(
 			if selector.RouteID != "" && selector.RouteID != routeID {
 				continue
 			}
-			privateStream := group.privateStreams[routeID]
 			candidates = append(candidates, routeCandidate{
 				routeID: routeID,
 				route:   route,
@@ -1578,7 +1564,6 @@ func (manager *Manager) SelectOrderRoute(
 					environment: exchange.Environment(group.Snapshot.NativeEnvironment),
 					definition:  route.Definition, handle: route.Handle, publicLease: route.publicLease,
 					admission: group.Admission, runtimeGeneration: group.Snapshot.Fence.RuntimeGeneration,
-					privateStreamReady: privateStream.ready, privateStreamReason: privateStream.reason,
 				},
 			})
 		}

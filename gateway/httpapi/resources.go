@@ -383,10 +383,10 @@ type activePositionRouteSource interface {
 	ActiveRoute(domain.AccountID, string, string) (domain.RouteID, *account.GenerationAdmission, error)
 }
 
-// getPositionSnapshot returns one complete account projection beside the
-// exact replay cursor from the same Gateway event Hub. A transient venue or
-// routing failure is an error, never an empty list: only a successfully loaded
-// complete snapshot may prove that an account has no positions.
+// getPositionSnapshot returns one complete account projection. A transient
+// venue or routing failure is an error, never an empty list: only a
+// successfully loaded complete snapshot may prove that an account has no
+// positions. Concurrent WebSocket changes are merged by observation time.
 func (handler *Handler) getPositionSnapshot(w http.ResponseWriter, r *http.Request) {
 	if handler.positions == nil {
 		writeError(w, http.StatusServiceUnavailable, "POSITION_PROJECTION_UNAVAILABLE", "position projection is unavailable", "", true)

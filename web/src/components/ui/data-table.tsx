@@ -39,6 +39,15 @@ declare module "@tanstack/react-table" {
  * unpainted sticky cell would show the scrolling columns straight through it.
  */
 const STICKY = "sticky left-0 z-10 bg-bg";
+/**
+ * The minimum readable measure for an ordinary data column.
+ *
+ * Fixed table layout prevents live values from moving columns, but it also
+ * needs a width for every otherwise-flexible column. Without one, a narrow
+ * viewport gives all remaining columns a few pixels each instead of making the
+ * table scroll. Explicit semantic widths still override this value.
+ */
+const DEFAULT_COLUMN_WIDTH = "128px";
 
 export interface DataTableProps<TData> {
   columns: ColumnDef<TData, unknown>[];
@@ -102,8 +111,21 @@ export function DataTable<TData>({
           its seam the moment the table scrolls. Separated borders are drawn by
           the cells themselves, which is why the header rule below sits on each
           `th` — a `tr` border paints nothing in this mode. */}
-      <table className="w-full border-separate border-spacing-0 text-base">
+      {/* Fixed layout is a correctness property for streaming tables: only the
+          column definitions may determine geometry. A longer price, P&L or
+          identifier must never make every column move while the operator is
+          reading the row. The colgroup makes declared widths authoritative;
+          columns without one divide the remaining space predictably. */}
+      <table className="w-full table-fixed border-separate border-spacing-0 text-base">
         <caption className="sr-only">{caption}</caption>
+        <colgroup>
+          {table.getVisibleLeafColumns().map((column) => (
+            <col
+              key={column.id}
+              style={{ width: column.columnDef.meta?.width ?? DEFAULT_COLUMN_WIDTH }}
+            />
+          ))}
+        </colgroup>
         <thead>
           {headers.map((group) => (
             <tr key={group.id}>

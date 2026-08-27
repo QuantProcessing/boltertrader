@@ -545,106 +545,6 @@ func TestRuntimePositionBlockersIdentifyAnAccountThatWasNeverPromoted(t *testing
 	}
 }
 
-func TestPromotedRuntimePrivateStreamBarrierControlsDynamicWriteReadiness(t *testing.T) {
-	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
-	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
-	}}, routeprofile.DefaultRegistry())
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager.publicConnectors = registry
-	pending := runtimeGroupPending(t)
-	group, err := manager.BuildCandidate(context.Background(), pending)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := promoteGroup(manager, group); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := manager.SetPrivateStreamState(pending.AccountID, false, ReasonPrivateStreamGap); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.RouteStatus(pending.AccountID, "spot", ""); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamGap {
-		t.Fatalf("gapped route status=%+v err=%v", status, err)
-	}
-	if status, err := manager.RecoveryStatus(pending.AccountID); err != nil || !status.WriteReady || status.Reason != "" {
-		t.Fatalf("recovery status=%+v err=%v", status, err)
-	}
-	if err := manager.SetPrivateStreamState(pending.AccountID, true, ""); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.Status(pending.AccountID); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamStarting {
-		t.Fatalf("reconnected-before-barrier status=%+v err=%v", status, err)
-	}
-	if err := manager.ObservePrivateStreamBarrier(pending.AccountID, "snapshot-1", 42); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.Status(pending.AccountID); err != nil || !status.WriteReady || status.Reason != "" {
-		t.Fatalf("barrier-complete status=%+v err=%v", status, err)
-	}
-}
-
-func TestPromotedRuntimePrivateStreamReadinessIsolatedByGenerationAndRoute(t *testing.T) {
-	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
-	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
-	}}, routeprofile.DefaultRegistry())
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager.publicConnectors = registry
-	manager.streamSupervision.Store(true)
-	pending := runtimeGroupPending(t)
-	group, err := manager.BuildCandidate(context.Background(), pending)
-	if err != nil || promoteGroup(manager, group) != nil {
-		t.Fatalf("promote runtime: %v", err)
-	}
-	spotFence := domain.WriteFence{AccountFence: pending.Fence, RouteID: "spot"}
-	perpFence := domain.WriteFence{AccountFence: pending.Fence, RouteID: "perp-usdt"}
-
-	if err := manager.SetPrivateStreamRouteState(spotFence, true, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.ObservePrivateStreamRouteBarrier(spotFence, "spot-snapshot", 1); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.RouteStatus(pending.AccountID, "spot", ""); err != nil || !status.WriteReady || status.Reason != "" {
-		t.Fatalf("spot status after its barrier=%+v err=%v", status, err)
-	}
-	if status, err := manager.RouteStatus(pending.AccountID, "perp", "USDT"); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamStarting {
-		t.Fatalf("perp status before its barrier=%+v err=%v", status, err)
-	}
-
-	if err := manager.SetPrivateStreamRouteState(perpFence, true, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.ObservePrivateStreamRouteBarrier(perpFence, "perp-snapshot", 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.SetPrivateStreamRouteState(spotFence, false, ReasonPrivateStreamGap); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.RouteStatus(pending.AccountID, "spot", ""); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamGap {
-		t.Fatalf("spot status after gap=%+v err=%v", status, err)
-	}
-	if status, err := manager.RouteStatus(pending.AccountID, "perp", "USDT"); err != nil || !status.WriteReady || status.Reason != "" {
-		t.Fatalf("unrelated perp status after spot gap=%+v err=%v", status, err)
-	}
-
-	stale := spotFence
-	stale.RuntimeGeneration--
-	if err := manager.SetPrivateStreamRouteState(stale, false, ReasonPrivateStreamGap); !errors.Is(err, ErrStaleWriteFence) {
-		t.Fatalf("stale stream callback err=%v", err)
-	}
-	if status, err := manager.RouteStatus(pending.AccountID, "perp", "USDT"); err != nil || !status.WriteReady {
-		t.Fatalf("stale generation callback changed unrelated route status=%+v err=%v", status, err)
-	}
-}
-
 func TestPromotedRuntimeResolvesSharedPublicCatalog(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
@@ -817,11 +717,8 @@ func TestRuntimeObserverRegistersExistingAndNewGenerationsBeforeWritesResume(t *
 	if got := observer.registrations(); len(got) != 1 || got[0] != first.AccountID {
 		t.Fatalf("initial registrations=%v", got)
 	}
-	if status, err := manager.Status(first.AccountID); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamStarting {
+	if status, err := manager.Status(first.AccountID); err != nil || !status.WriteReady || status.Reason != "" {
 		t.Fatalf("supervised initial status=%+v err=%v", status, err)
-	}
-	if err := manager.ObservePrivateStreamBarrier(first.AccountID, "snapshot-1", 1); err != nil {
-		t.Fatal(err)
 	}
 
 	second := runtimeGroupPending(t)
@@ -837,7 +734,7 @@ func TestRuntimeObserverRegistersExistingAndNewGenerationsBeforeWritesResume(t *
 	if got := observer.registrations(); len(got) != 2 || got[1] != second.AccountID {
 		t.Fatalf("generation registrations=%v", got)
 	}
-	if status, err := manager.Status(second.AccountID); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamStarting {
+	if status, err := manager.Status(second.AccountID); err != nil || !status.WriteReady || status.Reason != "" {
 		t.Fatalf("new generation status=%+v err=%v", status, err)
 	}
 }
@@ -871,7 +768,7 @@ func TestRuntimeObserverBootstrapBlocksAllAccountsAndRollsBackForRetry(t *testin
 	observer.onRegister = func(domain.AccountID) {
 		for _, accountID := range []domain.AccountID{first.AccountID, second.AccountID} {
 			status, statusErr := manager.Status(accountID)
-			if statusErr != nil || status.WriteReady || status.Reason != ReasonPrivateStreamStarting {
+			if statusErr != nil || !status.WriteReady || status.Reason != "" {
 				t.Errorf("status during bootstrap account=%s status=%+v err=%v", accountID, status, statusErr)
 			}
 		}
@@ -918,9 +815,9 @@ func TestPromotionReportsRuntimeObserverFailureAndKeepsWritesBlocked(t *testing.
 	}
 	status, statusErr := manager.RouteStatus(pending.AccountID, string(exchange.ProductSpot), "")
 	manager.groupMu.Lock()
-	privateReason := manager.groups[pending.AccountID].activeGroup.privateStreams["spot"].reason
+	registered := manager.groups[pending.AccountID].supervisionRegistered
 	manager.groupMu.Unlock()
-	if statusErr != nil || status.WriteReady || privateReason != ReasonPrivateStreamStarting {
+	if statusErr != nil || status.WriteReady || registered {
 		t.Fatalf("status after observer failure=%+v err=%v", status, statusErr)
 	}
 }
@@ -2013,10 +1910,10 @@ func TestRestoreActiveRuntimeRebuildsExactDurableRuntimeWithoutPromotion(t *test
 		t.Fatalf("observer registrations=%v", got)
 	}
 	manager.groupMu.Lock()
-	privateStream := manager.groups[active.AccountID].activeGroup.privateStreams["spot"]
+	registered := manager.groups[active.AccountID].supervisionRegistered
 	manager.groupMu.Unlock()
-	if privateStream.ready || privateStream.reason != ReasonPrivateStreamStarting {
-		t.Fatalf("restored supervision state=%+v", privateStream)
+	if !registered {
+		t.Fatal("restored runtime was not registered with account supervision")
 	}
 	runtime, err := manager.Runtime(active.AccountID)
 	if err != nil || !runtime.Ready || runtime.Reason != "" {
@@ -2025,21 +1922,15 @@ func TestRestoreActiveRuntimeRebuildsExactDurableRuntimeWithoutPromotion(t *test
 	runtimeID := runtime.Desired.RuntimeID
 	builds := buildCounts[active.SnapshotID]
 	if err := manager.RestoreActiveRuntime(context.Background(), durable); err != nil {
-		t.Fatalf("incomplete supervision replay: %v", err)
+		t.Fatalf("idempotent supervision replay: %v", err)
 	}
-	if got := observer.registrations(); len(got) != 2 {
-		t.Fatalf("incomplete supervision was not retried: registrations=%v", got)
-	}
-	for _, routeID := range []domain.RouteID{"spot", "perp-usdt"} {
-		fence := domain.WriteFence{AccountFence: active.Fence, RouteID: routeID}
-		if err := manager.ObservePrivateStreamRouteBarrier(fence, string(routeID)+"-snapshot", 1); err != nil {
-			t.Fatalf("observe %s barrier: %v", routeID, err)
-		}
+	if got := observer.registrations(); len(got) != 1 {
+		t.Fatalf("healthy supervision was registered twice: registrations=%v", got)
 	}
 	if err := manager.RestoreActiveRuntime(context.Background(), durable); err != nil {
 		t.Fatalf("healthy exact active replay: %v", err)
 	}
-	if got := observer.registrations(); len(got) != 2 {
+	if got := observer.registrations(); len(got) != 1 {
 		t.Fatalf("healthy exact replay restarted supervision: registrations=%v", got)
 	}
 	runtime, err = manager.Runtime(active.AccountID)

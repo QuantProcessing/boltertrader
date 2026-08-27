@@ -3,9 +3,10 @@ import { ChevronUp } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { system, type VenueConnectivity } from "@/api/endpoints";
+import { useReadOnly } from "@/app/mode";
 import { PopoverContent, PopoverRoot, PopoverTrigger } from "@/components/ui/popover";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
-import { realtimeTopics } from "@/features/realtime/topic-manager";
+import { realtimeTopics, type RealtimeConnectionState } from "@/features/realtime/topic-manager";
 import { formatTimestamp } from "@/lib/format";
 import { useT, type Key } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ export type VenueConnectivityState = VenueConnectivity["state"];
 
 export function BottomStatus() {
   const t = useT();
+  const readOnly = useReadOnly();
   const status = useQuery({
     queryKey: STATUS_KEY,
     queryFn: ({ signal }) => system.status(signal),
@@ -29,6 +31,11 @@ export function BottomStatus() {
   });
   const [connections, setConnections] = useState<VenueConnectivity[]>([]);
   const [connectionError, setConnectionError] = useState(false);
+  const [marketRealtime, setMarketRealtime] = useState<RealtimeConnectionState>("idle");
+  const [accountRealtime, setAccountRealtime] = useState<RealtimeConnectionState>("idle");
+
+  useEffect(() => realtimeTopics.watchConnection("market", setMarketRealtime), []);
+  useEffect(() => realtimeTopics.watchConnection("account", setAccountRealtime), []);
 
   useEffect(() => realtimeTopics.subscribe({ topic: "system.venue_connectivity" }, (message) => {
     if ((message.type === "snapshot" || message.type === "delta") && validConnectivity(message.data)) {
@@ -68,6 +75,8 @@ export function BottomStatus() {
       <span className="text-dim" aria-hidden="true">/</span>
       <span>{t("utility.mainnet")}</span>
       <div className="ml-auto flex min-w-0 items-center gap-3" aria-live="polite">
+        <StateBadge tone={realtimeTone(marketRealtime)} label={t("utility.marketRealtime")} detail={t(realtimeStateKey(marketRealtime))} />
+        {!readOnly ? <StateBadge tone={realtimeTone(accountRealtime)} label={t("utility.accountRealtime")} detail={t(realtimeStateKey(accountRealtime))} /> : null}
         <PopoverRoot>
           <PopoverTrigger asChild>
             <button type="button" className="group flex h-status min-w-0 items-center gap-3 rounded-control px-1.5 outline-none transition-colors hover:bg-fill focus-visible:ring-1 focus-visible:ring-accent" aria-label={t("utility.venueDetails")}>
@@ -91,6 +100,16 @@ export function BottomStatus() {
       </div>
     </footer>
   );
+}
+
+function realtimeTone(state: RealtimeConnectionState): StateTone {
+  if (state === "online") return "ok";
+  if (state === "reconnecting" || state === "degraded") return "warn";
+  return "pending";
+}
+
+function realtimeStateKey(state: RealtimeConnectionState): Key {
+  return `utility.realtimeState.${state}` as Key;
 }
 
 function VenueConnectionsPanel({ connections, unavailable }: { connections: VenueConnectivity[]; unavailable: boolean }) {

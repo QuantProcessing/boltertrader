@@ -25,8 +25,9 @@ export default defineConfig({
         target: AUTH_EDGE,
         changeOrigin: false,
         ws: true,
-        // The realtime stream is server-sent events. Buffering it would hold
-        // every event until the connection closed, which is never.
+        // Keep legacy streaming responses unbuffered. Current market, account,
+        // and business realtime ownership boundaries are WebSockets and use
+        // this same proxy with ws:true.
         configure: (proxy) => {
           proxy.on("proxyRes", (proxyRes) => {
             if (proxyRes.headers["content-type"]?.includes("text/event-stream")) {

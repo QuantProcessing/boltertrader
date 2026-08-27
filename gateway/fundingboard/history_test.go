@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/shopspring/decimal"
@@ -15,7 +16,11 @@ import (
 
 func TestProjectionFundingHistoryPassesNativeIdentityAndWindow(t *testing.T) {
 	histories := &fakeHistoryFactory{}
-	projection, err := NewProjection(markethub.NewFactStore(nil, time.Now), histories, routeprofile.DefaultRegistry())
+	capabilities, capabilityErr := marketcapability.DefaultRegistry()
+	if capabilityErr != nil {
+		t.Fatal(capabilityErr)
+	}
+	projection, err := NewProjection(markethub.NewFactStore(nil, time.Now), histories, routeprofile.DefaultRegistry(), capabilities)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +39,11 @@ func TestProjectionFundingHistoryPassesNativeIdentityAndWindow(t *testing.T) {
 }
 
 func TestProjectionFundingHistoryRefusalsAndClose(t *testing.T) {
-	projection, err := NewProjection(markethub.NewFactStore(nil, time.Now), &fakeHistoryFactory{}, routeprofile.DefaultRegistry())
+	capabilities, capabilityErr := marketcapability.DefaultRegistry()
+	if capabilityErr != nil {
+		t.Fatal(capabilityErr)
+	}
+	projection, err := NewProjection(markethub.NewFactStore(nil, time.Now), &fakeHistoryFactory{}, routeprofile.DefaultRegistry(), capabilities)
 	if err != nil {
 		t.Fatal(err)
 	}

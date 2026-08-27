@@ -20,6 +20,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
@@ -823,7 +824,11 @@ func newTestFundingBoardSource(t *testing.T, entry exchange.FundingBoardEntry) f
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err := fundingboard.NewProjection(store, nil, routeprofile.DefaultRegistry())
+	capabilities, capabilityErr := marketcapability.DefaultRegistry()
+	if capabilityErr != nil {
+		t.Fatal(capabilityErr)
+	}
+	projection, err := fundingboard.NewProjection(store, nil, routeprofile.DefaultRegistry(), capabilities)
 	if err != nil {
 		t.Fatal(err)
 	}

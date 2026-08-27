@@ -113,14 +113,21 @@ a response body suggested at submission time. See
 
 ## Stream gaps
 
-The gateway's public stream has no cursor replay by design. Every connection
-begins from a fresh authoritative snapshot, and a detected gap emits
-`resync_required` and closes rather than silently skipping events.
+The gateway's public stream has no cursor replay by design. Every logical topic
+begins from a fresh authoritative snapshot. A detected native gap emits
+`resync_required`; the feed owner reconnects and publishes a new generation
+snapshot without interrupting unrelated topics on the browser socket.
 
-Treat that event as authoritative: reconnect and take the new snapshot. Do not
+Treat that event as authoritative: discard the incomplete generation and take
+the new snapshot. Do not
 reconstruct orders or positions from the events you did receive. A gap means the
 sequence you hold is incomplete, and an incomplete sequence applied as if it
 were complete produces a position that looks settled and is not.
+
+Private account notifications are different: they are change hints over REST
+authority, not an event log used to reconstruct state. A native account-stream
+gap marks only that account degraded while the principal browser subscription
+remains open. Fixed 60-second REST reconciliation repairs any missed entity.
 
 ## Cleanup is bounded
 

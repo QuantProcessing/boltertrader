@@ -70,8 +70,9 @@ then a reconciler brings the runtime to it. See
 ## 5. Open the trade terminal
 
 **Trade** shows, for the selected instrument: the ticker strip, a candlestick
-chart, the order book, the order ticket, and the blotter. Live updates arrive on
-the single multiplexed WebSocket at `/api/v1/realtime/ws`.
+chart, the order book, the order ticket, and the blotter. Venue data arrives
+directly from Gateway at `/api/v1/market/realtime/ws`; account notifications use
+the separate authenticated Gateway socket.
 
 Pick an instrument your account's product policy allows.
 

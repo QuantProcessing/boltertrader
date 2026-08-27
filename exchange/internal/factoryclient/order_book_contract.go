@@ -2,9 +2,11 @@ package factoryclient
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
@@ -24,18 +26,24 @@ type orderBookContract struct {
 	mu       sync.Mutex
 	started  bool
 	sequence string
+	observed time.Time
+	bids     map[string]exchange.BookLevel
+	asks     map[string]exchange.BookLevel
 }
 
 func newOrderBookContract(meta clientMeta, instrument exchange.Instrument) *orderBookContract {
-	return &orderBookContract{meta: meta, instrument: instrument}
+	return &orderBookContract{
+		meta: meta, instrument: instrument,
+		bids: make(map[string]exchange.BookLevel), asks: make(map[string]exchange.BookLevel),
+	}
 }
 
 func (contract *orderBookContract) accept(event exchange.BookEvent) (bool, error) {
 	if contract == nil {
 		return false, fmt.Errorf("order-book contract is unavailable")
 	}
-	if event.Kind != exchange.EventSnapshot && event.Kind != exchange.EventDelta {
-		return false, contract.violation("event kind must be snapshot or delta")
+	if event.Kind != exchange.EventSnapshot && event.Kind != exchange.EventDelta && event.Kind != exchange.EventFull {
+		return false, contract.violation("event kind must be snapshot, delta, or full")
 	}
 	if !sameOrderBookInstrument(contract.instrument, event.Instrument) {
 		return false, contract.violation("event instrument does not match subscription")
@@ -56,10 +64,16 @@ func (contract *orderBookContract) accept(event exchange.BookEvent) (bool, error
 	contract.mu.Lock()
 	defer contract.mu.Unlock()
 
-	if event.Kind == exchange.EventSnapshot {
+	if event.Kind == exchange.EventSnapshot || event.Kind == exchange.EventFull {
 		contract.started = true
 		contract.sequence = sequence
+		contract.observed = event.Time
+		contract.bids = replaceBookSide(event.Bids)
+		contract.asks = replaceBookSide(event.Asks)
 		return true, nil
+	}
+	if !contract.started {
+		return false, contract.violation("delta arrived before a snapshot or full book")
 	}
 	if contract.started && sequence != "" && contract.sequence != "" {
 		if comparison, comparable := compareOrderBookSequence(sequence, contract.sequence); comparable && comparison <= 0 {
@@ -73,7 +87,62 @@ func (contract *orderBookContract) accept(event exchange.BookEvent) (bool, error
 	}
 	contract.started = true
 	contract.sequence = sequence
+	contract.observed = event.Time
+	patchBookSide(contract.bids, event.Bids)
+	patchBookSide(contract.asks, event.Asks)
 	return true, nil
+}
+
+// snapshot returns the current bounded venue-visible book for a subscriber
+// joining an already shared native topic. This is replay state at the Exchange
+// boundary, not a Gateway order-book engine; all prices still originate from
+// the WebSocket stream and no REST join is involved.
+func (contract *orderBookContract) snapshot() (exchange.BookEvent, bool) {
+	if contract == nil {
+		return exchange.BookEvent{}, false
+	}
+	contract.mu.Lock()
+	defer contract.mu.Unlock()
+	if !contract.started {
+		return exchange.BookEvent{}, false
+	}
+	return exchange.BookEvent{
+		Kind: exchange.EventSnapshot, Instrument: contract.instrument,
+		Sequence: contract.sequence, Bids: sortedBookSide(contract.bids, true),
+		Asks: sortedBookSide(contract.asks, false), Time: contract.observed,
+	}, true
+}
+
+func replaceBookSide(levels []exchange.BookLevel) map[string]exchange.BookLevel {
+	result := make(map[string]exchange.BookLevel, len(levels))
+	patchBookSide(result, levels)
+	return result
+}
+
+func patchBookSide(current map[string]exchange.BookLevel, levels []exchange.BookLevel) {
+	for _, level := range levels {
+		key := level.Price.String()
+		if level.Quantity.IsZero() {
+			delete(current, key)
+			continue
+		}
+		current[key] = level
+	}
+}
+
+func sortedBookSide(current map[string]exchange.BookLevel, descending bool) []exchange.BookLevel {
+	levels := make([]exchange.BookLevel, 0, len(current))
+	for _, level := range current {
+		levels = append(levels, level)
+	}
+	sort.Slice(levels, func(i, j int) bool {
+		comparison := levels[i].Price.Cmp(levels[j].Price)
+		if descending {
+			return comparison > 0
+		}
+		return comparison < 0
+	})
+	return levels
 }
 
 func (contract *orderBookContract) violation(message string) error {
@@ -99,8 +168,8 @@ func validateOrderBookLevels(kind exchange.EventKind, levels []exchange.BookLeve
 		if level.Quantity.IsNegative() {
 			return fmt.Errorf("%s quantity must not be negative", side)
 		}
-		if kind == exchange.EventSnapshot && level.Quantity.IsZero() {
-			return fmt.Errorf("%s snapshot quantity must be positive", side)
+		if (kind == exchange.EventSnapshot || kind == exchange.EventFull) && level.Quantity.IsZero() {
+			return fmt.Errorf("%s complete-book quantity must be positive", side)
 		}
 	}
 	return nil

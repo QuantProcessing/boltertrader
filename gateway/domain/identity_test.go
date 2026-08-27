@@ -26,16 +26,10 @@ func TestIdentityGeneratorCreatesValidUUIDv7IDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EventID: %v", err)
 	}
-	bootID, err := generator.BootID()
-	if err != nil {
-		t.Fatalf("BootID: %v", err)
-	}
-
 	for name, run := range map[string]func() error{
 		"command":       commandID.Validate,
 		"gateway_order": orderID.Validate,
 		"event":         eventID.Validate,
-		"boot":          bootID.Validate,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := run(); err != nil {

@@ -126,7 +126,7 @@ func TestWsMarketClient_CombinedWrapperDispatchesExactStreamWithoutEventType(t *
 		t.Fatalf("SubscribeLimitOrderBook: %v", err)
 	}
 
-	client.handleMessage([]byte(`{"stream":"btcusdt@depth5@100ms","data":{"lastUpdateId":123,"E":1700000000000,"T":1700000000001,"bids":[["100.1","1.5"]],"asks":[["100.2","2.5"]]}}`))
+	client.handleMessage([]byte(`{"stream":"btcusdt@depth5@100ms","data":{"e":"depthUpdate","E":1700000000000,"T":1700000000001,"s":"BTCUSDT","U":121,"u":123,"pu":120,"b":[["100.1","1.5"]],"a":[["100.2","2.5"]]}}`))
 
 	if got == nil {
 		t.Fatal("expected partial depth callback")

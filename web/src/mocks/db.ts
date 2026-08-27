@@ -97,7 +97,6 @@ function seedActivity(): ActivityEvent[] {
   return FILLS.map((fill, index) => ({
     eventId: `evt-seed-${index + 1}`,
     sequence: index + 1,
-    cursor: String(index + 1),
     kind: "fill.recorded",
     productId: fill.productId,
     accountId: fill.accountId,
@@ -313,7 +312,6 @@ export function record(kind: string, command: Command): ActivityEvent {
   const event: ActivityEvent = {
     eventId: nextId("evt"),
     sequence,
-    cursor: String(sequence),
     kind,
     productId: command.productId,
     accountId: command.accountId,

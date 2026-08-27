@@ -58,7 +58,7 @@ export function PortfolioPage() {
   const positions = usePortfolioPositions(query);
   const fundingBoard = useFundingBoard();
   const snapshot = positions.data;
-  useTradeRealtime(Boolean(snapshot?.cursor), snapshot?.cursor);
+  useTradeRealtime(Boolean(snapshot));
 
   const needle = search.query?.toLowerCase() ?? "";
   const livePositions = useMemo(() => applyFundingBoardMarks(snapshot?.items ?? [], fundingBoard.data), [fundingBoard.data, snapshot?.items]);
@@ -185,7 +185,7 @@ function positionColumns(t: Translate): ColumnDef<AccountPosition, unknown>[] {
   return [
     { id: "instrument", header: t("col.instrument"), accessorFn: (item) => item.symbol || item.instrumentId, cell: ({ row }) => <div><InstrumentName instrumentId={row.original.instrumentId} /><div className="text-meta text-dim">{[row.original.venue, row.original.product, row.original.settlementAsset].filter(Boolean).join(" · ")}</div></div>, meta: { sticky: true, width: "14rem" } },
     { id: "account", header: t("col.account"), accessorFn: (item) => item.accountLabel || item.accountId, cell: ({ row }) => <span title={row.original.accountId}>{row.original.accountLabel || row.original.accountId}</span> },
-    { id: "side", header: t("col.side"), accessorFn: (item) => item.side ?? (decimalSign(item.quantity) < 0 ? "sell" : "buy"), cell: ({ getValue }) => <PositionSide side={String(getValue() ?? "")} t={t} /> },
+    { id: "side", header: t("col.side"), accessorFn: (item) => item.side ?? (decimalSign(item.quantity) < 0 ? "sell" : "buy"), cell: ({ getValue }) => <PositionSide side={String(getValue() ?? "")} t={t} />, meta: { width: "128px" } },
     { id: "quantity", header: t("col.quantity"), accessorKey: "quantity", cell: ({ row }) => <Num value={row.original.quantity.replace(/^-/, "")} suffix={positionQuantityUnit(row.original)} />, meta: { numeric: true } },
     { id: "entry", header: t("col.entry"), accessorKey: "entryPrice", cell: ({ row }) => value(row.original.entryPrice), meta: { numeric: true } },
     { id: "mark", header: t("col.mark"), accessorKey: "markPrice", cell: ({ row }) => sourcedValue(row.original.markPrice, row.original.markPriceSource, t), meta: { numeric: true } },
@@ -252,7 +252,7 @@ function sourceLabel(source: string | undefined, t: Translate): string {
 
 function PositionSide({ side, t }: { side: string; t: Translate }) {
   const sell = side.toLowerCase() === "sell" || side.toLowerCase() === "short";
-  return <span className={cn("font-medium", sell ? "text-down" : "text-up")}>{t(sell ? "ticket.side.sell" : "ticket.side.buy")}</span>;
+  return <span className={cn("whitespace-nowrap font-medium", sell ? "text-down" : "text-up")}>{t(sell ? "ticket.side.sell" : "ticket.side.buy")}</span>;
 }
 
 function positionQuantityUnit(position: AccountPosition): string | undefined {

@@ -221,7 +221,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			derivativeOwners, boardErr = marketowner.NewDerivativeOwners(boardFactory, routeprofile.DefaultRegistry(), marketCapabilities, publicMarkets, marketFacts, metrics)
 		}
 		if boardErr == nil {
-			fundingBoard, boardErr = fundingboard.NewProjection(marketFacts, boardFactory, routeprofile.DefaultRegistry())
+			fundingBoard, boardErr = fundingboard.NewProjection(marketFacts, boardFactory, routeprofile.DefaultRegistry(), marketCapabilities)
 		}
 		if boardErr != nil {
 			if derivativeOwners != nil {
@@ -255,7 +255,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("market Hub setup failed")
 		}
 		publicMarkets.SetMarketHub(marketHub)
-		hotActivator = marketowner.NewHotActivator(marketHub, boardMarks, derivativeOwners, metrics)
+		hotActivator = marketowner.NewHotActivator(boardMarks, derivativeOwners, metrics)
 		hotsets, err = hotset.New(hotset.Options{
 			Activator: hotActivator,
 			Capacity: func(owner markethub.OwnerKey) int {
@@ -274,7 +274,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	var restoredAuthority *gatewayAuthority
 	var gatewayMonitor *health.Monitor
 	var internalAuth auth.BearerMiddleware
-	var internalHandlerFactory func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
+	var internalHandlerFactory func(context.Context, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
 	if file.Server.InternalListen != "" {
 		var authErr error
 		internalAuth, authErr = auth.NewBearerMiddleware(ctx, provider, file.Server.InternalAuthTokenRef)
@@ -284,7 +284,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, marketFacts, venueConnectivity, freshBBO, marketHub, hotsets)
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, marketFacts, venueConnectivity, freshBBO, marketHub, hotsets, authMiddleware.PrincipalID())
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
@@ -330,7 +330,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 				return nil, handlerErr
 			}
 			if internalHandlerFactory != nil {
-				internalHandler, handlerErr = internalHandlerFactory(ctx, pool, accounts)
+				internalHandler, handlerErr = internalHandlerFactory(ctx, pool, accounts, orders)
 				if handlerErr != nil {
 					return nil, handlerErr
 				}
@@ -448,8 +448,9 @@ func defaultInternalHandlerFactory(
 	freshBBO httpapi.InternalFreshBBO,
 	marketHub httpapi.InternalMarketHub,
 	hotsets httpapi.InternalHotset,
-) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
-	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
+	accountEventOwner domain.PrincipalID,
+) func(context.Context, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error) {
+	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
 		var handler http.Handler
 		var err error
 		if override != nil {
@@ -489,12 +490,16 @@ func defaultInternalHandlerFactory(
 				MarketHub:           marketHub,
 				FundingSettlements:  settlements,
 				Hotset:              hotsets,
+				AccountEventOwner:   accountEventOwner,
 				Authenticate: func(request *http.Request) error {
 					if _, ok := auth.Principal(request.Context()); !ok {
 						return errors.New("internal authentication required")
 					}
 					return nil
 				},
+			}
+			if coordinator, ok := orders.(processOrderCoordinator); ok {
+				options.AccountEvents = coordinator.Events
 			}
 			if marketKeys, ok := publicMarkets.(httpapi.InternalMarketKeys); ok {
 				options.MarketKeys = marketKeys

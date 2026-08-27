@@ -1,11 +1,10 @@
 // Package app assembles the trading service out of its parts: the reservation
 // gate, the command ledger, the accounting ledger, the portfolio projection,
-// the manual product, the activity log and realtime hub, the readiness view,
+// the manual product, the activity log and business realtime projection, the readiness view,
 // and the background reconciler.
 //
-// It is deliberately host-neutral. Two callers assemble the same service today
-// — the backend auth edge, which mounts it in-process on its own mux, and the
-// trading binary, which serves it directly — and neither one is the "real" one.
+// It is deliberately host-neutral. The trading binary serves it in production,
+// while tests mount the same service on their own mux.
 // Everything a host does differently is an injected dependency rather than a
 // branch in here: who the caller is (Principal, Authenticate,
 // AuthorizeMutation), where the durable state lives (Database), and how the
@@ -32,7 +31,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
-	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
 	tradingpg "github.com/QuantProcessing/boltertrader/services/trading/store/postgres"
 )
@@ -82,11 +80,8 @@ type Dependencies struct {
 	MarketDataSource      marketdata.Source
 	FreshMarketData       httpapi.MarketDataAuthority
 	FreshBBO              marketdata.FreshBBOSource
-	CandleSource          marketdata.CandleSource
 	FundingBoardStream    marketdata.BoardStream
-	FundingHistorySource  marketdata.FundingHistorySource
 	MarketTopics          httpapi.MarketTopicProjection
-	VenueConnectivity     httpapi.VenueConnectivityProjection
 	RealtimeObserver      httpapi.RealtimeObserver
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
@@ -170,14 +165,6 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if marketSource == nil {
 		marketSource = unavailableMarketDataSource{}
 	}
-	candleSource := dependencies.CandleSource
-	if candleSource == nil {
-		candleSource = unavailableCandleSource{}
-	}
-	historySource := dependencies.FundingHistorySource
-	if historySource == nil {
-		historySource = unavailableFundingHistorySource{}
-	}
 	catalogProjection, err := catalog.NewProjection(catalogSource, catalogTTL, now)
 	if err != nil {
 		return nil, err
@@ -190,34 +177,11 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The candle service shares the coordinator rather than taking one of its
-	// own: the budget models what the venue will tolerate, and a chart's reads
-	// and a quote panel's reads spend the same allowance at the same venue.
-	// Giving candles a second coordinator would let the two together spend
-	// twice what either believes is the limit.
-	candleService, err := marketdata.NewCandleService(candleSource, budget)
-	if err != nil {
-		return nil, err
-	}
 	boardService, err := marketdata.NewBoardService(now)
 	if err != nil {
 		return nil, err
 	}
 	arbitrageProjection, err := httpapi.NewArbitrageProjection(catalogProjection, boardService, dependencies.MarketTopics, now)
-	if err != nil {
-		return nil, err
-	}
-	// History spends under the venue's own key rather than the board's: it is
-	// one call to one venue, made when someone opens a pair, and charging it to
-	// the board's ledger would let a few pair pages exhaust the allowance the
-	// matrix poller depends on. It takes the clock because the window arrives
-	// as a name — resolving "7d" is the only thing this service does that the
-	// Gateway cannot do for it.
-	historyService, err := marketdata.NewFundingHistoryService(historySource, budget, now)
-	if err != nil {
-		return nil, err
-	}
-	hub, err := realtime.NewHub(1024, now)
 	if err != nil {
 		return nil, err
 	}
@@ -227,12 +191,12 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		if dependencies.Database != nil {
 			accountPositionStore = tradingpg.NewAccountPositionStore(dependencies.Database)
 		}
-		accountPositionProjection, err = accountpositions.NewService(dependencies.AccountPositionSource, accountPositionStore, hub, now)
+		accountPositionProjection, err = accountpositions.NewService(dependencies.AccountPositionSource, accountPositionStore, now)
 		if err != nil {
 			return nil, err
 		}
 	}
-	activityLog, err := httpapi.NewActivityLog(1024, now, hub)
+	activityLog, err := httpapi.NewActivityLog(1024, now)
 	if err != nil {
 		return nil, err
 	}
@@ -255,10 +219,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 
 	readiness := newReadiness(dependencies, catalogProjection)
 	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{
-		Catalog: catalogProjection, MarketData: marketService, Candles: candleService,
-		FundingBoard: boardService, FundingHistory: historyService,
-		Readiness: readiness, Realtime: hub, Principal: dependencies.Principal,
-		MarketTopics: dependencies.MarketTopics, Connectivity: dependencies.VenueConnectivity,
+		Readiness:        readiness,
 		RealtimeObserver: dependencies.RealtimeObserver,
 		Arbitrage:        arbitrageProjection,
 	})
@@ -489,18 +450,6 @@ type unavailableMarketDataSource struct{}
 
 func (unavailableMarketDataSource) Fetch(context.Context, marketdata.Query) (marketdata.Fact, error) {
 	return marketdata.Fact{}, errors.New("gateway projection unavailable")
-}
-
-type unavailableCandleSource struct{}
-
-func (unavailableCandleSource) FetchCandles(context.Context, marketdata.CandleQuery) (marketdata.CandlePage, error) {
-	return marketdata.CandlePage{}, errors.New("gateway projection unavailable")
-}
-
-type unavailableFundingHistorySource struct{}
-
-func (unavailableFundingHistorySource) FetchFundingHistory(context.Context, marketdata.FundingHistoryRead) (marketdata.FundingHistorySeries, error) {
-	return marketdata.FundingHistorySeries{}, errors.New("gateway projection unavailable")
 }
 
 // reservationGate narrows the reservation service to the one question the

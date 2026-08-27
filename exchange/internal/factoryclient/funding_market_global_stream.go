@@ -3,12 +3,9 @@ package factoryclient
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -46,45 +43,14 @@ func (slot *closeSlot) run() error {
 type binanceDerivativeWatcher struct {
 	settings Settings
 	aster    bool
-	hotMu    sync.RWMutex
-	hot      map[string]bool
-	hotWake  chan struct{}
 	closeSlot
-}
-
-func (watcher *binanceDerivativeWatcher) setHotInstrument(nativeSymbol string, active bool) {
-	watcher.hotMu.Lock()
-	if watcher.hot == nil {
-		watcher.hot = make(map[string]bool)
-	}
-	if watcher.hotWake == nil {
-		watcher.hotWake = make(chan struct{}, 1)
-	}
-	if active {
-		watcher.hot[nativeSymbol] = true
-	} else {
-		delete(watcher.hot, nativeSymbol)
-	}
-	wake := watcher.hotWake
-	watcher.hotMu.Unlock()
-	select {
-	case wake <- struct{}{}:
-	default:
-	}
-}
-
-type openInterestSample struct {
-	value      string
-	observedAt time.Time
 }
 
 func (watcher *binanceDerivativeWatcher) stream(ctx context.Context, bootstrap nativeDerivativePatch, emit func(nativeDerivativePatch)) error {
 	identities := derivativeIdentityByNative(bootstrap.Facts)
-	marks := derivativeMarkByNative(bootstrap.Facts)
-	var marksMu sync.RWMutex
 
 	if watcher.aster {
-		return watcher.streamAster(ctx, bootstrap.Scope, identities, marks, &marksMu, emit)
+		return watcher.streamAster(ctx, bootstrap.Scope, identities, emit)
 	}
 	profile := binanceperp.MainnetEndpointProfile()
 	if watcher.settings.WebSocketEndpoint != "" {
@@ -109,11 +75,6 @@ func (watcher *binanceDerivativeWatcher) stream(ctx context.Context, bootstrap n
 			}
 			observedAt := fundingMillisOrNow(event.EventTime)
 			fact, fields := markStreamFact(identity, event.FundingRate, event.MarkPrice, event.IndexPrice, event.NextFundingTime, observedAt)
-			if fact.MarkPrice.Valid {
-				marksMu.Lock()
-				marks[event.Symbol] = fact.MarkPrice
-				marksMu.Unlock()
-			}
 			if fields != 0 {
 				emit(derivativeDelta(bootstrap.Scope, observedAt, fields, fact))
 			}
@@ -122,24 +83,11 @@ func (watcher *binanceDerivativeWatcher) stream(ctx context.Context, bootstrap n
 	}); err != nil {
 		return err
 	}
-	rest := newBinancePerpPublicSDK(watcher.settings)
-	loadOpenInterest := func(callCtx context.Context, symbol string) (string, time.Time, error) {
-		sample, err := coordinatedMarketRequest(callCtx, watcher.settings, exchange.VenueBinance, "open_interest", symbol, func(requestCtx context.Context) (openInterestSample, error) {
-			row, requestErr := rest.GetOpenInterest(requestCtx, symbol)
-			if requestErr != nil || row == nil {
-				return openInterestSample{}, requestErr
-			}
-			return openInterestSample{value: row.OpenInterest, observedAt: fundingMillisOrNow(row.Time)}, nil
-		})
-		return sample.value, sample.observedAt, err
-	}
-	go runOpenInterestEnrichment(ctx, bootstrap.Scope, identities, marks, &marksMu, emit, loadOpenInterest)
-	go watcher.runHotOpenInterest(ctx, bootstrap.Scope, identities, marks, &marksMu, emit, loadOpenInterest)
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-func (watcher *binanceDerivativeWatcher) streamAster(ctx context.Context, scope exchange.CatalogScope, identities map[string]exchange.InstrumentIdentity, marks map[string]exchange.OptionalDecimal, marksMu *sync.RWMutex, emit func(nativeDerivativePatch)) error {
+func (watcher *binanceDerivativeWatcher) streamAster(ctx context.Context, scope exchange.CatalogScope, identities map[string]exchange.InstrumentIdentity, emit func(nativeDerivativePatch)) error {
 	profile, err := astercommon.NewProfile(astercommon.ProductPerp)
 	if err != nil {
 		return err
@@ -168,11 +116,6 @@ func (watcher *binanceDerivativeWatcher) streamAster(ctx context.Context, scope 
 			}
 			observedAt := fundingMillisOrNow(event.EventTime)
 			fact, fields := markStreamFact(identity, event.FundingRate, event.MarkPrice, event.IndexPrice, event.NextFundingTime, observedAt)
-			if fact.MarkPrice.Valid {
-				marksMu.Lock()
-				marks[event.Symbol] = fact.MarkPrice
-				marksMu.Unlock()
-			}
 			if fields != 0 {
 				emit(derivativeDelta(scope, observedAt, fields, fact))
 			}
@@ -181,66 +124,11 @@ func (watcher *binanceDerivativeWatcher) streamAster(ctx context.Context, scope 
 	}); err != nil {
 		return err
 	}
-	rest, err := newAsterPerpPublicSDK(watcher.settings)
-	if err != nil {
-		return err
-	}
-	loadOpenInterest := func(callCtx context.Context, symbol string) (string, time.Time, error) {
-		sample, requestErr := coordinatedMarketRequest(callCtx, watcher.settings, exchange.VenueAster, "open_interest", symbol, func(requestCtx context.Context) (openInterestSample, error) {
-			row, loadErr := rest.GetOpenInterest(requestCtx, symbol)
-			if loadErr != nil || row == nil {
-				return openInterestSample{}, loadErr
-			}
-			return openInterestSample{value: row.OpenInterest, observedAt: fundingMillisOrNow(row.Time)}, nil
-		})
-		return sample.value, sample.observedAt, requestErr
-	}
-	go runOpenInterestEnrichment(ctx, scope, identities, marks, marksMu, emit, loadOpenInterest)
-	go watcher.runHotOpenInterest(ctx, scope, identities, marks, marksMu, emit, loadOpenInterest)
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 func (watcher *binanceDerivativeWatcher) close() error { return watcher.run() }
-
-func (watcher *binanceDerivativeWatcher) runHotOpenInterest(ctx context.Context, scope exchange.CatalogScope, identities map[string]exchange.InstrumentIdentity, marks map[string]exchange.OptionalDecimal, marksMu *sync.RWMutex, emit func(nativeDerivativePatch), load func(context.Context, string) (string, time.Time, error)) {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		case <-watcher.hotWakeChannel():
-		}
-		hot := watcher.hotIdentities(identities)
-		if len(hot) > 0 {
-			runOpenInterestEnrichmentRound(ctx, scope, hot, marks, marksMu, emit, load, 4, 25*time.Millisecond)
-		}
-	}
-}
-
-func (watcher *binanceDerivativeWatcher) hotWakeChannel() <-chan struct{} {
-	watcher.hotMu.Lock()
-	if watcher.hotWake == nil {
-		watcher.hotWake = make(chan struct{}, 1)
-	}
-	wake := watcher.hotWake
-	watcher.hotMu.Unlock()
-	return wake
-}
-
-func (watcher *binanceDerivativeWatcher) hotIdentities(all map[string]exchange.InstrumentIdentity) map[string]exchange.InstrumentIdentity {
-	watcher.hotMu.RLock()
-	hot := make(map[string]exchange.InstrumentIdentity, len(watcher.hot))
-	for native := range watcher.hot {
-		if identity, ok := all[native]; ok {
-			hot[native] = identity
-		}
-	}
-	watcher.hotMu.RUnlock()
-	return hot
-}
 
 type lighterDerivativeWatcher struct {
 	settings Settings
@@ -376,16 +264,6 @@ func derivativeIdentityByNative(facts []nativeDerivativeFact) map[string]exchang
 	return result
 }
 
-func derivativeMarkByNative(facts []nativeDerivativeFact) map[string]exchange.OptionalDecimal {
-	result := make(map[string]exchange.OptionalDecimal, len(facts))
-	for _, fact := range facts {
-		if fact.MarkPrice.Valid {
-			result[fact.Instrument.NativeSymbol] = fact.MarkPrice
-		}
-	}
-	return result
-}
-
 func fundingOptionalSigned(value string) exchange.OptionalDecimal {
 	parsed, err := decimalOrSkip(value)
 	return exchange.OptionalDecimal{Value: parsed, Valid: err == nil}
@@ -396,101 +274,6 @@ func fundingMillisOrNow(millis int64) time.Time {
 		return time.UnixMilli(millis).UTC()
 	}
 	return time.Now().UTC()
-}
-
-func runOpenInterestEnrichment(ctx context.Context, scope exchange.CatalogScope, identities map[string]exchange.InstrumentIdentity, marks map[string]exchange.OptionalDecimal, marksMu *sync.RWMutex, emit func(nativeDerivativePatch), load func(context.Context, string) (string, time.Time, error)) {
-	runOpenInterestEnrichmentRound(ctx, scope, identities, marks, marksMu, emit, load, 4, 25*time.Millisecond)
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			runOpenInterestEnrichmentRound(ctx, scope, identities, marks, marksMu, emit, load, 4, 25*time.Millisecond)
-		}
-	}
-}
-
-func runOpenInterestEnrichmentRound(ctx context.Context, scope exchange.CatalogScope, identities map[string]exchange.InstrumentIdentity, marks map[string]exchange.OptionalDecimal, marksMu *sync.RWMutex, emit func(nativeDerivativePatch), load func(context.Context, string) (string, time.Time, error), workerLimit int, pace time.Duration) {
-	if workerLimit < 1 {
-		workerLimit = 1
-	}
-	symbols := make([]string, 0, len(identities))
-	for symbol := range identities {
-		symbols = append(symbols, symbol)
-	}
-	sort.Strings(symbols)
-	jobs := make(chan string)
-	var workers sync.WaitGroup
-	var failures atomic.Int64
-	for range workerLimit {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for symbol := range jobs {
-				callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				raw, observedAt, err := load(callCtx, symbol)
-				cancel()
-				if err != nil || raw == "" {
-					if ctx.Err() == nil {
-						failures.Add(1)
-					}
-					continue
-				}
-				oi := fundingOptionalNonNegative(raw)
-				if !oi.Valid {
-					failures.Add(1)
-					continue
-				}
-				if observedAt.IsZero() {
-					observedAt = time.Now().UTC()
-				}
-				identity := identities[symbol]
-				fact := nativeDerivativeFact{Instrument: identity, OpenInterest: oi, OpenInterestObservedAt: observedAt}
-				fields := nativeDerivativeFieldOpenInterest
-				marksMu.RLock()
-				mark := marks[symbol]
-				marksMu.RUnlock()
-				if mark.Valid {
-					fact.OpenInterestNotional = exchange.OptionalDecimal{Value: oi.Value.Mul(mark.Value), Valid: true}
-					fact.OpenInterestNotionalAsset = identity.SettleAsset
-					fields |= nativeDerivativeFieldOpenInterestNotional
-				}
-				emit(derivativeDelta(scope, observedAt, fields, fact))
-			}
-		}()
-	}
-
-	var limiter *time.Ticker
-	if pace > 0 {
-		limiter = time.NewTicker(pace)
-		defer limiter.Stop()
-	}
-	for _, symbol := range symbols {
-		if limiter != nil {
-			select {
-			case <-ctx.Done():
-				close(jobs)
-				workers.Wait()
-				return
-			case <-limiter.C:
-			}
-		}
-		select {
-		case <-ctx.Done():
-			close(jobs)
-			workers.Wait()
-			return
-		case jobs <- symbol:
-		}
-	}
-	close(jobs)
-	workers.Wait()
-	if count := failures.Load(); count > 0 && ctx.Err() == nil {
-		slog.WarnContext(ctx, "funding open-interest enrichment incomplete",
-			"venue", scope.Venue, "settlement", scope.Settlement, "failed_symbols", count)
-	}
 }
 
 type lighterMarketStat struct {

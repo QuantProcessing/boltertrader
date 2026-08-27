@@ -140,25 +140,20 @@ Gateway 在它自己那一层、对它自己的持久订单，也跑着自己的
 - `/api/v1/fills`、`/api/v1/ledger`——发生了什么，以及它的账务。
 - `/api/v1/activity`——命令链条，按顺序，带时间戳。
 - `/api/v1/accounts/{accountId}/runtimes`——界面在每个 account 上显示的读写就绪。
-- `/api/v1/catalog/venues`、`/api/v1/catalog/instruments`——可交易的东西。
-- `/api/v1/market-data`、`/api/v1/candles`——行情条与 K 线图。
 - `/api/v1/products/arbitrage/opportunities`、
   `/api/v1/products/arbitrage/positions`——排过名的价差，和已开的对儿。
-- `/api/v1/realtime/ws`——界面持有的那一条多路复用 WebSocket。
+- `/api/v1/realtime/ws`——套利机会等 Trading 业务投影；公共市场和私有账户连接由 Gateway
+  直接提供。
 
-资金费看板与套利机会都是常驻投影。Trading 消费 Gateway 的单条内部市场 WebSocket：
-每个 topic 首帧为完整 snapshot，后续 delta 按 generation 和 sequence 应用；出现 gap 后
-必须重新取得 snapshot。浏览器最多每秒接收一次合并后的看板与机会更新，不会请求交易所。
-
-`/api/v1/funding-history` 刻意保持按需读取：它通过 Gateway 免凭证的公共面读取一家
-交易所的一个标的，窗口只允许 `7d` 或 `30d`。历史 K 线和资金费不预热、不持久化。
-没有历史 surface 的交易所会被报成「不可用」，而不是报成「空」。参见
+资金费看板由 Gateway 维护，Trading 消费它来生成常驻套利机会投影。Trading 不再向浏览器
+代理 catalog、交易所深度、K 线、资金费历史、连接状态或账户事件。浏览器最多每秒接收一次
+合并后的业务机会更新，也不会因此建立第二条交易所连接。参见
 [市场与参考数据](market-reference-data.md)。
 
 集合响应的包封是 `{"data":{"items":[…]}}`，`data` 旁边还有一个 `meta` 对象。单资源响应把
 资源直接放在 `data` 里。在单资源上读 `data.items`、或在集合上读 `data`，读的都是错的形状。
 按这条规则，看板和历史都是单资源而不是集合：`data` 就是那份快照或那条序列本身，它的列在
-`venues` 下，它的读数在 `points` 下。看板完全从内存读取，因此没有交易所 rate budget。
+`venues` 下，它的读数在 `points` 下。
 
 ## 存储
 

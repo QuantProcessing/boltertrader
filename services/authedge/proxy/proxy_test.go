@@ -443,24 +443,28 @@ func TestPublicRoutesAnswerWithoutASession(t *testing.T) {
 		t.Run(route.Pattern(), func(t *testing.T) {
 			h := newHarness(t, nil)
 			h.sessions.err = session.ErrInvalidSession
+			upstream, token := h.trading, testToken
+			if route.Upstream == Gateway {
+				upstream, token = h.gateway, testToken+"-gateway"
+			}
 
 			response := h.doAnonymous(t, route.Method, route.Path)
 			if response.StatusCode != http.StatusOK {
 				t.Fatalf("status = %d, want 200", response.StatusCode)
 			}
-			if h.trading.path != route.UpstreamPath() {
-				t.Fatalf("trading saw %q, want %q", h.trading.path, route.UpstreamPath())
+			if upstream.path != route.UpstreamPath() {
+				t.Fatalf("%s upstream saw %q, want %q", route.Upstream, upstream.path, route.UpstreamPath())
 			}
 			// The service token still goes: anonymous to the browser is not
 			// anonymous to the upstream, which authenticates its caller either way.
-			if got := h.trading.header.Get(authorizationHeader); got != "Bearer "+testToken {
+			if got := upstream.header.Get(authorizationHeader); got != "Bearer "+token {
 				t.Fatalf("Authorization = %q, want the service token", got)
 			}
 			// No identity header at all, rather than an empty one. An empty
 			// assertion is indistinguishable from a real one to an upstream that
 			// ever grows a reason to care.
-			if _, present := h.trading.header[principalHeader]; present {
-				t.Fatalf("%s was sent for an anonymous read: %q", principalHeader, h.trading.header.Get(principalHeader))
+			if _, present := upstream.header[principalHeader]; present {
+				t.Fatalf("%s was sent for an anonymous read: %q", principalHeader, upstream.header.Get(principalHeader))
 			}
 		})
 	}
@@ -530,7 +534,7 @@ func TestPublicRoutesStillCarryASignedInPrincipal(t *testing.T) {
 	if got := h.do(t, http.MethodGet, "/api/v1/funding-board", nil, "").StatusCode; got != http.StatusOK {
 		t.Fatalf("status = %d, want 200", got)
 	}
-	if got := h.trading.header.Get(principalHeader); got != "browser-session" {
+	if got := h.gateway.header.Get(principalHeader); got != "browser-session" {
 		t.Fatalf("%s = %q, want the session's principal", principalHeader, got)
 	}
 }
@@ -552,8 +556,8 @@ func TestPublicRoutesWithAStaleSessionAreUnauthorized(t *testing.T) {
 	if got := errorCode(t, response); got != "AUTH_REQUIRED" {
 		t.Fatalf("code = %q, want AUTH_REQUIRED", got)
 	}
-	if h.trading.path != "" {
-		t.Fatalf("a stale session reached trading: %q", h.trading.path)
+	if h.trading.path != "" || h.gateway.path != "" {
+		t.Fatalf("a stale session reached an upstream: trading=%q gateway=%q", h.trading.path, h.gateway.path)
 	}
 }
 

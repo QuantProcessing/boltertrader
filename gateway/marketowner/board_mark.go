@@ -114,7 +114,8 @@ func (source BoardMarks) Open(ctx context.Context, key markethub.SubscriptionKey
 	if capabilityErr != nil || capability.Granularity == exchange.GranularitySingleInstrument {
 		return markethub.NativeStream{}, false, capabilityErr
 	}
-	changes, cancel, err := source.Facts.Subscribe(ctx, 64)
+	staleAfter := marketcapability.FreshnessWindow(capability)
+	changes, cancel, err := source.Facts.SubscribeInstrument(ctx, key.Owner, key.InstrumentID, exchange.DerivativeFieldMark, 8)
 	if err != nil {
 		return markethub.NativeStream{}, true, err
 	}
@@ -126,9 +127,9 @@ func (source BoardMarks) Open(ctx context.Context, key markethub.SubscriptionKey
 	events := make(chan markethub.Message, 64)
 	failures := make(chan error, 1)
 	streamCtx, stop := context.WithCancel(ctx)
-	go source.forward(streamCtx, instrument, price, at, changes, events, failures)
+	go source.forward(streamCtx, instrument, price, at, staleAfter, changes, events, failures)
 	return markethub.NativeStream{
-		Snapshot: message(key, markethub.MessageSnapshot, at, "", map[string]any{"price": price}),
+		Snapshot: message(key, markethub.MessageSnapshot, at, "", markData(price, staleAfter)),
 		Events:   events, Errors: failures,
 		Close: func() error {
 			stop()
@@ -155,7 +156,7 @@ func (source BoardMarks) snapshot(instrument publicmarket.Instrument) (string, t
 	return "", time.Time{}, fmt.Errorf("%w: broad mark is absent", markethub.ErrUnavailable)
 }
 
-func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.Instrument, lastPrice string, lastAt time.Time, changes <-chan markethub.FactChange, events chan<- markethub.Message, failures chan<- error) {
+func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.Instrument, lastPrice string, lastAt time.Time, staleAfter time.Duration, changes <-chan markethub.FactChange, events chan<- markethub.Message, failures chan<- error) {
 	defer close(events)
 	defer close(failures)
 	for {
@@ -175,9 +176,13 @@ func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.In
 				continue
 			}
 			lastPrice, lastAt = price, at
-			if !emit(ctx, events, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: at, Data: markethub.Encode(map[string]any{"price": price})}) {
+			if !emit(ctx, events, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: at, Data: markethub.Encode(markData(price, staleAfter))}) {
 				return
 			}
 		}
 	}
+}
+
+func markData(price string, staleAfter time.Duration) map[string]any {
+	return map[string]any{"price": price, "staleAfterMs": staleAfter.Milliseconds()}
 }

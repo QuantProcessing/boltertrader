@@ -4,6 +4,7 @@ import { accountData, trading, type LedgerQuery, type PortfolioPositionQuery } f
 import type { AccountPositionSnapshot, LedgerEntry, PnLSnapshot, Position } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
+import { applyPositionOverlays } from "@/features/trade/account-realtime-overlay";
 import { privateFallbackInterval } from "@/features/trade/queries";
 
 /* ---------------------------------------------------------------------------
@@ -53,6 +54,7 @@ export function usePortfolioPositions(query: PortfolioPositionQuery): UseQueryRe
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
     refetchInterval: privateFallbackInterval,
+    select: (snapshot) => applyPositionOverlays(snapshot, query),
     // Changing the account filter should swap the rows, not blank the table
     // and re-flash a loading state over a list that is mostly the same.
     placeholderData: (previous) => previous,

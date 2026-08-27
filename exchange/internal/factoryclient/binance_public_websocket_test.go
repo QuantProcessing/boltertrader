@@ -13,7 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth5(t *testing.T) {
+func TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth20(t *testing.T) {
 	ws := newFakeBinancePublicWSClient()
 	backend := newBinanceSpotWSBackendWithClient(ws)
 	if ws.connectCalls != 0 {
@@ -29,7 +29,7 @@ func TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth5(t *testing.T) {
 	if ws.connectCalls != 1 {
 		t.Fatalf("Connect calls = %d, want 1", ws.connectCalls)
 	}
-	if ws.bookSymbol != "ETHUSDT" || ws.bookDepth != 5 || ws.bookInterval != "100ms" {
+	if ws.bookSymbol != "ETHUSDT" || ws.bookDepth != 20 || ws.bookInterval != "100ms" {
 		t.Fatalf("subscribe book args = (%s, %d, %s)", ws.bookSymbol, ws.bookDepth, ws.bookInterval)
 	}
 	ws.emitDepth(&binancespot.DepthEvent{
@@ -247,19 +247,23 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartOrderBook: %v", err)
 	}
-	if ws.bookSymbol != "ETHUSDT" || ws.bookInterval != "100ms" {
-		t.Fatalf("perp book args = (%s, %s)", ws.bookSymbol, ws.bookInterval)
+	if ws.bookSymbol != "ETHUSDT" || ws.bookDepth != 20 || ws.bookInterval != "100ms" {
+		t.Fatalf("perp book args = (%s, %d, %s)", ws.bookSymbol, ws.bookDepth, ws.bookInterval)
 	}
 	ws.emitDepth(&binanceperp.WsDepthEvent{
-		Symbol:            "ETHUSDT",
-		FirstUpdateID:     8,
-		FinalUpdateID:     9,
-		FinalUpdateIDLast: 7,
-		Bids:              [][]interface{}{{"100.1", "0"}},
+		Symbol: "ETHUSDT", FinalUpdateID: 9,
+		Bids: [][]interface{}{{"100.1", "2"}}, Asks: [][]interface{}{{"100.2", "3"}},
 	})
-	if book.Kind != exchange.EventDelta || book.Sequence != "9" || book.Previous != "7" || book.Time.IsZero() ||
-		!book.Bids[0].Quantity.IsZero() {
+	if book.Kind != exchange.EventSnapshot || book.Sequence != "9" || book.Previous != "" || book.Time.IsZero() ||
+		!book.Bids[0].Quantity.Equal(decimal.NewFromInt(2)) {
 		t.Fatalf("perp book event = %+v", book)
+	}
+	ws.emitDepth(&binanceperp.WsDepthEvent{
+		Symbol: "ETHUSDT", FinalUpdateID: 10,
+		Bids: [][]interface{}{{"100.1", "4"}}, Asks: [][]interface{}{{"100.2", "5"}},
+	})
+	if book.Kind != exchange.EventFull || book.Sequence != "10" {
+		t.Fatalf("perp full book event = %+v", book)
 	}
 
 	var bbo exchange.BBOEvent
@@ -535,6 +539,7 @@ type fakeBinancePerpPublicWSClient struct {
 	postReconnect func()
 
 	bookSymbol, bboSymbol, tradeSymbol string
+	bookDepth                          int
 	bookInterval                       string
 	bookHandler                        func(*binanceperp.WsDepthEvent) error
 	bboHandler                         func(*binanceperp.WsBookTickerEvent) error
@@ -564,8 +569,8 @@ func (ws *fakeBinancePerpPublicWSClient) SetPostReconnect(handler func()) {
 	ws.postReconnect = handler
 }
 
-func (ws *fakeBinancePerpPublicWSClient) SubscribeIncrementOrderBook(symbol string, interval string, handler func(*binanceperp.WsDepthEvent) error) error {
-	ws.bookSymbol, ws.bookInterval = symbol, interval
+func (ws *fakeBinancePerpPublicWSClient) SubscribeLimitOrderBook(symbol string, depth int, interval string, handler func(*binanceperp.WsDepthEvent) error) error {
+	ws.bookSymbol, ws.bookDepth, ws.bookInterval = symbol, depth, interval
 	ws.bookHandler = handler
 	return nil
 }
@@ -594,7 +599,7 @@ func (ws *fakeBinancePerpPublicWSClient) SubscribeMarkPrice(symbol string, inter
 	return nil
 }
 
-func (ws *fakeBinancePerpPublicWSClient) UnsubscribeIncrementOrderBook(string, string) error {
+func (ws *fakeBinancePerpPublicWSClient) UnsubscribeLimitOrderBook(string, int, string) error {
 	return nil
 }
 

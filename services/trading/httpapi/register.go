@@ -1,7 +1,7 @@
 // Package httpapi is the trading service's browser-facing HTTP surface: manual
 // product orders, the command ledger, reservations, positions, the accounting
-// ledger and P&L, activity and fills projections, and the public catalog /
-// market-data / realtime reads.
+// ledger and P&L, activity and fills projections, system health, and business
+// realtime reads.
 //
 // It owns no authentication of its own. The caller resolves the principal and
 // hands it in — today that caller is the backend auth edge mounting these
@@ -31,9 +31,7 @@ var (
 
 	publicDataRoutes = []string{
 		"GET /api/v1/system/status", "GET /api/v1/system/readiness",
-		"GET /api/v1/catalog/venues", "GET /api/v1/catalog/instruments",
-		"GET /api/v1/market-data", "GET /api/v1/candles", "GET /api/v1/funding-board",
-		"GET /api/v1/funding-history", "GET /api/v1/venues/connectivity", "GET /api/v1/realtime/ws",
+		"GET /api/v1/realtime/ws",
 	}
 
 	tradingRoutes = []string{
@@ -72,7 +70,7 @@ func Routes() []string {
 	return all
 }
 
-// PublicDataRoutes reports the group that fronts the venues' own public reads.
+// PublicDataRoutes reports Trading-owned reads that may be anonymous.
 //
 // "Public data" is a statement about the *data*, not about who may ask: every
 // route here is mounted behind the same service token as the rest, and one of

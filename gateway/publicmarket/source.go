@@ -115,13 +115,15 @@ type CandleResult struct {
 	Page       exchange.CandlePage
 }
 
-// OrderBookStream is a REST snapshot fenced by a live public subscription.
-// The subscription is opened first, so updates cannot fall into the gap
-// between reading the snapshot and starting the stream.
+// OrderBookStream is bootstrapped exclusively from the venue WebSocket. The
+// Exchange layer replays its current bounded snapshot when a logical consumer
+// joins an already shared native topic, so Gateway never joins REST depth to a
+// different WS sequence.
 type OrderBookStream struct {
 	Instrument   exchange.Instrument
 	Snapshot     exchange.OrderBook
 	Subscription exchange.Subscription[exchange.BookEvent]
+	Replay       func() (exchange.OrderBook, bool)
 }
 
 // CandleStream carries the venue's native forming-bar updates. Historical bars
@@ -185,9 +187,9 @@ func observedTime(value time.Time) time.Time {
 	return value.UTC()
 }
 
-// MarkPriceStream joins an immediate REST mark to the venue's public perpetual
-// stream. It is credential-free: the account-specific position remains on the
-// private plane while every viewer may share the same mark.
+// MarkPriceStream is bootstrapped by the public perpetual WebSocket. It is
+// credential-free: the account-specific position remains on the private plane
+// while every viewer may share the same mark.
 type MarkPriceStream struct {
 	Instrument   exchange.Instrument
 	Snapshot     exchange.MarkPriceEvent
@@ -210,29 +212,79 @@ type Source struct {
 	venueTimeout time.Duration
 	now          func() time.Time
 
-	mu        sync.Mutex
-	marketHub *markethub.Hub
-	closed    bool
-	running   bool
-	runCancel context.CancelFunc
-	runDone   chan struct{}
+	mu              sync.Mutex
+	marketHub       *markethub.Hub
+	derivativeMu    sync.RWMutex
+	derivativeIndex map[string]map[string]exchange.DerivativeFact
+	closed          bool
+	running         bool
+	runCancel       context.CancelFunc
+	runDone         chan struct{}
 }
 
 // ResolveDerivativeInstrument implements exchange.DerivativeInstrumentResolver
-// from the resident catalog snapshot. It performs no venue I/O.
+// from the resident catalog index. Catalog publication rebuilds one route's
+// index atomically, so projecting an all-market venue event is O(1) per row and
+// performs no venue I/O or whole-directory scans.
 func (source *Source) ResolveDerivativeInstrument(ctx context.Context, routeProfileID, nativeSymbol, nativeID string) (exchange.DerivativeFact, bool) {
-	snapshot, err := source.Snapshot(ctx)
-	if err != nil {
+	if source == nil || ctx == nil || ctx.Err() != nil {
 		return exchange.DerivativeFact{}, false
 	}
-	instrument, ok := snapshot.MatchFundingEntry(routeProfileID, exchange.FundingBoardEntry{NativeSymbol: nativeSymbol, NativeID: nativeID})
-	if !ok {
-		return exchange.DerivativeFact{}, false
+	source.derivativeMu.RLock()
+	index := source.derivativeIndex[strings.TrimSpace(routeProfileID)]
+	if nativeID = strings.TrimSpace(nativeID); nativeID != "" {
+		if fact, ok := index[derivativeNativeKey("id", nativeID)]; ok {
+			source.derivativeMu.RUnlock()
+			return fact, true
+		}
 	}
-	return exchange.DerivativeFact{
-		InstrumentID: string(instrument.Catalog.ID), RouteProfileID: routeProfileID,
-		Instrument: instrument.Canonical.Identity, Environment: exchange.EnvironmentLive,
-	}, true
+	if nativeSymbol = strings.TrimSpace(nativeSymbol); nativeSymbol != "" {
+		if fact, ok := index[derivativeNativeKey("symbol", nativeSymbol)]; ok {
+			source.derivativeMu.RUnlock()
+			return fact, true
+		}
+	}
+	source.derivativeMu.RUnlock()
+	return exchange.DerivativeFact{}, false
+}
+
+func derivativeNativeKey(kind, value string) string { return kind + "\x00" + value }
+
+func (source *Source) indexDerivativeCatalog(profile routeprofile.Profile, instruments []exchange.Instrument) error {
+	if source == nil || profile.Product != routeprofile.ProductPerp {
+		return nil
+	}
+	index := make(map[string]exchange.DerivativeFact, len(instruments)*2)
+	for _, instrument := range instruments {
+		identity := instrument.Identity
+		instrumentID, err := domain.NewInstrumentID(
+			profile.Venue, string(exchange.EnvironmentLive), string(profile.Product), profile.SettlementAsset, identity.Symbol,
+		)
+		if err != nil {
+			return fmt.Errorf("index derivative catalog %s: %w", profile.ID, err)
+		}
+		fact := exchange.DerivativeFact{
+			InstrumentID: string(instrumentID), RouteProfileID: profile.ID,
+			Instrument: identity, Environment: exchange.EnvironmentLive,
+		}
+		keys := make([]string, 0, 2)
+		if identity.NativeID != "" {
+			keys = append(keys, derivativeNativeKey("id", identity.NativeID))
+		}
+		if identity.NativeSymbol != "" {
+			keys = append(keys, derivativeNativeKey("symbol", identity.NativeSymbol))
+		}
+		for _, key := range keys {
+			if existing, duplicate := index[key]; duplicate && existing.InstrumentID != fact.InstrumentID {
+				return fmt.Errorf("index derivative catalog %s: duplicate native identity", profile.ID)
+			}
+			index[key] = fact
+		}
+	}
+	source.derivativeMu.Lock()
+	source.derivativeIndex[profile.ID] = index
+	source.derivativeMu.Unlock()
+	return nil
 }
 
 // SetMarketHub switches composite market-data snapshots to the same resident
@@ -337,8 +389,16 @@ func (source *Source) RestoreCatalogRevisions(ctx context.Context, loader Catalo
 		if json.Unmarshal(revision.Instruments, &instruments) != nil || len(instruments) == 0 {
 			return fmt.Errorf("restore catalog %s: %w", current.profile.ID, ErrUnavailable)
 		}
-		if _, err := current.catalog.Restore(current.accountID, instruments, revision.ObservedAt); err != nil {
+		restored, err := current.catalog.Restore(current.accountID, instruments, revision.ObservedAt)
+		if err != nil {
 			return fmt.Errorf("restore catalog %s: %w", current.profile.ID, err)
+		}
+		// Restore is deliberately a no-op after a live publication. Do not let
+		// an older durable payload replace the native index in that race.
+		if current.onCatalog != nil && restored.LoadedAt.Equal(revision.ObservedAt.UTC()) {
+			if err := current.onCatalog(current.profile, instruments); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -412,6 +472,7 @@ type column struct {
 	connector Connector
 	catalog   *catalog.Service
 	accountID domain.AccountID
+	onCatalog func(routeprofile.Profile, []exchange.Instrument) error
 
 	mu         sync.Mutex
 	inFlight   chan struct{}
@@ -473,7 +534,14 @@ func newSource(factory Factory, trusted *routeprofile.Registry, options sourceOp
 			sockets[key] = current.connector.WebSocket()
 		}
 	}
-	return &Source{columns: columns, sockets: sockets, interval: options.interval, venueTimeout: options.venueTimeout, now: options.now}, nil
+	source := &Source{
+		columns: columns, sockets: sockets, interval: options.interval, venueTimeout: options.venueTimeout, now: options.now,
+		derivativeIndex: make(map[string]map[string]exchange.DerivativeFact),
+	}
+	for _, current := range columns {
+		current.onCatalog = source.indexDerivativeCatalog
+	}
+	return source, nil
 }
 
 // Venues reports the profiles this source can serve without performing I/O.
@@ -599,15 +667,11 @@ func (snapshot Snapshot) MatchFundingEntry(routeProfileID string, entry exchange
 			continue
 		}
 		identity := instrument.Canonical.Identity
-		switch {
-		case entry.NativeID != "" && identity.NativeID != "":
-			if entry.NativeID == identity.NativeID {
-				return instrument, true
-			}
-		case entry.NativeSymbol != "":
-			if entry.NativeSymbol == identity.NativeSymbol {
-				return instrument, true
-			}
+		if entry.NativeID != "" && identity.NativeID != "" && entry.NativeID == identity.NativeID {
+			return instrument, true
+		}
+		if entry.NativeSymbol != "" && entry.NativeSymbol == identity.NativeSymbol {
+			return instrument, true
 		}
 	}
 	return Instrument{}, false
@@ -654,28 +718,37 @@ func (source *Source) MarketData(ctx context.Context, query Query, depthLimit, f
 }
 
 func (source *Source) marketDataFromHub(ctx context.Context, hub *markethub.Hub, current *column, instrument exchange.Instrument, query Query, depthLimit int) (Fact, error) {
+	// The REST-shaped browser read consumes the same WS-only Hub topic as the
+	// live browser. It does not call the venue's REST order-book endpoint; the
+	// Exchange adapter supplies the initial or replayed bounded snapshot.
 	depthKey := markethub.SubscriptionKey{
 		Owner:   markethub.OwnerKey{Venue: exchange.Venue(current.profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: nativeMarketFamily(current.profile)},
 		Dataset: exchange.DatasetDepth, InstrumentID: query.InstrumentID, Depth: depthLimit,
 	}
 	depth, err := marketHubSnapshot(ctx, hub, depthKey)
 	if err != nil {
-		return Fact{}, fmt.Errorf("read shared public order book: %w", err)
+		return Fact{}, fmt.Errorf("read public order-book websocket snapshot: %w", err)
 	}
-	var payload struct {
+	var value struct {
 		Bids []exchange.BookLevel `json:"bids"`
 		Asks []exchange.BookLevel `json:"asks"`
 	}
-	if json.Unmarshal(depth.Data, &payload) != nil || len(payload.Bids) == 0 || len(payload.Asks) == 0 {
-		return Fact{}, fmt.Errorf("read shared public order book: %w", ErrUnavailable)
+	if json.Unmarshal(depth.Data, &value) != nil {
+		return Fact{}, fmt.Errorf("read public order-book websocket snapshot: %w", ErrUnavailable)
 	}
-	fact := Fact{Query: query, Instrument: instrument, Book: exchange.OrderBook{
-		Instrument: instrument, Bids: payload.Bids, Asks: payload.Asks,
-		Time: depth.ObservedAt.UTC(), Sequence: depth.SourceSequence,
-	}}
+	book := exchange.OrderBook{
+		Instrument: instrument, Bids: value.Bids, Asks: value.Asks,
+		Time: depth.ObservedAt, Sequence: depth.SourceSequence, Page: exchange.PageInfo{Limit: depthLimit},
+	}
+	if len(book.Bids) == 0 || len(book.Asks) == 0 {
+		return Fact{}, fmt.Errorf("read public order-book snapshot: %w", ErrUnavailable)
+	}
+	fact := Fact{Query: query, Instrument: instrument, Book: book}
+	markKey := markethub.SubscriptionKey{
+		Owner:   markethub.OwnerKey{Venue: exchange.Venue(current.profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: nativeMarketFamily(current.profile)},
+		Dataset: exchange.DatasetMark, InstrumentID: query.InstrumentID,
+	}
 	if instrument.Product() == exchange.ProductPerp {
-		markKey := depthKey
-		markKey.Dataset, markKey.Depth = exchange.DatasetMark, 0
 		if mark, markErr := marketHubSnapshot(ctx, hub, markKey); markErr == nil {
 			var value struct {
 				Price string `json:"price"`
@@ -744,12 +817,39 @@ func (source *Source) WatchOrderBook(ctx context.Context, instrumentID string, l
 	if err != nil || subscription == nil {
 		return OrderBookStream{}, fmt.Errorf("watch public order book: %w", errors.Join(ErrUnavailable, err))
 	}
-	book, err := current.connector.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: limit})
+	event, err := awaitSubscriptionEvent(ctx, source.venueTimeout, subscription, func(event exchange.BookEvent) bool {
+		return event.Kind == exchange.EventSnapshot || event.Kind == exchange.EventFull
+	})
 	if err != nil {
 		_ = subscription.Close()
-		return OrderBookStream{}, fmt.Errorf("snapshot public order book: %w", err)
+		return OrderBookStream{}, fmt.Errorf("bootstrap public order book websocket: %w", errors.Join(ErrUnavailable, err))
 	}
-	return OrderBookStream{Instrument: instrument, Snapshot: book, Subscription: subscription}, nil
+	bids, asks := event.Bids, event.Asks
+	if len(bids) > limit {
+		bids = bids[:limit]
+	}
+	if len(asks) > limit {
+		asks = asks[:limit]
+	}
+	book := exchange.OrderBook{Instrument: event.Instrument, Bids: bids, Asks: asks, Time: event.Time, Sequence: event.Sequence, Page: exchange.PageInfo{Limit: limit}}
+	replay := func() (exchange.OrderBook, bool) { return exchange.OrderBook{}, false }
+	if replayable, ok := subscription.(exchange.ReplaySubscription[exchange.BookEvent]); ok {
+		replay = func() (exchange.OrderBook, bool) {
+			event, available := replayable.Replay()
+			if !available {
+				return exchange.OrderBook{}, false
+			}
+			bids, asks := event.Bids, event.Asks
+			if len(bids) > limit {
+				bids = bids[:limit]
+			}
+			if len(asks) > limit {
+				asks = asks[:limit]
+			}
+			return exchange.OrderBook{Instrument: event.Instrument, Bids: bids, Asks: asks, Time: event.Time, Sequence: event.Sequence, Page: exchange.PageInfo{Limit: limit}}, true
+		}
+	}
+	return OrderBookStream{Instrument: instrument, Snapshot: book, Subscription: subscription, Replay: replay}, nil
 }
 
 // WatchCandles starts the venue's forming-candle stream for a portable
@@ -792,16 +892,17 @@ func (source *Source) WatchBBO(ctx context.Context, instrumentID string) (BBOStr
 	if err != nil || subscription == nil {
 		return BBOStream{}, fmt.Errorf("watch public BBO: %w", errors.Join(ErrUnavailable, err))
 	}
-	book, err := current.connector.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 1})
-	if err != nil || len(book.Bids) == 0 || len(book.Asks) == 0 {
+	event, err := awaitSubscriptionEvent(ctx, source.venueTimeout, subscription, func(event exchange.BBOEvent) bool {
+		return event.Bid.Price.IsPositive() && event.Bid.Quantity.IsPositive() && event.Ask.Price.IsPositive() && event.Ask.Quantity.IsPositive()
+	})
+	if err != nil {
 		_ = subscription.Close()
-		return BBOStream{}, fmt.Errorf("snapshot public BBO: %w", errors.Join(ErrUnavailable, err))
+		return BBOStream{}, fmt.Errorf("bootstrap public BBO websocket: %w", errors.Join(ErrUnavailable, err))
 	}
-	return BBOStream{Instrument: instrument, Snapshot: exchange.BBOEvent{Instrument: instrument, Bid: book.Bids[0], Ask: book.Asks[0], SourceSequence: book.Sequence, Time: book.Time}, Subscription: subscription}, nil
+	return BBOStream{Instrument: instrument, Snapshot: event, Subscription: subscription}, nil
 }
 
-// WatchMarkPrice starts the perpetual mark stream before taking its REST
-// snapshot, so a price move cannot disappear between the two operations.
+// WatchMarkPrice starts and bootstraps from one perpetual WS topic.
 func (source *Source) WatchMarkPrice(ctx context.Context, instrumentID string) (MarkPriceStream, error) {
 	current, instrument, err := source.resolvePublicID(ctx, instrumentID)
 	if err != nil {
@@ -819,12 +920,47 @@ func (source *Source) WatchMarkPrice(ctx context.Context, instrumentID string) (
 	if err != nil || subscription == nil {
 		return MarkPriceStream{}, fmt.Errorf("watch public mark price: %w", errors.Join(ErrUnavailable, err))
 	}
-	mark, supported, err := current.connector.MarkPrice(ctx, instrument)
-	if err != nil || !supported {
+	mark, err := awaitSubscriptionEvent(ctx, source.venueTimeout, subscription, func(event exchange.MarkPriceEvent) bool {
+		return event.Price.IsPositive()
+	})
+	if err != nil {
 		_ = subscription.Close()
-		return MarkPriceStream{}, fmt.Errorf("snapshot public mark price: %w", errors.Join(ErrUnavailable, err))
+		return MarkPriceStream{}, fmt.Errorf("bootstrap public mark websocket: %w", errors.Join(ErrUnavailable, err))
 	}
 	return MarkPriceStream{Instrument: instrument, Snapshot: mark, Subscription: subscription}, nil
+}
+
+func awaitSubscriptionEvent[T any](ctx context.Context, timeout time.Duration, subscription exchange.Subscription[T], accept func(T) bool) (T, error) {
+	var zero T
+	if subscription == nil || accept == nil {
+		return zero, ErrUnavailable
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	events, failures := subscription.Events(), subscription.Errors()
+	for events != nil || failures != nil {
+		select {
+		case <-waitCtx.Done():
+			return zero, waitCtx.Err()
+		case event, open := <-events:
+			if !open {
+				events = nil
+				continue
+			}
+			if accept(event) {
+				return event, nil
+			}
+		case err, open := <-failures:
+			if !open {
+				failures = nil
+				continue
+			}
+			if err != nil {
+				return zero, err
+			}
+		}
+	}
+	return zero, ErrUnavailable
 }
 
 // WatchDerivativeReference uses an adapter's additive rich-reference
@@ -948,7 +1084,11 @@ func (current *column) refresh(ctx context.Context) error {
 			instruments, _ := value.([]exchange.Instrument)
 			if err == nil {
 				_, err = current.catalog.Publish(current.accountID, instruments)
-			} else {
+			}
+			if err == nil && current.onCatalog != nil {
+				err = current.onCatalog(current.profile, instruments)
+			}
+			if err != nil {
 				current.catalog.MarkRefreshError(current.accountID)
 			}
 			current.mu.Lock()

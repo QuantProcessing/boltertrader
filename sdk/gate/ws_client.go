@@ -13,6 +13,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const gateWSReadIdleTimeout = 60 * time.Second
+
 type wsRequest struct {
 	ID      uint64  `json:"id,omitempty"`
 	Time    int64   `json:"time"`
@@ -243,7 +245,12 @@ func (c *WSClient) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := conn.SetReadDeadline(time.Now().Add(gateWSReadIdleTimeout)); err != nil {
+		_ = conn.Close()
+		return err
+	}
 	conn.SetPingHandler(func(appData string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(gateWSReadIdleTimeout))
 		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
 	})
 	c.conn = conn
@@ -388,6 +395,7 @@ func (c *WSClient) readLoop(conn *websocket.Conn) {
 			c.handleGateWSConnectionLoss(conn, err)
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(gateWSReadIdleTimeout))
 
 		var env WSEnvelope
 		if err := json.Unmarshal(payload, &env); err != nil {

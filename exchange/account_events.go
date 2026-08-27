@@ -51,8 +51,6 @@ type AccountEvent struct {
 	Kind           AccountEventKind   `json:"kind"`
 	Route          AccountRoute       `json:"route"`
 	InstrumentID   string             `json:"instrumentId,omitempty"`
-	Generation     uint64             `json:"generation"`
-	Sequence       uint64             `json:"sequence"`
 	SourceSequence string             `json:"sourceSequence,omitempty"`
 	Phase          AccountEventPhase  `json:"phase"`
 	ObservedAt     time.Time          `json:"observedAt"`
@@ -65,7 +63,7 @@ type AccountEvent struct {
 }
 
 func (event AccountEvent) Validate() error {
-	if err := event.Route.Validate(); err != nil || event.ObservedAt.IsZero() || event.Generation == 0 || event.Sequence == 0 {
+	if err := event.Route.Validate(); err != nil || event.ObservedAt.IsZero() {
 		return fmt.Errorf("account event identity is invalid")
 	}
 	if event.Phase != AccountEventPhaseSnapshot && event.Phase != AccountEventPhaseLive {

@@ -54,36 +54,7 @@ func TestPrivateWebSocketAuthenticatesFiltersAndPublishesNormalizedEvents(t *tes
 	}
 }
 
-func TestPrivateWebSocketEmitsResyncRequiredForStaleBootAndThenCloses(t *testing.T) {
-	server, _ := newWebSocketServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	header := http.Header{"Authorization": []string{"Bearer test-token"}}
-	connection, response, err := websocket.Dial(ctx,
-		websocketURL(server.URL)+"/v1/ws?account_id=acct-a&cursor=018f0000-0000-7000-8000-000000000099:1",
-		&websocket.DialOptions{HTTPHeader: header})
-	if err != nil {
-		t.Fatalf("websocket dial response=%v err=%v", response, err)
-	}
-	t.Cleanup(func() { _ = connection.CloseNow() })
-
-	var event gatewayevent.Event
-	if err := wsjson.Read(ctx, connection, &event); err != nil {
-		t.Fatal(err)
-	}
-	if event.Kind != gatewayevent.KindResyncRequired {
-		t.Fatalf("event=%+v", event)
-	}
-	var payload gatewayevent.ResyncPayload
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.Reason != "process_restarted" || len(payload.Resources) != 5 {
-		t.Fatalf("resync payload=%+v", payload)
-	}
-}
-
-func TestPrivateWebSocketRejectsUnknownAccountKindAndCursorBeforeUpgrade(t *testing.T) {
+func TestPrivateWebSocketRejectsUnknownAccountKindAndLegacyCursorBeforeUpgrade(t *testing.T) {
 	server, _ := newWebSocketServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -181,7 +152,7 @@ func newWebSocketServer(t *testing.T) (*httptest.Server, *gatewayevent.Hub) {
 		Random: strings.NewReader(strings.Repeat("w", 4096)),
 	})
 	hub, err := gatewayevent.NewHub(gatewayevent.Options{
-		Capacity: 8, SubscriberBuffer: 4, Identity: identity,
+		SubscriberBuffer: 4, Identity: identity,
 		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 	})
 	if err != nil {

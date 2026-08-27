@@ -1421,15 +1421,20 @@ func (backend *asterSpotWSBackend) StartOrderBook(ctx context.Context, instrumen
 	if err != nil {
 		return nil, err
 	}
-	err = ws.SubscribeIncrementOrderBook(native, "", func(event *asterspot.WsDepthEvent) error {
+	first := true
+	err = ws.SubscribeLimitOrderBook(native, 20, "100ms", func(event *asterspot.DepthEvent) error {
 		book, err := asterOrderBook(instrument, 0, event.Bids, event.Asks, event.FinalUpdateID, event.EventTime, exchange.ProductSpot)
 		if err != nil {
 			return err
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Previous: asterDepthPrevious(event.FirstUpdateID, event.FinalUpdateIDLast), Bids: book.Bids, Asks: book.Asks, Time: book.Time})
+		kind := exchange.EventFull
+		if first {
+			kind, first = exchange.EventSnapshot, false
+		}
+		callbacks.Event(exchange.BookEvent{Kind: kind, Instrument: instrument, Sequence: book.Sequence, Bids: book.Bids, Asks: book.Asks, Time: book.Time})
 		return nil
 	})
-	return func() error { return ws.UnsubscribeIncrementOrderBook(native, "") }, err
+	return func() error { return ws.UnsubscribeLimitOrderBook(native, 20, "100ms") }, err
 }
 
 func (backend *asterPerpWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
@@ -1441,25 +1446,20 @@ func (backend *asterPerpWSBackend) StartOrderBook(ctx context.Context, instrumen
 	if err != nil {
 		return nil, err
 	}
-	err = ws.SubscribeIncrementOrderBook(native, "", func(event *asterperp.WsDepthEvent) error {
+	first := true
+	err = ws.SubscribeLimitOrderBook(native, 20, "100ms", func(event *asterperp.WsDepthEvent) error {
 		book, err := asterOrderBook(instrument, 0, event.Bids, event.Asks, event.FinalUpdateID, event.EventTime, exchange.ProductPerp)
 		if err != nil {
 			return err
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Previous: asterDepthPrevious(event.FirstUpdateID, event.FinalUpdateIDLast), Bids: book.Bids, Asks: book.Asks, Time: book.Time})
+		kind := exchange.EventFull
+		if first {
+			kind, first = exchange.EventSnapshot, false
+		}
+		callbacks.Event(exchange.BookEvent{Kind: kind, Instrument: instrument, Sequence: book.Sequence, Bids: book.Bids, Asks: book.Asks, Time: book.Time})
 		return nil
 	})
-	return func() error { return ws.UnsubscribeIncrementOrderBook(native, "") }, err
-}
-
-func asterDepthPrevious(firstUpdateID, previousFinalUpdateID int64) string {
-	if previousFinalUpdateID > 0 {
-		return strconv.FormatInt(previousFinalUpdateID, 10)
-	}
-	if firstUpdateID > 0 {
-		return strconv.FormatInt(firstUpdateID-1, 10)
-	}
-	return ""
+	return func() error { return ws.UnsubscribeLimitOrderBook(native, 20, "100ms") }, err
 }
 
 func (backend *asterSpotWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {

@@ -33,8 +33,6 @@ type GatewayOrderID string
 
 type EventID string
 
-type BootID string
-
 type ResourceVersion int64
 
 type ClientOrderID uint64
@@ -129,7 +127,6 @@ func (id InstrumentID) Settlement() string {
 func (id CommandID) Validate() error      { return validateUUIDv7("command id", string(id)) }
 func (id GatewayOrderID) Validate() error { return validateUUIDv7("gateway order id", string(id)) }
 func (id EventID) Validate() error        { return validateUUIDv7("event id", string(id)) }
-func (id BootID) Validate() error         { return validateUUIDv7("boot id", string(id)) }
 
 func (version ResourceVersion) Validate() error {
 	if version < 0 {

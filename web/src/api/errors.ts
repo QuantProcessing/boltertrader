@@ -162,7 +162,7 @@ export const ErrorCode = {
   LiveWriteDisabled: "LIVE_PRIVATE_WRITE_DISABLED",
   PublicDataNotReady: "PUBLIC_DATA_NOT_READY",
   RealtimeUnavailable: "REALTIME_UNAVAILABLE",
-  /** The stream cannot prove continuity from the cursor; refetch, don't resume. */
+	/** The stream cannot prove continuity; discard local deltas and refetch authority. */
   ResnapshotRequired: "RESNAPSHOT_REQUIRED",
   RuntimeProjectionUnavailable: "RUNTIME_PROJECTION_UNAVAILABLE",
   CommandProjectionUnavailable: "COMMAND_PROJECTION_UNAVAILABLE",

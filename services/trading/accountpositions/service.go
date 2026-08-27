@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 	"github.com/shopspring/decimal"
 )
 
@@ -27,6 +27,13 @@ type principalProjection struct {
 	accounts       map[string]AccountState
 	items          map[string]Item
 	versions       map[string]uint64
+	watermarks     map[string]entityWatermark
+	connected      map[string]bool
+}
+
+type entityWatermark struct {
+	at      time.Time
+	version uint64
 }
 
 // Service is Trading's user-level account position read model. It owns one
@@ -36,7 +43,6 @@ type principalProjection struct {
 type Service struct {
 	source Source
 	store  Store
-	hub    *realtime.Hub
 	now    func() time.Time
 
 	ensureMu sync.Mutex
@@ -48,15 +54,15 @@ type Service struct {
 	watchers    map[string]context.CancelFunc
 }
 
-func NewService(source Source, store Store, hub *realtime.Hub, now func() time.Time) (*Service, error) {
-	if source == nil || store == nil || hub == nil {
+func NewService(source Source, store Store, now func() time.Time) (*Service, error) {
+	if source == nil || store == nil {
 		return nil, fmt.Errorf("account position projection dependencies are incomplete")
 	}
 	if now == nil {
 		now = time.Now
 	}
 	return &Service{
-		source: source, store: store, hub: hub, now: now,
+		source: source, store: store, now: now,
 		views: make(map[string]*principalProjection), watchers: make(map[string]context.CancelFunc),
 	}, nil
 }
@@ -139,7 +145,7 @@ func (service *Service) Snapshot(ctx context.Context, principal string, filter F
 		return items[i].PositionSlot < items[j].PositionSlot
 	})
 	return Snapshot{
-		ProjectionRevision: view.revision, Cursor: service.hub.Cursor(), VerifiedAt: snapshotVerifiedAt(accounts),
+		ProjectionRevision: view.revision, VerifiedAt: snapshotVerifiedAt(accounts),
 		Summary: summarize(accounts, items), Accounts: accounts, Items: items,
 	}, nil
 }
@@ -215,7 +221,10 @@ func (service *Service) hydrate(ctx context.Context, principal string) error {
 		return fmt.Errorf("load account position projection: %w", err)
 	}
 	now := service.now().UTC()
-	loaded := &principalProjection{hydrated: true, accounts: make(map[string]AccountState), items: make(map[string]Item), versions: make(map[string]uint64)}
+	loaded := &principalProjection{
+		hydrated: true, accounts: make(map[string]AccountState), items: make(map[string]Item),
+		versions: make(map[string]uint64), watermarks: make(map[string]entityWatermark), connected: make(map[string]bool),
+	}
 	for _, state := range states {
 		state.Freshness = FreshnessStale
 		state.RouteHealth = RouteDegraded
@@ -232,6 +241,7 @@ func (service *Service) hydrate(ctx context.Context, principal string) error {
 		item.ReceivedAt = now
 		loaded.items[item.Key.String()] = item
 		loaded.versions[item.Key.String()] = item.ResourceVersion
+		loaded.watermarks[item.Key.String()] = entityWatermark{at: item.ObservedAt.UTC(), version: item.ResourceVersion}
 	}
 	service.mu.Lock()
 	if existing := service.views[principal]; existing == nil || !existing.hydrated {
@@ -258,11 +268,11 @@ func (service *Service) installAccountMetadata(principal string, account Account
 			view.items[key] = decorate(item, account, state)
 		}
 	}
-	return state.Freshness != FreshnessLive || state.SourceCursor == ""
+	return state.VerifiedAt.IsZero()
 }
 
 func (service *Service) replaceSnapshot(ctx context.Context, principal string, account Account, snapshot SourceSnapshot) error {
-	if snapshot.AccountID != account.AccountID || strings.TrimSpace(snapshot.BootID) == "" || strings.TrimSpace(snapshot.Cursor) == "" || snapshot.VerifiedAt.IsZero() {
+	if snapshot.AccountID != account.AccountID || snapshot.VerifiedAt.IsZero() {
 		return fmt.Errorf("Gateway position snapshot identity is invalid")
 	}
 	now := service.now().UTC()
@@ -273,26 +283,20 @@ func (service *Service) replaceSnapshot(ctx context.Context, principal string, a
 	if !freshness.Valid() {
 		return fmt.Errorf("Gateway position snapshot freshness is invalid")
 	}
-	state := AccountState{
-		Account: account, RouteHealth: routeHealthFor(freshness), Freshness: freshness, WriteReady: accountWriteReady(account, freshness),
-		Reason: snapshot.Reason, SourceBootID: snapshot.BootID, SourceSequence: snapshot.Sequence,
-		SourceCursor: snapshot.Cursor, VerifiedAt: snapshot.VerifiedAt.UTC(), ReceivedAt: now,
-	}
-	items := make([]Item, 0, len(snapshot.Items))
-	seen := make(map[string]struct{}, len(snapshot.Items))
+	projected := make(map[string]Item, len(snapshot.Items))
 	for _, source := range snapshot.Items {
-		item, err := projectSourceItem(account, state, source, snapshot.BootID, snapshot.Sequence, now)
+		state := AccountState{Account: account, Freshness: freshness, VerifiedAt: snapshot.VerifiedAt.UTC()}
+		item, err := projectSourceItem(account, state, source, now)
 		if err != nil {
 			return err
 		}
 		if item.Quantity == "0" {
 			continue
 		}
-		if _, duplicate := seen[item.Key.String()]; duplicate {
+		if _, duplicate := projected[item.Key.String()]; duplicate {
 			return fmt.Errorf("Gateway position snapshot contains duplicate position")
 		}
-		seen[item.Key.String()] = struct{}{}
-		items = append(items, item)
+		projected[item.Key.String()] = item
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -300,39 +304,69 @@ func (service *Service) replaceSnapshot(ctx context.Context, principal string, a
 	if view == nil {
 		return fmt.Errorf("account position principal projection is unavailable")
 	}
-	if err := service.store.ReplaceAccount(ctx, principal, state, items); err != nil {
-		return err
+	state := view.accounts[account.AccountID]
+	state.Account, state.Freshness, state.VerifiedAt, state.ReceivedAt = account, freshness, snapshot.VerifiedAt.UTC(), now
+	state.WriteReady = accountWriteReady(account, freshness)
+	if view.connected[account.AccountID] {
+		state.RouteHealth, state.Reason = routeHealthFor(freshness), snapshot.Reason
+	} else {
+		state.RouteHealth = RouteDegraded
+		state.Reason = "account_realtime_disconnected"
+		if freshness == FreshnessUnavailable {
+			state.RouteHealth, state.Reason = RouteUnavailable, snapshot.Reason
+		}
 	}
 	removed := make([]Item, 0)
+	upserted := make([]Item, 0, len(projected))
 	for key, existing := range view.items {
 		if existing.AccountID != account.AccountID {
 			continue
 		}
-		if _, keep := seen[key]; !keep {
+		next, present := projected[key]
+		if present {
+			if newerEntity(next.ObservedAt, next.ResourceVersion, view.watermarks[key]) {
+				next = decorate(next, account, state)
+				view.items[key], view.versions[key] = next, next.ResourceVersion
+				view.watermarks[key] = entityWatermark{at: next.ObservedAt, version: next.ResourceVersion}
+				upserted = append(upserted, next)
+			}
+			delete(projected, key)
+			continue
+		}
+		// REST absence is a tombstone only when the snapshot is at least as
+		// recent as the entity it would remove. A slow REST response can never
+		// erase a fill/position update that arrived over WebSocket meanwhile.
+		if !snapshot.VerifiedAt.Before(existing.ObservedAt) {
 			removed = append(removed, existing)
 			delete(view.items, key)
+			view.watermarks[key] = entityWatermark{at: snapshot.VerifiedAt.UTC(), version: existing.ResourceVersion}
 		}
+	}
+	for key, item := range projected {
+		if !newerEntity(item.ObservedAt, item.ResourceVersion, view.watermarks[key]) {
+			continue
+		}
+		item = decorate(item, account, state)
+		view.items[key], view.versions[key] = item, item.ResourceVersion
+		view.watermarks[key] = entityWatermark{at: item.ObservedAt, version: item.ResourceVersion}
+		upserted = append(upserted, item)
+	}
+	items := accountItems(view, account.AccountID)
+	for index := range items {
+		items[index] = decorate(items[index], account, state)
+		view.items[items[index].Key.String()] = items[index]
+	}
+	if err := service.store.ReplaceAccount(ctx, principal, state, items); err != nil {
+		return err
 	}
 	view.accounts[account.AccountID] = cloneState(state)
-	for key := range view.versions {
-		if strings.HasPrefix(key, account.AccountID+"\x00") {
-			delete(view.versions, key)
-		}
-	}
-	for _, item := range items {
-		view.items[item.Key.String()] = item
-		view.versions[item.Key.String()] = item.ResourceVersion
-	}
-	for _, item := range removed {
+	for range removed {
 		view.revision++
-		_, _ = service.hub.PublishScoped(principal, "portfolio.position.remove", positionEventPayload(view.revision, OperationRemove, item, "snapshot_absent"))
 	}
-	for _, item := range items {
+	for range upserted {
 		view.revision++
-		_, _ = service.hub.PublishScoped(principal, "portfolio.position.upsert", positionEventPayload(view.revision, OperationUpsert, item, ""))
 	}
 	view.revision++
-	_, _ = service.hub.PublishScoped(principal, "portfolio.account.state", accountStatePayload(view.revision, state))
 	return nil
 }
 
@@ -352,15 +386,14 @@ func (service *Service) applySourceEvent(ctx context.Context, principal, account
 	}
 	now := service.now().UTC()
 	if event.Kind == SourceEventConnected {
-		// A transport connection is not proof of account state. In particular,
-		// an initial REST snapshot may have failed before this watch connected;
-		// promoting that account would turn an unknown state into a false empty
-		// live account and persist the data loss illusion.
-		if strings.TrimSpace(state.SourceBootID) == "" || strings.TrimSpace(state.SourceCursor) == "" || state.VerifiedAt.IsZero() {
-			return ErrResyncRequired
+		view.connected[accountID] = true
+		state.ReceivedAt = now
+		if state.VerifiedAt.IsZero() {
+			state.RouteHealth, state.Freshness, state.WriteReady = RouteUnavailable, FreshnessUnavailable, false
+		} else {
+			state.RouteHealth, state.Reason = routeHealthFor(state.Freshness), ""
+			state.WriteReady = accountWriteReady(state.Account, state.Freshness)
 		}
-		state.RouteHealth, state.Freshness, state.Reason = RouteLive, FreshnessLive, ""
-		state.WriteReady, state.VerifiedAt, state.ReceivedAt = accountWriteReady(state.Account, FreshnessLive), now, now
 		items := accountItems(view, accountID)
 		for index := range items {
 			items[index] = decorate(items[index], state.Account, state)
@@ -371,67 +404,33 @@ func (service *Service) applySourceEvent(ctx context.Context, principal, account
 		}
 		view.accounts[accountID] = state
 		view.revision++
-		_, err := service.hub.PublishScoped(principal, "portfolio.account.state", accountStatePayload(view.revision, state))
-		return err
+		return nil
 	}
 	if isAccountNotification(event.Kind) {
-		if event.AccountID != accountID || event.BootID != state.SourceBootID || event.Sequence < state.SourceSequence {
-			return ErrResyncRequired
+		if event.AccountID != accountID || event.OccurredAt.IsZero() {
+			return fmt.Errorf("Gateway account event identity is invalid")
 		}
-		if event.Sequence == state.SourceSequence {
-			return nil
-		}
-		state.SourceSequence, state.SourceCursor = event.Sequence, event.Cursor
-		state.RouteHealth, state.Freshness, state.Reason = RouteLive, FreshnessLive, ""
-		state.WriteReady, state.VerifiedAt, state.ReceivedAt = accountWriteReady(state.Account, FreshnessLive), now, now
-		items := accountItems(view, accountID)
-		for index := range items {
-			items[index] = decorate(items[index], state.Account, state)
-			view.items[items[index].Key.String()] = items[index]
-		}
-		if err := service.store.ReplaceAccount(ctx, principal, state, items); err != nil {
-			return err
-		}
-		view.accounts[accountID] = state
-		view.revision++
-		_, err := service.hub.PublishScoped(principal, "account."+event.Kind, map[string]any{
-			"accountId": accountID, "kind": event.Kind, "resourceVersion": event.ResourceVersion,
-			"occurredAt": event.OccurredAt, "payload": event.Payload,
-		})
-		return err
+		return nil
 	}
-	if event.Kind != SourceEventPosition || event.AccountID != accountID || event.BootID != state.SourceBootID || event.Sequence <= state.SourceSequence {
-		if event.Kind == SourceEventPosition && event.BootID == state.SourceBootID && event.Sequence == state.SourceSequence {
-			return nil
-		}
-		return ErrResyncRequired
+	if event.Kind != SourceEventPosition || event.AccountID != accountID || event.OccurredAt.IsZero() {
+		return fmt.Errorf("Gateway position event identity is invalid")
 	}
 	if event.Operation != OperationUpsert && event.Operation != OperationRemove {
 		return ErrResyncRequired
 	}
-	state.SourceSequence, state.SourceCursor = event.Sequence, event.Cursor
 	state.RouteHealth, state.Freshness, state.Reason = RouteLive, FreshnessLive, ""
-	state.WriteReady, state.VerifiedAt, state.ReceivedAt = accountWriteReady(state.Account, FreshnessLive), now, now
+	state.WriteReady, state.ReceivedAt = accountWriteReady(state.Account, FreshnessLive), now
 	source := SourceItem{
 		AccountID: event.AccountID, RouteID: event.RouteID, InstrumentID: event.InstrumentID,
 		PositionSlot: event.PositionSlot, Position: event.Position, ResourceVersion: event.ResourceVersion,
 		ObservedAt: event.OccurredAt, VerifiedAt: now,
 	}
-	item, err := projectSourceItem(state.Account, state, source, event.BootID, event.Sequence, now)
+	item, err := projectSourceItem(state.Account, state, source, now)
 	if err != nil {
 		return err
 	}
 	key := item.Key.String()
-	if event.ResourceVersion <= view.versions[key] {
-		items := accountItems(view, accountID)
-		for index := range items {
-			items[index] = decorate(items[index], state.Account, state)
-			view.items[items[index].Key.String()] = items[index]
-		}
-		if err := service.store.ReplaceAccount(ctx, principal, state, items); err != nil {
-			return err
-		}
-		view.accounts[accountID] = state
+	if !newerEntity(event.OccurredAt, event.ResourceVersion, view.watermarks[key]) {
 		return nil
 	}
 	if event.Operation == OperationUpsert && item.Quantity == "0" {
@@ -442,18 +441,17 @@ func (service *Service) applySourceEvent(ctx context.Context, principal, account
 	}
 	view.accounts[accountID] = state
 	view.versions[key] = event.ResourceVersion
+	view.watermarks[key] = entityWatermark{at: event.OccurredAt.UTC(), version: event.ResourceVersion}
 	view.revision++
 	switch event.Operation {
 	case OperationUpsert:
 		view.items[key] = item
-		_, err = service.hub.PublishScoped(principal, "portfolio.position.upsert", positionEventPayload(view.revision, event.Operation, item, event.Reason))
 	case OperationRemove:
 		delete(view.items, key)
-		_, err = service.hub.PublishScoped(principal, "portfolio.position.remove", positionEventPayload(view.revision, event.Operation, item, event.Reason))
 	default:
 		return ErrResyncRequired
 	}
-	return err
+	return nil
 }
 
 func isAccountNotification(kind string) bool {
@@ -486,48 +484,104 @@ func (service *Service) supervise(ctx context.Context, principal, accountID, wat
 		delete(service.watchers, watcherKey)
 		service.lifecycleMu.Unlock()
 	}()
+	reconcileDone := make(chan struct{})
+	go func() {
+		defer close(reconcileDone)
+		service.reconcileAccount(ctx, principal, accountID)
+	}()
+	defer func() { <-reconcileDone }()
 	backoff := reconnectMinimum
 	for ctx.Err() == nil {
-		service.mu.RLock()
-		state, exists := service.views[principal].accounts[accountID]
-		service.mu.RUnlock()
-		if !exists {
+		if _, exists := service.account(principal, accountID); !exists {
 			return
 		}
-		watchCtx, cancel := context.WithTimeout(ctx, integrityInterval)
-		err := service.source.WatchAccountEvents(watchCtx, principal, accountID, state.SourceCursor, func(event SourceEvent) error {
-			return service.applySourceEvent(watchCtx, principal, accountID, event)
+		connectedAt := service.now()
+		err := service.source.WatchAccountEvents(ctx, principal, accountID, func(event SourceEvent) error {
+			return service.applySourceEvent(ctx, principal, accountID, event)
 		})
-		periodic := errors.Is(watchCtx.Err(), context.DeadlineExceeded)
-		cancel()
 		if ctx.Err() != nil {
 			return
 		}
-		if !periodic {
-			service.markAccountStale(ctx, principal, accountID, safeSourceReason(err))
-			if !wait(ctx, backoff) {
-				return
-			}
-			backoff *= 2
-			if backoff > reconnectMaximum {
-				backoff = reconnectMaximum
-			}
+		service.markRealtimeDisconnected(ctx, principal, accountID, safeSourceReason(err))
+		if service.now().Sub(connectedAt) >= integrityInterval {
+			backoff = reconnectMinimum
 		}
-		account, ok := service.account(principal, accountID)
-		if !ok {
+		if !wait(ctx, jitteredReconnect(backoff)) {
 			return
 		}
-		snapshot, snapshotErr := service.source.PositionSnapshot(ctx, principal, accountID)
-		if snapshotErr != nil {
-			service.markAccountStale(ctx, principal, accountID, "position_snapshot_unavailable")
-			continue
+		backoff *= 2
+		if backoff > reconnectMaximum {
+			backoff = reconnectMaximum
 		}
-		if err := service.replaceSnapshot(ctx, principal, account, snapshot); err != nil {
-			service.markAccountStale(ctx, principal, accountID, "position_snapshot_invalid")
-			continue
-		}
-		backoff = reconnectMinimum
 	}
+}
+
+func (service *Service) reconcileAccount(ctx context.Context, principal, accountID string) {
+	ticker := time.NewTicker(integrityInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			account, ok := service.account(principal, accountID)
+			if !ok {
+				return
+			}
+			snapshot, err := service.source.PositionSnapshot(ctx, principal, accountID)
+			if err != nil {
+				service.markReconcileFailure(ctx, principal, accountID, "position_snapshot_unavailable")
+				continue
+			}
+			if err := service.replaceSnapshot(ctx, principal, account, snapshot); err != nil {
+				service.markReconcileFailure(ctx, principal, accountID, "position_snapshot_invalid")
+			}
+		}
+	}
+}
+
+func (service *Service) markReconcileFailure(ctx context.Context, principal, accountID, reason string) {
+	service.mu.RLock()
+	view := service.views[principal]
+	connected := view != nil && view.connected[accountID]
+	service.mu.RUnlock()
+	if connected {
+		return
+	}
+	service.markAccountStale(ctx, principal, accountID, reason)
+}
+
+func jitteredReconnect(base time.Duration) time.Duration {
+	spread := base / 5
+	if spread <= 0 {
+		return base
+	}
+	return base - spread + time.Duration(rand.Int64N(int64(2*spread)+1))
+}
+
+func (service *Service) markRealtimeDisconnected(ctx context.Context, principal, accountID, reason string) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	view := service.views[principal]
+	state, ok := view.accounts[accountID]
+	if !ok {
+		return
+	}
+	view.connected[accountID] = false
+	state.RouteHealth, state.Reason, state.ReceivedAt = RouteDegraded, reason, service.now().UTC()
+	if state.VerifiedAt.IsZero() {
+		state.RouteHealth, state.Freshness, state.WriteReady = RouteUnavailable, FreshnessUnavailable, false
+	}
+	items := accountItems(view, accountID)
+	for index := range items {
+		items[index] = decorate(items[index], state.Account, state)
+		view.items[items[index].Key.String()] = items[index]
+	}
+	if service.store.ReplaceAccount(ctx, principal, state, items) != nil {
+		return
+	}
+	view.accounts[accountID] = state
+	view.revision++
 }
 
 func (service *Service) markAccountFailure(ctx context.Context, principal string, account Account, cause error) {
@@ -560,12 +614,12 @@ func (service *Service) markAccountStale(ctx context.Context, principal, account
 		return
 	}
 	items := accountItems(view, accountID)
-	if strings.TrimSpace(state.SourceCursor) == "" && len(items) == 0 {
+	if state.VerifiedAt.IsZero() && len(items) == 0 {
 		state.RouteHealth, state.Freshness = RouteUnavailable, FreshnessUnavailable
 	} else {
 		state.RouteHealth, state.Freshness = RouteDegraded, FreshnessStale
 	}
-	state.WriteReady = false
+	state.WriteReady = accountWriteReady(state.Account, state.Freshness)
 	state.Reason, state.ReceivedAt = reason, service.now().UTC()
 	for index := range items {
 		items[index] = decorate(items[index], state.Account, state)
@@ -576,7 +630,6 @@ func (service *Service) markAccountStale(ctx context.Context, principal, account
 	}
 	view.accounts[accountID] = state
 	view.revision++
-	_, _ = service.hub.PublishScoped(principal, "portfolio.account.state", accountStatePayload(view.revision, state))
 }
 
 func (service *Service) persistState(ctx context.Context, principal string, state AccountState) {
@@ -591,7 +644,6 @@ func (service *Service) persistState(ctx context.Context, principal string, stat
 	}
 	view.accounts[state.AccountID] = state
 	view.revision++
-	_, _ = service.hub.PublishScoped(principal, "portfolio.account.state", accountStatePayload(view.revision, state))
 }
 
 func (service *Service) markPrincipalStale(ctx context.Context, principal, reason string) {
@@ -629,16 +681,21 @@ func (service *Service) removeMissingAccounts(ctx context.Context, principal str
 		service.mu.Lock()
 		view := service.views[principal]
 		delete(view.accounts, accountID)
+		delete(view.connected, accountID)
 		for key, item := range view.items {
 			if item.AccountID == accountID {
 				delete(view.items, key)
 				view.revision++
-				_, _ = service.hub.PublishScoped(principal, "portfolio.position.remove", positionEventPayload(view.revision, OperationRemove, item, "account_removed"))
 			}
 		}
 		for key := range view.versions {
 			if strings.HasPrefix(key, accountID+"\x00") {
 				delete(view.versions, key)
+			}
+		}
+		for key := range view.watermarks {
+			if strings.HasPrefix(key, accountID+"\x00") {
+				delete(view.watermarks, key)
 			}
 		}
 		service.mu.Unlock()
@@ -656,7 +713,7 @@ func (service *Service) account(principal, accountID string) (Account, bool) {
 	return state.Account, ok
 }
 
-func projectSourceItem(account Account, state AccountState, source SourceItem, bootID string, sequence uint64, receivedAt time.Time) (Item, error) {
+func projectSourceItem(account Account, state AccountState, source SourceItem, receivedAt time.Time) (Item, error) {
 	slot := source.PositionSlot
 	if slot == "" {
 		slot = source.Position.PositionSlot
@@ -700,8 +757,8 @@ func projectSourceItem(account Account, state AccountState, source SourceItem, b
 		Quantity: quantity.String(), EntryPrice: emptyZero(source.Position.EntryPrice), MarkPrice: emptyZero(source.Position.MarkPrice),
 		UnrealizedPnL: zeroDecimal(source.Position.UnrealizedPnL), UnrealizedPnLCurrency: settlement,
 		UnrealizedPnLSource: "venue_position", MarkPriceSource: "unavailable",
-		SourceBootID: bootID, SourceSequence: sequence, ResourceVersion: source.ResourceVersion,
-		ObservedAt: source.ObservedAt.UTC(), VerifiedAt: source.VerifiedAt.UTC(), ReceivedAt: receivedAt,
+		ResourceVersion: source.ResourceVersion,
+		ObservedAt:      source.ObservedAt.UTC(), VerifiedAt: source.VerifiedAt.UTC(), ReceivedAt: receivedAt,
 	}
 	if item.MarkPrice != "" {
 		item.MarkPriceSource = "venue_position"
@@ -758,6 +815,17 @@ func accountWriteReady(account Account, freshness Freshness) bool {
 		}
 	}
 	return false
+}
+
+func newerEntity(at time.Time, version uint64, current entityWatermark) bool {
+	at = at.UTC()
+	if current.at.IsZero() {
+		return !at.IsZero()
+	}
+	if at.After(current.at) {
+		return true
+	}
+	return at.Equal(current.at) && version > current.version
 }
 
 func routeHealthFor(freshness Freshness) RouteHealth {
@@ -853,14 +921,6 @@ func summarize(accounts []AccountState, items []Item) Summary {
 		summary.BySettlementAsset = append(summary.BySettlementAsset, *byAsset[asset])
 	}
 	return summary
-}
-
-func positionEventPayload(revision uint64, operation Operation, item Item, reason string) map[string]any {
-	return map[string]any{"projectionRevision": revision, "operation": operation, "key": item.Key, "item": item, "reason": reason}
-}
-
-func accountStatePayload(revision uint64, state AccountState) map[string]any {
-	return map[string]any{"projectionRevision": revision, "account": state}
 }
 
 func accountItems(view *principalProjection, accountID string) []Item {

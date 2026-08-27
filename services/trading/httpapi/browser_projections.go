@@ -14,7 +14,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
-	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
 
 type ProjectionReadiness struct {
@@ -168,7 +167,6 @@ type ActivityRecord struct {
 type ActivityEvent struct {
 	EventID    string          `json:"eventId"`
 	Sequence   uint64          `json:"sequence"`
-	Cursor     string          `json:"cursor"`
 	Kind       string          `json:"kind"`
 	ProductID  *string         `json:"productId"`
 	AccountID  *string         `json:"accountId"`
@@ -196,16 +194,16 @@ type ActivityPublisher interface {
 type ActivityLog struct {
 	capacity int
 	now      func() time.Time
-	hub      *realtime.Hub
+	next     uint64
 	mu       sync.RWMutex
 	events   []ActivityEvent
 }
 
-func NewActivityLog(capacity int, now func() time.Time, hub *realtime.Hub) (*ActivityLog, error) {
-	if capacity <= 0 || now == nil || hub == nil {
+func NewActivityLog(capacity int, now func() time.Time) (*ActivityLog, error) {
+	if capacity <= 0 || now == nil {
 		return nil, httpx.ConfigErr("activity projection dependencies are incomplete")
 	}
-	return &ActivityLog{capacity: capacity, now: now, hub: hub}, nil
+	return &ActivityLog{capacity: capacity, now: now}, nil
 }
 
 func (log *ActivityLog) Publish(record ActivityRecord) (ActivityEvent, error) {
@@ -220,14 +218,10 @@ func (log *ActivityLog) Publish(record ActivityRecord) (ActivityEvent, error) {
 	if err != nil {
 		return ActivityEvent{}, fmt.Errorf("encode activity payload: %w", err)
 	}
-	realtimePayload := map[string]any{"productId": nullableString(record.ProductID), "accountId": nullableString(record.AccountID), "resourceId": nullableString(record.ResourceID), "payload": json.RawMessage(encoded)}
 	log.mu.Lock()
 	defer log.mu.Unlock()
-	streamEvent, err := log.hub.PublishScoped(record.PrincipalID, record.Kind, realtimePayload)
-	if err != nil {
-		return ActivityEvent{}, err
-	}
-	event := ActivityEvent{EventID: streamEvent.EventID, Sequence: streamEvent.Sequence, Cursor: streamEvent.Cursor, Kind: streamEvent.Kind, ProductID: stringPointer(record.ProductID), AccountID: stringPointer(record.AccountID), ResourceID: stringPointer(record.ResourceID), Payload: encoded, ObservedAt: streamEvent.ObservedAt, principal: record.PrincipalID}
+	log.next++
+	event := ActivityEvent{EventID: fmt.Sprintf("activity-%d", log.next), Sequence: log.next, Kind: record.Kind, ProductID: stringPointer(record.ProductID), AccountID: stringPointer(record.AccountID), ResourceID: stringPointer(record.ResourceID), Payload: encoded, ObservedAt: log.now().UTC(), principal: record.PrincipalID}
 	log.events = append(log.events, event)
 	if len(log.events) > log.capacity {
 		log.events = append([]ActivityEvent(nil), log.events[len(log.events)-log.capacity:]...)
@@ -569,13 +563,6 @@ func projectionFailure(w http.ResponseWriter, r *http.Request, code string, err 
 
 func projectionError(w http.ResponseWriter, r *http.Request, status int, code string) {
 	httpx.WriteError(w, status, code, "request rejected", nil, status >= http.StatusInternalServerError, httpx.RequestID(r))
-}
-
-func nullableString(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
 }
 
 func stringPointer(value string) *string {

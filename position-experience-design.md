@@ -429,7 +429,9 @@ portfolio.resync_required
 
 如果继续复用 Gateway 的 `kind=position`，payload 也必须增加 `operation=upsert|remove`、`position_slot` 和完整 snapshot 边界。不能靠 `quantity=0`、side 变化或“这次列表里没有”让每个消费者自行猜测删除语义。
 
-Trading 面向浏览器的事件携带 principal 作用域，但 payload 不包含 principal ID。浏览器 reducer 只接受 revision 单调递增的事件；发现缺口时不尝试局部修复，直接 resnapshot。
+Gateway 面向浏览器的账户事件由 Auth Edge 注入 principal 作用域，但 payload 不包含 principal ID。
+事件只是 REST 权威状态的实时变更提示，浏览器按实体 ID、来源时间和 resource version 合并；
+断线或 `resync_required` 时重新读取相关 REST 投影，不依赖进程内 sequence 或 cursor 回放。
 
 ## 10. API 设计
 
@@ -446,9 +448,6 @@ Authorization: Bearer <service token>
 {
   "data": {
     "account_id": "acct-123",
-    "boot_id": "boot-...",
-    "sequence": 481,
-    "cursor": "boot-...:481",
     "verified_at": "2026-08-24T08:31:22Z",
     "freshness": "live",
     "items": []
@@ -456,7 +455,8 @@ Authorization: Bearer <service token>
 }
 ```
 
-空 `items` 只有在快照完整且 cursor 有效时才表示“确认无持仓”。超时、权限失败、route 不可用必须返回错误，不能伪装成空数组。
+空 `items` 只有在完整快照请求成功时才表示“确认无持仓”。快照发起后到达的 WebSocket 更新按
+实体来源时间保留，旧 REST 响应不能覆盖；超时、权限失败、route 不可用必须返回错误，不能伪装成空数组。
 
 ### 10.2 Trading 全局持仓快照
 
@@ -556,21 +556,21 @@ GET /api/v1/account-positions?accountId=...&instrumentId=...
 
 | 故障 | 保留什么 | UI | 动作 | 恢复 |
 | --- | --- | --- | --- | --- |
-| 单个 venue 私有流断开 | 该账户最后已知持仓 | 仅该账户标记 stale | 禁止旧数量平仓；其他账户不受影响 | REST resnapshot + 新 cursor |
-| sequence gap | 最后已知值 | “事件缺口，正在重新同步” | 同上 | 丢弃增量假设，完整快照 |
-| Gateway 重启/boot ID 变化 | Trading 持久化的最后已知值 | 全部受影响账户 stale | 等待账户同步和 write gate | 按账户重建 |
-| Trading SSE 断开 | 浏览器最后已知值 | 顶部“实时连接中断” | 下单仍由服务端 readiness 决定；持仓派生动作先刷新 | REST fallback + SSE replay |
+| 单个 venue 私有流断开 | 该账户最后已知持仓 | 仅该账户标记 stale | 禁止旧数量平仓；其他账户不受影响 | 指数退避重连 + 固定 60 秒 REST 对账 |
+| 交易所原生流报告 gap | 最后已知值 | “事件缺口，等待校验” | 同上 | 不做自造 sequence 回放，由固定 REST 对账修复 |
+| Gateway 重启 | Trading 持久化的最后已知值 | 全部受影响账户 stale | 等待账户同步和 write gate | 按账户重建 |
+| 浏览器账户 WS 断开 | 浏览器最后已知值 | 顶部“账户实时连接中断” | 下单不被 WS 状态阻止；持仓派生动作先刷新 | 指数退避重连 + REST resnapshot |
 | 浏览器休眠后恢复 | 本地缓存 | 短暂 syncing | 暂停持仓派生动作 | 立即快照，不逐条补旧事件 |
 | mark 公共流中断 | 权威 position mark 或最后公开 mark | mark 标 stale，估算 PnL 标 stale | 不影响已确认持仓数量；preview 需新市场价 | 重连公开流 |
 | 凭证轮换/runtime generation 切换 | 稳定 accountId 下最后已知值 | “账户运行时切换中” | write fence 拒绝旧 preview | 新 generation 同步完成 |
 | 账户移除/权限撤销 | 不再返回该账户数据 | 从当前列表移除，活动记录保留安全摘要 | 全部禁止 | 重新授权后作为新同步周期 |
-| REST 返回空列表 | 仅完整快照才能解释为空 | 完整则清空；不完整则报错 | 视状态 | snapshot cursor 证明完整性 |
+| REST 返回空列表 | 仅成功的完整快照才能解释为空 | 完整则清空；不完整则报错 | 视状态 | HTTP 成功与快照 freshness 证明完整性 |
 
 ## 14. 安全与权限
 
 - 浏览器不能传 principal；Auth edge 从会话派生，Trading 和 Gateway 逐层验证账户所有权。
 - Gateway 的 service-authenticated capability route 必须先授权账户，再读取资源，避免任意 account ID 探测。
-- 私有事件按 principal/account 隔离；一个账户的事件、游标和错误不能泄漏到另一个 principal。
+- 私有事件按 principal/account 隔离；一个账户的事件和错误不能泄漏到另一个 principal。
 - 不把 credential version、原始交易所错误体或签名信息返回浏览器。
 - 可读失败原因使用归一化 code、可读 message 和安全 details；原始错误只进入经过脱敏的服务日志。
 - 所有持仓操作重新校验 write fence。浏览器持有的 route/revision 只用于证明上下文，不能替代服务端 authority。
@@ -622,8 +622,8 @@ GET /api/v1/account-positions?accountId=...&instrumentId=...
 
 ### Phase 3：浏览器实时化
 
-- 扩展现有 Trading SSE 传递 position upsert/remove/account state。
-- 页面使用 snapshot cursor 建立无缝增量。
+- 浏览器经 Auth Edge 直接订阅 Gateway 的 principal 级账户事件流。
+- 页面以 REST 快照为权威，按稳定实体 ID、来源时间和 resource version 合并实时 overlay。
 - 全局持仓页加入筛选、分组、状态和独立账户操作。
 - 交易页只消费当前上下文行，图表只显示当前账户持仓。
 
@@ -699,14 +699,14 @@ GET /api/v1/account-positions?accountId=...&instrumentId=...
 | --- | --- | --- |
 | Exchange model | `exchange/model.go`、`exchange/websocket.go` | 增加稳定 position slot/集合语义，保留 snapshot/delta 类型 |
 | Venue adapters | `exchange/internal/factoryclient/*private_websocket*` | 映射 one-way/hedge slot，证明关闭仓位和完整快照语义 |
-| Gateway event | `gateway/event/streams.go`、`gateway/event/hub.go` | 投影先于发布，增加 upsert/remove/snapshot boundary，继续复用 per-account cursor |
+| Gateway event | `gateway/event/streams.go`、`gateway/event/hub.go` | 投影先于发布，使用稳定事件 ID、来源时间和 upsert/remove；live-only fanout 不保存 replay cursor |
 | Gateway HTTP | `gateway/httpapi/resources.go` | 增加原子 position snapshot；保留现有 `/v1/positions` 兼容读取 |
 | Trading Gateway client | `services/trading/gateway/client.go` | 账户快照读取、`/v1/ws` 消费、gap/resync 处理 |
 | Trading projection | 新的 `services/trading/accountpositions/` | principal 多账户读模型、revision、freshness、估值来源和隔离恢复 |
 | Trading persistence | `services/trading/store/postgres/` 新 migration | 独立保存 last-known account projection，不复用谱系持仓表 |
-| Trading browser API | `services/trading/httpapi/browser_projections.go`、`services/trading/realtime/` | 全局快照、当前上下文兼容接口、用户级 position SSE |
-| Auth edge | `services/authedge/proxy/routes.go` | 明确代理新的浏览器快照路由；继续流式代理现有 SSE |
-| Web API/cache | `web/src/api/`、`web/src/features/trade/queries.ts`、`realtime.ts` | 新类型、snapshot cursor、增量 reducer、fallback 和 resnapshot |
+| Trading browser API | `services/trading/httpapi/browser_projections.go` | 全局快照和当前上下文兼容接口；不再转发账户事件或公共行情 |
+| Auth edge | `services/authedge/proxy/routes.go` | 快照路由按所有权代理；账户与公共行情 WebSocket 直达 Gateway |
+| Web API/cache | `web/src/api/`、`web/src/features/trade/queries.ts`、`realtime.ts` | REST 权威快照、按时间/version 的实时 overlay、失联 invalidation 和 resnapshot |
 | Trade UI | `web/src/features/trade/blotter.tsx`、`web/src/features/market/price-chart.tsx` | 当前上下文持仓、freshness、来源、入场/强平线和安全行操作 |
 | Portfolio UI | `web/src/routes/portfolio.tsx`、`web/src/features/portfolio/` | 全账户分组、过滤、汇总状态传播和逐行操作 |
 | Preferences | `web/src/app/preferences.ts`、交易设置组件 | 下单确认开关；语言入口保持独立 |

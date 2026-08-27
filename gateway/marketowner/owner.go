@@ -27,7 +27,7 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 	if owner.Capabilities == nil {
 		return markethub.NativeStream{}, fmt.Errorf("%w: capability registry unavailable", markethub.ErrUnavailable)
 	}
-	_, err := owner.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, key.Dataset, key.InstrumentID != "")
+	capability, err := owner.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, key.Dataset, key.InstrumentID != "")
 	if err != nil {
 		return markethub.NativeStream{}, fmt.Errorf("%w: %v", markethub.ErrUnavailable, err)
 	}
@@ -39,10 +39,20 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 		}
 		events, failures := make(chan markethub.Message, 256), make(chan error, 1)
 		go forwardBook(ctx, stream.Subscription, events, failures)
-		return markethub.NativeStream{
+		native := markethub.NativeStream{
 			Snapshot: message(key, markethub.MessageSnapshot, observed(stream.Snapshot.Time), stream.Snapshot.Sequence, map[string]any{"bids": nonNilBook(stream.Snapshot.Bids), "asks": nonNilBook(stream.Snapshot.Asks)}),
 			Events:   events, Errors: failures, Close: stream.Subscription.Close,
-		}, nil
+		}
+		if stream.Replay != nil {
+			native.Replay = func() (markethub.Message, bool) {
+				book, ok := stream.Replay()
+				if !ok {
+					return markethub.Message{}, false
+				}
+				return message(key, markethub.MessageSnapshot, observed(book.Time), book.Sequence, map[string]any{"bids": nonNilBook(book.Bids), "asks": nonNilBook(book.Asks)}), true
+			}
+		}
+		return native, nil
 	case exchange.DatasetBBO:
 		stream, err := owner.Source.WatchBBO(ctx, key.InstrumentID)
 		if err != nil {
@@ -77,9 +87,10 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 			return markethub.NativeStream{}, err
 		}
 		events, failures := make(chan markethub.Message, 64), make(chan error, 1)
+		staleAfter := marketcapability.FreshnessWindow(capability)
 		owner.BoardMarks.PublishMark(ctx, key.InstrumentID, exchange.OptionalDecimal{Value: markStream.Snapshot.Price, Valid: true}, observed(markStream.Snapshot.Time))
-		go forwardMark(ctx, key.InstrumentID, owner.BoardMarks, markStream.Subscription, events, failures)
-		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, observed(markStream.Snapshot.Time), "", map[string]any{"price": markStream.Snapshot.Price.String()}), Events: events, Errors: failures, Close: markStream.Subscription.Close}, nil
+		go forwardMark(ctx, key.InstrumentID, owner.BoardMarks, markStream.Subscription, staleAfter, events, failures)
+		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, observed(markStream.Snapshot.Time), "", markData(markStream.Snapshot.Price.String(), staleAfter)), Events: events, Errors: failures, Close: markStream.Subscription.Close}, nil
 	default:
 		return markethub.NativeStream{}, fmt.Errorf("%w: dataset %s", markethub.ErrUnavailable, key.Dataset)
 	}
@@ -97,6 +108,12 @@ func forwardBook(ctx context.Context, subscription exchange.Subscription[exchang
 				return
 			}
 			kind := markethub.MessageDelta
+			switch event.Kind {
+			case exchange.EventSnapshot:
+				kind = markethub.MessageSnapshot
+			case exchange.EventFull:
+				kind = markethub.MessageFull
+			}
 			if event.Resync {
 				kind = markethub.MessageResyncRequired
 			}
@@ -170,7 +187,7 @@ func forwardCandles(ctx context.Context, subscription exchange.Subscription[exch
 	}
 }
 
-func forwardMark(ctx context.Context, instrumentID string, sink BoardMarks, subscription exchange.Subscription[exchange.MarkPriceEvent], output chan<- markethub.Message, failures chan<- error) {
+func forwardMark(ctx context.Context, instrumentID string, sink BoardMarks, subscription exchange.Subscription[exchange.MarkPriceEvent], staleAfter time.Duration, output chan<- markethub.Message, failures chan<- error) {
 	defer close(output)
 	defer close(failures)
 	for {
@@ -182,7 +199,7 @@ func forwardMark(ctx context.Context, instrumentID string, sink BoardMarks, subs
 				return
 			}
 			sink.PublishMark(ctx, instrumentID, exchange.OptionalDecimal{Value: event.Price, Valid: true}, observed(event.Time))
-			if !emit(ctx, output, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: observed(event.Time), Data: markethub.Encode(map[string]any{"price": event.Price.String()})}) {
+			if !emit(ctx, output, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: observed(event.Time), Data: markethub.Encode(markData(event.Price.String(), staleAfter))}) {
 				return
 			}
 		case err, open := <-subscription.Errors():

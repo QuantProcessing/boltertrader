@@ -632,6 +632,12 @@ func (handler *Handler) privateEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized", handler.correlationID(), false)
 		return
 	}
+	for key := range r.URL.Query() {
+		if key != "account_id" && key != "kind" {
+			handler.invalid(w)
+			return
+		}
+	}
 	accountID, err := parseAccountID(r.URL.Query().Get("account_id"))
 	if err != nil {
 		handler.invalid(w)
@@ -649,7 +655,6 @@ func (handler *Handler) privateEvents(w http.ResponseWriter, r *http.Request) {
 	subscription, err := handler.events.Subscribe(r.Context(), gatewayevent.SubscribeRequest{
 		PrincipalID: principal,
 		AccountID:   accountID,
-		Cursor:      r.URL.Query().Get("cursor"),
 		Kinds:       kinds,
 	})
 	if err != nil {

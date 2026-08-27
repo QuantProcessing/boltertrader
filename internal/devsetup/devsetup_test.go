@@ -63,12 +63,12 @@ func bootstrapInto(t *testing.T, root string) Result {
 	return result
 }
 
-func TestBootstrapMapsLoopbackProxyForGatewayContainer(t *testing.T) {
+func TestBootstrapMapsExplicitLoopbackProxyForGatewayContainer(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{gatewayHTTPProxyVar, "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
 		t.Setenv(name, "")
 	}
-	t.Setenv("ALL_PROXY", "http://127.0.0.1:10900")
+	t.Setenv(gatewayHTTPProxyVar, "http://127.0.0.1:10900")
 	result, err := Bootstrap(root)
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +76,22 @@ func TestBootstrapMapsLoopbackProxyForGatewayContainer(t *testing.T) {
 	values := parseEnvFile(t, result.EnvFile)
 	if got, want := values[gatewayHTTPProxyVar], "http://host.docker.internal:10900"; got != want {
 		t.Fatalf("%s = %q, want %q", gatewayHTTPProxyVar, got, want)
+	}
+}
+
+func TestBootstrapDoesNotInheritAmbientProxyForGatewayContainer(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{gatewayHTTPProxyVar, "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:10900")
+	t.Setenv("ALL_PROXY", "socks5://127.0.0.1:10900")
+	result, err := Bootstrap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parseEnvFile(t, result.EnvFile)[gatewayHTTPProxyVar]; got != "" {
+		t.Fatalf("ambient proxy leaked into %s as %q", gatewayHTTPProxyVar, got)
 	}
 }
 
@@ -90,16 +106,16 @@ func TestBootstrapRejectsCredentialedProxy(t *testing.T) {
 	}
 }
 
-func TestBootstrapDoesNotRetainAnAbsentAmbientProxy(t *testing.T) {
+func TestBootstrapClearsAnExplicitProxyWhenItIsRemoved(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{gatewayHTTPProxyVar, "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
 		t.Setenv(name, "")
 	}
-	t.Setenv("ALL_PROXY", "http://127.0.0.1:10900")
+	t.Setenv(gatewayHTTPProxyVar, "http://127.0.0.1:10900")
 	if _, err := Bootstrap(root); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("ALL_PROXY", "")
+	t.Setenv(gatewayHTTPProxyVar, "")
 	result, err := Bootstrap(root)
 	if err != nil {
 		t.Fatal(err)

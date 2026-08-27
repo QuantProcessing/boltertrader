@@ -3433,6 +3433,7 @@ func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument exchang
 	}
 	ws := bitget.NewPublicWSClientWithProfile(b.client.profile)
 	arg := bitget.WSArg{InstType: b.client.bitgetPublicWSInstType(), Topic: "books5", Symbol: native}
+	first := true
 	if err := ws.Subscribe(ctx, arg, func(payload json.RawMessage) {
 		msg, err := bitget.DecodeOrderBookMessage(payload)
 		if err != nil || len(msg.Data) == 0 {
@@ -3460,6 +3461,10 @@ func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument exchang
 			callbacks.Error(malformed(b.client.meta, "WatchOrderBook", err.Error()))
 			return
 		}
+		if !first {
+			kind = exchange.EventFull
+		}
+		first = false
 		callbacks.Event(exchange.BookEvent{Kind: kind, Instrument: canonical, Sequence: strconv.FormatInt(row.Seq, 10), Bids: bids, Asks: asks, Time: observedAt})
 	}); err != nil {
 		_ = ws.Close()

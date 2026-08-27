@@ -3,6 +3,7 @@ package markethub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,8 @@ type fakeOwner struct {
 	opens            int
 	snapshot         json.RawMessage
 	snapshotSequence string
+	replay           json.RawMessage
+	replaySequence   string
 	events           chan Message
 	closed           chan struct{}
 }
@@ -30,7 +33,14 @@ func (owner *fakeOwner) Open(context.Context, SubscriptionKey) (NativeStream, er
 	}
 	return NativeStream{
 		Snapshot: Message{Kind: MessageSnapshot, ObservedAt: time.Now().UTC(), SourceSequence: owner.snapshotSequence, Data: snapshot},
-		Events:   owner.events, Errors: make(chan error), Close: func() error {
+		Events:   owner.events, Errors: make(chan error), Replay: func() (Message, bool) {
+			owner.mu.Lock()
+			defer owner.mu.Unlock()
+			if len(owner.replay) == 0 {
+				return Message{}, false
+			}
+			return Message{Kind: MessageSnapshot, ObservedAt: time.Now().UTC(), SourceSequence: owner.replaySequence, Data: append(json.RawMessage(nil), owner.replay...)}, true
+		}, Close: func() error {
 			select {
 			case <-owner.closed:
 			default:
@@ -66,6 +76,35 @@ func TestHubDetectsDepthPreviousSequenceGap(t *testing.T) {
 	if first.Kind != MessageSnapshot || first.Generation != 1 || second.Kind != MessageResyncRequired || second.Generation != 2 ||
 		third.Kind != MessageSnapshot || third.Generation != 2 {
 		t.Fatalf("unexpected gap lifecycle: first=%+v second=%+v third=%+v", first, second, third)
+	}
+}
+
+func TestHubBoundsReplaceableBBOFanoutWithoutLaggingSubscriber(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	updates := make(chan Message, 1)
+	hub := &Hub{now: func() time.Time { return now }}
+	state := &feedState{
+		key: SubscriptionKey{
+			Owner:   OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"},
+			Dataset: exchange.DatasetBBO, InstrumentID: "btc",
+		},
+		generation: 1,
+		subs:       map[uint64]chan Message{1: updates},
+	}
+	hub.publishLocked(state, Message{ObservedAt: now, Data: Encode(map[string]any{"bid": "1"})}, MessageSnapshot)
+	for index := 0; index < 500; index++ {
+		hub.publishLocked(state, Message{ObservedAt: now.Add(time.Millisecond), Data: Encode(map[string]any{"bid": "2"})}, MessageDelta)
+	}
+	if len(state.subs) != 1 || len(updates) != 1 {
+		t.Fatalf("BBO burst removed subscriber or expanded queue: subscribers=%d queued=%d", len(state.subs), len(updates))
+	}
+	if message := <-updates; message.Kind != MessageSnapshot {
+		t.Fatalf("first BBO message=%s want snapshot", message.Kind)
+	}
+	now = now.Add(bboFanoutMinInterval)
+	hub.publishLocked(state, Message{ObservedAt: now, Data: Encode(map[string]any{"bid": "3"})}, MessageDelta)
+	if message := <-updates; message.Kind != MessageDelta || message.Sequence != 502 {
+		t.Fatalf("bounded BBO message=%+v", message)
 	}
 }
 
@@ -111,50 +150,140 @@ func TestHubSharesOneNativeStreamAndHonorsIdleGrace(t *testing.T) {
 	}
 }
 
-func TestHubGivesLateDepthConsumerMaterializedSnapshot(t *testing.T) {
+func TestHubReplaysExchangeSnapshotWithoutMaterializingDepth(t *testing.T) {
 	owner := &fakeOwner{snapshot: Encode(map[string]any{
 		"bids": []exchange.BookLevel{{Price: decimal.NewFromInt(1), Quantity: decimal.NewFromInt(1)}},
 		"asks": []exchange.BookLevel{},
-	}), events: make(chan Message, 2), closed: make(chan struct{})}
+	}), snapshotSequence: "1", events: make(chan Message, 4), closed: make(chan struct{})}
 	hub, err := New(Options{Owner: owner, IdleGrace: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer hub.Close()
 	key := SubscriptionKey{Owner: OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"}, Dataset: exchange.DatasetDepth, InstrumentID: "btc", Depth: 10}
-	owner.events <- Message{Kind: MessageDelta, ObservedAt: time.Now().UTC(), SourceSequence: "2", Data: Encode(map[string]any{
-		"kind": "delta",
-		"bids": []exchange.BookLevel{{Price: decimal.NewFromInt(2), Quantity: decimal.NewFromInt(3)}},
-		"asks": []exchange.BookLevel{},
-	})}
 	first, err := hub.Subscribe(t.Context(), key, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	<-first.Events()
-	deadline := time.Now().Add(time.Second)
-	for {
-		if latest, ok := hub.Latest(key); ok && latest.SourceSequence == "2" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("depth delta was not materialized")
-		}
-		time.Sleep(time.Millisecond)
+	if message := <-first.Events(); message.Kind != MessageSnapshot {
+		t.Fatalf("first event = %+v", message)
 	}
+	owner.events <- Message{Kind: MessageDelta, ObservedAt: time.Now().UTC(), SourceSequence: "2", Data: Encode(map[string]any{
+		"kind": "delta", "previous": "1",
+		"bids": []exchange.BookLevel{{Price: decimal.NewFromInt(2), Quantity: decimal.NewFromInt(3)}},
+		"asks": []exchange.BookLevel{},
+	})}
+	if message := <-first.Events(); message.Kind != MessageDelta || message.SourceSequence != "2" {
+		t.Fatalf("first delta = %+v", message)
+	}
+	if _, ok := hub.Latest(key); ok {
+		t.Fatal("Gateway retained a materialized depth book")
+	}
+	owner.mu.Lock()
+	owner.replay = Encode(map[string]any{
+		"bids": []exchange.BookLevel{
+			{Price: decimal.NewFromInt(2), Quantity: decimal.NewFromInt(3)},
+			{Price: decimal.NewFromInt(1), Quantity: decimal.NewFromInt(1)},
+		},
+		"asks": []exchange.BookLevel{},
+	})
+	owner.replaySequence = "2"
+	owner.mu.Unlock()
 	late, err := hub.Subscribe(t.Context(), key, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer late.Close()
-	message := <-late.Events()
-	if message.Kind != MessageSnapshot {
-		t.Fatalf("late first kind=%s", message.Kind)
+	if message := <-late.Events(); message.Kind != MessageSnapshot || message.SourceSequence != "2" {
+		t.Fatalf("late WS replay = %+v", message)
 	}
-	var book wireBook
-	if err := json.Unmarshal(message.Data, &book); err != nil || len(book.Bids) != 2 || !book.Bids[0].Price.Equal(decimal.NewFromInt(2)) {
-		t.Fatalf("late book=%+v err=%v", book, err)
+	owner.events <- Message{Kind: MessageDelta, ObservedAt: time.Now().UTC(), SourceSequence: "3", Data: Encode(map[string]any{
+		"kind": "delta", "previous": "2", "bids": []exchange.BookLevel{}, "asks": []exchange.BookLevel{},
+	})}
+	if message := <-late.Events(); message.Kind != MessageDelta || message.SourceSequence != "3" {
+		t.Fatalf("late live event = %+v", message)
+	}
+}
+
+func TestHubPreservesNativeDepthSnapshotSemantics(t *testing.T) {
+	owner := &fakeOwner{
+		snapshot:         Encode(map[string]any{"bids": []exchange.BookLevel{}, "asks": []exchange.BookLevel{}}),
+		snapshotSequence: "1", events: make(chan Message, 1), closed: make(chan struct{}),
+	}
+	hub, err := New(Options{Owner: owner, IdleGrace: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	key := SubscriptionKey{Owner: OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "spot"}, Dataset: exchange.DatasetDepth, InstrumentID: "btc", Depth: 5}
+	subscription, err := hub.Subscribe(t.Context(), key, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	<-subscription.Events()
+	owner.events <- Message{Kind: MessageSnapshot, ObservedAt: time.Now().UTC(), SourceSequence: "2", Data: Encode(map[string]any{
+		"kind": "snapshot", "bids": []exchange.BookLevel{}, "asks": []exchange.BookLevel{},
+	})}
+	if message := <-subscription.Events(); message.Kind != MessageSnapshot || message.SourceSequence != "2" {
+		t.Fatalf("native snapshot was downgraded: %+v", message)
+	}
+}
+
+type retryingOwner struct {
+	mu     sync.Mutex
+	opens  int
+	events chan Message
+}
+
+func (owner *retryingOwner) Open(context.Context, SubscriptionKey) (NativeStream, error) {
+	owner.mu.Lock()
+	owner.opens++
+	opens := owner.opens
+	owner.mu.Unlock()
+	if opens < 3 {
+		return NativeStream{}, errors.New("temporary open failure")
+	}
+	return NativeStream{
+		Snapshot: Message{Kind: MessageSnapshot, ObservedAt: time.Now().UTC(), Data: Encode(map[string]any{"price": "1"})},
+		Events:   owner.events, Errors: make(chan error), Close: func() error { return nil },
+	}, nil
+}
+
+func TestHubKeepsLogicalSubscriptionAcrossOpenFailures(t *testing.T) {
+	owner := &retryingOwner{events: make(chan Message)}
+	hub, err := New(Options{
+		Owner: owner, IdleGrace: time.Second,
+		ReconnectMinimum: time.Millisecond, ReconnectMaximum: 2 * time.Millisecond,
+		ReconnectJitter: func(delay time.Duration) time.Duration { return delay },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	key := SubscriptionKey{Owner: OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"}, Dataset: exchange.DatasetMark}
+	subscription, err := hub.Subscribe(t.Context(), key, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case message := <-subscription.Events():
+			if message.Kind == MessageSnapshot {
+				owner.mu.Lock()
+				opens := owner.opens
+				owner.mu.Unlock()
+				if opens != 3 {
+					t.Fatalf("native opens = %d, want 3", opens)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("logical subscription did not recover")
+		}
 	}
 }
 

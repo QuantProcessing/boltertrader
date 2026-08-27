@@ -17,16 +17,23 @@ type derivativeMarketFeed struct {
 	routeProfiles []string
 	nativeFamily  string
 	resolver      exchange.DerivativeInstrumentResolver
+	resolutionMu  sync.RWMutex
+	resolved      map[string]derivativeResolution
 	hotMu         sync.Mutex
 	nativeByID    map[string]string
 	hot           map[string]bool
+}
+
+type derivativeResolution struct {
+	fact exchange.DerivativeFact
+	ok   bool
 }
 
 func NewDerivativeFeed(scope exchange.CatalogScope, routeProfiles []string, nativeFamily string, loader DerivativeSnapshotLoader, resolver exchange.DerivativeInstrumentResolver, settings Settings) exchange.DerivativeFeed {
 	native := newNativeDerivativeFeed(scope, loader, settings)
 	return &derivativeMarketFeed{
 		native: native, routeProfiles: append([]string(nil), routeProfiles...), nativeFamily: nativeFamily, resolver: resolver,
-		nativeByID: make(map[string]string), hot: make(map[string]bool),
+		resolved: make(map[string]derivativeResolution), nativeByID: make(map[string]string), hot: make(map[string]bool),
 	}
 }
 
@@ -85,9 +92,17 @@ func (feed *derivativeMarketFeed) project(ctx context.Context, patch nativeDeriv
 		return exchange.DerivativePatch{}, err
 	}
 	facts := make([]exchange.DerivativeFact, 0, len(patch.Facts))
+	if patch.Kind == nativeDerivativePatchSnapshot {
+		feed.resolutionMu.Lock()
+		feed.resolved = make(map[string]derivativeResolution, len(patch.Facts)*len(feed.routeProfiles))
+		feed.resolutionMu.Unlock()
+		feed.hotMu.Lock()
+		feed.nativeByID = make(map[string]string, len(patch.Facts))
+		feed.hotMu.Unlock()
+	}
 	for _, native := range patch.Facts {
 		for _, routeProfile := range feed.routeProfiles {
-			fact, ok := feed.resolver.ResolveDerivativeInstrument(ctx, routeProfile, native.Instrument.NativeSymbol, native.Instrument.NativeID)
+			fact, ok := feed.resolve(ctx, routeProfile, native.Instrument.NativeSymbol, native.Instrument.NativeID)
 			if !ok {
 				continue
 			}
@@ -121,6 +136,33 @@ func (feed *derivativeMarketFeed) project(ctx context.Context, patch nativeDeriv
 		ObservedAt: patch.ObservedAt, SourceSequence: strconv.FormatUint(patch.Sequence, 10),
 		Fields: derivativeFields(patch.Fields), Facts: facts,
 	}, nil
+}
+
+func (feed *derivativeMarketFeed) resolve(ctx context.Context, routeProfile, nativeSymbol, nativeID string) (exchange.DerivativeFact, bool) {
+	key := derivativeResolutionKey(routeProfile, nativeSymbol, nativeID)
+	feed.resolutionMu.RLock()
+	resolution, cached := feed.resolved[key]
+	feed.resolutionMu.RUnlock()
+	if cached {
+		return resolution.fact, resolution.ok
+	}
+	fact, ok := feed.resolver.ResolveDerivativeInstrument(ctx, routeProfile, nativeSymbol, nativeID)
+	feed.resolutionMu.Lock()
+	if current, exists := feed.resolved[key]; exists {
+		resolution = current
+	} else {
+		resolution = derivativeResolution{fact: fact, ok: ok}
+		feed.resolved[key] = resolution
+	}
+	feed.resolutionMu.Unlock()
+	return resolution.fact, resolution.ok
+}
+
+func derivativeResolutionKey(routeProfile, nativeSymbol, nativeID string) string {
+	if nativeID != "" {
+		return routeProfile + "\x00id:" + nativeID
+	}
+	return routeProfile + "\x00symbol:" + nativeSymbol
 }
 
 func derivativeFields(fields nativeDerivativeField) exchange.DerivativeField {
@@ -368,8 +410,36 @@ func nativeDerivativePatchFromSnapshot(snapshot DerivativeSnapshot) nativeDeriva
 	}
 	return nativeDerivativePatch{
 		Kind: nativeDerivativePatchSnapshot, Scope: snapshot.Scope,
-		ObservedAt: snapshot.ObservedAt, Fields: nativeDerivativeFieldAll, Facts: facts,
+		ObservedAt: snapshot.ObservedAt, Fields: nativeDerivativeSnapshotFields(facts), Facts: facts,
 	}
+}
+
+func nativeDerivativeSnapshotFields(facts []nativeDerivativeFact) nativeDerivativeField {
+	fields := nativeDerivativeFieldIdentity
+	for _, fact := range facts {
+		if fact.FundingRate.Valid {
+			fields |= nativeDerivativeFieldFunding
+		}
+		if fact.FundingIntervalHours.Valid {
+			fields |= nativeDerivativeFieldFundingInterval
+		}
+		if !fact.NextFundingTime.IsZero() {
+			fields |= nativeDerivativeFieldNextFundingTime
+		}
+		if fact.MarkPrice.Valid {
+			fields |= nativeDerivativeFieldMarkPrice
+		}
+		if fact.IndexPrice.Valid {
+			fields |= nativeDerivativeFieldIndexPrice
+		}
+		if fact.OpenInterest.Valid {
+			fields |= nativeDerivativeFieldOpenInterest
+		}
+		if fact.OpenInterestNotional.Valid {
+			fields |= nativeDerivativeFieldOpenInterestNotional
+		}
+	}
+	return fields
 }
 
 func firstObservedAt(candidate, fallback time.Time) time.Time {

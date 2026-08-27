@@ -20,7 +20,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestStreamManagerPublishesPrivateResourcesAndRecoversAfterGap(t *testing.T) {
+func TestStreamManagerPublishesPrivateResourcesAndReconnectsWithoutRESTRecovery(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
 	first := newFakeStreamGeneration()
 	second := newFakeStreamGeneration()
@@ -38,7 +38,7 @@ func TestStreamManagerPublishesPrivateResourcesAndRecoversAfterGap(t *testing.T)
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,8 +50,9 @@ func TestStreamManagerPublishesPrivateResourcesAndRecoversAfterGap(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
+	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool {
-		return reconciler.Recoveries() == 1 && accounts.LatestReady()
+		return accounts.LatestReady()
 	})
 	if event := receiveEvent(t, subscription); event.Kind != KindAccountHealth {
 		t.Fatalf("initial private stream event kind=%s, want %s", event.Kind, KindAccountHealth)
@@ -120,7 +121,7 @@ func TestStreamManagerPublishesPrivateResourcesAndRecoversAfterGap(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if health.WriteReady != status.WriteReady || health.WriteReady ||
+		if health.WriteReady != status.WriteReady ||
 			health.ReadReady != status.ReadReady || health.Reason != status.Reason {
 			t.Fatalf("account health=%+v REST status=%+v", health, status)
 		}
@@ -129,10 +130,13 @@ func TestStreamManagerPublishesPrivateResourcesAndRecoversAfterGap(t *testing.T)
 	if resync.Kind != KindResyncRequired {
 		t.Fatalf("gap event=%+v", resync)
 	}
+	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool {
-		return reconciler.Suspensions() >= 2 && reconciler.Recoveries() >= 2 &&
-			socket.Generation() >= 2 && accounts.LatestReady()
+		return socket.Generation() >= 2 && accounts.LatestReady()
 	})
+	if reconciler.Recoveries() != 0 || reconciler.Suspensions() != 0 {
+		t.Fatalf("transport reconnect triggered REST/suspension: recoveries=%d suspensions=%d", reconciler.Recoveries(), reconciler.Suspensions())
+	}
 }
 
 func TestStreamManagerPublishesPerpPositionsWithMonotonicVersions(t *testing.T) {
@@ -152,7 +156,7 @@ func TestStreamManagerPublishesPerpPositionsWithMonotonicVersions(t *testing.T) 
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +167,7 @@ func TestStreamManagerPublishesPerpPositionsWithMonotonicVersions(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
+	generation.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.LatestReady() })
 
 	subscription := subscribeTest(t, hub, "principal-a", "acct-p", "")
@@ -224,8 +229,8 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 		wantResync  bool
 		wantRecover int
 	}{
-		{name: "external order", observeErr: store.ErrNotFound, wantRecover: 1},
-		{name: "durable observation failure", observeErr: errors.New("store unavailable"), wantResync: true, wantRecover: 2},
+		{name: "external order", observeErr: store.ErrNotFound},
+		{name: "durable observation failure", observeErr: errors.New("store unavailable"), wantResync: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -244,7 +249,7 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 			reconciler := &fakeStreamReconciler{observeErr: test.observeErr}
 			manager, err := NewStreamManager(StreamOptions{
 				Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-				ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+				ReconnectBackoff: time.Millisecond,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -255,6 +260,7 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 				t.Fatal(err)
 			}
 			t.Cleanup(manager.Close)
+			first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 			awaitCondition(t, func() bool { return accounts.LatestReady() })
 			subscription := subscribeTest(t, hub, "principal-a", "acct-a", "")
 			first.orders.events <- exchange.OrderEvent{
@@ -273,7 +279,10 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 				if event.Kind != KindResyncRequired {
 					t.Fatalf("event=%+v, want resync_required", event)
 				}
-				awaitCondition(t, func() bool { return reconciler.Recoveries() >= test.wantRecover })
+				awaitCondition(t, func() bool { return socket.Generation() >= 2 })
+				if got := reconciler.Recoveries(); got != test.wantRecover {
+					t.Fatalf("reconnect recoveries=%d, want %d", got, test.wantRecover)
+				}
 			} else {
 				time.Sleep(20 * time.Millisecond)
 				if got := reconciler.Recoveries(); got != test.wantRecover {
@@ -348,58 +357,31 @@ func TestStreamManagerOpensOneAccountStreamPerDynamicRoute(t *testing.T) {
 			Asset: "SPOT-DELTA", Available: decimal.NewFromInt(1), Total: decimal.NewFromInt(1),
 		}},
 	}
-	select {
-	case event := <-subscription.Events():
-		t.Fatalf("account delta escaped before recovery baseline: %+v", event)
-	default:
-	}
-	if err := streams.releaseAccountEvents(); err != nil {
-		t.Fatal(err)
-	}
+	// REST and WebSocket are independent facts. Events are applied immediately;
+	// timestamp/entity merge rules prevent a slower REST response from
+	// overwriting them, so there is no recovery queue to release.
 	receiveEvent(t, subscription)
 	receiveEvent(t, subscription)
 
-	// Both balance events are now published, and the barrier is still shut. It
+	// Both balance events are now published, and the activation gate is still
+	// shut. It
 	// asks whether the private streams are live, and a payload's baseline does
 	// not answer that: five of the nine adapters only ever emit EventDelta, and
 	// Binance emits nothing at all while an account's balances do not move.
 	select {
 	case <-streams.activated:
-		t.Fatal("private activation barrier completed on balance payloads alone")
+		t.Fatal("private activation completed on balance payloads alone")
 	default:
 	}
 
 	// The exchange layer reports liveness the same way for every venue, once the
-	// backend's subscribe has succeeded. That is what opens the barrier.
+	// backend's subscribe has succeeded. That is what opens the activation gate.
 	spotGeneration.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	perpGeneration.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	select {
 	case <-streams.activated:
 	case <-time.After(time.Second):
-		t.Fatal("private activation barrier did not complete after every route reported active")
-	}
-}
-
-func TestAccountEventGenerationFenceDropsLateAndRejectsGap(t *testing.T) {
-	route := exchange.AccountRoute{AccountID: "account", RouteID: "perp-usdt", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT", NativeFamily: "perpetual"}
-	event := func(generation, sequence uint64) exchange.AccountEvent {
-		return exchange.AccountEvent{Kind: exchange.AccountEventResyncRequired, Route: route, Generation: generation, Sequence: sequence, Phase: exchange.AccountEventPhaseLive, ObservedAt: time.Now().UTC(), Reason: "test"}
-	}
-	var generation, sequence uint64
-	if accepted, err := acceptAccountEvent(event(2, 1), &generation, &sequence); err != nil || !accepted {
-		t.Fatalf("initial event accepted=%t err=%v", accepted, err)
-	}
-	if accepted, err := acceptAccountEvent(event(1, 99), &generation, &sequence); err != nil || accepted {
-		t.Fatalf("late generation accepted=%t err=%v", accepted, err)
-	}
-	if accepted, err := acceptAccountEvent(event(2, 1), &generation, &sequence); err != nil || accepted {
-		t.Fatalf("duplicate accepted=%t err=%v", accepted, err)
-	}
-	if _, err := acceptAccountEvent(event(2, 3), &generation, &sequence); err == nil {
-		t.Fatal("sequence gap accepted")
-	}
-	if _, err := acceptAccountEvent(event(3, 1), &generation, &sequence); err == nil {
-		t.Fatal("new generation accepted without resync")
+		t.Fatal("private activation did not complete after every route reported active")
 	}
 }
 
@@ -435,7 +417,7 @@ func TestRouteAccountEventsDrivePositionAndOpenOrderHotReasons(t *testing.T) {
 	}
 }
 
-func TestAccountStreamsFaultBeforeEveryRouteActivatesDoesNotReleaseBarrier(t *testing.T) {
+func TestAccountStreamsFaultBeforeEveryRouteActivatesDoesNotReleaseActivation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	streams := &accountStreams{
 		cancel: cancel, faults: make(chan struct{}, 1), activated: make(chan struct{}),
@@ -452,7 +434,7 @@ func TestAccountStreamsFaultBeforeEveryRouteActivatesDoesNotReleaseBarrier(t *te
 	}
 	select {
 	case <-streams.activated:
-		t.Fatal("fault released the private activation barrier before every route activated")
+		t.Fatal("fault released private activation before every route activated")
 	default:
 	}
 	if err := ctx.Err(); err != nil {
@@ -496,7 +478,7 @@ func TestStreamManagerFailsClosedWhenDynamicRouteSelectionsCrossGenerations(t *t
 	}
 }
 
-func TestStreamManagerReconnectRequiresFreshPrivateActivationBarrier(t *testing.T) {
+func TestStreamManagerReconnectRequiresFreshPrivateActivation(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
 	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
@@ -507,11 +489,11 @@ func TestStreamManagerReconnectRequiresFreshPrivateActivationBarrier(t *testing.
 		instrument: streamTestInstrument(exchange.ProductSpot),
 		spot:       &fakeStreamSpotClient{socket: socket},
 	}
-	accounts := &barrierStreamAccounts{fakeStreamAccounts: base}
+	accounts := base
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -520,29 +502,25 @@ func TestStreamManagerReconnectRequiresFreshPrivateActivationBarrier(t *testing.
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
-	awaitCondition(t, func() bool { return reconciler.Recoveries() == 1 })
-	if accounts.LatestReady() || accounts.BarrierCount() != 0 {
-		t.Fatalf("ready=%t barriers=%d before initial activation", accounts.LatestReady(), accounts.BarrierCount())
+	awaitCondition(t, func() bool { return socket.Generation() == 1 })
+	if accounts.LatestReady() || accounts.ActivationCount() != 0 {
+		t.Fatalf("ready=%t activations=%d before initial activation", accounts.LatestReady(), accounts.ActivationCount())
 	}
 	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.BarrierCount() == 1 })
+	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.ActivationCount() == 1 })
 
 	first.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
 	awaitCondition(t, func() bool {
-		return reconciler.Recoveries() == 2 && socket.Generation() == 2 && !accounts.LatestReady()
+		return socket.Generation() == 2 && !accounts.LatestReady()
 	})
-	if accounts.BarrierCount() != 1 {
-		t.Fatalf("barriers=%d before reconnect activation", accounts.BarrierCount())
+	if accounts.ActivationCount() != 1 {
+		t.Fatalf("activations=%d before reconnect activation", accounts.ActivationCount())
 	}
 	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.BarrierCount() == 2 })
-	barriers := accounts.Barriers()
-	if barriers[0].snapshotID == barriers[1].snapshotID || barriers[0].sequence >= barriers[1].sequence {
-		t.Fatalf("barriers=%+v", barriers)
-	}
+	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.ActivationCount() == 2 })
 }
 
-func TestStreamManagerDynamicRoutesRequireIndependentActivationBarriers(t *testing.T) {
+func TestStreamManagerDynamicRoutesRequireIndependentActivation(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
 	spotFirst, spotSecond := newFakeStreamGeneration(), newFakeStreamGeneration()
 	perpFirst := newFakeStreamGeneration()
@@ -563,11 +541,11 @@ func TestStreamManagerDynamicRoutesRequireIndependentActivationBarriers(t *testi
 		spotID: dynamicStreamSelection(fence, "spot", spotID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: spotSocket}),
 		perpID: dynamicStreamSelection(fence, "perp-usdt", perpID, streamTestInstrument(exchange.ProductPerp), &fakeStreamPerpClient{socket: perpSocket}),
 	}}
-	accounts := &dynamicBarrierStreamAccounts{atomicStreamAccounts: routes}
+	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes}
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -576,25 +554,25 @@ func TestStreamManagerDynamicRoutesRequireIndependentActivationBarriers(t *testi
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
-	awaitCondition(t, func() bool { return reconciler.Recoveries() == 1 })
+	awaitCondition(t, func() bool { return spotSocket.Generation() == 1 && perpSocket.spot.Generation() == 1 })
 
 	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool {
-		return accounts.LatestReady() && accounts.BarrierCount() == 2 &&
+		return accounts.LatestReady() && accounts.ActivationCount() == 1 &&
 			accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt")
 	})
 
 	spotFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
 	awaitCondition(t, func() bool {
-		return reconciler.Recoveries() == 2 && spotSocket.Generation() == 2 && !accounts.LatestReady()
+		return spotSocket.Generation() == 2 && !accounts.LatestReady()
 	})
 	if !accounts.RouteReady("perp-usdt") || perpSocket.spot.Generation() != 1 {
 		t.Fatalf("spot reconnect changed perp route: ready=%t generation=%d",
 			accounts.RouteReady("perp-usdt"), perpSocket.spot.Generation())
 	}
 	spotSecond.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.BarrierCount() == 3 })
+	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.ActivationCount() == 2 })
 	if !accounts.RouteReady("spot") || !accounts.RouteReady("perp-usdt") {
 		t.Fatalf("route readiness after spot recovery: spot=%t perp=%t",
 			accounts.RouteReady("spot"), accounts.RouteReady("perp-usdt"))
@@ -622,10 +600,10 @@ func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *te
 		spotID: dynamicStreamSelection(fence, "spot", spotID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: spotSocket}),
 		perpID: dynamicStreamSelection(fence, "perp-usdt", perpID, streamTestInstrument(exchange.ProductPerp), &fakeStreamPerpClient{socket: perpSocket}),
 	}}
-	accounts := &dynamicBarrierStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
+	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: &fakeStreamReconciler{}, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -654,7 +632,7 @@ func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *te
 	}
 }
 
-func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnectIsBlocked(t *testing.T) {
+func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnects(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
 	spotFirst, spotSecond := newFakeStreamGeneration(), newFakeStreamGeneration()
 	perpFirst := newFakeStreamGeneration()
@@ -673,14 +651,11 @@ func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnectIsBlocked(t
 		spotID: dynamicStreamSelection(fence, "spot", spotID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: spotSocket}),
 		perpID: dynamicStreamSelection(fence, "perp-usdt", perpID, streamTestInstrument(exchange.ProductPerp), &fakeStreamPerpClient{socket: perpSocket}),
 	}}
-	accounts := &dynamicBarrierStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
-	reconciler := &nthBlockingRecoveryReconciler{
-		fakeStreamReconciler: &fakeStreamReconciler{}, blockAt: 2,
-		entered: make(chan struct{}), release: make(chan struct{}),
-	}
+	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
+	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -689,63 +664,23 @@ func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnectIsBlocked(t
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
-	defer close(reconciler.release)
 	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt") })
 
 	spotFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	select {
-	case <-reconciler.entered:
-	case <-time.After(time.Second):
-		t.Fatal("spot reconnect did not enter blocked recovery")
-	}
+	awaitCondition(t, func() bool { return spotSocket.Generation() == 2 })
 	perpFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for accounts.RouteReady("perp-usdt") && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if accounts.RouteReady("perp-usdt") {
-		t.Fatal("blocked spot reconnect prevented sibling perp fault from becoming unavailable")
+		t.Fatal("spot reconnect prevented sibling perp fault from becoming unavailable")
 	}
-}
-
-func TestStreamManagerReconnectsRouteAfterBarrierCallbackFailure(t *testing.T) {
-	hub := newTestHub(t, 16, 8)
-	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
-	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
-	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
-	fence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3}
-	base := &fakeStreamAccounts{
-		status:   account.Status{Resource: account.Resource{AccountID: fence.AccountID, ReadReady: true}},
-		snapshot: catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},
+	if reconciler.Recoveries() != 0 {
+		t.Fatalf("route reconnects triggered REST recovery: %d", reconciler.Recoveries())
 	}
-	routes := &atomicStreamAccounts{fakeStreamAccounts: base, selections: map[domain.InstrumentID]account.SelectedOrderRoute{
-		instrumentID: dynamicStreamSelection(fence, "spot", instrumentID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: socket}),
-	}}
-	accounts := &dynamicBarrierStreamAccounts{
-		atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool),
-		barrierFailures: map[domain.RouteID]int{"spot": 1},
-	}
-	reconciler := &fakeStreamReconciler{}
-	manager, err := NewStreamManager(StreamOptions{
-		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Start(t.Context(), []domain.AccountID{fence.AccountID}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(manager.Close)
-	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return socket.Generation() == 2 && reconciler.Recoveries() == 2 })
-	if accounts.RouteReady("spot") {
-		t.Fatal("route became ready after rejected private-stream barrier")
-	}
-	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.RouteReady("spot") })
 }
 
 func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t *testing.T) {
@@ -761,11 +696,11 @@ func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t 
 	routes := &atomicStreamAccounts{fakeStreamAccounts: base, selections: map[domain.InstrumentID]account.SelectedOrderRoute{
 		instrumentID: dynamicStreamSelection(fence, "spot", instrumentID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: socket}),
 	}}
-	accounts := &dynamicBarrierStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
+	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -774,13 +709,13 @@ func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t 
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
-	awaitCondition(t, func() bool { return socket.Generation() == 1 && reconciler.Recoveries() == 1 })
+	awaitCondition(t, func() bool { return socket.Generation() == 1 })
 	if accounts.RouteReady("spot") {
 		t.Fatal("route became ready before its private stream activated")
 	}
 
 	first.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	awaitCondition(t, func() bool { return socket.Generation() == 2 && reconciler.Recoveries() == 2 })
+	awaitCondition(t, func() bool { return socket.Generation() == 2 })
 	if accounts.RouteReady("spot") {
 		t.Fatal("route became ready after reconnect but before the replacement stream activated")
 	}
@@ -802,7 +737,7 @@ func TestStreamManagerRegistersAccountsBeforeAndDuringStartIdempotently(t *testi
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -816,11 +751,11 @@ func TestStreamManagerRegistersAccountsBeforeAndDuringStartIdempotently(t *testi
 	if err := manager.Start(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
-	awaitCondition(t, func() bool { return reconciler.Recoveries() == 1 })
+	awaitCondition(t, func() bool { return socket.Generation() == 1 })
 	if err := manager.RegisterAccount("acct-a"); err != nil {
 		t.Fatal(err)
 	}
-	awaitCondition(t, func() bool { return reconciler.Recoveries() == 2 && socket.Generation() == 2 })
+	awaitCondition(t, func() bool { return socket.Generation() == 2 })
 	if !first.Closed() {
 		t.Fatal("runtime registration did not replace old-generation subscriptions")
 	}
@@ -832,7 +767,7 @@ func TestStreamManagerRegistersAccountsBeforeAndDuringStartIdempotently(t *testi
 	if err := manager.RegisterAccount("acct-a"); err != nil {
 		t.Fatal(err)
 	}
-	awaitCondition(t, func() bool { return reconciler.Recoveries() == 3 && socket.Generation() == 3 })
+	awaitCondition(t, func() bool { return socket.Generation() == 3 })
 
 	closed := make(chan struct{}, 2)
 	for range 2 {
@@ -853,63 +788,7 @@ func TestStreamManagerRegistersAccountsBeforeAndDuringStartIdempotently(t *testi
 	}
 }
 
-func TestStreamManagerUnregisterDoesNotBlockIndependentRegistrationWhileSupervisorStops(t *testing.T) {
-	hub := newTestHub(t, 16, 8)
-	generation := newFakeStreamGeneration()
-	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
-	accounts := &fakeStreamAccounts{
-		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true}},
-		snapshot:   catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},
-		instrument: streamTestInstrument(exchange.ProductSpot),
-		spot:       &fakeStreamSpotClient{socket: &fakeSpotSocket{generations: []*fakeStreamGeneration{generation}}},
-	}
-	reconciler := &blockingRecoveryReconciler{
-		fakeStreamReconciler: &fakeStreamReconciler{},
-		entered:              make(chan struct{}),
-		release:              make(chan struct{}),
-	}
-	manager, err := NewStreamManager(StreamOptions{
-		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer manager.Close()
-	defer close(reconciler.release)
-	if err := manager.Start(t.Context(), []domain.AccountID{"acct-a"}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-reconciler.entered:
-	case <-time.After(time.Second):
-		t.Fatal("account supervisor did not enter recovery")
-	}
-
-	unregistered := make(chan struct{})
-	go func() {
-		manager.UnregisterAccount("acct-a")
-		close(unregistered)
-	}()
-	select {
-	case <-unregistered:
-		t.Fatal("unregister returned before blocked supervisor stopped")
-	case <-time.After(20 * time.Millisecond):
-	}
-
-	registered := make(chan error, 1)
-	go func() { registered <- manager.RegisterAccount("acct-b") }()
-	select {
-	case err := <-registered:
-		if err != nil {
-			t.Fatalf("register independent account: %v", err)
-		}
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("independent registration blocked behind another account shutdown")
-	}
-}
-
-func TestStreamManagerStartFailureRollsBackForRealRetry(t *testing.T) {
+func TestStreamManagerStartDoesNotInvokeRESTRecoveryOrSuspendWrites(t *testing.T) {
 	hub := newTestHub(t, 16, 8)
 	generation := newFakeStreamGeneration()
 	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
@@ -922,78 +801,19 @@ func TestStreamManagerStartFailureRollsBackForRealRetry(t *testing.T) {
 	reconciler := &fakeStreamReconciler{suspendFailures: 1}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-		ReconnectBackoff: time.Millisecond, RecoveryTimeout: time.Second,
+		ReconnectBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	if err := manager.Start(t.Context(), []domain.AccountID{"acct-a"}); err == nil {
-		t.Fatal("Start succeeded despite injected suspend failure")
-	}
 	if err := manager.Start(t.Context(), []domain.AccountID{"acct-a"}); err != nil {
-		t.Fatalf("retry Start: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
-	awaitCondition(t, func() bool { return reconciler.Recoveries() == 1 })
-}
-
-func TestStreamManagerClosePublishesTerminalStateWhileRegistrationIsBlocked(t *testing.T) {
-	hub := newTestHub(t, 16, 8)
-	accounts := &fakeStreamAccounts{
-		status: account.Status{Resource: account.Resource{AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true}},
-	}
-	reconciler := &blockingSuspendReconciler{
-		fakeStreamReconciler: &fakeStreamReconciler{},
-		entered:              make(chan struct{}),
-		release:              make(chan struct{}),
-	}
-	manager, err := NewStreamManager(StreamOptions{
-		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Start(t.Context(), nil); err != nil {
-		t.Fatal(err)
-	}
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(reconciler.release) }) }
-	defer release()
-
-	registered := make(chan error, 1)
-	go func() { registered <- manager.RegisterAccount("acct-a") }()
-	select {
-	case <-reconciler.entered:
-	case <-time.After(time.Second):
-		t.Fatal("registration did not enter suspend")
-	}
-	closed := make(chan struct{})
-	go func() {
-		manager.Close()
-		close(closed)
-	}()
-	awaitCondition(t, func() bool {
-		manager.lifecycleMu.Lock()
-		defer manager.lifecycleMu.Unlock()
-		return manager.closed
-	})
-	if err := manager.RegisterAccount("acct-b"); !errors.Is(err, ErrClosed) {
-		t.Fatalf("register after terminal state err=%v, want ErrClosed", err)
-	}
-	select {
-	case <-closed:
-		t.Fatal("Close returned while lifecycle operation was blocked")
-	default:
-	}
-
-	release()
-	if err := <-registered; !errors.Is(err, ErrClosed) {
-		t.Fatalf("blocked registration error=%v, want ErrClosed", err)
-	}
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("Close did not finish after registration was released")
+	generation.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
+	awaitCondition(t, accounts.LatestReady)
+	if reconciler.Recoveries() != 0 || reconciler.Suspensions() != 0 {
+		t.Fatalf("private stream startup invoked REST recovery/suspension: recoveries=%d suspensions=%d", reconciler.Recoveries(), reconciler.Suspensions())
 	}
 }
 
@@ -1059,6 +879,18 @@ func (accounts *fakeStreamAccounts) LatestReady() bool {
 	return len(accounts.states) > 0 && accounts.states[len(accounts.states)-1]
 }
 
+func (accounts *fakeStreamAccounts) ActivationCount() int {
+	accounts.mu.Lock()
+	defer accounts.mu.Unlock()
+	count := 0
+	for _, ready := range accounts.states {
+		if ready {
+			count++
+		}
+	}
+	return count
+}
+
 type atomicStreamAccounts struct {
 	*fakeStreamAccounts
 	selectionMu    sync.Mutex
@@ -1106,113 +938,47 @@ func dynamicStreamSelection(
 	}
 }
 
-type privateBarrier struct {
-	snapshotID string
-	sequence   uint64
-}
-
-type barrierStreamAccounts struct {
-	*fakeStreamAccounts
-	barrierMu sync.Mutex
-	barriers  []privateBarrier
-}
-
-type dynamicBarrierStreamAccounts struct {
+type dynamicActivationStreamAccounts struct {
 	*atomicStreamAccounts
-	barrierMu       sync.Mutex
-	barriers        []privateBarrier
-	routeReady      map[domain.RouteID]bool
-	barrierFailures map[domain.RouteID]int
+	activationMu sync.Mutex
+	routeReady   map[domain.RouteID]bool
 }
 
-func (accounts *barrierStreamAccounts) SetPrivateStreamState(accountID domain.AccountID, ready bool, reason string) error {
-	if ready {
-		return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, false, account.ReasonPrivateStreamStarting)
-	}
-	return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, false, reason)
-}
-
-func (accounts *barrierStreamAccounts) ObservePrivateStreamBarrier(accountID domain.AccountID, snapshotID string, sequence uint64) error {
-	accounts.barrierMu.Lock()
-	accounts.barriers = append(accounts.barriers, privateBarrier{snapshotID: snapshotID, sequence: sequence})
-	accounts.barrierMu.Unlock()
-	return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, true, "")
-}
-
-func (accounts *barrierStreamAccounts) BarrierCount() int {
-	accounts.barrierMu.Lock()
-	defer accounts.barrierMu.Unlock()
-	return len(accounts.barriers)
-}
-
-func (accounts *barrierStreamAccounts) Barriers() []privateBarrier {
-	accounts.barrierMu.Lock()
-	defer accounts.barrierMu.Unlock()
-	return append([]privateBarrier(nil), accounts.barriers...)
-}
-
-func (accounts *dynamicBarrierStreamAccounts) SetPrivateStreamState(accountID domain.AccountID, ready bool, reason string) error {
-	accounts.barrierMu.Lock()
+func (accounts *dynamicActivationStreamAccounts) SetPrivateStreamState(accountID domain.AccountID, ready bool, reason string) error {
+	accounts.activationMu.Lock()
 	if accounts.routeReady == nil {
 		accounts.routeReady = make(map[domain.RouteID]bool)
 	}
-	for _, selection := range accounts.selections {
-		accounts.routeReady[selection.RouteID] = false
+	if !ready {
+		for _, selection := range accounts.selections {
+			accounts.routeReady[selection.RouteID] = false
+		}
 	}
-	accounts.barrierMu.Unlock()
-	if ready {
-		return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, false, account.ReasonPrivateStreamStarting)
-	}
-	return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, false, reason)
+	accounts.activationMu.Unlock()
+	return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, ready, reason)
 }
 
-func (accounts *dynamicBarrierStreamAccounts) ObservePrivateStreamBarrier(accountID domain.AccountID, snapshotID string, sequence uint64) error {
-	accounts.barrierMu.Lock()
+func (accounts *dynamicActivationStreamAccounts) SetPrivateStreamRouteState(fence domain.WriteFence, ready bool, reason string) error {
+	accounts.activationMu.Lock()
 	if accounts.routeReady == nil {
 		accounts.routeReady = make(map[domain.RouteID]bool)
 	}
-	accounts.barriers = append(accounts.barriers, privateBarrier{snapshotID: snapshotID, sequence: sequence})
-	for _, selection := range accounts.selections {
-		accounts.routeReady[selection.RouteID] = true
+	accounts.routeReady[fence.RouteID] = ready
+	allReady := accounts.allRoutesReadyLocked()
+	accounts.activationMu.Unlock()
+	if allReady {
+		return accounts.fakeStreamAccounts.SetPrivateStreamState(fence.AccountID, true, "")
 	}
-	accounts.barrierMu.Unlock()
-	return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, true, "")
-}
-
-func (accounts *dynamicBarrierStreamAccounts) SetPrivateStreamRouteState(fence domain.WriteFence, ready bool, reason string) error {
-	accounts.barrierMu.Lock()
-	if accounts.routeReady == nil {
-		accounts.routeReady = make(map[domain.RouteID]bool)
-	}
-	accounts.routeReady[fence.RouteID] = false
-	accounts.barrierMu.Unlock()
 	return accounts.fakeStreamAccounts.SetPrivateStreamState(fence.AccountID, false, reason)
 }
 
-func (accounts *dynamicBarrierStreamAccounts) ObservePrivateStreamRouteBarrier(fence domain.WriteFence, snapshotID string, sequence uint64) error {
-	accounts.barrierMu.Lock()
-	if accounts.routeReady == nil {
-		accounts.routeReady = make(map[domain.RouteID]bool)
-	}
-	if accounts.barrierFailures[fence.RouteID] > 0 {
-		accounts.barrierFailures[fence.RouteID]--
-		accounts.barrierMu.Unlock()
-		return errors.New("injected route barrier failure")
-	}
-	accounts.barriers = append(accounts.barriers, privateBarrier{snapshotID: snapshotID, sequence: sequence})
-	accounts.routeReady[fence.RouteID] = true
-	allReady := accounts.allRoutesReadyLocked()
-	accounts.barrierMu.Unlock()
-	return accounts.fakeStreamAccounts.SetPrivateStreamState(fence.AccountID, allReady, "")
-}
-
-func (accounts *dynamicBarrierStreamAccounts) RouteReady(routeID domain.RouteID) bool {
-	accounts.barrierMu.Lock()
-	defer accounts.barrierMu.Unlock()
+func (accounts *dynamicActivationStreamAccounts) RouteReady(routeID domain.RouteID) bool {
+	accounts.activationMu.Lock()
+	defer accounts.activationMu.Unlock()
 	return accounts.routeReady[routeID]
 }
 
-func (accounts *dynamicBarrierStreamAccounts) allRoutesReadyLocked() bool {
+func (accounts *dynamicActivationStreamAccounts) allRoutesReadyLocked() bool {
 	seen := make(map[domain.RouteID]struct{})
 	for _, selection := range accounts.selections {
 		seen[selection.RouteID] = struct{}{}
@@ -1228,12 +994,6 @@ func (accounts *dynamicBarrierStreamAccounts) allRoutesReadyLocked() bool {
 	return true
 }
 
-func (accounts *dynamicBarrierStreamAccounts) BarrierCount() int {
-	accounts.barrierMu.Lock()
-	defer accounts.barrierMu.Unlock()
-	return len(accounts.barriers)
-}
-
 type fakeStreamReconciler struct {
 	mu              sync.Mutex
 	suspensions     int
@@ -1241,58 +1001,6 @@ type fakeStreamReconciler struct {
 	recoveries      int
 	observed        []order.VenueOrderObservation
 	observeErr      error
-}
-
-type blockingRecoveryReconciler struct {
-	*fakeStreamReconciler
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
-}
-
-type nthBlockingRecoveryReconciler struct {
-	*fakeStreamReconciler
-	mu      sync.Mutex
-	blockAt int
-	calls   int
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
-}
-
-type blockingSuspendReconciler struct {
-	*fakeStreamReconciler
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
-}
-
-func (reconciler *blockingSuspendReconciler) SuspendAccount(accountID domain.AccountID) error {
-	reconciler.once.Do(func() { close(reconciler.entered) })
-	<-reconciler.release
-	return reconciler.fakeStreamReconciler.SuspendAccount(accountID)
-}
-
-func (reconciler *blockingRecoveryReconciler) RecoverAccount(_ context.Context, accountID domain.AccountID) (order.RecoveryReport, error) {
-	reconciler.once.Do(func() { close(reconciler.entered) })
-	<-reconciler.release
-	return order.RecoveryReport{AccountID: accountID, WriteReady: true}, nil
-}
-
-func (reconciler *nthBlockingRecoveryReconciler) RecoverAccount(ctx context.Context, accountID domain.AccountID) (order.RecoveryReport, error) {
-	reconciler.mu.Lock()
-	reconciler.calls++
-	call := reconciler.calls
-	reconciler.mu.Unlock()
-	if call == reconciler.blockAt {
-		reconciler.once.Do(func() { close(reconciler.entered) })
-		select {
-		case <-ctx.Done():
-			return order.RecoveryReport{}, ctx.Err()
-		case <-reconciler.release:
-		}
-	}
-	return reconciler.fakeStreamReconciler.RecoverAccount(ctx, accountID)
 }
 
 func (reconciler *fakeStreamReconciler) SuspendAccount(domain.AccountID) error {
@@ -1486,16 +1194,10 @@ type fakeRouteSubscription struct {
 	once   sync.Once
 }
 
-func newFakeRouteSubscription(parent context.Context, route exchange.AccountRoute, generation uint64, instrumentID string, source *fakeStreamGeneration, includePositions bool) *fakeRouteSubscription {
+func newFakeRouteSubscription(parent context.Context, route exchange.AccountRoute, _ uint64, instrumentID string, source *fakeStreamGeneration, includePositions bool) *fakeRouteSubscription {
 	ctx, cancel := context.WithCancel(parent)
 	result := &fakeRouteSubscription{events: make(chan exchange.AccountEvent, 32), status: make(chan exchange.StreamStatusEvent, 32), errors: make(chan error, 8), cancel: cancel}
-	var sequence uint64
-	var sequenceMu sync.Mutex
 	emit := func(event exchange.AccountEvent) {
-		sequenceMu.Lock()
-		sequence++
-		event.Generation, event.Sequence = generation, sequence
-		sequenceMu.Unlock()
 		if event.Phase == "" {
 			event.Phase = exchange.AccountEventPhaseLive
 		}
@@ -1510,7 +1212,6 @@ func newFakeRouteSubscription(parent context.Context, route exchange.AccountRout
 			case <-ctx.Done():
 				return
 			case status := <-input:
-				status.Generation = generation
 				select {
 				case result.status <- status:
 				case <-ctx.Done():

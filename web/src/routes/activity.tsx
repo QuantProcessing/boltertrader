@@ -154,7 +154,6 @@ function Detail({ event }: { event: ActivityEvent | null }) {
         <Row label={t("col.product")} value={event.productId} />
         <Row label={t("col.account")} value={event.accountId} />
         <Row label={t("col.resource")} value={event.resourceId} />
-        <Row label={t("activity.cursor")} value={event.cursor} />
       </dl>
 
       <div className="p-3">

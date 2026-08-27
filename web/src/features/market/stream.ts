@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { Candle, CandleInterval, DepthLevel } from "@/api/types";
 import { realtimeTopics, type RealtimeMessage } from "@/features/realtime/topic-manager";
@@ -15,36 +15,51 @@ export interface LiveMarkPrice {
   stale: boolean;
 }
 
-interface StreamEvent {
+export const DEFAULT_MARK_STALE_AFTER_MS = 5_000;
+
+export interface StreamEvent {
   /** Kept optional for the pure book reducer's legacy fixtures. */
   kind?: "order_book" | "candles" | "mark_price";
   instrumentId?: string;
-  eventType: "snapshot" | "delta" | "update" | "resync_required";
+  eventType: "snapshot" | "delta" | "full" | "update" | "resync_required";
   observedAt: string;
   bids?: DepthLevel[];
   asks?: DepthLevel[];
   candle?: Candle;
   price?: string;
+  sourceSequence?: string;
+  previous?: string;
 }
 
-/** One public venue stream per resource, both carried through the same origin. */
-export function usePublicMarketStreams(instrumentId: string | undefined, interval: CandleInterval, product?: string) {
+/** Public venue streams terminate at Gateway and recover from native WS snapshots. */
+export function usePublicMarketStreams(
+  instrumentId: string | undefined,
+  interval: CandleInterval,
+  product?: string,
+) {
   const [book, setBook] = useState<LiveOrderBook | null>(null);
   const [candle, setCandle] = useState<Candle | null>(null);
   const [mark, setMark] = useState<LiveMarkPrice | null>(null);
+  const bookSync = useRef(new OrderBookSynchronizer());
 
   useEffect(() => {
     setBook(null);
     setCandle(null);
     setMark(null);
     if (!instrumentId || typeof WebSocket === "undefined") return;
+    bookSync.current = new OrderBookSynchronizer();
 
     let markTimer: ReturnType<typeof setTimeout> | undefined;
     const subscriptions = [
       realtimeTopics.subscribe({ topic: "market.order_book", instrumentId, depth: 100 }, (message) => {
         const event = bookEvent(message);
-        if (event) setBook((current) => applyBookEvent(current, event));
-        else if (message.type === "resync_required") setBook(null);
+        if (event) {
+          const result = bookSync.current.push(event);
+          if (result.book !== undefined) setBook(result.book);
+        } else if (message.type === "resync_required") {
+          bookSync.current.reset();
+          setBook(null);
+        }
       }),
       realtimeTopics.subscribe({ topic: "market.candles", instrumentId, interval }, (message) => {
         const next = candleEvent(message);
@@ -59,7 +74,7 @@ export function usePublicMarketStreams(instrumentId: string | undefined, interva
           const observedAt = message.observedAt ?? new Date().toISOString();
           setMark({ price: data.price, observedAt, stale: false });
           if (markTimer) clearTimeout(markTimer);
-          const delay = Math.max(0, Date.parse(observedAt) + 2_000 - Date.now());
+          const delay = markStaleDelay(observedAt, data.staleAfterMs);
           markTimer = setTimeout(() => setMark((current) => current?.observedAt === observedAt ? { ...current, stale: true } : current), delay);
         } else if (message.type === "resync_required") setMark((current) => current ? { ...current, stale: true } : null);
       }));
@@ -71,6 +86,16 @@ export function usePublicMarketStreams(instrumentId: string | undefined, interva
   }, [instrumentId, interval, product]);
 
   return { book, candle, mark };
+}
+
+/** The Gateway owns source cadence; the browser only evaluates its deadline. */
+export function markStaleDelay(observedAt: string, staleAfterMs: unknown, now = Date.now()): number {
+  const configured = typeof staleAfterMs === "number" && Number.isFinite(staleAfterMs) && staleAfterMs >= 1_000
+    ? staleAfterMs
+    : DEFAULT_MARK_STALE_AFTER_MS;
+  const observed = Date.parse(observedAt);
+  const deadline = Number.isFinite(observed) ? observed + configured : now + configured;
+  return Math.max(0, deadline - now);
 }
 
 export function mergeLiveCandle(candles: Candle[] | undefined, live: Candle | null, limit: number): Candle[] | undefined {
@@ -88,7 +113,7 @@ function objectData(message: RealtimeMessage): Record<string, unknown> | null {
 }
 
 function bookEvent(message: RealtimeMessage): StreamEvent | null {
-  if (message.type !== "snapshot" && message.type !== "delta") return null;
+  if (message.type !== "snapshot" && message.type !== "delta" && message.type !== "full") return null;
   const data = objectData(message);
   if (!data || !Array.isArray(data.bids) || !Array.isArray(data.asks)) return null;
   return {
@@ -96,7 +121,103 @@ function bookEvent(message: RealtimeMessage): StreamEvent | null {
     observedAt: message.observedAt ?? new Date().toISOString(),
     bids: data.bids as DepthLevel[],
     asks: data.asks as DepthLevel[],
+    sourceSequence: message.sourceSequence,
+    previous: typeof data.previous === "string" ? data.previous : undefined,
   };
+}
+
+export interface BookSyncResult {
+  book?: LiveOrderBook | null;
+  needsSnapshot: boolean;
+}
+
+/**
+ * Rebuild depth in the browser from a WS snapshot and native deltas. A full
+ * event is a later self-contained replacement; no REST book is ever joined to
+ * a different WebSocket sequence.
+ */
+export class OrderBookSynchronizer {
+  private book: LiveOrderBook | null = null;
+  private sourceSequence = "";
+  private waitingForSnapshot = true;
+  private pending: StreamEvent[] = [];
+
+  reset(): void {
+    this.book = null;
+    this.sourceSequence = "";
+    this.waitingForSnapshot = true;
+    this.pending = [];
+  }
+
+  seed(snapshot: StreamEvent): BookSyncResult {
+    if (snapshot.eventType !== "snapshot") return { needsSnapshot: true };
+    this.book = applyBookEvent(null, snapshot);
+    if (!this.book) return this.fail();
+    this.sourceSequence = snapshot.sourceSequence ?? "";
+    this.waitingForSnapshot = false;
+    return this.drain();
+  }
+
+  push(event: StreamEvent): BookSyncResult {
+    if (event.eventType === "snapshot") return this.seed(event);
+    if (event.eventType === "full") {
+      this.book = applyBookEvent(null, event);
+      if (!this.book) return this.fail();
+      this.sourceSequence = event.sourceSequence ?? "";
+      this.waitingForSnapshot = false;
+      this.pending = [];
+      return { book: this.book, needsSnapshot: false };
+    }
+    if (event.eventType !== "delta") return { needsSnapshot: false };
+    if (this.waitingForSnapshot) {
+      this.pending.push(event);
+      if (this.pending.length > 2_000) return this.fail();
+      return { needsSnapshot: false };
+    }
+    return this.applyDelta(event);
+  }
+
+  private drain(): BookSyncResult {
+    const pending = this.pending;
+    this.pending = [];
+    for (const event of pending) {
+      const result = this.applyDelta(event);
+      if (result.needsSnapshot) return result;
+    }
+    return { book: this.book, needsSnapshot: false };
+  }
+
+  private applyDelta(event: StreamEvent): BookSyncResult {
+    if (!this.book) return this.fail();
+    const incoming = event.sourceSequence ?? "";
+    if (this.sourceSequence && incoming) {
+      const order = compareIntegerSequences(incoming, this.sourceSequence);
+      if (incoming === this.sourceSequence || (order !== null && order <= 0)) {
+        return { book: this.book, needsSnapshot: false };
+      }
+      // Some venues expose only a monotonic sequence. When a predecessor is
+      // available it must join exactly; otherwise the adapter/Hub can only
+      // guarantee monotonicity and a later native snapshot resets the book.
+      if (event.previous && event.previous !== this.sourceSequence) return this.fail();
+    }
+    const next = applyBookEvent(this.book, event);
+    if (!next) return this.fail();
+    this.book = next;
+    if (incoming) this.sourceSequence = incoming;
+    return { book: this.book, needsSnapshot: false };
+  }
+
+  private fail(): BookSyncResult {
+    this.reset();
+    return { book: null, needsSnapshot: true };
+  }
+}
+
+function compareIntegerSequences(left: string, right: string): number | null {
+  if (!/^\d+$/.test(left) || !/^\d+$/.test(right)) return null;
+  const a = BigInt(left);
+  const b = BigInt(right);
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function candleEvent(message: RealtimeMessage): Candle | null {
@@ -114,7 +235,7 @@ export function applyBookEvent(current: LiveOrderBook | null, event: StreamEvent
   const bids = event.bids === undefined ? [] : validLevels(event.bids);
   const asks = event.asks === undefined ? [] : validLevels(event.asks);
   if (!bids || !asks) return current;
-  if (event.eventType === "snapshot" || current === null) {
+  if (event.eventType === "snapshot" || event.eventType === "full" || current === null) {
     return { bids: sortLevels(bids, true), asks: sortLevels(asks, false), observedAt: event.observedAt };
   }
   return {

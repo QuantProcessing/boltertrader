@@ -694,7 +694,7 @@ func TestCoordinatorPrincipalScopedGetListAndCancelAreDurableAndIdempotent(t *te
 	}
 }
 
-func TestCoordinatorTerminalPrivateEventReopensGateAfterAmbiguousCancel(t *testing.T) {
+func TestCoordinatorTerminalPrivateEventWaitsForScheduledReconciliationAfterAmbiguousCancel(t *testing.T) {
 	fixture := newCoordinatorFixture(t)
 	if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {
 		t.Fatal(err)
@@ -727,8 +727,14 @@ func TestCoordinatorTerminalPrivateEventReopensGateAfterAmbiguousCancel(t *testi
 
 	next := fixture.placeRequest()
 	next.IdempotencyKey = "strategy-a-2"
+	if _, err := fixture.coordinator.Place(context.Background(), next); !errors.Is(err, ErrWriteNotReady) {
+		t.Fatalf("Place before fixed reconciliation error=%v", err)
+	}
+	if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {
+		t.Fatalf("scheduled account reconciliation: %v", err)
+	}
 	if _, err := fixture.coordinator.Place(context.Background(), next); err != nil {
-		t.Fatalf("Place after exact terminal private event: %v", err)
+		t.Fatalf("Place after fixed reconciliation: %v", err)
 	}
 }
 

@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	publicWSURLSpot    = "wss://stream.bybit.com/v5/public/spot"
-	publicWSURLLinear  = "wss://stream.bybit.com/v5/public/linear"
-	publicWSURLInverse = "wss://stream.bybit.com/v5/public/inverse"
-	publicWSURLOption  = "wss://stream.bybit.com/v5/public/option"
+	publicWSURLSpot        = "wss://stream.bybit.com/v5/public/spot"
+	publicWSURLLinear      = "wss://stream.bybit.com/v5/public/linear"
+	publicWSURLInverse     = "wss://stream.bybit.com/v5/public/inverse"
+	publicWSURLOption      = "wss://stream.bybit.com/v5/public/option"
+	bybitWSReadIdleTimeout = 60 * time.Second
 )
 
 type PublicWSClient struct {
@@ -104,6 +105,10 @@ func (c *PublicWSClient) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := conn.SetReadDeadline(time.Now().Add(bybitWSReadIdleTimeout)); err != nil {
+		_ = conn.Close()
+		return err
+	}
 
 	c.conn = conn
 	go c.readLoop(conn)
@@ -189,6 +194,7 @@ func (c *PublicWSClient) pingLoop(conn *websocket.Conn) {
 		err := conn.WriteJSON(map[string]string{"op": "ping"})
 		c.writeMu.Unlock()
 		if err != nil {
+			_ = conn.Close()
 			return
 		}
 	}
@@ -209,6 +215,7 @@ func (c *PublicWSClient) readLoop(conn *websocket.Conn) {
 			}
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(bybitWSReadIdleTimeout))
 
 		var env WSEnvelope
 		if err := json.Unmarshal(payload, &env); err != nil {

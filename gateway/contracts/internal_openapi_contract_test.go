@@ -106,7 +106,7 @@ func TestInternalMarketWebSocketDeclaresMultiplexedResnapshotProtocol(t *testing
 	}
 	switching := document.Paths["/internal/v1/market/ws"]["get"].Responses["101"]
 	description := strings.ToLower(switching.Description)
-	for _, phrase := range []string{"multiplexed", "complete snapshot", "resync_required", "new generation"} {
+	for _, phrase := range []string{"multiplexed", "websocket-derived snapshot", "native deltas", "full replacements", "no rest book", "resync_required", "new generation"} {
 		if !strings.Contains(description, phrase) {
 			t.Errorf("market ws description must contain %q: %s", phrase, description)
 		}
@@ -118,7 +118,7 @@ func TestInternalMarketWebSocketDeclaresMultiplexedResnapshotProtocol(t *testing
 	if !reflect.DeepEqual(event.Required, []string{"type"}) {
 		t.Fatalf("RealtimeMessage required=%v", event.Required)
 	}
-	if got, want := event.Properties["type"].Enum, []string{"ack", "snapshot", "delta", "checkpoint", "resync_required", "error", "pong"}; !reflect.DeepEqual(got, want) {
+	if got, want := event.Properties["type"].Enum, []string{"ack", "snapshot", "delta", "full", "checkpoint", "resync_required", "error", "pong"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("RealtimeMessage event types=%v want=%v", got, want)
 	}
 }
@@ -275,8 +275,14 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		"/internal/v1/accounts/runtime/{accountId}":                           {"get"},
 		"/internal/v1/accounts/runtime/{accountId}/events":                    {"get"},
 		"/internal/v1/catalog/venues":                                         {"get"}, "/internal/v1/catalog/instruments": {"get"},
-		"/internal/v1/market-data": {"get"}, "/internal/v1/candles": {"get"},
+		"/internal/v1/browser/catalog/venues":      {"get"},
+		"/internal/v1/browser/catalog/instruments": {"get"},
+		"/internal/v1/browser/market-data":         {"get"},
+		"/internal/v1/browser/candles":             {"get"},
+		"/internal/v1/browser/funding-history":     {"get"},
+		"/internal/v1/market-data":                 {"get"}, "/internal/v1/candles": {"get"},
 		"/internal/v1/market/ws":           {"get"},
+		"/internal/v1/account/ws":          {"get"},
 		"/internal/v1/market-facts":        {"get"},
 		"/internal/v1/fresh-bbo":           {"get"},
 		"/internal/v1/private-events":      {"get"},

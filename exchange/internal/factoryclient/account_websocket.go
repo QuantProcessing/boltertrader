@@ -3,7 +3,6 @@ package factoryclient
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -44,10 +43,6 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 		return nil, fmt.Errorf("native account event stream is unavailable")
 	}
 	watchCtx, cancel := context.WithCancel(ctx)
-	var mu sync.Mutex
-	generation, sequence := spot.accountGeneration.Add(1), uint64(0)
-	backendGeneration := uint64(0)
-	gapOpen := false
 	var subscription *typedSubscription[exchange.AccountEvent]
 	closeChildren := func() error {
 		cancel()
@@ -56,38 +51,15 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 	id := fmt.Sprintf("%s:%s:account:%s:%d", spot.meta.venue, spot.meta.product, request.Route.RouteID, websocketSubscriptionSequence.Add(1))
 	subscription = newTypedSubscription[exchange.AccountEvent](id, spot.meta, buffer, closeChildren)
 	emitEvent := func(event exchange.AccountEvent) {
-		mu.Lock()
-		sequence++
-		event.Generation, event.Sequence = generation, sequence
 		if event.Phase == "" {
 			event.Phase = exchange.AccountEventPhaseLive
 		}
-		mu.Unlock()
 		subscription.emit(event)
 	}
 	emitStatus := func(status exchange.StreamStatusEvent) {
 		if status.Time.IsZero() {
 			status.Time = time.Now().UTC()
 		}
-		mu.Lock()
-		if status.State == exchange.SubscriptionGap && status.Phase == exchange.GapStarted {
-			generation = spot.accountGeneration.Add(1)
-			sequence = 0
-			gapOpen = true
-		} else if status.Generation > backendGeneration && backendGeneration != 0 {
-			if !gapOpen {
-				generation = spot.accountGeneration.Add(1)
-				sequence = 0
-			}
-		}
-		if status.Generation > backendGeneration {
-			backendGeneration = status.Generation
-		}
-		if status.State == exchange.SubscriptionActive {
-			gapOpen = false
-		}
-		status.Generation = generation
-		mu.Unlock()
 		subscription.emitStatus(backendStatus{State: status.State, Phase: status.Phase, Generation: status.Generation, Reason: status.Reason, Time: status.Time})
 		event := exchange.AccountEvent{Kind: exchange.AccountEventStreamStatus, Route: request.Route, ObservedAt: status.Time, Status: &status, Phase: exchange.AccountEventPhaseLive}
 		emitEvent(event)
@@ -129,7 +101,7 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 		}
 		return stop()
 	}
-	emitStatus(exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Generation: generation, Time: time.Now().UTC()})
+	emitStatus(exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Time: time.Now().UTC()})
 	return subscription, nil
 }
 

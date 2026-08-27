@@ -180,32 +180,25 @@ calls:
 - `/api/v1/activity` — the command chain, in order, with timestamps.
 - `/api/v1/accounts/{accountId}/runtimes` — the read and write readiness the
   interface shows on each account.
-- `/api/v1/catalog/venues`, `/api/v1/catalog/instruments` — what can be traded.
-- `/api/v1/market-data`, `/api/v1/candles` — the ticker strip and the chart.
 - `/api/v1/products/arbitrage/opportunities`,
   `/api/v1/products/arbitrage/positions` — the ranked spreads and the open pairs.
-- `/api/v1/realtime/ws` — the single multiplexed WebSocket the interface holds
-  open.
+- `/api/v1/realtime/ws` — Trading business projections such as ranked
+  arbitrage opportunities. Public market and private account sockets are owned
+  directly by Gateway.
 
-The funding board and opportunities are resident projections. Trading consumes
-Gateway's single internal market WebSocket: the first message for every topic
-is a snapshot, later deltas are applied by generation and sequence, and a gap
-requires a new snapshot. Browser subscribers receive merged board and
-opportunity updates at most once per second and never trigger a venue request.
-
-`/api/v1/funding-history` is intentionally different: it is an on-demand read
-from Gateway's credential-free public plane for one instrument and a bounded
-window, `7d` or `30d`. Historical candles and funding are not preheated or
-persisted. A venue with no history surface is reported unavailable rather than
-empty. See [Market and reference data](market-reference-data.md).
+The funding board is maintained in Gateway; Trading consumes it to build the
+resident arbitrage opportunity projection. Trading does not proxy catalog,
+venue depth, candles, funding history, connectivity, or account events back to
+the browser. Browser subscribers receive business opportunity updates at most
+once per second and never create a second venue connection. See
+[Market and reference data](market-reference-data.md).
 
 Collection responses are enveloped as `{"data":{"items":[…]}}`, with a `meta`
 object alongside `data`. Single-resource responses put the resource directly in
 `data`. A client that reads `data.items` on a single resource, or `data` on a
 collection, is reading the wrong shape. The board and the history are single
 resources by that rule, not collections: `data` is the snapshot or the series
-itself, with its columns under `venues` and its readings under `points`. A board
-read has no venue-rate budget because it is served entirely from memory.
+itself, with its columns under `venues` and its readings under `points`.
 
 ## Storage
 

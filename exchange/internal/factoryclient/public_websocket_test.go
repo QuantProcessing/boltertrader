@@ -16,7 +16,8 @@ import (
 type fakePublicWSBackend struct {
 	mu sync.Mutex
 
-	bookCallbacks streamCallbacks[exchange.BookEvent]
+	bookCallbacks  streamCallbacks[exchange.BookEvent]
+	startBookCalls int
 
 	startBBOCalls int
 	stopBBOCalls  int
@@ -34,9 +35,48 @@ func (backend *fakePublicWSBackend) StartOrderBook(
 	callbacks streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
 	backend.mu.Lock()
+	backend.startBookCalls++
 	backend.bookCallbacks = callbacks
 	backend.mu.Unlock()
 	return func() error { return nil }, nil
+}
+
+func TestPublicWebSocketReplaysMaterializedBookWithoutSecondNativeTopic(t *testing.T) {
+	backend := &fakePublicWSBackend{}
+	socket := newPublicWebSocket(clientMeta{venue: exchange.VenueBinance, product: exchange.ProductSpot}, backend)
+	instrument := websocketTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT")
+	first, err := socket.WatchOrderBook(t.Context(), exchange.WatchRequest{Instrument: instrument})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	backend.emitBook(exchange.BookEvent{
+		Kind: exchange.EventSnapshot, Instrument: instrument, Sequence: "10", Time: time.Now().UTC(),
+		Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(1)}},
+		Asks: []exchange.BookLevel{{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(2)}},
+	})
+	<-first.Events()
+	backend.emitBook(exchange.BookEvent{
+		Kind: exchange.EventDelta, Instrument: instrument, Sequence: "11", Previous: "10", Time: time.Now().UTC(),
+		Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(99), Quantity: decimal.NewFromInt(3)}},
+	})
+	<-first.Events()
+
+	second, err := socket.WatchOrderBook(t.Context(), exchange.WatchRequest{Instrument: instrument})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	replay := <-second.Events()
+	if replay.Kind != exchange.EventSnapshot || replay.Sequence != "11" || len(replay.Bids) != 2 || len(replay.Asks) != 1 {
+		t.Fatalf("replay=%+v", replay)
+	}
+	backend.mu.Lock()
+	starts := backend.startBookCalls
+	backend.mu.Unlock()
+	if starts != 1 {
+		t.Fatalf("native order-book starts=%d want=1", starts)
+	}
 }
 
 func (backend *fakePublicWSBackend) StartBBO(

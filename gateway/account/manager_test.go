@@ -125,52 +125,6 @@ func TestManagerRefreshesAccountsIndependentlyAndPublishesCatalog(t *testing.T) 
 	}
 }
 
-func TestManagerPrivateStreamStateParticipatesInWriteReadiness(t *testing.T) {
-	service, _ := catalog.NewService(time.Minute, time.Now)
-	handle := &fakeHandle{instruments: []exchange.Instrument{
-		accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "ETH-USDT", "ETHUSDT", ""),
-	}}
-	manager, err := newManager(context.Background(), []config.AccountConfig{
-		{AccountID: "good", Venue: "binance", Product: "spot", Environment: "live", Credentials: apiCredentials(t)},
-	}, Options{GatewayCatalog: service}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
-		return handle, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = manager.Close() })
-	if _, err := manager.Refresh(context.Background(), "good"); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.Status("good"); err != nil || !status.WriteReady {
-		t.Fatalf("initial status=%+v err=%v", status, err)
-	}
-	if err := manager.SetPrivateStreamState("good", false, ReasonPrivateStreamGap); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.Status("good"); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamGap {
-		t.Fatalf("gapped status=%+v err=%v", status, err)
-	}
-	if status, err := manager.RecoveryStatus("good"); err != nil || !status.WriteReady || status.Reason != "" {
-		t.Fatalf("recovery status=%+v err=%v", status, err)
-	}
-	if err := manager.SetPrivateStreamState("good", true, ""); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.Status("good"); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamStarting {
-		t.Fatalf("reconnected-before-barrier status=%+v err=%v", status, err)
-	}
-	if err := manager.ObservePrivateStreamBarrier("good", "snapshot-1", 42); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := manager.Status("good"); err != nil || !status.WriteReady || status.Reason != "" {
-		t.Fatalf("barrier-complete status=%+v err=%v", status, err)
-	}
-	if err := manager.SetPrivateStreamState("missing", false, ReasonPrivateStreamGap); !errors.Is(err, ErrUnknownAccount) {
-		t.Fatalf("unknown account error=%v", err)
-	}
-}
-
 func TestManagerWriteReadinessRequiresExactLookupClient(t *testing.T) {
 	service, _ := catalog.NewService(time.Minute, time.Now)
 	handle := &fakeHandle{
