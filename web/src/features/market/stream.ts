@@ -10,9 +10,16 @@ export interface LiveOrderBook {
 }
 
 export interface LiveMarkPrice {
+  instrumentId: string;
   price: string;
   observedAt: string;
   stale: boolean;
+}
+
+export interface LiveCandleSubscriptionValue {
+  instrumentId: string;
+  interval: CandleInterval;
+  candle: Candle;
 }
 
 export const DEFAULT_MARK_STALE_AFTER_MS = 5_000;
@@ -38,13 +45,13 @@ export function usePublicMarketStreams(
   product?: string,
 ) {
   const [book, setBook] = useState<LiveOrderBook | null>(null);
-  const [candle, setCandle] = useState<Candle | null>(null);
+  const [candleValue, setCandleValue] = useState<LiveCandleSubscriptionValue | null>(null);
   const [mark, setMark] = useState<LiveMarkPrice | null>(null);
   const bookSync = useRef(new OrderBookSynchronizer());
 
   useEffect(() => {
     setBook(null);
-    setCandle(null);
+    setCandleValue(null);
     setMark(null);
     if (!instrumentId || typeof WebSocket === "undefined") return;
     bookSync.current = new OrderBookSynchronizer();
@@ -63,8 +70,8 @@ export function usePublicMarketStreams(
       }),
       realtimeTopics.subscribe({ topic: "market.candles", instrumentId, interval }, (message) => {
         const next = candleEvent(message);
-        if (next) setCandle(next);
-        else if (message.type === "resync_required") setCandle(null);
+        if (next) setCandleValue({ instrumentId, interval, candle: next });
+        else if (message.type === "resync_required") setCandleValue(null);
       }),
     ];
     if (product?.toLowerCase().includes("perp")) {
@@ -72,7 +79,7 @@ export function usePublicMarketStreams(
         const data = objectData(message);
         if ((message.type === "snapshot" || message.type === "delta") && typeof data?.price === "string" && data.price !== "") {
           const observedAt = message.observedAt ?? new Date().toISOString();
-          setMark({ price: data.price, observedAt, stale: false });
+          setMark({ instrumentId, price: data.price, observedAt, stale: false });
           if (markTimer) clearTimeout(markTimer);
           const delay = markStaleDelay(observedAt, data.staleAfterMs);
           markTimer = setTimeout(() => setMark((current) => current?.observedAt === observedAt ? { ...current, stale: true } : current), delay);
@@ -85,7 +92,21 @@ export function usePublicMarketStreams(
     };
   }, [instrumentId, interval, product]);
 
-  return { book, candle, mark };
+  return {
+    book,
+    candle: candleForSubscription(candleValue, instrumentId, interval),
+    mark,
+  };
+}
+
+/** Late callbacks from a released topic can arrive after an interval switch. */
+export function candleForSubscription(
+  value: LiveCandleSubscriptionValue | null,
+  instrumentId: string | undefined,
+  interval: CandleInterval,
+): Candle | null {
+  if (!value || value.instrumentId !== instrumentId || value.interval !== interval) return null;
+  return value.candle;
 }
 
 /** The Gateway owns source cadence; the browser only evaluates its deadline. */

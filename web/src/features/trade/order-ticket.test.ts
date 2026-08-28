@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Command } from "@/api/types";
 import {
+  defaultLimitPrice,
   marginPercentQuantity,
   orderConfirmationRequired,
   positionPercentQuantity,
@@ -12,6 +13,13 @@ import { describeCommandFailure } from "@/features/trade/order-status";
 import type { Translate } from "@/lib/i18n";
 
 describe("order ticket position sizing", () => {
+  it("initializes a limit price from the mark on the venue price grid", () => {
+    expect(defaultLimitPrice("78396.7", "0.1")).toBe("78396.7");
+    expect(defaultLimitPrice("78396.7", "0.5")).toBe("78396.5");
+    expect(defaultLimitPrice("78396.75", "0.5")).toBe("78397");
+    expect(defaultLimitPrice(undefined, "0.1")).toBeNull();
+  });
+
   it("sums split position rows exactly", () => {
     expect(sumDecimals(["0.1", "0.02", "-0.005"])).toBe("0.115");
   });

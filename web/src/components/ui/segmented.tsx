@@ -32,6 +32,7 @@ export function Segmented<T extends string>({
   onChange,
   className,
   trackClassName,
+  emphasis = "quiet",
 }: {
   name: string;
   /** Group name for assistive technology. */
@@ -42,6 +43,8 @@ export function Segmented<T extends string>({
   className?: string;
   /** Optional spacing/layout override for one control's segment track. */
   trackClassName?: string;
+  /** Strong selection is reserved for a primary mode switch such as order type. */
+  emphasis?: "quiet" | "strong";
 }) {
   const id = useId();
   return (
@@ -84,7 +87,9 @@ export function Segmented<T extends string>({
                       ? "bg-buy text-buy-fg"
                       : option.tone === "sell"
                         ? "bg-sell text-sell-fg"
-                        : "bg-raised text-text"
+                        : emphasis === "strong"
+                          ? "bg-raised text-text ring-1 ring-inset ring-line-strong"
+                          : "bg-raised text-text"
                     : "text-muted hover:bg-fill-strong hover:text-text",
                 )}
               >

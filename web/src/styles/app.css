@@ -111,6 +111,40 @@
   }
 }
 
+/* The chart's available width is determined by the book and order ticket, not
+ * by the viewport. Container queries keep its two information rows stable when
+ * either neighbouring panel grows: rules collapse first, then lower-priority
+ * OHLC context, while the interval control always remains a single row. */
+.price-chart {
+  --chart-price-scale-gutter: 96px;
+  container-name: price-chart;
+  container-type: inline-size;
+}
+
+/* Lightweight Charts paints the right price scale inside its canvas. Keep the
+ * toolbar out of that same horizontal lane so the highest visible tick remains
+ * readable even when the scale label reaches into the metadata row. */
+.chart-meta-row {
+  padding-right: calc(0.75rem + var(--chart-price-scale-gutter));
+}
+
+@container price-chart (max-width: 980px) {
+  .chart-rules-summary,
+  .chart-legend-volume {
+    display: none;
+  }
+}
+
+@container price-chart (max-width: 740px) {
+  .chart-legend-ohl {
+    display: none;
+  }
+
+  .chart-interval-button {
+    padding-inline: 0.375rem;
+  }
+}
+
 /* Native range semantics with a terminal-sized track. The fill follows the
  * selected trade side, while the thumb remains large enough to acquire without
  * turning the whole control into a decorative component. */

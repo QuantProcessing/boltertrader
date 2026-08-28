@@ -66,6 +66,8 @@ export function TradePage() {
     interval,
     instrument?.product,
   );
+  const liveMark = stream.mark?.instrumentId === instrument?.instrumentId ? stream.mark : null;
+  const currentRestFact = restFact?.instrumentId === instrument?.instrumentId ? restFact : undefined;
 
   // Disabling a private query does not erase a previously cached response.
   // Filter at the write surface as well so signing out cannot retain an account
@@ -83,27 +85,27 @@ export function TradePage() {
   const positionItems = accountPositions.data?.items ?? [];
   useTradeRealtime(!readOnly && Boolean(accountPositions.data));
   const marketFact = useMemo(() => {
-    if (!stream.book) return restFact;
+    if (!stream.book) return currentRestFact;
     return {
-      venue: instrument?.venue ?? restFact?.venue ?? "",
-      environment: instrument?.environment ?? restFact?.environment ?? "live",
-      product: instrument?.product ?? restFact?.product ?? "",
-      instrumentId: instrument?.instrumentId ?? restFact?.instrumentId ?? "",
-      bestBid: stream.book.bids[0]?.price ?? restFact?.bestBid ?? "",
-      bestBidSize: stream.book.bids[0]?.quantity ?? restFact?.bestBidSize ?? "",
-      bestAsk: stream.book.asks[0]?.price ?? restFact?.bestAsk ?? "",
-      bestAskSize: stream.book.asks[0]?.quantity ?? restFact?.bestAskSize ?? "",
+      venue: instrument?.venue ?? currentRestFact?.venue ?? "",
+      environment: instrument?.environment ?? currentRestFact?.environment ?? "live",
+      product: instrument?.product ?? currentRestFact?.product ?? "",
+      instrumentId: instrument?.instrumentId ?? currentRestFact?.instrumentId ?? "",
+      bestBid: stream.book.bids[0]?.price ?? currentRestFact?.bestBid ?? "",
+      bestBidSize: stream.book.bids[0]?.quantity ?? currentRestFact?.bestBidSize ?? "",
+      bestAsk: stream.book.asks[0]?.price ?? currentRestFact?.bestAsk ?? "",
+      bestAskSize: stream.book.asks[0]?.quantity ?? currentRestFact?.bestAskSize ?? "",
       bids: stream.book.bids,
       asks: stream.book.asks,
-      markPrice: stream.mark?.price ?? restFact?.markPrice,
-      fundingRate: restFact?.fundingRate,
-      openInterest: restFact?.openInterest,
-      fundingObservedAt: restFact?.fundingObservedAt,
-      fundingTime: restFact?.fundingTime,
-      nextFundingTime: restFact?.nextFundingTime,
-      observedAt: stream.mark?.observedAt ?? stream.book.observedAt,
+      markPrice: liveMark?.price ?? currentRestFact?.markPrice,
+      fundingRate: currentRestFact?.fundingRate,
+      openInterest: currentRestFact?.openInterest,
+      fundingObservedAt: currentRestFact?.fundingObservedAt,
+      fundingTime: currentRestFact?.fundingTime,
+      nextFundingTime: currentRestFact?.nextFundingTime,
+      observedAt: liveMark?.observedAt ?? stream.book.observedAt,
     };
-  }, [instrument, restFact, stream.book, stream.mark]);
+  }, [currentRestFact, instrument, liveMark, stream.book]);
   const midPrice = midpointPrice(
     marketFact?.bestBid,
     marketFact?.bestAsk,
@@ -132,7 +134,7 @@ export function TradePage() {
           <PriceChart
             candles={candles.data?.value.candles}
             liveCandle={stream.candle}
-            mark={stream.mark}
+            mark={liveMark}
             instrument={instrument}
             positions={positionItems}
             interval={interval}
@@ -148,7 +150,7 @@ export function TradePage() {
                 positionsLoading={accountPositions.isFetching && accountPositions.data === undefined}
                 positionsError={accountPositions.isError}
                 positionAccounts={accountPositions.data?.accounts ?? []}
-                liveMark={stream.mark}
+                liveMark={liveMark}
               />
             )}
           </div>
@@ -175,6 +177,11 @@ export function TradePage() {
             positions={positionItems}
             limitPrice={limitPrice}
             onLimitPriceChange={setLimitPrice}
+            markPrice={
+              liveMark
+                ? liveMark.stale ? undefined : liveMark.price
+                : currentRestFact?.markPrice
+            }
             bestBid={marketFact?.bestBid}
             bestAsk={marketFact?.bestAsk}
           />

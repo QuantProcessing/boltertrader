@@ -1,7 +1,53 @@
 import { MismatchDirection } from "lightweight-charts";
 import { describe, expect, it } from "vitest";
 
-import { crosshairWhitespaceDirection, currentCandlePriceLine, markPriceLine, positionLineDescriptors } from "@/features/market/price-chart";
+import { chartTradeRules, crosshairWhitespaceDirection, currentCandlePriceLine, markPriceLine, positionLineDescriptors } from "@/features/market/price-chart";
+
+describe("chart trading rules", () => {
+  it("presents explicit catalog limits with the asset they constrain", () => {
+    expect(chartTradeRules({
+      instrumentId: "binance:perp:BTC-USDT",
+      venue: "binance",
+      environment: "live",
+      product: "perp",
+      settlement: "USDT",
+      symbol: "BTC-USDT",
+      baseAsset: "BTC",
+      quoteAsset: "USDT",
+      marketFamily: "venue_perpetual",
+      assetClass: "crypto",
+      ready: true,
+      rules: {
+        minQuantity: "0.001",
+        minNotional: "100",
+        quantityIncrement: "0.001",
+        priceIncrement: "0.1",
+      },
+    })).toEqual([
+      { key: "minQuantity", value: "0.001 BTC" },
+      { key: "minNotional", value: "100 USDT" },
+      { key: "quantityIncrement", value: "0.001 BTC" },
+      { key: "priceIncrement", value: "0.1 USDT" },
+    ]);
+  });
+
+  it("does not invent zero values for missing rules", () => {
+    expect(chartTradeRules({
+      instrumentId: "binance:perp:BTC-USDT",
+      venue: "binance",
+      environment: "live",
+      product: "perp",
+      symbol: "BTC-USDT",
+      baseAsset: "BTC",
+      quoteAsset: "USDT",
+      marketFamily: "venue_perpetual",
+      assetClass: "crypto",
+      ready: true,
+      rules: { minQuantity: "0.001" },
+    })).toEqual([{ key: "minQuantity", value: "0.001 BTC" }]);
+    expect(chartTradeRules(null)).toEqual([]);
+  });
+});
 
 describe("current candle price line", () => {
   const candle = (open: string, close: string) => ({

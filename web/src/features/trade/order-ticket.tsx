@@ -1,5 +1,5 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { X } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { ChevronDown, X } from "lucide-react";
 
 import { describeError } from "@/api/errors";
 import type { Account, AccountPosition, Command, Instrument, ManualPreviewCheck, OrderSide, OrderType } from "@/api/types";
@@ -47,8 +47,8 @@ const SIDES: { value: OrderSide; labelKey: Key; tone: "buy" | "sell" }[] = [
 ];
 
 const ORDER_TYPES: { value: OrderType; labelKey: Key }[] = [
-  { value: "limit", labelKey: "ticket.type.limit" },
   { value: "market", labelKey: "ticket.type.market" },
+  { value: "limit", labelKey: "ticket.type.limit" },
 ];
 
 const LEVERAGES = ["1", "2", "3", "5", "10", "20"] as const;
@@ -78,6 +78,7 @@ export function OrderTicket({
   positions,
   limitPrice,
   onLimitPriceChange,
+  markPrice,
   bestBid,
   bestAsk,
 }: {
@@ -91,6 +92,8 @@ export function OrderTicket({
   /** Lifted so a click in the order book can fill it. */
   limitPrice: string;
   onLimitPriceChange: (next: string) => void;
+  /** Fresh public mark, used only to initialize an empty limit-price field. */
+  markPrice?: string;
   /** Live public prices used only for market-size conversion and estimates. */
   bestBid?: string;
   bestAsk?: string;
@@ -107,6 +110,7 @@ export function OrderTicket({
   const [reduceOnly, setReduceOnly] = useState(false);
   const [leverage, setLeverage] = useState<(typeof LEVERAGES)[number]>("1");
   const [sealed, setSealed] = useState<TicketSeal | null>(null);
+  const seededLimitPriceForInstrument = useRef<string | null>(null);
 
   const preview = usePreviewOrder();
   const place = usePlaceOrder();
@@ -174,6 +178,23 @@ export function OrderTicket({
     setAmount("");
     setSizePercent(0);
   }, [instrument?.instrumentId]);
+
+  useEffect(() => {
+    const instrumentId = instrument?.instrumentId ?? null;
+    if (!instrumentId) {
+      seededLimitPriceForInstrument.current = null;
+      return;
+    }
+    if (orderType !== "limit" || seededLimitPriceForInstrument.current === instrumentId) return;
+    if (limitPrice !== "") {
+      seededLimitPriceForInstrument.current = instrumentId;
+      return;
+    }
+    const next = defaultLimitPrice(markPrice, instrument?.rules.priceIncrement);
+    if (!next) return;
+    seededLimitPriceForInstrument.current = instrumentId;
+    onLimitPriceChange(next);
+  }, [instrument?.instrumentId, instrument?.rules.priceIncrement, limitPrice, markPrice, onLimitPriceChange, orderType]);
 
   // Any edit invalidates the seal: it was priced against the previous values,
   // and confirming it afterwards would send something the operator never saw.
@@ -325,7 +346,7 @@ export function OrderTicket({
         </span>
       </div>
 
-      <div className="flex flex-col gap-3 p-3">
+      <div className="flex flex-col gap-2.5 p-3">
         {/* Options are rebuilt per render rather than memoised: `useT` returns a
             fresh closure every time, so a `[t]` dependency would never hit. */}
         <Segmented
@@ -363,7 +384,7 @@ export function OrderTicket({
           {(field) => (
             <select
               {...field}
-              className={`${inputClass} h-10`}
+              className={`${inputClass} h-row`}
               value={accountId}
               onChange={(event) => onAccountIdChange(event.target.value)}
               disabled={accounts.length === 0 || interactionLocked}
@@ -378,36 +399,53 @@ export function OrderTicket({
           )}
         </Field>
 
-        <Segmented
-          name="order-type"
-          label={t("ticket.orderType")}
-          value={orderType}
-          options={ORDER_TYPES.map((entry) => ({
-            value: entry.value,
-            label: t(entry.labelKey),
-            disabled: interactionLocked,
-          }))}
-          onChange={(next) => {
-            setOrderType(next);
-            setSizePercent(0);
-            // A resting market order is not a thing. Immediate-or-cancel is the
-            // only honest time-in-force for one, so it is set and locked.
-            setTimeInForce(next === "market" ? "IOC" : "GTC");
-          }}
-        />
-
-        {instrument?.product === "perp" ? (
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
           <Segmented
-            name="leverage"
-            label={t("ticket.leverage")}
-            value={leverage}
-            options={LEVERAGES.map((value) => ({ value, label: `${value}×`, disabled: interactionLocked }))}
+            name="order-type"
+            label={t("ticket.orderType")}
+            value={orderType}
+            className="min-w-0"
+            trackClassName="border border-line-strong"
+            emphasis="strong"
+            options={ORDER_TYPES.map((entry) => ({
+              value: entry.value,
+              label: t(entry.labelKey),
+              disabled: interactionLocked,
+            }))}
             onChange={(next) => {
-              setLeverage(next);
+              setOrderType(next);
               setSizePercent(0);
+              if (next === "limit" && limitPrice === "") {
+                const nextPrice = defaultLimitPrice(markPrice, instrument?.rules.priceIncrement);
+                if (nextPrice) {
+                  seededLimitPriceForInstrument.current = instrument?.instrumentId ?? null;
+                  onLimitPriceChange(nextPrice);
+                }
+              }
+              // A resting market order is not a thing. Immediate-or-cancel is the
+              // only honest time-in-force for one, so it is set and locked.
+              setTimeInForce(next === "market" ? "IOC" : "GTC");
             }}
           />
-        ) : null}
+
+          {instrument?.product === "perp" ? (
+            <label className="grid shrink-0 grid-cols-[auto_72px] items-center gap-2 text-meta text-dim">
+              <span>{t("ticket.leverage")}</span>
+              <select
+                aria-label={t("ticket.leverage")}
+                className={`${inputClass} font-mono`}
+                value={leverage}
+                disabled={interactionLocked}
+                onChange={(event) => {
+                  setLeverage(event.target.value as (typeof LEVERAGES)[number]);
+                  setSizePercent(0);
+                }}
+              >
+                {LEVERAGES.map((value) => <option key={value} value={value}>{value}×</option>)}
+              </select>
+            </label>
+          ) : null}
+        </div>
 
         {orderType === "limit" ? (
           <Field
@@ -419,7 +457,7 @@ export function OrderTicket({
             {(field) => (
               <Input
                 {...field}
-                className="h-10 text-right font-mono"
+                className="h-row text-right font-mono"
                 inputMode="decimal"
                 autoComplete="off"
                 disabled={interactionLocked}
@@ -453,7 +491,7 @@ export function OrderTicket({
             <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
               <Input
                 {...field}
-                className="h-10 text-right font-mono"
+                className="h-row text-right font-mono"
                 inputMode="decimal"
                 autoComplete="off"
                 disabled={interactionLocked}
@@ -479,42 +517,57 @@ export function OrderTicket({
           value={sizePercent}
           side={side}
           disabled={!sliderAvailable || interactionLocked}
-          unavailable={!sliderAvailable}
           reduceOnly={reduceOnly}
           onChange={changeSizePercent}
         />
 
-        <div className="flex items-end gap-3">
-          <Field label={t("ticket.tif")} className="flex-1">
-            {(field) => (
-              <select
-                {...field}
-                className={`${inputClass} h-10`}
-                value={timeInForce}
-                onChange={(event) => setTimeInForce(event.target.value)}
-                disabled={orderType === "market" || interactionLocked}
-              >
-                <option value="GTC">GTC</option>
-                <option value="IOC">IOC</option>
-                <option value="FOK">FOK</option>
-              </select>
-            )}
-          </Field>
+        <details className="group border-y border-line">
+          <summary className="flex h-row cursor-pointer list-none items-center justify-between text-base text-muted hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+            <span>{t("ticket.advanced")}</span>
+            <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <div className="flex items-end gap-3 pb-3 pt-1">
+            <Field label={t("ticket.tif")} className="flex-1">
+              {(field) => (
+                <select
+                  {...field}
+                  className={`${inputClass} h-row`}
+                  value={timeInForce}
+                  onChange={(event) => setTimeInForce(event.target.value)}
+                  disabled={orderType === "market" || interactionLocked}
+                >
+                  <option value="GTC">GTC</option>
+                  <option value="IOC">IOC</option>
+                  <option value="FOK">FOK</option>
+                </select>
+              )}
+            </Field>
 
-          <label className="flex h-[30px] items-center gap-2 text-base text-muted">
-            <input
-              type="checkbox"
-              disabled={interactionLocked}
-              checked={reduceOnly}
-              onChange={(event) => {
-                setReduceOnly(event.target.checked);
-                setSizePercent(0);
-              }}
-              className="size-3.5 accent-[var(--bt-accent)]"
-            />
-            {t("ticket.reduceOnly")}
-          </label>
-        </div>
+            <label className="flex h-[30px] shrink-0 items-center gap-2 text-base text-muted">
+              <input
+                type="checkbox"
+                disabled={interactionLocked}
+                checked={reduceOnly}
+                onChange={(event) => {
+                  setReduceOnly(event.target.checked);
+                  setSizePercent(0);
+                }}
+                className="size-3.5 accent-[var(--bt-accent)]"
+              />
+              {t("ticket.reduceOnly")}
+            </label>
+          </div>
+        </details>
+
+        <Button
+          variant={side}
+          size="lg"
+          onClick={onPrepareOrder}
+          disabled={!ready || preview.isPending || place.isPending || sealed !== null}
+          className="w-full"
+        >
+          {place.isPending ? t("ticket.placing") : preview.isPending ? t("ticket.pricing") : t(PLACE[side])}
+        </Button>
 
         <div className="flex flex-col gap-1 border-t border-line pt-2" aria-label={t("ticket.preview.live")}>
           <div className="mb-1 flex items-center justify-between">
@@ -562,15 +615,6 @@ export function OrderTicket({
           <TicketStat label={t("ticket.fee")} value={estimatedNotional ? t("ticket.preview.venueConfirm") : "—"} />
         </div>
 
-        <Button
-          variant={side}
-          size="lg"
-          onClick={onPrepareOrder}
-          disabled={!ready || preview.isPending || place.isPending || sealed !== null}
-          className="w-full"
-        >
-          {place.isPending ? t("ticket.placing") : preview.isPending ? t("ticket.pricing") : t(PLACE[side])}
-        </Button>
       </div>
 
       {sealed ? (
@@ -611,7 +655,7 @@ function QuantityUnitToggle({
   ];
   return (
     <div
-      className="flex h-10 items-center rounded-control bg-fill p-0.5"
+      className="flex h-row items-center rounded-control bg-fill p-0.5"
       role="group"
       aria-label={t("ticket.quantity.unit")}
     >
@@ -639,14 +683,12 @@ function PositionSlider({
   value,
   side,
   disabled,
-  unavailable,
   reduceOnly,
   onChange,
 }: {
   value: number;
   side: OrderSide;
   disabled: boolean;
-  unavailable: boolean;
   reduceOnly: boolean;
   onChange: (next: number) => void;
 }) {
@@ -681,7 +723,6 @@ function PositionSlider({
           {value}%
         </output>
       </div>
-      {unavailable ? <p className="text-meta text-dim">{t("ticket.positionPercent.unavailable")}</p> : null}
     </div>
   );
 }
@@ -967,6 +1008,18 @@ function isPositiveDecimal(value: string): boolean {
   const parts = splitDecimal(value);
   if (!parts || parts.sign === "-") return false;
   return !/^0*$/.test(parts.integer) || !/^0*$/.test(parts.fraction);
+}
+
+/** Fresh mark snapped to the nearest venue tick for a safe limit-price default. */
+export function defaultLimitPrice(markPrice: string | undefined, increment: unknown): string | null {
+  const mark = markPrice ? positiveDecimalUnits(markPrice) : null;
+  const step = typeof increment === "string" ? positiveDecimalUnits(increment) : null;
+  if (!mark || !step) return null;
+  const scale = Math.max(mark.scale, step.scale);
+  const markUnits = mark.units * 10n ** BigInt(scale - mark.scale);
+  const stepUnits = step.units * 10n ** BigInt(scale - step.scale);
+  const snapped = ((markUnits + stepUnits / 2n) / stepUnits) * stepUnits;
+  return snapped > 0n ? unitsToDecimal(snapped, scale) : null;
 }
 
 /** Exact decimal addition for position rows that may be split by lineage. */

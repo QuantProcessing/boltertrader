@@ -17,6 +17,7 @@ import { useEffect, useRef } from "react";
 
 import { CANDLE_INTERVALS, type AccountPosition, type Candle, type CandleInterval, type Instrument } from "@/api/types";
 import { Num } from "@/components/ui/num";
+import { PopoverContent, PopoverRoot, PopoverTrigger } from "@/components/ui/popover";
 import type { LiveMarkPrice } from "@/features/market/stream";
 import { readChartPalette } from "@/lib/chart-palette";
 import { useT } from "@/lib/i18n";
@@ -321,7 +322,7 @@ export function PriceChart({
   }, [instrument?.rules.priceIncrement, price]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="price-chart flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center justify-between gap-3 border-b border-line px-3">
         <div className="flex min-w-0 items-baseline gap-2">
           <h2 className="text-title font-semibold text-text">{t("chart.price")}</h2>
@@ -329,33 +330,20 @@ export function PriceChart({
             {instrument ? `${instrument.symbol} · ${instrument.venue}` : "—"}
           </span>
         </div>
-        <div className="flex items-center rounded-card bg-fill p-0.5" role="radiogroup" aria-label={t("chart.interval")}>
-          {CANDLE_INTERVALS.map((option) => (
-            <button
-              key={option}
-              type="button"
-              role="radio"
-              aria-checked={interval === option}
-              onClick={() => onIntervalChange(option)}
-              className={cn(
-                "h-[26px] rounded-control px-2 text-meta font-medium transition-colors",
-                interval === option ? "bg-raised text-text" : "text-dim hover:text-muted",
-              )}
-            >
-              {option}
-            </button>
-          ))}
-        </div>
+        <TradeRulesSummary instrument={instrument} />
       </div>
-      <div className="flex h-7 shrink-0 items-center gap-3 px-3 text-meta text-dim">
-        <span className="font-medium text-muted" data-numeric="">
-          {instrument?.baseAsset ?? "—"} · {interval}
-        </span>
-        <LegendValue label="O" value={latest?.open} decimals={price} />
-        <LegendValue label="H" value={latest?.high} decimals={price} />
-        <LegendValue label="L" value={latest?.low} decimals={price} />
-        <LegendValue label="C" value={latest?.close} decimals={price} />
-        <LegendValue label="V" value={latest?.volume} decimals={quantity} />
+      <div className="chart-meta-row flex h-7 shrink-0 items-center justify-between gap-3 pl-3 text-meta text-dim">
+        <div className="chart-legend flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
+          <span className="shrink-0 font-medium text-muted" data-numeric="">
+            {instrument?.baseAsset ?? "—"}
+          </span>
+          <LegendValue className="chart-legend-ohl" label="O" value={latest?.open} decimals={price} />
+          <LegendValue className="chart-legend-ohl" label="H" value={latest?.high} decimals={price} />
+          <LegendValue className="chart-legend-ohl" label="L" value={latest?.low} decimals={price} />
+          <LegendValue label="C" value={latest?.close} decimals={price} />
+          <LegendValue className="chart-legend-volume" label="V" value={latest?.volume} decimals={quantity} />
+        </div>
+        <IntervalSelector interval={interval} onChange={onIntervalChange} />
       </div>
       <div
         ref={containerRef}
@@ -443,9 +431,121 @@ export function crosshairWhitespaceDirection(
   return logical < 0 ? MismatchDirection.NearestRight : MismatchDirection.NearestLeft;
 }
 
-function LegendValue({ label, value, decimals }: { label: string; value: string | undefined; decimals: number | undefined }) {
+type TradeRuleKey = "minQuantity" | "minNotional" | "quantityIncrement" | "priceIncrement";
+
+export interface ChartTradeRule {
+  key: TradeRuleKey;
+  value: string;
+}
+
+const TRADE_RULE_LABELS = {
+  minQuantity: "chart.rules.minQuantity",
+  minNotional: "chart.rules.minNotional",
+  quantityIncrement: "chart.rules.quantityIncrement",
+  priceIncrement: "chart.rules.priceIncrement",
+} as const;
+
+/** Only explicit catalog rules are presented; absent values never become zero. */
+export function chartTradeRules(instrument: Instrument | null): ChartTradeRule[] {
+  if (!instrument) return [];
+  const values: Array<[TradeRuleKey, string | undefined, string]> = [
+    ["minQuantity", instrument.rules.minQuantity, instrument.baseAsset],
+    ["minNotional", instrument.rules.minNotional, instrument.quoteAsset],
+    ["quantityIncrement", instrument.rules.quantityIncrement, instrument.baseAsset],
+    ["priceIncrement", instrument.rules.priceIncrement, instrument.quoteAsset],
+  ];
+  return values.flatMap(([key, raw, asset]) => {
+    const value = raw?.trim();
+    return value ? [{ key, value: `${value} ${asset}` }] : [];
+  });
+}
+
+function TradeRulesSummary({ instrument }: { instrument: Instrument | null }) {
+  const t = useT();
+  const rules = chartTradeRules(instrument);
+  const summary = rules.filter((rule) => rule.key === "minQuantity" || rule.key === "minNotional");
+
   return (
-    <span className="flex items-baseline gap-1">
+    <PopoverRoot>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="chart-rules-trigger flex h-7 min-w-0 max-w-[62%] shrink-0 items-center gap-1 rounded-control border border-transparent px-1.5 text-meta text-dim transition-colors hover:border-line hover:bg-fill hover:text-muted data-[state=open]:border-line data-[state=open]:bg-fill data-[state=open]:text-text"
+        >
+          {summary.length > 0 ? (
+            <span className="chart-rules-summary min-w-0 truncate" data-numeric="">
+              {summary.map((rule, index) => (
+                <span key={rule.key}>
+                  {index > 0 ? " · " : ""}
+                  {t(TRADE_RULE_LABELS[rule.key])} {rule.value}
+                </span>
+              ))}
+              <span> ·</span>
+            </span>
+          ) : null}
+          <span className="shrink-0 border-b border-dashed border-line-strong font-medium text-muted">{t("chart.rules")}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" side="bottom" className="w-80 p-3">
+        <div className="mb-3 border-b border-line pb-2">
+          <div className="text-base font-semibold text-text">{t("chart.rules")}</div>
+          <div className="mt-0.5 text-meta text-dim" data-numeric="">
+            {instrument ? `${instrument.symbol} · ${instrument.venue}` : "—"}
+          </div>
+        </div>
+        {rules.length > 0 ? (
+          <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 text-meta">
+            {rules.map((rule) => (
+              <div key={rule.key} className="contents">
+                <dt className="text-dim">{t(TRADE_RULE_LABELS[rule.key])}</dt>
+                <dd className="text-right text-muted" data-numeric="">{rule.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="text-meta text-dim">{t("chart.rules.unavailable")}</p>
+        )}
+      </PopoverContent>
+    </PopoverRoot>
+  );
+}
+
+function IntervalSelector({ interval, onChange }: { interval: CandleInterval; onChange: (next: CandleInterval) => void }) {
+  const t = useT();
+  return (
+    <div className="chart-interval-selector flex shrink-0 items-center" role="radiogroup" aria-label={t("chart.interval")}>
+      {CANDLE_INTERVALS.map((option) => (
+        <button
+          key={option}
+          type="button"
+          role="radio"
+          aria-checked={interval === option}
+          onClick={() => onChange(option)}
+          className={cn(
+            "chart-interval-button h-[24px] rounded-control px-2 text-meta font-medium transition-colors",
+            interval === option ? "bg-raised text-text" : "text-dim hover:text-muted",
+          )}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function LegendValue({
+  className,
+  label,
+  value,
+  decimals,
+}: {
+  className?: string;
+  label: string;
+  value: string | undefined;
+  decimals: number | undefined;
+}) {
+  return (
+    <span className={cn("flex items-baseline gap-1", className)}>
       <span>{label}</span>
       <Num value={value} decimals={decimals} className="text-muted" />
     </span>

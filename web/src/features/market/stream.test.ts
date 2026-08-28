@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Candle } from "@/api/types";
-import { applyBookEvent, markStaleDelay, mergeLiveCandle, OrderBookSynchronizer } from "@/features/market/stream";
+import { applyBookEvent, candleForSubscription, markStaleDelay, mergeLiveCandle, OrderBookSynchronizer } from "@/features/market/stream";
 
 describe("public market stream reducers", () => {
   it("uses the Gateway-provided mark freshness window instead of a fixed two-second timeout", () => {
@@ -44,6 +44,23 @@ describe("public market stream reducers", () => {
       2,
     );
     expect(merged?.map((entry) => entry.close)).toEqual(["1", "2.5"]);
+  });
+
+  it("ignores a late candle from the interval subscription that was released", () => {
+    const candle: Candle = {
+      openTime: "2026-08-20T00:00:00Z",
+      closeTime: "2026-08-20T00:05:00Z",
+      open: "1",
+      high: "2",
+      low: "1",
+      close: "2",
+      volume: "3",
+      complete: false,
+    };
+    const value = { instrumentId: "btc", interval: "5m" as const, candle };
+    expect(candleForSubscription(value, "btc", "5m")).toBe(candle);
+    expect(candleForSubscription(value, "btc", "15m")).toBeNull();
+    expect(candleForSubscription(value, "eth", "5m")).toBeNull();
   });
 
   it("joins buffered native deltas to the WebSocket snapshot sequence", () => {
