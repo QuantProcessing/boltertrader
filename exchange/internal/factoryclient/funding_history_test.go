@@ -215,7 +215,7 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 			// The unparsable row sits between two settlements rather than at an
 			// end, so keeping it would halve every measured interval instead of
 			// merely adding a point. Four-hour gaps on an eight-hourly contract
-			// would double the daily rate the arbitrage engine derives.
+			// would double the daily rate a consumer derives.
 			name: "binance drops the row it cannot read and keeps the clock intact",
 			build: func(t *testing.T) (exchange.FundingHistoryLoader, exchange.FundingHistoryRequest, *fundingHistoryFixture) {
 				fixture := newFundingHistoryFixture(t, map[string][]string{
@@ -647,7 +647,7 @@ func fundingHistoryLoaderBuilders() []struct {
 //
 // An unbounded request is not an empty chart — it is a chart. Several of these
 // venues read a missing start as "since listing" and answer with whatever tail
-// of that they feel like returning, so the two legs of one arbitrage pair would
+// of that they feel like returning, so two venues in one comparison would
 // come back covering different periods with nothing on screen to say so. The
 // refusal has to happen before the call for that reason, which is what the
 // request counter checks: a loader that asks first and validates after would

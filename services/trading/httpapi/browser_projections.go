@@ -21,77 +21,7 @@ type ProjectionReadiness struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-type CapabilityOperations struct {
-	Place         bool `json:"place"`
-	Amend         bool `json:"amend"`
-	Cancel        bool `json:"cancel"`
-	OpenOrders    bool `json:"openOrders"`
-	OrderHistory  bool `json:"orderHistory"`
-	Fills         bool `json:"fills"`
-	Balances      bool `json:"balances"`
-	Account       bool `json:"account"`
-	Positions     bool `json:"positions"`
-	Leverage      bool `json:"leverage"`
-	PrivateStream bool `json:"privateStream"`
-	MarginMode    bool `json:"marginMode"`
-	PositionMode  bool `json:"positionMode"`
-	FundsTransfer bool `json:"fundsTransfer"`
-}
-
-type AccountCapabilityProjection struct {
-	RowID      string               `json:"rowId"`
-	Venue      string               `json:"venue"`
-	Product    string               `json:"product"`
-	Settlement string               `json:"settlement,omitempty"`
-	WriteReady bool                 `json:"writeReady"`
-	Operations CapabilityOperations `json:"operations"`
-}
-
-type RouteRuntimeProjection struct {
-	RouteID         string `json:"routeId"`
-	Product         string `json:"product"`
-	SettlementAsset string `json:"settlementAsset,omitempty"`
-	RouteProfileID  string `json:"routeProfileId"`
-	RequestedState  string `json:"requestedState"`
-	Ready           bool   `json:"ready"`
-	Reason          string `json:"reason,omitempty"`
-}
-
-type RuntimeSnapshotProjection struct {
-	RuntimeID      string                   `json:"-"`
-	RequestedState string                   `json:"requestedState"`
-	Routes         []RouteRuntimeProjection `json:"routes"`
-	// Deprecated source-compatibility fields; never sent to the browser.
-	DesiredStateRevision int64 `json:"-"`
-	RuntimeGeneration    int64 `json:"-"`
-	CredentialVersion    int64 `json:"-"`
-}
-
-type PendingRuntimeSnapshotProjection struct {
-	RuntimeSnapshotProjection
-	State  string `json:"state"`
-	Reason string `json:"reason,omitempty"`
-}
-
-type AccountRuntimeProjection struct {
-	AccountID      string                            `json:"accountId"`
-	RuntimeID      string                            `json:"-"`
-	Active         *RuntimeSnapshotProjection        `json:"active,omitempty"`
-	Pending        *PendingRuntimeSnapshotProjection `json:"pending,omitempty"`
-	Retiring       []RuntimeSnapshotProjection       `json:"retiring"`
-	Readiness      ProjectionReadiness               `json:"readiness"`
-	WriteReadiness ProjectionReadiness               `json:"writeReadiness"`
-	BlockedReason  *string                           `json:"blockedReason"`
-	Capabilities   []AccountCapabilityProjection     `json:"capabilities"`
-	ObservedAt     time.Time                         `json:"observedAt"`
-	// Deprecated source-compatibility fields; never sent to the browser.
-	DesiredStateRevision            int64 `json:"-"`
-	RuntimeGeneration               int64 `json:"-"`
-	CredentialVersion               int64 `json:"-"`
-	RuntimeVersion                  int64 `json:"-"`
-	LastAppliedDesiredStateRevision int64 `json:"-"`
-	LastAppliedRuntimeGeneration    int64 `json:"-"`
-}
+type AccountRuntimeProjection = accountpositions.AccountRuntimeProjection
 
 type AccountRuntimeProjectionReader interface {
 	ListAccountRuntimes(context.Context, string, string) ([]AccountRuntimeProjection, error)
@@ -101,16 +31,7 @@ type AccountRuntimeProjectionReader interface {
 // Gateway owns the raw resource and its account routing; trading owns the
 // principal-scoped browser projection, so account facts do not bypass the same
 // identity boundary as positions and orders.
-type AccountBalanceProjection struct {
-	AccountID       string `json:"accountId"`
-	Product         string `json:"product"`
-	SettlementAsset string `json:"settlementAsset,omitempty"`
-	Asset           string `json:"asset"`
-	Available       string `json:"available"`
-	AvailableMargin string `json:"availableMargin,omitempty"`
-	Locked          string `json:"locked"`
-	Total           string `json:"total"`
-}
+type AccountBalanceProjection = accountpositions.AccountBalanceProjection
 
 type AccountBalanceProjectionReader interface {
 	ListAccountBalances(context.Context, string, string) ([]AccountBalanceProjection, error)
@@ -119,15 +40,7 @@ type AccountBalanceProjectionReader interface {
 // AccountPositionProjection is the current venue position for one owned
 // account. Quantity is signed so every browser consumer reads long/short the
 // same way: positive is long, negative is short.
-type AccountPositionProjection struct {
-	AccountID     string `json:"accountId"`
-	InstrumentID  string `json:"instrumentId"`
-	Side          string `json:"side,omitempty"`
-	Quantity      string `json:"quantity"`
-	EntryPrice    string `json:"entryPrice"`
-	MarkPrice     string `json:"markPrice"`
-	UnrealizedPnL string `json:"unrealizedPnl"`
-}
+type AccountPositionProjection = accountpositions.AccountPositionProjection
 
 type AccountPositionProjectionReader interface {
 	ListAccountPositions(context.Context, string, string, string) ([]AccountPositionProjection, error)

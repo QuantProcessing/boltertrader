@@ -187,22 +187,38 @@ type DerivativeReferenceWebSocket interface {
 	WatchDerivativeReference(context.Context, WatchRequest) (Subscription[DerivativeReferenceEvent], error)
 }
 
-type SpotWebSocket interface {
+// MarketWebSocket contains only public market streams. Public connectors return
+// an object with this method set, not an authenticated socket behind a narrower
+// interface that callers could recover through a type assertion.
+type MarketWebSocket interface {
 	WatchOrderBook(context.Context, WatchRequest) (Subscription[BookEvent], error)
 	WatchBBO(context.Context, WatchRequest) (Subscription[BBOEvent], error)
 	WatchPublicTrades(context.Context, WatchRequest) (Subscription[PublicTradeEvent], error)
 	WatchCandles(context.Context, WatchCandlesRequest) (Subscription[CandleEvent], error)
+	Close() error
+}
+
+// PerpMarketWebSocket adds public derivative streams without account or order
+// access. DerivativeReferenceWebSocket remains an optional additional facet.
+type PerpMarketWebSocket interface {
+	MarketWebSocket
+	WatchMarkPrice(context.Context, WatchRequest) (Subscription[MarkPriceEvent], error)
+	WatchFundingRate(context.Context, WatchRequest) (Subscription[FundingRateEvent], error)
+}
+
+// SpotWebSocket is the complete socket surface of an account client. Market-only
+// consumers should depend on MarketWebSocket instead.
+type SpotWebSocket interface {
+	MarketWebSocket
 	WatchOrders(context.Context, WatchRequest) (Subscription[OrderEvent], error)
 	WatchFills(context.Context, WatchRequest) (Subscription[FillEvent], error)
 	WatchBalances(context.Context, WatchAccountRequest) (Subscription[BalanceEvent], error)
 	PlaceOrder(context.Context, PlaceOrderRequest) (OrderAcknowledgement, error)
 	CancelOrder(context.Context, CancelOrderRequest) (OrderAcknowledgement, error)
-	Close() error
 }
 
 type PerpWebSocket interface {
 	SpotWebSocket
+	PerpMarketWebSocket
 	WatchPositions(context.Context, WatchRequest) (Subscription[PositionEvent], error)
-	WatchMarkPrice(context.Context, WatchRequest) (Subscription[MarkPriceEvent], error)
-	WatchFundingRate(context.Context, WatchRequest) (Subscription[FundingRateEvent], error)
 }

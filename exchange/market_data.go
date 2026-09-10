@@ -92,7 +92,7 @@ func knownMarketDataset(dataset MarketDataset) bool {
 }
 
 // DerivativeFact is the venue-neutral state shared by the trader, funding
-// board, arbitrage scanner, position PnL and future alerting. Optional values
+// board, position PnL and future alerting. Optional values
 // preserve absent data; a venue's missing value must never become numeric zero.
 // Each field group owns its own observation clock so one fast mark update cannot
 // make a stale funding rate or open-interest value appear fresh.

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/QuantProcessing/boltertrader/internal/livewrite"
-	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 )
 
 const (
@@ -28,11 +27,9 @@ const (
 	// any deployment that serves both paths from one listener.
 	gatewayInternalURLEnv       = "BT_GATEWAY_INTERNAL_URL"
 	gatewayInternalTokenFileEnv = "BT_GATEWAY_INTERNAL_TOKEN_FILE"
-	previewSigningKeyEnv        = "BT_MANUAL_PREVIEW_SIGNING_KEY_FILE"
 	livePrivateWritesEnv        = livewrite.EnvName
 	allowNonLoopbackEnv         = "BT_TRADING_ALLOW_NON_LOOPBACK_LISTEN"
 	allowPlaintextEnv           = "BT_TRADING_ALLOW_NON_LOOPBACK_UPSTREAM"
-	inlinePreviewKeyEnv         = "BT_MANUAL_PREVIEW_SIGNING_KEY"
 	inlineServiceTokenEnv       = "BT_TRADING_SERVICE_TOKEN"
 	inlineGatewayTokenName      = "BT_GATEWAY_TOKEN"
 
@@ -49,7 +46,6 @@ type config struct {
 	GatewayToken             []byte
 	GatewayInternalURL       string
 	GatewayInternalToken     []byte
-	ManualPreviewSigningKey  []byte
 	LivePrivateWritesEnabled bool
 	AllowNonLoopbackListen   bool
 	AllowNonLoopbackUpstream bool
@@ -61,7 +57,7 @@ type config struct {
 // listing and survives in shell history, and there is no version of this
 // service where that is an acceptable place to keep a token.
 func load() (config, error) {
-	for _, name := range []string{inlinePreviewKeyEnv, inlineServiceTokenEnv, inlineGatewayTokenName, inlineGatewayInternalTokenName} {
+	for _, name := range []string{inlineServiceTokenEnv, inlineGatewayTokenName, inlineGatewayInternalTokenName} {
 		if strings.TrimSpace(os.Getenv(name)) != "" {
 			return config{}, fmt.Errorf("inline secrets are forbidden; set the corresponding _FILE variable instead of %s", name)
 		}
@@ -152,7 +148,6 @@ func load() (config, error) {
 	secrets := []secretFile{
 		{serviceTokenFileEnv, &cfg.ServiceToken},
 		{gatewayTokenFileEnv, &cfg.GatewayToken},
-		{previewSigningKeyEnv, &cfg.ManualPreviewSigningKey},
 	}
 	if internalTokenFile != "" {
 		secrets = append(secrets, secretFile{gatewayInternalTokenFileEnv, &cfg.GatewayInternalToken})
@@ -176,7 +171,7 @@ func load() (config, error) {
 // clear zeroes every secret read so far. A configuration that failed to load
 // must not leave key material in a heap this process keeps running on.
 func (cfg config) clear() {
-	for _, value := range [][]byte{cfg.ServiceToken, cfg.GatewayToken, cfg.GatewayInternalToken, cfg.ManualPreviewSigningKey} {
+	for _, value := range [][]byte{cfg.ServiceToken, cfg.GatewayToken, cfg.GatewayInternalToken} {
 		for index := range value {
 			value[index] = 0
 		}
@@ -297,8 +292,4 @@ func getenv(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func readyComponent() platformsystem.Component {
-	return platformsystem.Component{Ready: true, Reason: "ready"}
 }

@@ -57,3 +57,15 @@ func TestBoardMarksMergesRichHotReferenceWithIndependentFieldClocks(t *testing.T
 		t.Fatalf("late mark replaced newer value: %+v", got.MarkPrice)
 	}
 }
+
+func TestMarkDataCarriesGatewayComputedAge(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	data := markData("70000", now.Add(-20*time.Second), now.Add(-2*time.Second), 5*time.Second, now)
+	if data["ageMs"] != int64(2000) || data["staleAfterMs"] != int64(5000) || data["receivedAt"] != now.Add(-2*time.Second) {
+		t.Fatalf("mark freshness payload=%+v", data)
+	}
+	future := markData("70000", now.Add(-20*time.Second), now.Add(time.Second), 5*time.Second, now)
+	if future["ageMs"] != int64(0) {
+		t.Fatalf("future receipt clock produced negative age: %+v", future)
+	}
+}

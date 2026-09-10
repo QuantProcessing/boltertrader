@@ -602,53 +602,6 @@ func catalogSourceForConfig(configName string, settings settings) (exchange.Cata
 	return scope, descriptor, true
 }
 
-func catalogIdentityForConfig(configName string) (exchange.Venue, exchange.Product, string, bool) {
-	switch configName {
-	case "binance-spot":
-		return exchange.VenueBinance, exchange.ProductSpot, "", true
-	case "binance-usd-perp":
-		return exchange.VenueBinance, exchange.ProductPerp, "USDT", true
-	case "okx-spot":
-		return exchange.VenueOKX, exchange.ProductSpot, "", true
-	case "okx-usdt-perp":
-		return exchange.VenueOKX, exchange.ProductPerp, "USDT", true
-	case "lighter-spot":
-		return exchange.VenueLighter, exchange.ProductSpot, "", true
-	case "lighter-perp":
-		return exchange.VenueLighter, exchange.ProductPerp, "USDC", true
-	case "hyperliquid-spot":
-		return exchange.VenueHyperliquid, exchange.ProductSpot, "", true
-	case "hyperliquid-perp":
-		return exchange.VenueHyperliquid, exchange.ProductPerp, "USDC", true
-	case "bybit-spot":
-		return exchange.VenueBybit, exchange.ProductSpot, "", true
-	case "bybit-usdt-perp":
-		return exchange.VenueBybit, exchange.ProductPerp, "USDT", true
-	case "bybit-usdc-perp":
-		return exchange.VenueBybit, exchange.ProductPerp, "USDC", true
-	case "bitget-spot":
-		return exchange.VenueBitget, exchange.ProductSpot, "", true
-	case "bitget-usdt-perp":
-		return exchange.VenueBitget, exchange.ProductPerp, "USDT", true
-	case "bitget-usdc-perp":
-		return exchange.VenueBitget, exchange.ProductPerp, "USDC", true
-	case "gate-spot":
-		return exchange.VenueGate, exchange.ProductSpot, "", true
-	case "gate-usdt-perp":
-		return exchange.VenueGate, exchange.ProductPerp, "USDT", true
-	case "aster-spot":
-		return exchange.VenueAster, exchange.ProductSpot, "", true
-	case "aster-usdt-perp":
-		return exchange.VenueAster, exchange.ProductPerp, "USDT", true
-	case "nado-spot":
-		return exchange.VenueNado, exchange.ProductSpot, "USDT0", true
-	case "nado-usdt0-perp":
-		return exchange.VenueNado, exchange.ProductPerp, "USDT0", true
-	default:
-		return "", "", "", false
-	}
-}
-
 func instrumentLoaderForConfig(configName string, settings settings) exchange.InstrumentLoader {
 	switch configName {
 	case "binance-spot":

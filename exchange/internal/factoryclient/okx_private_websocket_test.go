@@ -157,22 +157,23 @@ func TestOKXPrivateWSBackend_OrdersAndFillsShareOrdersChannel(t *testing.T) {
 		UTime:     "1700000000000",
 	})
 	ws.orderHandler(&okx.Order{
-		InstType:   okxSpotType,
-		InstId:     "BTC-USDT",
-		OrdId:      "1",
-		ClOrdId:    "12",
-		Side:       okx.SideBuy,
-		OrdType:    okx.OrderTypeLimit,
-		Sz:         "1",
-		Px:         "100",
-		AccFillSz:  "0.2",
-		AvgPx:      "101",
-		State:      okx.OrderStatusPartiallyFilled,
-		FillPx:     "101",
-		FillSz:     "0.2",
-		FillTime:   "1700000001000",
-		TradeId:    "t1",
-		Fee:        "-0.01",
+		InstType:  okxSpotType,
+		InstId:    "BTC-USDT",
+		OrdId:     "1",
+		ClOrdId:   "12",
+		Side:      okx.SideBuy,
+		OrdType:   okx.OrderTypeLimit,
+		Sz:        "1",
+		Px:        "100",
+		AccFillSz: "0.2",
+		AvgPx:     "101",
+		State:     okx.OrderStatusPartiallyFilled,
+		FillPx:    "101",
+		FillSz:    "0.2",
+		FillTime:  "1700000001000",
+		TradeId:   "t1",
+		Fee:       "-0.05",
+		FillFee:   "-0.01", FillFeeCcy: "USDT",
 		FeeCcy:     "USDT",
 		ExecType:   "T",
 		CTime:      "1700000000000",
@@ -182,7 +183,7 @@ func TestOKXPrivateWSBackend_OrdersAndFillsShareOrdersChannel(t *testing.T) {
 	if len(orders) != 1 || orders[0].Order.OrderID != "1" || !orders[0].Order.Filled.Equal(decimal.RequireFromString("0.2")) {
 		t.Fatalf("unexpected orders: %#v", orders)
 	}
-	if len(fills) != 1 || fills[0].Fill.FillID != "t1" || !fills[0].Fill.Quantity.Equal(decimal.RequireFromString("0.2")) {
+	if len(fills) != 1 || fills[0].Fill.FillID != "t1" || !fills[0].Fill.Quantity.Equal(decimal.RequireFromString("0.2")) || fills[0].Fill.Fee.String() != "0.01" {
 		t.Fatalf("unexpected fills: %#v", fills)
 	}
 

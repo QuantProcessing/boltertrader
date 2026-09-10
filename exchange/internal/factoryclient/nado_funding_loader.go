@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	nadosdk "github.com/QuantProcessing/boltertrader/sdk/nado"
 	"github.com/shopspring/decimal"
 )
 
@@ -16,6 +17,8 @@ type nadoDerivativeSnapshotLoader struct {
 func NewNadoDerivativeSnapshotLoader(settings Settings) DerivativeSnapshotLoader {
 	return nadoDerivativeSnapshotLoader{settings: settings}
 }
+
+func (nadoDerivativeSnapshotLoader) coordinatesDerivativeRequests() bool { return true }
 
 // LoadDerivativeSnapshot resolves Nado's product ids back into symbols.
 //
@@ -41,7 +44,9 @@ func (loader nadoDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Co
 		HTTPClient:        loader.settings.HTTPClient,
 	})
 
-	products, err := base.discover(ctx, derivativeSnapshotOperation)
+	products, err := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueNado, "instruments", "usdt0-perpetual", func(callCtx context.Context) ([]nadoProduct, error) {
+		return base.discover(callCtx, derivativeSnapshotOperation)
+	})
 	if err != nil {
 		return DerivativeSnapshot{}, err
 	}
@@ -50,19 +55,23 @@ func (loader nadoDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Co
 		byProductID[strconv.FormatInt(product.productID, 10)] = product
 	}
 
-	rates, err := base.sdk.GetAllFundingRates(ctx)
+	rates, err := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueNado, "funding_rates", "usdt0-perpetual", base.sdk.GetAllFundingRates)
 	if err != nil {
 		return DerivativeSnapshot{}, base.normalize(derivativeSnapshotOperation, err)
 	}
-	contracts, _ := base.sdk.GetContracts(ctx, nil)
+	contracts, contractsErr := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueNado, "contracts", "usdt0-perpetual", func(callCtx context.Context) (nadosdk.ContractV2Map, error) {
+		return base.sdk.GetContracts(callCtx, nil)
+	})
 	contractsByProductID := make(map[int64]nadoContractFields, len(contracts))
-	for _, row := range contracts {
-		contractsByProductID[int64(row.ProductID)] = nadoContractFields{
-			markPrice:                row.MarkPrice,
-			indexPrice:               row.IndexPrice,
-			openInterest:             row.OpenInterest,
-			openInterestNotional:     row.OpenInterestUsd,
-			nextFundingRateTimestamp: row.NextFundingRateTimestamp,
+	if contractsErr == nil {
+		for _, row := range contracts {
+			contractsByProductID[int64(row.ProductID)] = nadoContractFields{
+				markPrice:                row.MarkPrice,
+				indexPrice:               row.IndexPrice,
+				openInterest:             row.OpenInterest,
+				openInterestNotional:     row.OpenInterestUsd,
+				nextFundingRateTimestamp: row.NextFundingRateTimestamp,
+			}
 		}
 	}
 

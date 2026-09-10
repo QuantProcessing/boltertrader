@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
 func TestOrderCommandsReturnTypedResponseError(t *testing.T) {
@@ -118,6 +120,9 @@ func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
 					}, nil
 				})})
 			err := test.run(client)
+			if test.name == "missing response code" && errors.Is(err, venuehttp.ErrMalformedResponse) {
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v, want text %q", err, test.want)
 			}

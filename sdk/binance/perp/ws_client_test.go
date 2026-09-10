@@ -126,7 +126,7 @@ func TestWSClientReconnectResubscribesOffline(t *testing.T) {
 	defer cancel()
 	client := NewWSClient(ctx, wsURL+"/ws")
 	client.ReconnectWait = time.Millisecond
-	client.pongInterval = time.Hour
+	client.heartbeatInterval = time.Hour
 	defer client.Close()
 
 	if err := client.Connect(); err != nil {

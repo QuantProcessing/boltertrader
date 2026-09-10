@@ -1,6 +1,6 @@
-// Package app assembles the trading service out of its parts: the reservation
-// gate, the command ledger, the accounting ledger, the portfolio projection,
-// the manual product, the activity log and business realtime projection, the readiness view,
+// Package app assembles the trading service out of its parts: the command
+// ledger, the accounting ledger, the portfolio projection,
+// the manual product, the activity log, the readiness view,
 // and the background reconciler.
 //
 // It is deliberately host-neutral. The trading binary serves it in production,
@@ -22,16 +22,13 @@ import (
 
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
-	"github.com/QuantProcessing/boltertrader/services/trading/arbitrage"
 	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	"github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
-	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
-	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
 	tradingpg "github.com/QuantProcessing/boltertrader/services/trading/store/postgres"
 )
 
@@ -56,33 +53,24 @@ type Config struct {
 	// exchange. It used to also have to be paired with a live Mode, back when a
 	// service could run under a test mode that fenced writes on its own.
 	LivePrivateWritesEnabled bool
-	// ManualPreviewSigningKey seals execution previews. New zeroes it before
-	// returning, so the caller's copy does not outlive the call.
-	ManualPreviewSigningKey []byte
 	// ReconcilerDisabled suppresses the background reconciler. A host running a
-	// migration-validation startup has no business issuing Gateway writes, and
-	// the reconciler is the one component that would do so unprompted.
+	// migration-validation startup can avoid background Gateway reads and
+	// command-state updates. Reconciliation never places or cancels orders.
 	ReconcilerDisabled bool
 }
 
 // Dependencies names everything the trading service cannot decide for itself.
 //
-// The eight Gateway-facing fields stay separate even though one client answers
-// all of them. That one type satisfies all eight is a fact about the client,
+// The Gateway-facing fields stay separate even though one client answers
+// all of them. That one type satisfies these interfaces is a fact about the client,
 // not about this assembly: tests substitute a different fake per capability,
 // and collapsing them into a single interface would force every test to
-// implement eight methods to exercise one.
+// implement unrelated methods to exercise one.
 type Dependencies struct {
 	// Database is trading's own. Left nil, every store falls back to its
 	// in-memory form, which is what the tests and a first local run want.
 	Database              *sql.DB
 	CatalogSource         catalog.Source
-	MarketDataSource      marketdata.Source
-	FreshMarketData       httpapi.MarketDataAuthority
-	FreshBBO              marketdata.FreshBBOSource
-	FundingBoardStream    marketdata.BoardStream
-	MarketTopics          httpapi.MarketTopicProjection
-	RealtimeObserver      httpapi.RealtimeObserver
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
@@ -90,7 +78,7 @@ type Dependencies struct {
 	PositionProjection    httpapi.AccountPositionProjectionReader
 	AccountPositionSource accountpositions.Source
 	ManualGateway         manual.Gateway
-	ManualAccounts        httpapi.ManualAccountAuthority
+	ManualAccounts        manual.AccountAuthority
 	ReconciliationGateway orders.ReconciliationGateway
 	// Principal, Authenticate and AuthorizeMutation are how a host answers "who
 	// is asking, and may they write". The backend reads a session cookie; the
@@ -105,14 +93,11 @@ type Dependencies struct {
 // Register mounts it on whatever mux the host provides, and Run drives the
 // background reconciler on whatever lifecycle the host has.
 type Service struct {
-	routes      httpapi.Options
-	readiness   *platformsystem.Readiness
-	reconciler  *orders.Reconciler
-	catalog     *catalog.Projection
-	board       *marketdata.BoardService
-	boardStream marketdata.BoardStream
-	positions   *accountpositions.Service
-	arbitrage   *httpapi.ArbitrageProjection
+	routes     httpapi.Options
+	readiness  *platformsystem.Readiness
+	reconciler *orders.Reconciler
+	catalog    *catalog.Projection
+	positions  *accountpositions.Service
 }
 
 // catalogTTL is how long the catalog projection's facts are considered fresh;
@@ -151,7 +136,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	}
 
 	now := func() time.Time { return time.Now().UTC() }
-	auditStore, reservationStore, commandStore, ledgerStore, portfolioProjection := stores(dependencies.Database)
+	auditStore, commandStore, ledgerStore, portfolioProjection := stores(dependencies.Database)
 
 	auditService, err := audit.New(auditStore, nil, sequentialID("audit"))
 	if err != nil {
@@ -161,37 +146,13 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if catalogSource == nil {
 		catalogSource = unavailableCatalogSource{}
 	}
-	marketSource := dependencies.MarketDataSource
-	if marketSource == nil {
-		marketSource = unavailableMarketDataSource{}
-	}
 	catalogProjection, err := catalog.NewProjection(catalogSource, catalogTTL, now)
-	if err != nil {
-		return nil, err
-	}
-	budget, err := marketdata.NewCoordinator(30, time.Minute, now)
-	if err != nil {
-		return nil, err
-	}
-	marketService, err := marketdata.NewService(marketSource, budget, 5*time.Second, now)
-	if err != nil {
-		return nil, err
-	}
-	boardService, err := marketdata.NewBoardService(now)
-	if err != nil {
-		return nil, err
-	}
-	arbitrageProjection, err := httpapi.NewArbitrageProjection(catalogProjection, boardService, dependencies.MarketTopics, now)
 	if err != nil {
 		return nil, err
 	}
 	var accountPositionProjection *accountpositions.Service
 	if dependencies.AccountPositionSource != nil {
-		var accountPositionStore accountpositions.Store = accountpositions.NewMemoryStore()
-		if dependencies.Database != nil {
-			accountPositionStore = tradingpg.NewAccountPositionStore(dependencies.Database)
-		}
-		accountPositionProjection, err = accountpositions.NewService(dependencies.AccountPositionSource, accountPositionStore, now)
+		accountPositionProjection, err = accountpositions.NewService(dependencies.AccountPositionSource, now)
 		if err != nil {
 			return nil, err
 		}
@@ -212,46 +173,29 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if positionProjection == nil {
 		positionProjection = httpapi.FailClosedAccountPositionProjectionReader{}
 	}
-	var manualAccounts httpapi.ManualAccountAuthority = unavailableManualAccounts{}
+	var manualAccounts manual.AccountAuthority = unavailableManualAccounts{}
 	if dependencies.ManualAccounts != nil {
 		manualAccounts = dependencies.ManualAccounts
 	}
 
 	readiness := newReadiness(dependencies, catalogProjection)
 	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{
-		Readiness:        readiness,
-		RealtimeObserver: dependencies.RealtimeObserver,
-		Arbitrage:        arbitrageProjection,
+		Readiness: readiness,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	reservationService := reservations.NewService(reservationStore, now)
-	commandService := orders.NewService(commandStore, reservationGate{service: reservationService}, now)
+	commandService := orders.NewService(commandStore, now)
 	commandService.SetLiveWritesEnabled(cfg.LivePrivateWritesEnabled)
 	ledgerService := ledger.NewService(ledgerStore, now)
-	manualService := manual.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, dependencies.ManualGateway, now, cfg.ManualPreviewSigningKey)
+	manualService := manual.NewService(manual.Options{Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Gateway: dependencies.ManualGateway, Accounts: manualAccounts, Catalog: catalogProjection, Now: now})
 	if err := manualService.SetExecutionAdmission(cfg.LivePrivateWritesEnabled); err != nil {
 		return nil, err
 	}
-	// Arbitrage takes the same signing key and the same Gateway channel: a hedge
-	// leg is placed the way a manual order is, and both constructors clone the
-	// key, so the zeroing below still leaves nothing for a later caller to reuse.
-	// The two products cannot open each other's previews despite the shared key —
-	// arbitrage's MAC covers an extra domain label for exactly that reason.
-	arbitrageService := arbitrage.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, dependencies.ManualGateway, now, cfg.ManualPreviewSigningKey)
-	if err := arbitrageService.SetExecutionAdmission(cfg.LivePrivateWritesEnabled); err != nil {
-		return nil, err
-	}
-	for index := range cfg.ManualPreviewSigningKey {
-		cfg.ManualPreviewSigningKey[index] = 0
-	}
-	cfg.ManualPreviewSigningKey = nil
-
 	var reconciler *orders.Reconciler
 	if !cfg.ReconcilerDisabled && dependencies.ReconciliationGateway != nil {
-		reconciler, err = orders.NewReconciler(commandService, dependencies.ReconciliationGateway, reconciliationDispatcher{manual: manualService, arbitrage: arbitrageService}, now)
+		reconciler, err = orders.NewReconciler(commandService, dependencies.ReconciliationGateway, manualService, now)
 		if err != nil {
 			return nil, err
 		}
@@ -265,13 +209,9 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 			Audit:      &httpapi.AuditRouteOptions{Service: auditService, Authenticate: dependencies.Authenticate},
 			PublicData: publicAPI,
 			Trading: &httpapi.TradingOptions{
-				Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection,
+				Commands: commandService, Portfolio: portfolioProjection,
 				Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService,
-				ManualAccounts: manualAccounts,
-				Arbitrage:      arbitrageService, FundingBoard: boardService, MarketData: marketService,
-				FreshMarketData: dependencies.FreshMarketData,
-				FreshBBO:        dependencies.FreshBBO,
-				Principal:       dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
+				Principal: dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
 				Activity: activityLog,
 			},
 			Projections: &httpapi.BrowserProjectionRoutesOptions{
@@ -280,13 +220,10 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				Principal: dependencies.Principal,
 			},
 		},
-		readiness:   readiness,
-		reconciler:  reconciler,
-		catalog:     catalogProjection,
-		board:       boardService,
-		boardStream: dependencies.FundingBoardStream,
-		positions:   accountPositionProjection,
-		arbitrage:   arbitrageProjection,
+		readiness:  readiness,
+		reconciler: reconciler,
+		catalog:    catalogProjection,
+		positions:  accountPositionProjection,
 	}, nil
 }
 
@@ -314,38 +251,12 @@ func (service *Service) Run(ctx context.Context) {
 		defer close(refreshed)
 		service.refreshCatalog(ctx)
 	}()
-	boardDone := make(chan struct{})
-	go func() {
-		defer close(boardDone)
-		if service.boardStream == nil {
-			<-ctx.Done()
-			return
-		}
-		_ = service.boardStream.RunFundingBoard(ctx, service.board.Replace)
-	}()
-	positionsDone := make(chan struct{})
-	go func() {
-		defer close(positionsDone)
-		if service.positions == nil {
-			<-ctx.Done()
-			return
-		}
-		service.positions.Run(ctx)
-	}()
-	arbitrageDone := make(chan struct{})
-	go func() {
-		defer close(arbitrageDone)
-		service.arbitrage.Run(ctx)
-	}()
 	if service.reconciler != nil {
 		service.reconciler.Run(ctx)
 	} else {
 		<-ctx.Done()
 	}
 	<-refreshed
-	<-boardDone
-	<-positionsDone
-	<-arbitrageDone
 }
 
 // refreshCatalog renews the catalog projection for as long as ctx lives.
@@ -377,11 +288,11 @@ func (service *Service) refreshCatalog(ctx context.Context) {
 
 // stores picks durable or in-memory backing for every store in one place, so
 // there is no way to end up with half the service persistent and half not.
-func stores(database *sql.DB) (audit.Store, reservations.Store, orders.Store, ledger.Store, *portfolio.Projection) {
+func stores(database *sql.DB) (audit.Store, orders.Store, ledger.Store, *portfolio.Projection) {
 	if database == nil {
-		return audit.NewMemoryStore(), reservations.NewMemoryStore(), orders.NewMemoryStore(), ledger.NewMemoryStore(), portfolio.NewProjection()
+		return audit.NewMemoryStore(), orders.NewMemoryStore(), ledger.NewMemoryStore(), portfolio.NewProjection()
 	}
-	return tradingpg.NewAuditStore(database), tradingpg.NewReservationStore(database), tradingpg.NewCommandStore(database),
+	return tradingpg.NewAuditStore(database), tradingpg.NewCommandStore(database),
 		tradingpg.NewLedgerStore(database), portfolio.NewPersistentProjection(tradingpg.NewPortfolioStore(database))
 }
 
@@ -436,29 +347,14 @@ func component(ready bool, missingReason string) platformsystem.Component {
 // wrong reason, blaming the account instead of the missing wiring.
 type unavailableManualAccounts struct{}
 
-func (unavailableManualAccounts) Get(context.Context, string, string) (httpapi.ManualAccount, error) {
-	return httpapi.ManualAccount{}, errors.New("account authority unavailable")
+func (unavailableManualAccounts) Get(context.Context, string, string) (manual.Account, error) {
+	return manual.Account{}, errors.New("account authority unavailable")
 }
 
 type unavailableCatalogSource struct{}
 
 func (unavailableCatalogSource) Fetch(context.Context) (catalog.Snapshot, error) {
 	return catalog.Snapshot{}, catalog.ErrUnavailable
-}
-
-type unavailableMarketDataSource struct{}
-
-func (unavailableMarketDataSource) Fetch(context.Context, marketdata.Query) (marketdata.Fact, error) {
-	return marketdata.Fact{}, errors.New("gateway projection unavailable")
-}
-
-// reservationGate narrows the reservation service to the one question the
-// command ledger asks of it, so the ledger cannot reach the rest of it.
-type reservationGate struct{ service *reservations.Service }
-
-func (gate reservationGate) Consume(ctx context.Context, claim orders.ReservationClaim) error {
-	_, err := gate.service.Consume(ctx, reservations.ConsumeRequest{ReservationID: claim.ReservationID, PrincipalID: claim.PrincipalID, ProductID: claim.ProductID})
-	return err
 }
 
 func sequentialID(prefix string) func() string {

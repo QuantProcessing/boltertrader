@@ -25,14 +25,6 @@ import { Outlet, createRootRouteWithContext, createRoute, createRouter, redirect
 import type { SessionStore } from "@/app/session";
 import { AppShell } from "@/app/shell/app-shell";
 import { ActivityPage } from "@/routes/activity";
-import {
-  CryptoBasisArbitragePage,
-  CryptoFundingArbitragePage,
-  TradfiFundingArbitragePage,
-  TradfiSpreadArbitragePage,
-  validateArbitrageSearch,
-  type ArbitrageSearch,
-} from "@/routes/arbitrage.strategy";
 import { FundingPage } from "@/routes/funding";
 import { LoginPage } from "@/routes/login";
 import { PortfolioPage, validatePortfolioSearch } from "@/routes/portfolio";
@@ -148,9 +140,6 @@ const indexRoute = createRoute({
  * `/portfolio` and `/activity` are private by nature. `/settings` opens only
  * far enough to explain why account configuration requires sign-in; the page
  * mounts no private query until a session is authenticated.
- * `/arbitrage` looks like it belongs with these two but does not: its
- * `opportunities()` handler asks for an identity before it does anything else,
- * so opening it here would produce exactly that screen of 401s.
  */
 const tradeRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -175,65 +164,6 @@ const fundingRoute = createRoute({
  * the profitable one and an operator is allowed to disagree — putting the choice
  * in the URL is what keeps a fifteen-second poll from undoing it.
  */
-const arbitrageOverviewRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/arbitrage",
-  beforeLoad: () => {
-    throw redirect({ to: "/arbitrage/crypto/basis", replace: true });
-  },
-});
-
-const cryptoBasisArbitrageRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/arbitrage/crypto/basis",
-  validateSearch: validateArbitrageSearch,
-  component: CryptoBasisArbitragePage,
-});
-
-const cryptoFundingArbitrageRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/arbitrage/crypto/funding",
-  validateSearch: validateArbitrageSearch,
-  component: CryptoFundingArbitragePage,
-});
-
-const tradfiFundingArbitrageRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/arbitrage/tradfi/funding",
-  validateSearch: validateArbitrageSearch,
-  component: TradfiFundingArbitragePage,
-});
-
-const tradfiSpreadArbitrageRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/arbitrage/tradfi/perp-spread",
-  validateSearch: validateArbitrageSearch,
-  component: TradfiSpreadArbitragePage,
-});
-
-/** Keep old bookmarks useful while making the strategy task explicit in the URL. */
-const legacyArbitrageRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/funding/arbitrage",
-  validateSearch: (search: Record<string, unknown>): ArbitrageSearch & { strategy?: string } => ({
-    ...validateArbitrageSearch(search),
-    strategy: typeof search.strategy === "string" ? search.strategy : undefined,
-  }),
-  beforeLoad: ({ search }) => {
-    const target = search.strategy === "spot_perp_basis"
-      ? "/arbitrage/crypto/basis"
-      : search.strategy === "cross_perp_spread"
-        ? "/arbitrage/tradfi/perp-spread"
-        : "/arbitrage/crypto/funding";
-    const query = new URLSearchParams();
-    if (search.opportunity) query.set("opportunity", search.opportunity);
-    if (search.symbol) query.set("symbol", search.symbol);
-    if (search.long) query.set("long", search.long);
-    if (search.short) query.set("short", search.short);
-    throw redirect({ href: `${target}${query.size > 0 ? `?${query.toString()}` : ""}`, replace: true });
-  },
-});
-
 const portfolioRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/portfolio",
@@ -254,12 +184,6 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     tradeRoute,
     fundingRoute,
-    arbitrageOverviewRoute,
-    cryptoBasisArbitrageRoute,
-    cryptoFundingArbitrageRoute,
-    tradfiFundingArbitrageRoute,
-    tradfiSpreadArbitrageRoute,
-    legacyArbitrageRoute,
     portfolioRoute,
     activityRoute,
     settingsRoute,

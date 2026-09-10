@@ -20,7 +20,7 @@ They are named here because the words still circulate.
 | --- | --- |
 | The strategy runtime — a long-running process that owned a bus, a cache, and strategy orchestration | Product services over the gateway's HTTP surface. The trading service hosts two of them |
 | Backtesting | Nothing. There is no historical simulation surface anywhere in this tree |
-| The funding product — a service that traded funding-rate spreads | The rewrite landed. A credential-free funding board reads the rates, and the arbitrage product in [the trading service](../guides/trading-service.md) trades the spread as a two-leg cross-venue hedge |
+| Local funding-arbitrage application | Removed. Gateway still provides public funding rates, history and the funding board. |
 
 If you find a page, comment, or issue that mentions a strategy `Context`, a
 `runtime/` package, or a per-venue `adapter/` package, it predates the current

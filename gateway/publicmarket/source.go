@@ -35,17 +35,12 @@ const (
 	defaultVenueTimeout    = 30 * time.Second
 )
 
-// Connector is the complete method set a public market route may expose.
-// The two boolean results distinguish an unsupported optional facet from a
-// supported facet whose venue request failed.
+// Connector contains only the capabilities used by Gateway public routes.
+// Its socket exposes market streams without account or order methods.
 type Connector interface {
 	Refresh(context.Context) ([]exchange.Instrument, error)
-	OrderBook(context.Context, exchange.OrderBookRequest) (exchange.OrderBook, error)
 	Candles(context.Context, exchange.CandlesRequest) (exchange.CandlePage, error)
-	FundingRate(context.Context, exchange.FundingRateRequest) (exchange.FundingRate, bool, error)
-	FundingRateHistory(context.Context, exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, bool, error)
-	MarkPrice(context.Context, exchange.Instrument) (exchange.MarkPriceEvent, bool, error)
-	WebSocket() exchange.SpotWebSocket
+	WebSocket() exchange.MarketWebSocket
 	Close() error
 }
 
@@ -89,6 +84,9 @@ type Snapshot struct {
 	Revision    string
 	ObservedAt  time.Time
 	Instruments []Instrument
+	// UnavailableProfiles identifies omitted catalog scopes. A partial snapshot
+	// must never imply that instruments from a failed venue have been delisted.
+	UnavailableProfiles []string
 }
 
 type Query struct {
@@ -99,14 +97,11 @@ type Query struct {
 }
 
 type Fact struct {
-	Query          Query
-	Instrument     exchange.Instrument
-	Book           exchange.OrderBook
-	Mark           exchange.MarkPriceEvent
-	HasMark        bool
-	Funding        exchange.FundingRate
-	HasFunding     bool
-	FundingHistory exchange.FundingRatePage
+	Query      Query
+	Instrument exchange.Instrument
+	Book       exchange.OrderBook
+	Mark       exchange.MarkPriceEvent
+	HasMark    bool
 }
 
 type CandleResult struct {
@@ -140,24 +135,6 @@ type BBOStream struct {
 	Subscription exchange.Subscription[exchange.BBOEvent]
 }
 
-// SnapshotBBO is the REST bootstrap used by the shared execution quote cache.
-// It deliberately reads only one level and never joins mark, funding, history,
-// or depth data onto a preview quote.
-func (source *Source) SnapshotBBO(ctx context.Context, instrumentID string) (markethub.BBOQuote, error) {
-	current, instrument, err := source.resolvePublicID(ctx, instrumentID)
-	if err != nil {
-		return markethub.BBOQuote{}, err
-	}
-	book, err := current.connector.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 1})
-	if err != nil || len(book.Bids) == 0 || len(book.Asks) == 0 {
-		return markethub.BBOQuote{}, fmt.Errorf("snapshot public BBO: %w", errors.Join(ErrUnavailable, err))
-	}
-	return markethub.BBOQuote{
-		InstrumentID: instrumentID, Bid: book.Bids[0], Ask: book.Asks[0],
-		ObservedAt: observedTime(book.Time), SourceSequence: book.Sequence,
-	}, nil
-}
-
 // SubscriptionKey resolves a canonical instrument to the venue's native
 // connection boundary. Route profiles are projections; Bybit USDT and USDC,
 // for example, both resolve to the single native linear owner.
@@ -177,7 +154,7 @@ func (source *Source) SubscriptionKey(ctx context.Context, instrumentID string, 
 }
 
 func nativeMarketFamily(profile routeprofile.Profile) string {
-	return marketcapability.NativeFamily(exchange.Venue(profile.Venue), exchange.Product(profile.Product), profile.SettlementAsset)
+	return exchange.NativeMarketFamily(exchange.Venue(profile.Venue), exchange.Product(profile.Product), profile.SettlementAsset)
 }
 
 func observedTime(value time.Time) time.Time {
@@ -207,7 +184,7 @@ type DerivativeReferenceStream struct {
 
 type Source struct {
 	columns      []*column
-	sockets      map[markethub.OwnerKey]exchange.SpotWebSocket
+	sockets      map[markethub.OwnerKey]exchange.MarketWebSocket
 	interval     time.Duration
 	venueTimeout time.Duration
 	now          func() time.Time
@@ -287,9 +264,9 @@ func (source *Source) indexDerivativeCatalog(profile routeprofile.Profile, instr
 	return nil
 }
 
-// SetMarketHub switches composite market-data snapshots to the same resident
-// feeds used by WebSocket consumers. Tests and migration-validation sources
-// may leave it unset and retain the bounded direct REST behavior.
+// SetMarketHub attaches the only realtime market-data plane. Catalog, candle
+// history and funding history remain bounded REST reads, but depth and mark
+// snapshots never fall back to a second venue request path.
 func (source *Source) SetMarketHub(hub *markethub.Hub) {
 	if source == nil {
 		return
@@ -527,7 +504,7 @@ func newSource(factory Factory, trusted *routeprofile.Registry, options sourceOp
 	if len(columns) == 0 {
 		return nil, ErrUnavailable
 	}
-	sockets := make(map[markethub.OwnerKey]exchange.SpotWebSocket)
+	sockets := make(map[markethub.OwnerKey]exchange.MarketWebSocket)
 	for _, current := range columns {
 		key := markethub.OwnerKey{Venue: exchange.Venue(current.profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: nativeMarketFamily(current.profile)}
 		if sockets[key] == nil {
@@ -588,7 +565,7 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 	group.Wait()
 	close(results)
 
-	combined := Snapshot{Instruments: make([]Instrument, 0)}
+	combined := Snapshot{Instruments: make([]Instrument, 0), UnavailableProfiles: make([]string, 0)}
 	contributors := make([]string, 0, len(source.columns))
 	for result := range results {
 		if result.err != nil {
@@ -598,6 +575,7 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 				"error", result.err,
 			)
 			contributors = append(contributors, result.column.profile.ID+"\x00unavailable")
+			combined.UnavailableProfiles = append(combined.UnavailableProfiles, result.column.profile.ID)
 			continue
 		}
 		contributors = append(contributors, result.column.profile.ID+"\x00"+result.snapshot.Revision)
@@ -632,6 +610,7 @@ func (source *Source) Snapshot(ctx context.Context) (Snapshot, error) {
 		return left.ID < right.ID
 	})
 	sort.Strings(contributors)
+	sort.Strings(combined.UnavailableProfiles)
 	payload, _ := json.Marshal(contributors)
 	revision := sha256.Sum256(payload)
 	combined.Revision = "public-" + hex.EncodeToString(revision[:16])
@@ -677,7 +656,7 @@ func (snapshot Snapshot) MatchFundingEntry(routeProfileID string, entry exchange
 	return Instrument{}, false
 }
 
-func (source *Source) MarketData(ctx context.Context, query Query, depthLimit, fundingHistoryLimit int) (Fact, error) {
+func (source *Source) MarketData(ctx context.Context, query Query, depthLimit int) (Fact, error) {
 	current, instrument, err := source.resolve(ctx, query)
 	if err != nil {
 		return Fact{}, err
@@ -685,36 +664,10 @@ func (source *Source) MarketData(ctx context.Context, query Query, depthLimit, f
 	source.mu.Lock()
 	hub := source.marketHub
 	source.mu.Unlock()
-	if hub != nil {
-		return source.marketDataFromHub(ctx, hub, current, instrument, query, depthLimit)
+	if hub == nil {
+		return Fact{}, fmt.Errorf("read public market-data Hub: %w", ErrUnavailable)
 	}
-	book, err := current.connector.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: depthLimit})
-	if err != nil {
-		return Fact{}, fmt.Errorf("read public order book: %w", err)
-	}
-	fact := Fact{Query: query, Instrument: instrument, Book: book}
-	if fact.Mark, fact.HasMark, err = current.connector.MarkPrice(ctx, instrument); err != nil {
-		// Mark price enriches a book; it is not the book. A venue temporarily
-		// refusing this optional endpoint must leave depth usable and the mark
-		// field absent, which is already the public DTO's representation.
-		fact.Mark = exchange.MarkPriceEvent{}
-		fact.HasMark = false
-	}
-	if fact.Funding, fact.HasFunding, err = current.connector.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument}); err != nil {
-		fact.Funding = exchange.FundingRate{}
-		fact.HasFunding = false
-	}
-	if fact.HasFunding {
-		var supported bool
-		fact.FundingHistory, supported, err = current.connector.FundingRateHistory(ctx, exchange.FundingRateHistoryRequest{Instrument: instrument, Limit: fundingHistoryLimit})
-		if err != nil {
-			fact.FundingHistory = exchange.FundingRatePage{}
-		}
-		if !supported {
-			fact.FundingHistory = exchange.FundingRatePage{}
-		}
-	}
-	return fact, nil
+	return source.marketDataFromHub(ctx, hub, current, instrument, query, depthLimit)
 }
 
 func (source *Source) marketDataFromHub(ctx context.Context, hub *markethub.Hub, current *column, instrument exchange.Instrument, query Query, depthLimit int) (Fact, error) {
@@ -909,7 +862,7 @@ func (source *Source) WatchMarkPrice(ctx context.Context, instrumentID string) (
 		return MarkPriceStream{}, err
 	}
 	socket := source.socketFor(current.profile)
-	perpSocket, ok := socket.(exchange.PerpWebSocket)
+	perpSocket, ok := socket.(exchange.PerpMarketWebSocket)
 	if !ok || perpSocket == nil {
 		return MarkPriceStream{}, ErrUnavailable
 	}
@@ -992,26 +945,59 @@ func (source *Source) WatchDerivativeReference(ctx context.Context, instrumentID
 	}, nil
 }
 
+// ResolveInstrument reads one public catalog scope without requiring an account
+// or probing unrelated venues. The returned directory row contains no native
+// SDK handle or credential material.
+func (source *Source) ResolveInstrument(ctx context.Context, instrumentID string) (Instrument, error) {
+	current, canonical, err := source.resolvePublicID(ctx, instrumentID)
+	if err != nil {
+		return Instrument{}, err
+	}
+	snapshot, err := current.catalog.Snapshot(current.accountID)
+	if err != nil {
+		return Instrument{}, ErrUnavailable
+	}
+	for _, instrument := range snapshot.Instruments {
+		if string(instrument.ID) == instrumentID {
+			return Instrument{RouteProfileID: current.profile.ID, Catalog: instrument, Canonical: canonical, Ready: !current.catalog.Status(current.accountID).Stale}, nil
+		}
+	}
+	return Instrument{}, exchange.ErrNotFound
+}
+
 func (source *Source) resolvePublicID(ctx context.Context, instrumentID string) (*column, exchange.Instrument, error) {
 	if source == nil || ctx == nil || ctx.Err() != nil || source.isClosed() || strings.TrimSpace(instrumentID) == "" {
 		return nil, exchange.Instrument{}, ErrUnavailable
 	}
+	id := domain.InstrumentID(instrumentID)
+	if id.Validate() != nil {
+		return nil, exchange.Instrument{}, exchange.ErrNotFound
+	}
+	parts := strings.Split(instrumentID, ":")
 	for _, current := range source.columns {
+		if current.profile.Venue != parts[0] || parts[1] != string(exchange.EnvironmentLive) ||
+			string(current.profile.Product) != id.Product() || current.profile.SettlementAsset != id.Settlement() {
+			continue
+		}
 		venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
 		_, err := current.snapshot(venueCtx)
 		cancel()
 		if err != nil {
-			continue
+			return nil, exchange.Instrument{}, ErrUnavailable
 		}
 		instrument, err := current.catalog.ResolveLastKnown(ctx, current.accountID, domain.InstrumentID(instrumentID))
 		if err == nil {
 			return current, instrument, nil
 		}
+		if current.catalog.Status(current.accountID).Stale {
+			return nil, exchange.Instrument{}, ErrUnavailable
+		}
+		return nil, exchange.Instrument{}, exchange.ErrNotFound
 	}
-	return nil, exchange.Instrument{}, ErrUnavailable
+	return nil, exchange.Instrument{}, exchange.ErrNotFound
 }
 
-func (source *Source) socketFor(profile routeprofile.Profile) exchange.SpotWebSocket {
+func (source *Source) socketFor(profile routeprofile.Profile) exchange.MarketWebSocket {
 	if source == nil {
 		return nil
 	}

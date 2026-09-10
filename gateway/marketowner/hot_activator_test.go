@@ -1,6 +1,7 @@
 package marketowner
 
 import (
+	"slices"
 	"sync"
 	"testing"
 
@@ -10,17 +11,17 @@ import (
 )
 
 type hotMetricRecorder struct {
-	mu       sync.Mutex
-	datasets []string
+	mu     sync.Mutex
+	counts []int
 }
 
-func (recorder *hotMetricRecorder) SetMarketHot(_, _, dataset string, _ int) {
+func (recorder *hotMetricRecorder) SetMarketHot(_, _ string, count int) {
 	recorder.mu.Lock()
-	recorder.datasets = append(recorder.datasets, dataset)
+	recorder.counts = append(recorder.counts, count)
 	recorder.mu.Unlock()
 }
 
-func TestHotActivatorDoesNotTurnGenericHotDemandIntoBBO(t *testing.T) {
+func TestHotActivatorCountsDistinctInstrumentsAndReleasesDemand(t *testing.T) {
 	metrics := &hotMetricRecorder{}
 	activator := NewHotActivator(BoardMarks{}, nil, metrics)
 	defer activator.Close()
@@ -31,12 +32,17 @@ func TestHotActivatorDoesNotTurnGenericHotDemandIntoBBO(t *testing.T) {
 		InstrumentID: "binance:live:perp:USDT:BTC-USDT",
 	}
 	activator.SetActive(key, true)
+	activator.SetActive(key, true) // duplicate demand must not double-count
+	second := key
+	second.InstrumentID = "binance:live:perp:USDT:ETH-USDT"
+	activator.SetActive(second, true)
+	activator.SetActive(key, false)
+	activator.SetActive(key, false)
+	activator.Close()
 
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
-	for _, dataset := range metrics.datasets {
-		if dataset == string(exchange.DatasetBBO) || dataset == string(exchange.DatasetDepth) {
-			t.Fatalf("generic hot demand activated order-book dataset %q", dataset)
-		}
+	if !slices.Equal(metrics.counts, []int{1, 2, 1, 0}) {
+		t.Fatalf("hot instrument counts = %v", metrics.counts)
 	}
 }

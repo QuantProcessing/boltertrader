@@ -582,6 +582,10 @@ func (backend *okxPrivateWSBackend) emitOrder(row *okx.Order) {
 	if strings.TrimSpace(row.TradeId) == "" || strings.TrimSpace(row.FillSz) == "" {
 		return
 	}
+	if row.FillFee == "" {
+		backend.emitFillError(row.InstId, okxWSError(backend.meta, "WatchFills", exchange.KindMalformedResponse, "execution fee is missing"))
+		return
+	}
 	fill, err := okxFill(okx.Fill{
 		InstType: row.InstType,
 		InstId:   row.InstId,
@@ -592,8 +596,8 @@ func (backend *okxPrivateWSBackend) emitOrder(row *okx.Order) {
 		PosSide:  row.PosSide,
 		FillPx:   row.FillPx,
 		FillSz:   row.FillSz,
-		Fee:      row.Fee,
-		FeeCcy:   row.FeeCcy,
+		Fee:      row.FillFee,
+		FeeCcy:   row.FillFeeCcy,
 		ExecType: row.ExecType,
 		Ts:       row.FillTime,
 	}, multiplier)

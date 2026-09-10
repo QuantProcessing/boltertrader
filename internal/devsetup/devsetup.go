@@ -35,24 +35,12 @@ const (
 	// StackDirName holds the credentials this package generates for the stack's
 	// own services, and it is a path component rather than a flat layout for one
 	// reason: it is the directory trading and the auth edge bind-mount read-only.
-	// The store below must stay outside it, so those two services never hold a
-	// view of registered venue credentials.
+	// Venue credentials are encrypted in PostgreSQL, not in this directory.
 	//
 	// It was named for BT_MODE until there was one mode, which is when the name
 	// stopped describing anything. It pairs with .env.stack: both are what
 	// `make up` generates for a local stack and neither is ever committed.
 	StackDirName = "stack"
-
-	// SecretStoreDirName is the gateway's encrypted venue-credential store, and
-	// it is the one directory in the stack a service writes to. It sits beside
-	// the stack directory rather than inside it because that mount is read-only:
-	// the tokens are given to the services, whereas this is state the gateway
-	// owns.
-	//
-	// It is a host directory rather than a named volume because every container
-	// runs as the host uid, and Docker creates a named volume owned by root —
-	// which the gateway could not write to.
-	SecretStoreDirName = "store"
 
 	// EnvStackName is deliberately not ".env" — see the package comment.
 	EnvStackName = ".env.stack"
@@ -65,8 +53,8 @@ const (
 	HostServiceFileName = "pg_service.host.conf"
 )
 
-// The generated secret files. The first four are opaque tokens, the fifth is a
-// key of a different shape, the sixth is derived, and the last two are one
+// The generated secret files. The first three are opaque tokens, the fourth is a
+// key of a different shape, the fifth is derived, and the last two are one
 // credential in two files.
 const (
 	TradingServiceTokenFile = "trading_service_token"
@@ -76,7 +64,6 @@ const (
 	// token that opens /v1. Generating one file and pointing both at it would
 	// work and would quietly make the split decorative.
 	GatewayInternalAuthTokenFile = "gateway_internal_auth_token"
-	ManualPreviewSigningKeyFile  = "manual_preview_signing_key"
 	SecretMasterKeyFile          = "secret_master_key"
 	GatewayPostgresDSNFile       = "gateway_postgres_dsn"
 	BootstrapPasswordFile        = "bootstrap_password"
@@ -144,7 +131,7 @@ type Result struct {
 
 	// SecretDir is the directory holding the six secret files the stack's own
 	// services read. It is what those services bind-mount read-only, which is
-	// why the gateway's credential store sits beside it rather than in it.
+	// why venue credentials are stored separately in encrypted database rows.
 	SecretDir string
 
 	// EnvFile and ServiceFile are the two generated non-secret artifacts.
@@ -196,13 +183,6 @@ func Bootstrap(root string) (Result, error) {
 	if err := ensureDir(secretDir); err != nil {
 		return Result{}, err
 	}
-	// Created here rather than left to the gateway because Docker would create
-	// the missing bind-mount source itself, owned by root, and every container
-	// runs as the host uid — so the gateway's first write would fail on a
-	// directory it appears to own.
-	if err := ensureDir(filepath.Join(root, SecretDirName, SecretStoreDirName)); err != nil {
-		return Result{}, err
-	}
 
 	result := Result{
 		Config:      config,
@@ -212,7 +192,7 @@ func Bootstrap(root string) (Result, error) {
 		ServiceFile: filepath.Join(root, SecretDirName, HostServiceFileName),
 	}
 
-	for _, name := range []string{TradingServiceTokenFile, GatewayAuthTokenFile, GatewayInternalAuthTokenFile, ManualPreviewSigningKeyFile} {
+	for _, name := range []string{TradingServiceTokenFile, GatewayAuthTokenFile, GatewayInternalAuthTokenFile} {
 		created, err := ensureSecret(filepath.Join(secretDir, name), newToken)
 		if err != nil {
 			return Result{}, err

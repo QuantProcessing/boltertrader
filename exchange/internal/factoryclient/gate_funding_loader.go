@@ -17,6 +17,8 @@ func NewGateDerivativeSnapshotLoader(settings Settings) DerivativeSnapshotLoader
 	return gateDerivativeSnapshotLoader{settings: settings}
 }
 
+func (gateDerivativeSnapshotLoader) coordinatesDerivativeRequests() bool { return true }
+
 // LoadDerivativeSnapshot joins Gate's ticker surface to its contract surface.
 //
 // Both calls are required, not one preferred over the other: the ticker carries
@@ -32,7 +34,9 @@ func (loader gateDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Co
 	sdk, _ := newGateSDK("", "", loader.settings)
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 
-	tickers, err := sdk.ListFuturesTickers(ctx, gate.SettleUSDT, "")
+	tickers, err := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueGate, "all_tickers", "perpetual", func(callCtx context.Context) ([]gate.FuturesTicker, error) {
+		return sdk.ListFuturesTickers(callCtx, gate.SettleUSDT, "")
+	})
 	if err != nil {
 		return DerivativeSnapshot{}, gateNormalizeErr(meta, derivativeSnapshotOperation, err)
 	}
@@ -42,7 +46,10 @@ func (loader gateDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Co
 		multiplier decimal.Decimal
 	}
 	contractsByName := map[string]contractInfo{}
-	if contracts, err := sdk.ListFuturesContracts(ctx, gate.SettleUSDT); err == nil {
+	contracts, contractsErr := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueGate, "contracts", "perpetual", func(callCtx context.Context) ([]gate.Contract, error) {
+		return sdk.ListFuturesContracts(callCtx, gate.SettleUSDT)
+	})
+	if contractsErr == nil {
 		for _, contract := range contracts {
 			entry := contractInfo{}
 			entry.multiplier, _ = decimal.NewFromString(contract.QuantoMultiplier)

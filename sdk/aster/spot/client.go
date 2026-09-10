@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/QuantProcessing/boltertrader/internal/mbx"
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
@@ -80,7 +81,7 @@ func (c *Client) WithDebug(debug bool) *Client {
 	return c
 }
 
-func (c *Client) call(ctx context.Context, method, endpoint string, params map[string]interface{}, signed bool, result interface{}) error {
+func (c *Client) call(ctx context.Context, method, endpoint string, params map[string]interface{}, signed bool, result interface{}) (returnErr error) {
 	u, err := url.Parse(c.profile.RESTURL() + endpoint)
 	if err != nil {
 		return err
@@ -122,7 +123,11 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 		c.Logger.Debugw("Request", "method", method, "url", astercommon.RedactURL(u.String()))
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "aster")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return astercommon.NewTransportError(method, endpoint, err)
 	}

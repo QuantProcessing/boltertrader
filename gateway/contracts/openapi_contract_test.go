@@ -42,6 +42,10 @@ func TestOpenAPIInventoryAndSecurityAreStructurallyFrozen(t *testing.T) {
 	}
 
 	wantOperations := map[string]map[string]string{
+		"/v1/market/instruments":          {"get": "listMarketInstruments"},
+		"/v1/market/candles":              {"get": "getMarketCandles"},
+		"/v1/market/snapshot":             {"get": "getMarketSnapshot"},
+		"/v1/market/ws":                   {"get": "streamPublicMarkets"},
 		"/v1/health/live":                 {"get": "getLiveHealth"},
 		"/v1/health/ready":                {"get": "getReadyHealth"},
 		"/v1/accounts":                    {"get": "listAccounts"},
@@ -52,19 +56,20 @@ func TestOpenAPIInventoryAndSecurityAreStructurallyFrozen(t *testing.T) {
 		"/v1/rules":                       {"get": "listRules"},
 		"/v1/risk-limits":                 {"get": "listRiskLimits"},
 		"/v1/orders":                      {"get": "listOrders", "post": "placeOrder"},
-		"/v1/orders/{gateway_order_id}":   {"delete": "cancelOrder", "get": "getOrder", "patch": "amendOrder"},
-		"/v1/open-orders":                 {"get": "listOpenOrders"},
-		"/v1/fills":                       {"get": "listFills"},
-		"/v1/balances":                    {"get": "listBalances"},
-		"/v1/positions":                   {"get": "listPositions"},
-		"/v1/position-snapshot":           {"get": "getPositionSnapshot"},
-		"/v1/funding-payments":            {"get": "listFundingPayments"},
-		"/v1/funding-rates":               {"get": "listFundingRates"},
-		"/v1/funding-rates/history":       {"get": "listFundingRateHistory"},
-		"/v1/order-book":                  {"get": "getOrderBook"},
-		"/v1/bbo":                         {"get": "getBBO"},
-		"/v1/mark-price":                  {"get": "getMarkPrice"},
-		"/v1/candles":                     {"get": "getCandles"},
+		"/v1/orders/by-idempotency-key/{idempotency_key}": {"get": "getOrderByIdempotencyKey"},
+		"/v1/orders/{gateway_order_id}":                   {"delete": "cancelOrder", "get": "getOrder", "patch": "amendOrder"},
+		"/v1/open-orders":                                 {"get": "listOpenOrders"},
+		"/v1/fills":                                       {"get": "listFills"},
+		"/v1/balances":                                    {"get": "listBalances"},
+		"/v1/positions":                                   {"get": "listPositions"},
+		"/v1/position-snapshot":                           {"get": "getPositionSnapshot"},
+		"/v1/funding-payments":                            {"get": "listFundingPayments"},
+		"/v1/funding-rates":                               {"get": "listFundingRates"},
+		"/v1/funding-rates/history":                       {"get": "listFundingRateHistory"},
+		"/v1/order-book":                                  {"get": "getOrderBook"},
+		"/v1/bbo":                                         {"get": "getBBO"},
+		"/v1/mark-price":                                  {"get": "getMarkPrice"},
+		"/v1/candles":                                     {"get": "getCandles"},
 		"/v1/accounts/{account_id}/instruments/{instrument_id}/leverage": {"put": "setLeverage"},
 		"/v1/ws": {"get": "streamPrivateEvents"},
 	}
@@ -108,21 +113,25 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		required   []string
 		properties []string
 	}{
+		"MarketInstrument":       {required: []string{"base_asset", "environment", "instrument_id", "product", "quote_asset", "ready", "route_profile_id", "settlement", "symbol", "venue"}, properties: []string{"base_asset", "environment", "instrument_id", "product", "quote_asset", "ready", "route_profile_id", "settlement", "symbol", "venue"}},
+		"MarketCatalogResponse":  {required: []string{"complete", "items", "observed_at", "revision", "unavailable_profiles"}, properties: []string{"complete", "items", "observed_at", "revision", "unavailable_profiles"}},
+		"MarketCandlesResponse":  {required: []string{"candles", "instrument_id", "interval", "page"}, properties: []string{"candles", "instrument_id", "interval", "page"}},
+		"MarketSnapshotResponse": {required: []string{"instrument_id", "snapshot"}, properties: []string{"instrument_id", "snapshot"}},
+		"MarketControl":          {required: []string{"op", "requestId"}, properties: []string{"op", "requestId", "topics"}},
+		"MarketTopicRequest":     {required: []string{}, properties: []string{"depth", "instrumentId", "interval", "subscriptionId", "topic"}},
+		"MarketMessage":          {required: []string{"type"}, properties: []string{"code", "data", "generation", "observedAt", "reason", "requestId", "sequence", "sourceSequence", "subscriptionId", "topic", "type"}},
+		"MarketStreamCandle":     {required: []string{"close", "closeTime", "complete", "high", "low", "open", "openTime", "volume"}, properties: []string{"close", "closeTime", "complete", "high", "low", "open", "openTime", "volume"}},
 		"PlaceOrderRequest": {
-			required:   []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "quantity", "route_id", "runtime_generation", "side", "type"},
-			properties: []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "limit_policy", "limit_price", "quantity", "reduce_only", "route_id", "runtime_generation", "side", "type"},
+			required:   []string{"account_id", "idempotency_key", "instrument_id", "quantity", "route_id", "runtime_id", "side", "type"},
+			properties: []string{"account_id", "idempotency_key", "instrument_id", "leverage", "limit_policy", "limit_price", "quantity", "reduce_only", "route_id", "runtime_id", "side", "type"},
 		},
-		"AmendOrderRequest": {
-			required:   []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "route_id", "runtime_generation"},
-			properties: []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "limit_price", "quantity", "route_id", "runtime_generation"},
-		},
-		"CancelOrderRequest": {
-			required:   []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "route_id", "runtime_generation"},
-			properties: []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "route_id", "runtime_generation"},
+		"OrderLookupResponse": {
+			required:   []string{"account_id", "idempotency_key", "instrument_id", "order"},
+			properties: []string{"account_id", "idempotency_key", "instrument_id", "order"},
 		},
 		"OrderResponse": {
-			required:   []string{"client_order_id", "command_id", "gateway_order_id", "resource_version", "state"},
-			properties: []string{"client_order_id", "command_id", "gateway_order_id", "resource_version", "state", "venue_code", "venue_message"},
+			required:   []string{"account_id", "client_order_id", "command_id", "gateway_order_id", "instrument_id", "resource_version", "state"},
+			properties: []string{"account_id", "client_order_id", "command_id", "gateway_order_id", "instrument_id", "resource_version", "state", "venue_code", "venue_message"},
 		},
 		"ErrorEnvelope": {
 			required:   []string{"error"},
@@ -216,10 +225,6 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 			required:   []string{"account_id", "instrument_id", "observed_at", "position", "position_slot", "resource_version", "route_id", "verified_at"},
 			properties: []string{"account_id", "instrument_id", "observed_at", "position", "position_slot", "resource_version", "route_id", "verified_at"},
 		},
-		"ResyncRequiredEvent": {
-			required:   nil,
-			properties: nil,
-		},
 	}
 	if len(document.Components.Schemas) != len(want) {
 		t.Fatalf("schema count = %d, want %d", len(document.Components.Schemas), len(want))
@@ -244,25 +249,11 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		}
 	}
 	placeOrder := document.Components.Schemas["PlaceOrderRequest"]
-	for _, name := range []string{"desired_state_revision", "runtime_generation", "credential_version"} {
-		property, ok := placeOrder.Properties[name].(map[string]any)
-		if !ok || property["type"] != "integer" || property["minimum"] != 1 {
-			t.Errorf("PlaceOrderRequest property %s = %#v, want positive integer", name, placeOrder.Properties[name])
-		}
+	property, ok := placeOrder.Properties["runtime_id"].(map[string]any)
+	if !ok || property["type"] != "string" || property["minLength"] != 1 {
+		t.Errorf("PlaceOrderRequest runtime_id = %#v, want nonempty string", property)
 	}
-	resync := document.Components.Schemas["ResyncRequiredEvent"]
-	if len(resync.AllOf) != 2 || resync.AllOf[0].Ref != "#/components/schemas/PrivateEvent" {
-		t.Fatalf("ResyncRequiredEvent allOf = %#v, want PrivateEvent plus resync payload", resync.AllOf)
-	}
-	if len(resync.AllOf[1].Required) != 0 {
-		t.Fatalf("ResyncRequiredEvent required = %v", resync.AllOf[1].Required)
-	}
-	if _, kindOK := resync.AllOf[1].Properties["kind"]; !kindOK {
-		t.Fatalf("ResyncRequiredEvent properties = %v", resync.AllOf[1].Properties)
-	}
-	if _, payloadOK := resync.AllOf[1].Properties["payload"]; !payloadOK || len(resync.AllOf[1].Properties) != 2 {
-		t.Fatalf("ResyncRequiredEvent properties = %v", resync.AllOf[1].Properties)
-	}
+
 }
 
 func readOpenAPI(t *testing.T) openAPIDocument {

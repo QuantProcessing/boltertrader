@@ -29,11 +29,15 @@ type derivativeVenueOwner struct {
 // for each venue/environment/native-family key; settlement route profiles are
 // projections managed by that element, never independent lifecycle owners.
 type DerivativeOwners struct {
-	owners   []derivativeVenueOwner
-	facts    *markethub.FactStore
-	observer markethub.Observer
-	mu       sync.Mutex
-	closed   bool
+	owners    []derivativeVenueOwner
+	facts     *markethub.FactStore
+	observer  markethub.Observer
+	mu        sync.Mutex
+	closed    bool
+	runCancel context.CancelFunc
+	runDone   chan struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.Registry, capabilities *marketcapability.Registry, resolver exchange.DerivativeInstrumentResolver, facts *markethub.FactStore, observer markethub.Observer) (*DerivativeOwners, error) {
@@ -45,7 +49,7 @@ func NewDerivativeOwners(factory DerivativeFeedFactory, profiles *routeprofile.R
 		if profile.Product != routeprofile.ProductPerp {
 			continue
 		}
-		key := markethub.OwnerKey{Venue: exchange.Venue(profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: marketcapability.NativeFamily(exchange.Venue(profile.Venue), exchange.ProductPerp, profile.SettlementAsset)}
+		key := markethub.OwnerKey{Venue: exchange.Venue(profile.Venue), Environment: exchange.EnvironmentLive, NativeFamily: exchange.NativeMarketFamily(exchange.Venue(profile.Venue), exchange.ProductPerp, profile.SettlementAsset)}
 		for _, dataset := range []exchange.MarketDataset{exchange.DatasetFunding, exchange.DatasetMark, exchange.DatasetIndex} {
 			if _, err := capabilities.Resolve(key.Venue, key.NativeFamily, dataset, false); err != nil {
 				return nil, fmt.Errorf("%s %s capability: %w", profile.ID, dataset, err)
@@ -87,6 +91,17 @@ func (owners *DerivativeOwners) Run(ctx context.Context) error {
 	if owners == nil || ctx == nil {
 		return fmt.Errorf("derivative Feed Owners unavailable")
 	}
+	owners.mu.Lock()
+	if owners.closed || owners.runDone != nil {
+		owners.mu.Unlock()
+		return fmt.Errorf("derivative Feed Owners already started or closed")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	owners.runCancel, owners.runDone = cancel, done
+	owners.mu.Unlock()
+	defer close(done)
+	defer cancel()
 	var group sync.WaitGroup
 	for index := range owners.owners {
 		group.Add(1)
@@ -160,6 +175,9 @@ func (owners *DerivativeOwners) SetHot(key hotset.Key, active bool) {
 	}
 	owners.mu.Lock()
 	defer owners.mu.Unlock()
+	if owners.closed {
+		return
+	}
 	for index := range owners.owners {
 		owner := &owners.owners[index]
 		if owner.key != key.Owner {
@@ -176,18 +194,24 @@ func (owners *DerivativeOwners) Close() error {
 	if owners == nil {
 		return nil
 	}
-	owners.mu.Lock()
-	if owners.closed {
+	owners.closeOnce.Do(func() {
+		owners.mu.Lock()
+		owners.closed = true
+		cancel, done := owners.runCancel, owners.runDone
 		owners.mu.Unlock()
-		return nil
-	}
-	owners.closed = true
-	var result error
-	for _, owner := range owners.owners {
-		result = errors.Join(result, owner.feed.Close())
-	}
-	owners.mu.Unlock()
-	return result
+		if cancel != nil {
+			cancel()
+		}
+		// Close feeds to unblock native I/O, then wait until no owner can apply
+		// another patch or reconnect. Never copy the mutable generation field.
+		for index := range owners.owners {
+			owners.closeErr = errors.Join(owners.closeErr, owners.owners[index].feed.Close())
+		}
+		if done != nil {
+			<-done
+		}
+	})
+	return owners.closeErr
 }
 
 func waitContext(ctx context.Context, delay time.Duration) bool {

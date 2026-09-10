@@ -1,104 +1,50 @@
 package capability
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
 
-func TestUnknownCapabilityRowRequiresPromotionEvidence(t *testing.T) {
-	if isPromoted("UNKNOWN") {
-		t.Fatal("unknown row bypassed the explicit live-promotion allowlist")
-	}
-	if got := exactLookupStrategy("UNKNOWN"); got != "requires_fixture_promotion" {
-		t.Fatalf("unknown row exact lookup strategy = %q, want evidence gate", got)
-	}
-}
+	"github.com/QuantProcessing/boltertrader/routeprofile"
+)
 
-func TestMatrixHasTwentyRowsNineteenPromotedAndLISReadOnly(t *testing.T) {
-	matrix := StaticMatrix()
-	if len(matrix.Rows) != 20 {
-		t.Fatalf("rows = %d, want 20", len(matrix.Rows))
+func TestMatrixDescribesImplementedScopeWithoutInventingEvidence(t *testing.T) {
+	rows := StaticMatrix().Rows
+	if len(rows) != len(routeprofile.DefaultProfiles()) {
+		t.Fatal("matrix drifted from route catalog")
 	}
-	seen := make(map[string]bool)
-	for _, row := range matrix.Rows {
-		if row.RowID == "" || row.Venue == "" || row.Product == "" {
-			t.Fatalf("incomplete row: %+v", row)
-		}
-		if seen[row.RowID] {
-			t.Fatalf("duplicate row %q", row.RowID)
+	seen := map[string]bool{}
+	for _, profile := range routeprofile.DefaultProfiles() {
+		row, ok := Resolve(profile.Venue, string(profile.Product), profile.SettlementAsset)
+		if !ok || seen[row.RowID] {
+			t.Fatalf("missing or duplicate profile: %+v", profile)
 		}
 		seen[row.RowID] = true
-		wantWriteReady := row.Code != "LIS"
-		if row.WriteReadyDefault != wantWriteReady {
-			t.Fatalf("row %s write-ready=%t, want %t", row.RowID, row.WriteReadyDefault, wantWriteReady)
+		if row.TradingSupported != (profile.Venue != "lighter" || profile.Product != routeprofile.ProductSpot) {
+			t.Fatalf("unexpected trading support: %+v", row)
 		}
-		if wantWriteReady {
-			if row.ExactLookup != "promoted" || row.ExactFixture != "passed" {
-				t.Fatalf("promoted row %s has incomplete evidence state: %+v", row.RowID, row)
-			}
-		} else if row.Code == "LIS" {
-			if row.ExactLookup != "fixture_only" || row.ExactFixture != "passed" {
-				t.Fatalf("live-blocked row %s lost its fixture-only evidence state: %+v", row.RowID, row)
-			}
-			if row.PromotionEvidenceRequired != "live_two_sided_liquidity_and_exact_lookup" {
-				t.Fatalf("live-blocked row %s promotion evidence = %q", row.RowID, row.PromotionEvidenceRequired)
-			}
+		if row.Operations.Place != row.TradingSupported || row.Operations.Cancel != row.TradingSupported {
+			t.Fatalf("contradictory trading support: %+v", row)
 		}
-		if row.HistoryPaginationProvesAbsence {
-			t.Fatalf("row %s treats pagination as exact reconciliation proof", row.RowID)
+		if row.HistoryPaginationProvesAbsence || row.Operations.Amend || row.Operations.Leverage || row.Operations.MarginMode || row.Operations.PositionMode || row.Operations.FundsTransfer {
+			t.Fatalf("unsupported operation: %+v", row)
 		}
-		if row.Operations.Leverage {
-			t.Fatalf("row %s exposes non-durable leverage mutation in Gateway V1", row.RowID)
-		}
-		wantFunding := row.Product == "perp" && row.Code != "ATP"
-		if row.Operations.Funding != wantFunding {
-			t.Fatalf("row %s funding capability=%t, want %t", row.RowID, row.Operations.Funding, wantFunding)
-		}
-		wantFundingPayments := row.Code == "BNP" || row.Code == "LIP" || row.Code == "BYU" || row.Code == "GTU"
-		if row.Operations.AccountFundingPayments != wantFundingPayments {
-			t.Fatalf("row %s account funding-payment capability=%t, want %t", row.RowID, row.Operations.AccountFundingPayments, wantFundingPayments)
-		}
-		if row.Operations.Amend || row.Operations.MarginMode || row.Operations.PositionMode || row.Operations.FundsTransfer {
-			t.Fatalf("row %s claims unsupported operation: %+v", row.RowID, row.Operations)
-		}
-		if row.ExactLookup == "" {
-			t.Fatalf("row %s missing exact lookup declaration", row.RowID)
-		}
-		if row.Code == "" || row.ExactLookupStrategy == "" || row.ExactFixture == "" || row.PromotionEvidenceRequired == "" {
-			t.Fatalf("row %s missing machine exact reconciliation metadata: %+v", row.RowID, row)
-		}
-		if row.ExactLookupStrategy == "history_pagination" {
-			t.Fatalf("row %s uses history pagination as exact strategy", row.RowID)
-		}
-		switch row.Code {
-		case "LIS", "LIP":
-			if row.ExactLookupStrategy != "active_plus_first_inactive_page_scan_with_unconfirmed_absence" {
-				t.Fatalf("Lighter row %s overstates exact lookup strategy: %q", row.RowID, row.ExactLookupStrategy)
-			}
-		default:
-			if row.ExactLookupStrategy != "client_or_venue_order_id_exact_readback" {
-				t.Fatalf("exact-readback row %s strategy = %q", row.RowID, row.ExactLookupStrategy)
-			}
+		if row.ExactLookupStrategy == "" {
+			t.Fatal("missing readback strategy")
 		}
 	}
-
-	for _, required := range []string{
-		"binance:spot", "binance:perp:USDT", "okx:spot", "okx:perp:USDT",
-		"lighter:spot", "lighter:perp:USDC", "hyperliquid:spot", "hyperliquid:perp:USDC",
-		"bybit:spot", "bybit:perp:USDT", "bybit:perp:USDC", "bitget:spot",
-		"bitget:perp:USDT", "bitget:perp:USDC", "gate:spot", "gate:perp:USDT",
-		"aster:spot", "aster:perp:USDT", "nado:spot:USDT0", "nado:perp:USDT0",
-	} {
-		if !seen[required] {
-			t.Fatalf("missing row %s", required)
+	for _, parts := range [][3]string{{"unknown", "spot", ""}, {"binance", "perp", "USDC"}, {"binance", "option", ""}, {"binance", "spot", "USDT"}} {
+		if _, ok := Resolve(parts[0], parts[1], parts[2]); ok {
+			t.Fatalf("invented support: %v", parts)
 		}
 	}
-
-	wantCodes := map[string]bool{"BNS": true, "BNP": true, "OXS": true, "OXP": true, "LIS": true, "LIP": true, "HLS": true, "HLP": true, "BYS": true, "BYU": true, "BYC": true, "BGS": true, "BGU": true, "BGC": true, "GTS": true, "GTU": true, "ATS": true, "ATP": true, "NDS": true, "NDP": true}
-	for _, row := range matrix.Rows {
-		if !wantCodes[row.Code] {
-			t.Fatalf("row %s has non-manifest code %q", row.RowID, row.Code)
-		}
-		delete(wantCodes, row.Code)
+	raw, err := json.Marshal(StaticMatrix())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(wantCodes) != 0 {
-		t.Fatalf("missing manifest row codes: %v", wantCodes)
+	for _, forbidden := range []string{"write_ready_default", "exact_fixture", "promotion_evidence", `"passed"`, `"promoted"`} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("static matrix invents evidence: %s", forbidden)
+		}
 	}
 }

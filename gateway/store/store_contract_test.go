@@ -37,6 +37,10 @@ func (*fakeCommandStore) LoadOrder(context.Context, LoadOrderRequest) (StoredCom
 	return StoredCommand{}, nil
 }
 
+func (*fakeCommandStore) LoadOrderByIdempotencyKey(context.Context, domain.PrincipalID, domain.IdempotencyKey) (StoredCommand, error) {
+	return StoredCommand{}, nil
+}
+
 func (*fakeCommandStore) LoadOrderByVenueIdentity(context.Context, LoadOrderByVenueIdentityRequest) (StoredCommand, error) {
 	return StoredCommand{}, nil
 }
@@ -55,15 +59,6 @@ func (*fakeCommandStore) RescheduleReconciliation(context.Context, RescheduleRec
 
 func (*fakeCommandStore) ClaimDueReconciliationTasks(context.Context, ClaimDueReconciliationTasksRequest) ([]ReconciliationTask, error) {
 	return []ReconciliationTask{{Reason: ReconciliationAmbiguousHandoff}}, nil
-}
-
-func (*fakeCommandStore) BeginOrderHandoff(_ context.Context, request BeginOrderHandoffRequest) (OrderHandoff, error) {
-	return OrderHandoff{BeginOrderHandoffRequest: request, State: OrderHandoffStarted, StartedAt: time.Now()}, nil
-}
-
-func (*fakeCommandStore) ResolveOrderHandoff(_ context.Context, request ResolveOrderHandoffRequest) (OrderHandoff, error) {
-	resolved := time.Now()
-	return OrderHandoff{BeginOrderHandoffRequest: BeginOrderHandoffRequest{HandoffID: request.HandoffID}, State: request.State, ResolvedAt: &resolved}, nil
 }
 
 func TestReserveCommandRequestFreezesConflictScope(t *testing.T) {

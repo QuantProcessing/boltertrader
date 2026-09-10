@@ -77,8 +77,8 @@ func TestPostgresFundingSupersessionReplaySurvivesDatabaseRestart(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Funding != "2" {
-		t.Fatalf("restarted Funding PnL=%s, want 2", snapshot.Funding)
+	if snapshot.ByCurrency[0].Funding != "2" {
+		t.Fatalf("restarted Funding PnL=%s, want 2", snapshot.ByCurrency[0].Funding)
 	}
 }
 
@@ -126,7 +126,7 @@ func TestPostgresMarkObservationSurvivesDelayedFillAndDatabaseRestart(t *testing
 		t.Fatalf("older mark overwrote persisted newest mark after delayed fill: %+v", position)
 	}
 	var persisted time.Time
-	if err := database.QueryRowContext(ctx, `SELECT mark_observed_at FROM positions WHERE mode='test' AND product_id='funding' AND lineage_id='lineage-a' AND account_id='account-a' AND instrument_id='BTC-USDT'`).Scan(&persisted); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT mark_observed_at FROM positions WHERE principal_id='principal-a' AND product_id='funding' AND lineage_id='lineage-a' AND account_id='account-a' AND instrument_id='BTC-USDT'`).Scan(&persisted); err != nil {
 		t.Fatal(err)
 	}
 	if !persisted.Equal(newestMarkAt) {

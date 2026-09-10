@@ -2,7 +2,6 @@ package ledger
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 )
@@ -29,12 +28,12 @@ func TestServiceAggregatesAttributedPnLWithoutCrossProductLeakage(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.RealizedPnL != "10" || snapshot.UnrealizedPnL != "5" || snapshot.Fees != "1.5" || snapshot.Funding != "2" || snapshot.NetPnL != "15.5" {
+	if snapshot.ByCurrency[0].RealizedPnL != "10" || snapshot.ByCurrency[0].UnrealizedPnL != "5" || snapshot.ByCurrency[0].Fees != "1.5" || snapshot.ByCurrency[0].Funding != "2" || snapshot.ByCurrency[0].NetPnL != "15.5" {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 }
 
-func TestServiceRejectsMixedCurrencyPnLScalar(t *testing.T) {
+func TestServiceReportsMixedCurrenciesWithoutScalar(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	entries := []Entry{
 		{PrincipalID: "principal-a", EntryID: "realized", LineageID: "lineage-a", ProductID: "manual", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: KindRealizedPnL, Amount: "10", Currency: "USDT", OccurredAt: time.Now()},
@@ -45,9 +44,12 @@ func TestServiceRejectsMixedCurrencyPnLScalar(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, err := service.PnL(context.Background(), Query{PrincipalID: "principal-a", ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
-	if !errors.Is(err, ErrCurrencyMismatch) {
-		t.Fatalf("PnL error=%v, want ErrCurrencyMismatch", err)
+	snapshot, err := service.PnL(context.Background(), Query{PrincipalID: "principal-a", ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
+	if err != nil || len(snapshot.ByCurrency) != 2 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	if snapshot.ByCurrency[0].Currency != "BNB" || snapshot.ByCurrency[0].BookedNetPnL != "-1" || snapshot.ByCurrency[1].Currency != "USDT" || snapshot.ByCurrency[1].BookedNetPnL != "10" || snapshot.ByCurrency[0].NetPnL != "" {
+		t.Fatalf("mixed currency totals=%+v", snapshot)
 	}
 }
 
@@ -80,7 +82,7 @@ func TestServiceRejectsUnrealizedPnLWithoutCurrency(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsUnrealizedCurrencyMismatch(t *testing.T) {
+func TestServicePreservesUnrealizedCurrency(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	entry := Entry{PrincipalID: "principal-a", EntryID: "realized", LineageID: "lineage-a", ProductID: "manual", AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: KindRealizedPnL, Amount: "10", Currency: "USDT", OccurredAt: time.Now()}
 	if err := service.Record(context.Background(), entry); err != nil {
@@ -91,8 +93,11 @@ func TestServiceRejectsUnrealizedCurrencyMismatch(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := service.PnL(context.Background(), Query{PrincipalID: "principal-a", ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
-	if !errors.Is(err, ErrCurrencyMismatch) {
-		t.Fatalf("PnL error=%v, want ErrCurrencyMismatch", err)
+	snapshot, err := service.PnL(context.Background(), Query{PrincipalID: "principal-a", ProductID: "manual", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT"})
+	if err != nil || len(snapshot.ByCurrency) != 2 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	if snapshot.ByCurrency[0].Currency != "USDC" || snapshot.ByCurrency[0].NetPnL != "5" || snapshot.ByCurrency[1].Currency != "USDT" || snapshot.ByCurrency[1].NetPnL != "10" {
+		t.Fatalf("mixed valuation=%+v", snapshot)
 	}
 }

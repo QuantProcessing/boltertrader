@@ -3,7 +3,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, Inbox, RefreshCcw, Search, Wallet } from "lucide-react";
 import { useMemo } from "react";
 
-import type { AccountPosition, LedgerEntry, PositionFreshness, PositionSettlementSummary } from "@/api/types";
+import type { AccountPosition, Instrument, LedgerEntry, PositionFreshness, PositionSettlementSummary } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -13,8 +13,11 @@ import { Num } from "@/components/ui/num";
 import { Metric } from "@/components/ui/panel";
 import { Tag } from "@/components/ui/state-badge";
 import { useLedger, usePortfolioPositions } from "@/features/portfolio/queries";
+import { ledgerEffect } from "@/features/portfolio/ledger-effect";
 import { applyFundingBoardMarks, summarizeLivePositions } from "@/features/portfolio/live-positions";
 import { useFundingBoard } from "@/features/funding/queries";
+import { useInstruments } from "@/features/market/queries";
+import { PositionCloseControl } from "@/features/trade/close-position";
 import { liquidationPrice } from "@/features/trade/live-position";
 import { useTradeRealtime } from "@/features/trade/realtime";
 import { decimalSign, formatDecimal, formatTimestamp } from "@/lib/format";
@@ -56,6 +59,7 @@ export function PortfolioPage() {
     product: search.product,
   }), [search.account, search.product, search.venue]);
   const positions = usePortfolioPositions(query);
+  const instruments = useInstruments();
   const fundingBoard = useFundingBoard();
   const snapshot = positions.data;
   useTradeRealtime(Boolean(snapshot));
@@ -77,6 +81,10 @@ export function PortfolioPage() {
   const venues = useMemo(() => unique([...(snapshot?.accounts.map((account) => account.venue) ?? []), ...(search.venue ? [search.venue] : [])]), [search.venue, snapshot?.accounts]);
   const products = useMemo(() => unique([...(snapshot?.items.map((item) => item.product ?? "") ?? []), ...(search.product ? [search.product] : [])]), [search.product, snapshot?.items]);
   const accountLabels = new Map(snapshot?.accounts.map((account) => [account.accountId, account.label]) ?? []);
+  const instrumentById = useMemo(
+    () => new Map((instruments.data?.items ?? []).map((instrument) => [instrument.instrumentId, instrument])),
+    [instruments.data?.items],
+  );
 
   const update = (patch: Partial<PortfolioSearch>) => {
     void navigate({ to: "/portfolio", search: { ...search, ...patch }, replace: true });
@@ -137,7 +145,7 @@ export function PortfolioPage() {
                   <Tag>{items.length}</Tag>
                   {state ? <span className="ml-auto text-meta text-dim">{state}</span> : null}
                 </header>
-                <DataTable columns={positionColumns(t)} data={items} getRowId={positionId} caption={t("portfolio.caption.positions")} loading={positions.isPending} />
+                <DataTable columns={positionColumns(t, instrumentById)} data={items} getRowId={positionId} caption={t("portfolio.caption.positions")} loading={positions.isPending} />
               </section>
             );
           })
@@ -175,13 +183,13 @@ function LedgerPanel({ accountId }: { accountId?: string }) {
         <span className="ml-auto text-meta text-dim">{t("portfolio.entries", { count: ledger.data?.length ?? 0 })}</span>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <DataTable columns={ledgerColumns(t)} data={ledger.data ?? []} getRowId={(entry) => entry.entryId} caption={t("portfolio.caption.ledger")} loading={ledger.isPending} empty={<EmptyState icon={Inbox} title={t("portfolio.empty.ledger")} detail={t("portfolio.empty.ledger.detail")} />} />
+        <DataTable columns={ledgerColumns(t)} data={ledger.data ?? []} getRowId={(entry) => JSON.stringify([entry.accountId, entry.instrumentId, entry.entryId])} caption={t("portfolio.caption.ledger")} loading={ledger.isPending} empty={<EmptyState icon={Inbox} title={t("portfolio.empty.ledger")} detail={t("portfolio.empty.ledger.detail")} />} />
       </div>
     </section>
   );
 }
 
-function positionColumns(t: Translate): ColumnDef<AccountPosition, unknown>[] {
+function positionColumns(t: Translate, instrumentById: Map<string, Instrument>): ColumnDef<AccountPosition, unknown>[] {
   return [
     { id: "instrument", header: t("col.instrument"), accessorFn: (item) => item.symbol || item.instrumentId, cell: ({ row }) => <div><InstrumentName instrumentId={row.original.instrumentId} /><div className="text-meta text-dim">{[row.original.venue, row.original.product, row.original.settlementAsset].filter(Boolean).join(" · ")}</div></div>, meta: { sticky: true, width: "14rem" } },
     { id: "account", header: t("col.account"), accessorFn: (item) => item.accountLabel || item.accountId, cell: ({ row }) => <span title={row.original.accountId}>{row.original.accountLabel || row.original.accountId}</span> },
@@ -193,6 +201,7 @@ function positionColumns(t: Translate): ColumnDef<AccountPosition, unknown>[] {
     { id: "liquidation", header: t("portfolio.liquidation"), accessorFn: liquidationPrice, cell: ({ getValue }) => value(String(getValue() ?? "")), meta: { numeric: true } },
     { id: "margin", header: t("portfolio.margin"), accessorKey: "marginUsed", cell: ({ row }) => <div>{value(row.original.marginUsed)}{row.original.marginMode ? <div className="text-meta text-dim">{row.original.marginMode}</div> : null}</div>, meta: { numeric: true } },
     { id: "verified", header: t("col.updated"), accessorKey: "verifiedAt", cell: ({ row }) => <span className="text-dim">{row.original.verifiedAt ? formatTimestamp(row.original.verifiedAt) : "—"}</span>, meta: { align: "right", width: "7rem" } },
+    { id: "actions", header: "", enableSorting: false, cell: ({ row }) => <PositionCloseControl position={row.original} instrument={instrumentById.get(row.original.instrumentId) ?? null} />, meta: { align: "right", width: "88px" } },
   ];
 }
 
@@ -275,10 +284,10 @@ function unique(values: string[]): string[] {
 function ledgerColumns(t: Translate): ColumnDef<LedgerEntry, unknown>[] {
   return [
     { id: "occurred", header: t("col.time"), accessorKey: "occurredAt", meta: { width: "7rem" }, cell: ({ row }) => <span className="text-dim">{formatTimestamp(row.original.occurredAt)}</span> },
-    { id: "kind", header: t("col.kind"), accessorKey: "kind", meta: { width: "9rem" } },
+    { id: "kind", header: t("col.kind"), accessorFn: (entry) => entry.accountingStatus === "legacy_fee_review" ? t("portfolio.reviewRequired") : entry.kind === "fee" ? t(decimalSign(entry.amount) < 0 ? "portfolio.rebate" : "portfolio.fees") : entry.kind, meta: { width: "9rem" } },
     { id: "instrument", header: t("col.instrument"), accessorKey: "instrumentId", cell: ({ row }) => <InstrumentName instrumentId={row.original.instrumentId} /> },
     { id: "account", header: t("col.account"), accessorKey: "accountId", meta: { width: "12rem" } },
-    { id: "amount", header: t("col.amount"), accessorKey: "amount", meta: { numeric: true }, cell: ({ row }) => <Num value={row.original.amount} decimals={2} signed grouped directional /> },
+    { id: "amount", header: t("portfolio.entryEffect"), accessorFn: ledgerEffect, meta: { numeric: true }, cell: ({ row }) => <Num value={ledgerEffect(row.original)} title={row.original.accountingStatus === "legacy_fee_review" ? t("portfolio.accountingReview") : undefined} signed grouped directional /> },
     { id: "currency", header: t("col.currency"), accessorKey: "currency", meta: { width: "5rem" } },
   ];
 }

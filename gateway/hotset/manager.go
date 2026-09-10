@@ -21,13 +21,12 @@ const (
 	ReasonOpenOrder      Reason = "open_order"
 	ReasonExecution      Reason = "execution"
 	ReasonBrowser        Reason = "browser"
-	ReasonArbitrageTop   Reason = "arbitrage_top"
 	ReasonFundingHistory Reason = "funding_history"
 )
 
 var priorities = map[Reason]int{
 	ReasonPosition: 600, ReasonOpenOrder: 500, ReasonExecution: 400,
-	ReasonBrowser: 300, ReasonArbitrageTop: 200, ReasonFundingHistory: 100,
+	ReasonBrowser: 300, ReasonFundingHistory: 100,
 }
 
 func (reason Reason) Validate() error {

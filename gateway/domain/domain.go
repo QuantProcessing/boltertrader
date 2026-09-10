@@ -188,6 +188,17 @@ const (
 	StateUncertain       OrderState = "uncertain"
 )
 
+// ConfirmsAcceptance reports positive evidence that the venue accepted an
+// order. A later lookup miss cannot undo this historical fact.
+func (state OrderState) ConfirmsAcceptance() bool {
+	switch state {
+	case StateAccepted, StateOpen, StatePartiallyFilled, StateFilled, StateCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
 var allowedTransitions = map[OrderState]map[OrderState]bool{
 	StatePrepared: {
 		StateDispatching: true,

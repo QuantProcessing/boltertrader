@@ -46,16 +46,20 @@ var defaultRows = []profileRow{
 	{"nado", ProductPerp, "USDT0"},
 }
 
+// DefaultProfiles returns the supported products in catalog order. Callers own
+// the returned slice; product identity is defined only by this catalog.
+func DefaultProfiles() []Profile {
+	profiles := make([]Profile, 0, len(defaultRows))
+	for _, row := range defaultRows {
+		profiles = append(profiles, Profile{ID: profileID(row.venue, row.product, row.settlement), Venue: row.venue, Product: row.product, SettlementAsset: row.settlement})
+	}
+	return profiles
+}
+
 func DefaultRegistry() *Registry {
 	registry := &Registry{profiles: map[Key]Profile{}}
-	for _, row := range defaultRows {
-		id := profileID(row.venue, row.product, row.settlement)
-		registry.profiles[Key{Venue: row.venue, RouteProfileID: id}] = Profile{
-			ID:              id,
-			Venue:           row.venue,
-			Product:         row.product,
-			SettlementAsset: row.settlement,
-		}
+	for _, profile := range DefaultProfiles() {
+		registry.profiles[Key{Venue: profile.Venue, RouteProfileID: profile.ID}] = profile
 	}
 	return registry
 }

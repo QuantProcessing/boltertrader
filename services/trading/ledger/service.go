@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -14,7 +14,6 @@ import (
 
 var (
 	ErrEntryConflict           = errors.New("ledger entry conflict")
-	ErrCurrencyMismatch        = errors.New("ledger PnL currency mismatch")
 	ErrSupersessionUnsupported = errors.New("ledger funding supersession unsupported")
 )
 
@@ -51,19 +50,27 @@ type Query struct {
 	ProductID, LineageID, AccountID, InstrumentID string
 }
 
+// CurrencyPnL keeps costs, rebates and earnings in their original currency.
+// BookedNetPnL excludes unobserved valuation; NetPnL exists only when an
+// unrealized observation is available for this instrument.
+type CurrencyPnL struct {
+	Currency      string `json:"currency"`
+	RealizedPnL   string `json:"realizedPnl"`
+	Fees          string `json:"fees"`
+	Funding       string `json:"funding"`
+	BookedNetPnL  string `json:"bookedNetPnl"`
+	UnrealizedPnL string `json:"unrealizedPnl,omitempty"`
+	NetPnL        string `json:"netPnl,omitempty"`
+}
 type PnLSnapshot struct {
-	PrincipalID   string    `json:"-"`
-	PnLSnapshotID string    `json:"pnlSnapshotId"`
-	LineageID     string    `json:"lineageId"`
-	ProductID     string    `json:"productId"`
-	AccountID     string    `json:"accountId"`
-	InstrumentID  string    `json:"instrumentId"`
-	RealizedPnL   string    `json:"realizedPnl"`
-	UnrealizedPnL string    `json:"unrealizedPnl"`
-	Fees          string    `json:"fees"`
-	Funding       string    `json:"funding"`
-	NetPnL        string    `json:"netPnl"`
-	AsOf          time.Time `json:"asOf"`
+	PrincipalID   string        `json:"-"`
+	LineageID     string        `json:"lineageId"`
+	ProductID     string        `json:"productId"`
+	AccountID     string        `json:"accountId"`
+	InstrumentID  string        `json:"instrumentId"`
+	ByCurrency    []CurrencyPnL `json:"byCurrency"`
+	AsOf          time.Time     `json:"asOf"`
+	ValuationAsOf *time.Time    `json:"valuationAsOf,omitempty"`
 }
 
 type Store interface {
@@ -76,7 +83,6 @@ type Store interface {
 type Service struct {
 	store Store
 	now   func() time.Time
-	next  atomic.Uint64
 }
 
 func NewService(store Store, now func() time.Time) *Service {
@@ -129,45 +135,70 @@ func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, erro
 	if err != nil {
 		return PnLSnapshot{}, err
 	}
-	realized, fees, funding := decimal.Zero, decimal.Zero, decimal.Zero
-	currency := ""
+	type totals struct{ realized, fees, funding decimal.Decimal }
+	byCurrency := map[string]totals{}
+	asOf := time.Time{}
 	for _, entry := range entries {
-		if currency == "" {
-			currency = entry.Currency
-		} else if entry.Currency != currency {
-			return PnLSnapshot{}, ErrCurrencyMismatch
+		amount, parseErr := decimal.NewFromString(entry.Amount)
+		if parseErr != nil || entry.Currency == "" {
+			return PnLSnapshot{}, fmt.Errorf("invalid persisted ledger amount")
 		}
-		amount, _ := decimal.NewFromString(entry.Amount)
+		total := byCurrency[entry.Currency]
 		switch entry.Kind {
 		case KindRealizedPnL, KindAdjustment:
-			realized = realized.Add(amount)
+			total.realized = total.realized.Add(amount)
 		case KindFee:
-			fees = fees.Add(amount)
+			total.fees = total.fees.Add(amount)
 		case KindFunding:
-			funding = funding.Add(amount)
+			total.funding = total.funding.Add(amount)
+		default:
+			return PnLSnapshot{}, fmt.Errorf("invalid persisted ledger kind")
+		}
+		byCurrency[entry.Currency] = total
+		if entry.OccurredAt.After(asOf) {
+			asOf = entry.OccurredAt
 		}
 	}
-	unrealized, unrealizedCurrency, asOf, err := service.store.Unrealized(ctx, query)
+	unrealized, unrealizedCurrency, markedAt, err := service.store.Unrealized(ctx, query)
 	if err != nil {
 		return PnLSnapshot{}, err
 	}
-	if unrealizedCurrency != "" {
-		if currency == "" {
-			currency = unrealizedCurrency
-		} else if unrealizedCurrency != currency {
-			return PnLSnapshot{}, ErrCurrencyMismatch
+	valued := unrealizedCurrency != "" && !markedAt.IsZero()
+	if valued {
+		if _, exists := byCurrency[unrealizedCurrency]; !exists {
+			byCurrency[unrealizedCurrency] = totals{}
+		}
+		if markedAt.After(asOf) {
+			asOf = markedAt
 		}
 	}
-	if asOf.IsZero() {
-		asOf = service.now().UTC()
+	currencies := make([]string, 0, len(byCurrency))
+	for currency := range byCurrency {
+		currencies = append(currencies, currency)
 	}
-	return PnLSnapshot{
-		PnLSnapshotID: fmt.Sprintf("pnl_%016x", service.next.Add(1)),
-		PrincipalID:   query.PrincipalID,
-		LineageID:     query.LineageID, ProductID: query.ProductID, AccountID: query.AccountID, InstrumentID: query.InstrumentID,
-		RealizedPnL: realized.String(), UnrealizedPnL: unrealized.String(), Fees: fees.String(), Funding: funding.String(),
-		NetPnL: realized.Add(unrealized).Add(funding).Sub(fees).String(), AsOf: asOf,
-	}, nil
+	sort.Strings(currencies)
+	snapshot := PnLSnapshot{PrincipalID: query.PrincipalID, LineageID: query.LineageID, ProductID: query.ProductID,
+		AccountID: query.AccountID, InstrumentID: query.InstrumentID, ByCurrency: []CurrencyPnL{}, AsOf: asOf}
+	if valued {
+		snapshot.ValuationAsOf = &markedAt
+	}
+	if snapshot.AsOf.IsZero() {
+		snapshot.AsOf = service.now().UTC()
+	}
+	for _, currency := range currencies {
+		total := byCurrency[currency]
+		booked := total.realized.Add(total.funding).Sub(total.fees)
+		item := CurrencyPnL{Currency: currency, RealizedPnL: total.realized.String(), Fees: total.fees.String(), Funding: total.funding.String(), BookedNetPnL: booked.String()}
+		if valued {
+			mark := decimal.Zero
+			if currency == unrealizedCurrency {
+				mark = unrealized
+			}
+			item.UnrealizedPnL, item.NetPnL = mark.String(), booked.Add(mark).String()
+		}
+		snapshot.ByCurrency = append(snapshot.ByCurrency, item)
+	}
+	return snapshot, nil
 }
 
 func (service *Service) List(ctx context.Context, query Query) ([]Entry, error) {
@@ -186,12 +217,9 @@ func validateEntry(entry Entry) error {
 	default:
 		return fmt.Errorf("invalid ledger kind")
 	}
-	amount, err := decimal.NewFromString(entry.Amount)
+	_, err := decimal.NewFromString(entry.Amount)
 	if err != nil {
 		return fmt.Errorf("amount must be a decimal")
-	}
-	if entry.Kind == KindFee && amount.IsNegative() {
-		return fmt.Errorf("fee cannot be negative")
 	}
 	return nil
 }
@@ -209,7 +237,7 @@ func NewMemoryStore() *MemoryStore {
 func (store *MemoryStore) Append(_ context.Context, entry Entry) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	key := ledgerKey(entry.PrincipalID, entry.EntryID)
+	key := ledgerKey(entry.PrincipalID, entry.AccountID, entry.InstrumentID, entry.EntryID)
 	if existing, ok := store.entries[key]; ok {
 		if existing != entry {
 			return ErrEntryConflict
@@ -223,8 +251,8 @@ func (store *MemoryStore) Append(_ context.Context, entry Entry) error {
 func (store *MemoryStore) SupersedeFunding(_ context.Context, priorEntryID string, replacement Entry) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	replacementKey := ledgerKey(replacement.PrincipalID, replacement.EntryID)
-	priorKey := ledgerKey(replacement.PrincipalID, priorEntryID)
+	replacementKey := ledgerKey(replacement.PrincipalID, replacement.AccountID, replacement.InstrumentID, replacement.EntryID)
+	priorKey := ledgerKey(replacement.PrincipalID, replacement.AccountID, replacement.InstrumentID, priorEntryID)
 	if existing, ok := store.entries[replacementKey]; ok {
 		if existing != replacement {
 			return ErrEntryConflict

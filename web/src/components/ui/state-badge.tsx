@@ -1,6 +1,7 @@
 import { cva, type VariantProps } from "class-variance-authority";
 import type { ComponentProps } from "react";
 
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 /**
@@ -32,15 +33,15 @@ export type StateTone = NonNullable<VariantProps<typeof dot>["tone"]>;
 export interface StateBadgeProps extends Omit<ComponentProps<"span">, "children"> {
   tone: StateTone;
   label: string;
-  /** Longer explanation surfaced as a title and to screen readers. */
+  /** Longer explanation surfaced in a hover/focus tooltip and to screen readers. */
   detail?: string;
 }
 
 export function StateBadge({ tone, label, detail, className, ...props }: StateBadgeProps) {
-  return (
+  const badge = (
     <span
       className={cn("inline-flex items-center gap-1.5 whitespace-nowrap", className)}
-      title={detail ?? undefined}
+      tabIndex={detail ? 0 : undefined}
       {...props}
     >
       <span className={dot({ tone })} aria-hidden="true" />
@@ -48,6 +49,7 @@ export function StateBadge({ tone, label, detail, className, ...props }: StateBa
       {detail ? <span className="sr-only">{detail}</span> : null}
     </span>
   );
+  return detail ? <Tooltip content={detail}>{badge}</Tooltip> : badge;
 }
 
 /** A count or short qualifier that sits beside a title. Carries no state. */

@@ -353,7 +353,8 @@ func (client *gatePerpClient) PublicTrades(ctx context.Context, request exchange
 	return exchange.PublicTradePage{Trades: trades, Page: exchange.PageInfo{Limit: request.Limit}}, nil
 }
 
-func gateNormalizeErr(meta clientMeta, operation string, err error) error {
+func gateNormalizeErr(meta clientMeta, operation string, err error) (returnErr error) {
+	defer func() { returnErr = normalizeHTTPError(returnErr, err, meta.venue, meta.product, operation) }()
 	if err == nil {
 		return nil
 	}
@@ -385,7 +386,8 @@ func gateNormalizeErr(meta clientMeta, operation string, err error) error {
 	return exchange.NewError(exchange.KindTransport, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: operation, SafeMessage: "gate transport failed"})
 }
 
-func gateCommandErr(meta clientMeta, operation exchange.OrderOperation, instrument exchange.Instrument, orderID, clientID string, err error) (exchange.OrderAcknowledgement, error) {
+func gateCommandErr(meta clientMeta, operation exchange.OrderOperation, instrument exchange.Instrument, orderID, clientID string, err error) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() { normalizeHTTPCommand(&returnAck, &returnErr, err, meta.venue, meta.product, string(operation)) }()
 	ack := exchange.OrderAcknowledgement{Venue: meta.venue, Product: meta.product, Operation: operation, State: exchange.AckAmbiguous, NativeSymbol: instrument.Identity.NativeSymbol, NativeID: instrument.Identity.NativeID, OrderID: orderID, ClientOrderID: clientID}
 	if gateCommandMetadataMismatch(err) {
 		return ack, meta.catalogMetadataResolution(string(operation), "gate command response identity does not match requested instrument")
@@ -407,7 +409,8 @@ func gateCommandMetadataMismatch(err error) bool {
 		strings.Contains(message, "returned mismatched contract")
 }
 
-func gateWriteErr(meta clientMeta, operation string, err error) error {
+func gateWriteErr(meta clientMeta, operation string, err error) (returnErr error) {
+	defer func() { returnErr = normalizeHTTPError(returnErr, err, meta.venue, meta.product, operation) }()
 	if gate.IsDefinitiveCommandRejection(err) {
 		return gateNormalizeErr(meta, operation, err)
 	}

@@ -1,13 +1,9 @@
 // Package httpapi is the trading service's browser-facing HTTP surface: manual
-// product orders, the command ledger, reservations, positions, the accounting
-// ledger and P&L, activity and fills projections, system health, and business
-// realtime reads.
+// product orders, the command ledger, positions, the accounting
+// ledger and P&L, activity and fills projections, system health.
 //
-// It owns no authentication of its own. The caller resolves the principal and
-// hands it in — today that caller is the backend auth edge mounting these
-// routes in-process, and after the service splits out it becomes a service
-// token plus an X-Bolter-Principal header. Keeping the principal an injected
-// function is what lets that swap happen without touching a single handler.
+// Authentication and mutation authorization are injected by the host. Production
+// requests arrive through Auth Edge with a service token and attested principal.
 package httpapi
 
 import "net/http"
@@ -31,24 +27,16 @@ var (
 
 	publicDataRoutes = []string{
 		"GET /api/v1/system/status", "GET /api/v1/system/readiness",
-		"GET /api/v1/realtime/ws",
 	}
 
 	tradingRoutes = []string{
-		"POST /api/v1/reservations", "GET /api/v1/reservations", "DELETE /api/v1/reservations/{reservationId}",
-		"POST /api/v1/commands", "GET /api/v1/commands/{commandId}",
+		"GET /api/v1/commands/{commandId}",
 		"GET /api/v1/positions", "GET /api/v1/ledger", "GET /api/v1/pnl",
 	}
 
 	manualRoutes = []string{
-		"GET /api/v1/products/manual/venues", "POST /api/v1/products/manual/execution-previews",
-		"POST /api/v1/products/manual/commands", "GET /api/v1/products/manual/orders",
+		"GET /api/v1/products/manual/venues", "POST /api/v1/products/manual/commands", "GET /api/v1/products/manual/orders",
 		"GET /api/v1/products/manual/orders/{orderId}",
-	}
-
-	arbitrageRoutes = []string{
-		"GET /api/v1/products/arbitrage/opportunities", "POST /api/v1/products/arbitrage/execution-previews",
-		"POST /api/v1/products/arbitrage/commands", "GET /api/v1/products/arbitrage/positions",
 	}
 
 	projectionRoutes = []string{
@@ -65,7 +53,6 @@ func Routes() []string {
 	all = append(all, publicDataRoutes...)
 	all = append(all, tradingRoutes...)
 	all = append(all, manualRoutes...)
-	all = append(all, arbitrageRoutes...)
 	all = append(all, projectionRoutes...)
 	return all
 }
@@ -73,15 +60,14 @@ func Routes() []string {
 // PublicDataRoutes reports Trading-owned reads that may be anonymous.
 //
 // "Public data" is a statement about the *data*, not about who may ask: every
-// route here is mounted behind the same service token as the rest, and one of
-// them (realtime) refuses an empty identity on its own. The auth edge is the
+// route here is mounted behind the same service token as the rest. The auth edge is the
 // only thing that decides a request may arrive unauthenticated, and this list
 // is the outer bound on what it is allowed to decide that about — its contract
 // test compares its own carve-out against this, so widening one without the
 // other fails rather than drifts.
 func PublicDataRoutes() []string {
 	routes := append([]string(nil), publicDataRoutes...)
-	return append(routes, "GET /api/v1/products/arbitrage/opportunities")
+	return routes
 }
 
 // Register mounts every configured group on mux and reports the routes it now
@@ -113,12 +99,6 @@ func Register(mux *http.ServeMux, options Options) ([]string, error) {
 		// ownership list has to agree with it or a mounted route goes unclaimed.
 		if options.Trading.Catalog != nil && options.Trading.Manual != nil {
 			owned = append(owned, manualRoutes...)
-		}
-		// Arbitrage rides on the same registration under its own condition: it
-		// needs the board as well, because a hedge nobody can price is a hedge
-		// nobody should be offered a button for.
-		if options.Trading.Catalog != nil && options.Trading.Arbitrage != nil && options.Trading.FundingBoard != nil {
-			owned = append(owned, arbitrageRoutes...)
 		}
 	}
 	if options.Projections != nil {

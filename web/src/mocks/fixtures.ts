@@ -93,8 +93,7 @@ export const SESSION: SessionState = {
  *
  * The spot pair leads because the terminal falls back to the first ready
  * instrument in catalog order, and spot is the one the binance account holds a
- * route for. The two BTC perpetuals are the pair the arbitrage scan ranks — a
- * hedge needs the same underlying quoted on two exchanges, and this is it.
+ * route for. The BTC perpetuals exercise the same underlying across venues.
  *
  * Binance leads and lists most of them on purpose. The picker's defect was that
  * a venue further down the catalog could not be found without scrolling past
@@ -320,15 +319,13 @@ export const ACCOUNT: Account = {
   venue: "binance",
   nativeEnvironment: "live",
   displayName: "Binance",
-  productPolicy: ["manual", "arbitrage"],
   routes: [
-    { routeId: "spot", product: "spot", routeProfileId: "binance.spot.v1", requestedState: "active" },
+    { routeId: "spot", product: "spot", routeProfileId: "binance.spot.v1" },
     {
       routeId: "perp-usdt",
       product: "perp",
       settlementAsset: "USDT",
       routeProfileId: "binance.perp.usdt.v1",
-      requestedState: "active",
     },
   ],
   status: "active",
@@ -336,27 +333,18 @@ export const ACCOUNT: Account = {
   updatedAt: OBSERVED_AT,
 };
 
-/**
- * The second venue, which is the whole of what makes a hedge possible.
- *
- * Arbitrage is the one product that cannot be exercised by a single account: it
- * is long on one exchange and short on another, and the server refuses a hedge
- * whose legs share an account. A fixture set with one account could only ever
- * prove the refusal.
- */
-export const HEDGE_ACCOUNT: Account = {
+/** A second account exercises cross-venue selection and account isolation. */
+export const SECOND_ACCOUNT: Account = {
   accountId: "acct-bybit-live",
   venue: "bybit",
   nativeEnvironment: "live",
   displayName: "Bybit",
-  productPolicy: ["manual", "arbitrage"],
   routes: [
     {
       routeId: "perp-usdt",
       product: "perp",
       settlementAsset: "USDT",
       routeProfileId: "bybit.perp.usdt.v1",
-      requestedState: "active",
     },
   ],
   status: "active",
@@ -390,49 +378,19 @@ const ALL_OPERATIONS = {
  * "settled" looks like; settings renders a pending badge when they diverge.
  */
 export function runtimeOf(account: Account): AccountRuntime {
-  const routes = (account.routes ?? []).map((route) => ({
-    routeId: route.routeId,
-    product: route.product,
-    settlementAsset: route.settlementAsset,
-    routeProfileId: route.routeProfileId,
-    requestedState: route.requestedState,
-    ready: true,
-  }));
-  const snapshot = {
-    requestedState: "active",
-    routes,
-  };
-  return {
-    accountId: account.accountId,
-    active: snapshot,
-    retiring: [],
-    readiness: { ready: true },
-    writeReadiness: { ready: true },
-    blockedReason: null,
-    capabilities: (account.routes ?? []).map((route) => ({
-      // Capability rows are keyed without the environment: a capability is a
-      // property of the venue's API surface, not of which host serves it.
-      rowId: [account.venue, route.product, route.settlementAsset].filter(Boolean).join(":"),
-      venue: account.venue,
-      product: route.product,
-      settlement: route.settlementAsset,
-      writeReady: true,
-      operations: { ...ALL_OPERATIONS },
-    })),
-    observedAt: OBSERVED_AT,
-  };
+ return {accountId:account.accountId, connected:true, observedAt:OBSERVED_AT};
 }
 
 /* --- Ledgers -------------------------------------------------------------- */
 
 /**
  * One settled position, so the portfolio screens have something to show before
- * anything is traded. It is the long leg of the hedge above, held on binance.
+ * anything is traded. It is held on binance.
  */
 export const POSITIONS: Position[] = [
   {
     lineageId: "lin-seed-1",
-    productId: "arbitrage",
+    productId: "manual",
     accountId: ACCOUNT.accountId,
     instrumentId: "binance:live:perp:USDT:BTC-USDT",
     settlementCurrency: "USDT",
@@ -457,7 +415,7 @@ export const BALANCES: AccountBalance[] = [
     total: "350.00",
   },
   {
-    accountId: HEDGE_ACCOUNT.accountId,
+    accountId: SECOND_ACCOUNT.accountId,
     product: "perp",
     settlementAsset: "USDT",
     asset: "USDT",
@@ -499,9 +457,9 @@ export const ACCOUNT_POSITIONS: AccountPositionSnapshot = {
       receivedAt: OBSERVED_AT,
     },
     {
-      accountId: HEDGE_ACCOUNT.accountId,
-      label: HEDGE_ACCOUNT.displayName,
-      venue: HEDGE_ACCOUNT.venue,
+      accountId: SECOND_ACCOUNT.accountId,
+      label: SECOND_ACCOUNT.displayName,
+      venue: SECOND_ACCOUNT.venue,
       environment: "live",
       status: "connected",
       routeHealth: "live",
@@ -542,10 +500,10 @@ export const ACCOUNT_POSITIONS: AccountPositionSnapshot = {
       receivedAt: OBSERVED_AT,
     },
     {
-      accountId: HEDGE_ACCOUNT.accountId,
+      accountId: SECOND_ACCOUNT.accountId,
       routeId: "perp-usdt",
       instrumentId: "bybit:live:perp:USDT:BTC-USDT",
-      accountLabel: HEDGE_ACCOUNT.displayName,
+      accountLabel: SECOND_ACCOUNT.displayName,
       venue: "bybit",
       environment: "live",
       product: "perp",
@@ -577,18 +535,18 @@ export const LEDGER: LedgerEntry[] = [
   {
     entryId: "led-1",
     lineageId: "lin-seed-1",
-    productId: "arbitrage",
+    productId: "manual",
     accountId: ACCOUNT.accountId,
     instrumentId: "binance:live:perp:USDT:BTC-USDT",
     kind: "fee",
-    amount: "-2.2768",
+    amount: "2.2768",
     currency: "USDT",
     occurredAt: "2026-08-16T16:00:02Z",
   },
   {
     entryId: "led-2",
     lineageId: "lin-seed-1",
-    productId: "arbitrage",
+    productId: "manual",
     accountId: ACCOUNT.accountId,
     instrumentId: "binance:live:perp:USDT:BTC-USDT",
     kind: "funding",
@@ -599,17 +557,13 @@ export const LEDGER: LedgerEntry[] = [
 ];
 
 export const PNL: PnLSnapshot = {
-  pnlSnapshotId: "pnl-1",
   lineageId: "lin-seed-1",
-  productId: "arbitrage",
+  productId: "manual",
   accountId: ACCOUNT.accountId,
   instrumentId: "binance:live:perp:USDT:BTC-USDT",
-  realizedPnl: "0",
-  unrealizedPnl: "21.10",
-  fees: "-2.2768",
-  funding: "-0.5692",
-  netPnl: "18.2540",
+  byCurrency: [{ currency: "USDT", realizedPnl: "0", unrealizedPnl: "21.10", fees: "2.2768", funding: "-0.5692", bookedNetPnl: "-2.846", netPnl: "18.254" }],
   asOf: OBSERVED_AT,
+  valuationAsOf: OBSERVED_AT,
 };
 
 export const FILLS: Fill[] = [
@@ -617,7 +571,7 @@ export const FILLS: Fill[] = [
     fillId: "fill-1",
     commandId: "cmd-seed-1",
     lineageId: "lin-seed-1",
-    productId: "arbitrage",
+    productId: "manual",
     accountId: ACCOUNT.accountId,
     instrumentId: "binance:live:perp:USDT:BTC-USDT",
     side: "buy",

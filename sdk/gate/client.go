@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
 const defaultRESTBaseURL = "https://api.gateio.ws/api/v4"
@@ -85,7 +87,7 @@ func (c *Client) deletePrivate(ctx context.Context, path string, query map[strin
 	return c.do(ctx, http.MethodDelete, path, query, nil, true, out)
 }
 
-func (c *Client) do(ctx context.Context, method, path string, query map[string]string, body any, signed bool, out any) error {
+func (c *Client) do(ctx context.Context, method, path string, query map[string]string, body any, signed bool, out any) (returnErr error) {
 	u, err := url.Parse(c.baseURL + path)
 	if err != nil {
 		return err
@@ -120,7 +122,11 @@ func (c *Client) do(ctx context.Context, method, path string, query map[string]s
 		c.signHeaders(req, u.RawQuery, bodyString)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.httpClient, req, "gate")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return err
 	}

@@ -33,7 +33,7 @@ func newBinancePerpPublicSDK(settings Settings) *binanceperp.Client {
 		sdk.WithBaseURL(settings.Endpoint)
 	}
 	if settings.HTTPClient != nil {
-		sdk.HTTPClient = settings.HTTPClient
+		sdk.WithHTTPClient(settings.HTTPClient)
 	}
 	return sdk
 }

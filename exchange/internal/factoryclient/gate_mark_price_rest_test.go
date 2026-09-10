@@ -97,7 +97,7 @@ func TestGatePerpMarkPriceRESTNormalizesTransportAndVenueErrors(t *testing.T) {
 					Body:       io.NopCloser(strings.NewReader(`{"label":"INTERNAL","message":"upstream unavailable"}`)),
 				}, nil
 			}),
-			kind: exchange.KindVenueRejected,
+			kind: exchange.KindTransport,
 		},
 	}
 	for _, test := range tests {

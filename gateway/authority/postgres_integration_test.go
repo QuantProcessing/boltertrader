@@ -61,6 +61,9 @@ var stackRoles = map[string]roleAttributes{
 // already run, since the gateway database's ACL is applied by ApplyAuthority
 // rather than at init.
 func TestStackClusterTopologyRealPostgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cluster verification requires explicit non-short PostgreSQL tests")
+	}
 	if os.Getenv("BT_G010_POSTGRES_ACCEPT") != "1" {
 		t.Skip("BT_G010_POSTGRES_ACCEPT=1 is required for local PostgreSQL authority verification")
 	}

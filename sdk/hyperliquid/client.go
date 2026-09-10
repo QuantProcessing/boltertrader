@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -119,7 +120,7 @@ func (c *Client) PostAction(ctx context.Context, action any, sig SignatureResult
 	return c.Post(ctx, "/exchange", payload)
 }
 
-func (c *Client) Post(ctx context.Context, path string, payload any) ([]byte, error) {
+func (c *Client) Post(ctx context.Context, path string, payload any) (_ []byte, returnErr error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload %w", err)
@@ -140,7 +141,11 @@ func (c *Client) Post(ctx context.Context, path string, payload any) ([]byte, er
 
 	c.Logger.Debugw("request", "method", req.Method, "path", req.URL.Path, "body_bytes", len(jsonData))
 
-	resp, err := c.Http.Do(req)
+	resp, err := venuehttp.DoHTTP(c.Http, req, "hyperliquid")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}

@@ -88,9 +88,11 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 		}
 		events, failures := make(chan markethub.Message, 64), make(chan error, 1)
 		staleAfter := marketcapability.FreshnessWindow(capability)
+		receivedAt := time.Now().UTC()
 		owner.BoardMarks.PublishMark(ctx, key.InstrumentID, exchange.OptionalDecimal{Value: markStream.Snapshot.Price, Valid: true}, observed(markStream.Snapshot.Time))
 		go forwardMark(ctx, key.InstrumentID, owner.BoardMarks, markStream.Subscription, staleAfter, events, failures)
-		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, observed(markStream.Snapshot.Time), "", markData(markStream.Snapshot.Price.String(), staleAfter)), Events: events, Errors: failures, Close: markStream.Subscription.Close}, nil
+		snapshotAt := observed(markStream.Snapshot.Time)
+		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, snapshotAt, "", markData(markStream.Snapshot.Price.String(), snapshotAt, receivedAt, staleAfter, time.Now().UTC())), Events: events, Errors: failures, Close: markStream.Subscription.Close}, nil
 	default:
 		return markethub.NativeStream{}, fmt.Errorf("%w: dataset %s", markethub.ErrUnavailable, key.Dataset)
 	}
@@ -198,8 +200,10 @@ func forwardMark(ctx context.Context, instrumentID string, sink BoardMarks, subs
 			if !open {
 				return
 			}
-			sink.PublishMark(ctx, instrumentID, exchange.OptionalDecimal{Value: event.Price, Valid: true}, observed(event.Time))
-			if !emit(ctx, output, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: observed(event.Time), Data: markethub.Encode(markData(event.Price.String(), staleAfter))}) {
+			observedAt := observed(event.Time)
+			receivedAt := time.Now().UTC()
+			sink.PublishMark(ctx, instrumentID, exchange.OptionalDecimal{Value: event.Price, Valid: true}, observedAt)
+			if !emit(ctx, output, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: observedAt, Data: markethub.Encode(markData(event.Price.String(), observedAt, receivedAt, staleAfter, time.Now().UTC()))}) {
 				return
 			}
 		case err, open := <-subscription.Errors():

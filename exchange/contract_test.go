@@ -77,6 +77,7 @@ var (
 	_ OrderREST                     = (PerpClient)(nil)
 	_ PerpAccountREST               = (PerpClient)(nil)
 	_ PerpREST                      = (PerpClient)(nil)
+	_ PerpMarketREST                = (PerpClient)(nil)
 )
 
 type expectedSpotWebSocketContract interface {
@@ -102,7 +103,22 @@ type expectedPerpWebSocketContract interface {
 var (
 	_ expectedSpotWebSocketContract = (SpotWebSocket)(nil)
 	_ expectedPerpWebSocketContract = (PerpWebSocket)(nil)
+	_ MarketWebSocket               = (SpotWebSocket)(nil)
+	_ PerpMarketWebSocket           = (PerpWebSocket)(nil)
 )
+
+func TestPublicMarketFacetMethodSets(t *testing.T) {
+	assertMethodNames(t, reflect.TypeFor[MarketWebSocket](), []string{
+		"Close", "WatchBBO", "WatchCandles", "WatchOrderBook", "WatchPublicTrades",
+	})
+	assertMethodNames(t, reflect.TypeFor[PerpMarketWebSocket](), []string{
+		"Close", "WatchBBO", "WatchCandles", "WatchOrderBook", "WatchPublicTrades",
+		"WatchFundingRate", "WatchMarkPrice",
+	})
+	assertMethodNames(t, reflect.TypeFor[PerpMarketREST](), []string{
+		"FundingRate", "FundingRateHistory",
+	})
+}
 
 func TestProductClientMethodSets(t *testing.T) {
 	spot := reflect.TypeOf((*SpotClient)(nil)).Elem()

@@ -8,8 +8,7 @@
  * product the only screen worth opening on a fresh install.
  *
  * Gateway's market socket is public. Its account socket is deliberately
- * absent because it carries private venue events. Trading's remaining socket
- * is public because it only publishes derived arbitrage opportunities.
+ * absent because it carries private venue events.
  *
  * It lives in its own module rather than inside `handlers.ts` so the drift test
  * can import it without waking the mock database. The list is duplicated across
@@ -20,7 +19,6 @@
 export const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/api/v1/system/status",
   "/api/v1/system/readiness",
-  "/api/v1/catalog/venues",
   "/api/v1/catalog/instruments",
   "/api/v1/market-data",
   "/api/v1/candles",
@@ -28,6 +26,4 @@ export const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/api/v1/funding-board",
   "/api/v1/funding-history",
   "/api/v1/venues/connectivity",
-  "/api/v1/realtime/ws",
-  "/api/v1/products/arbitrage/opportunities",
 ]);

@@ -9,8 +9,8 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/exchange/factory"
 	"github.com/QuantProcessing/boltertrader/gateway/config"
+	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
-	"github.com/QuantProcessing/boltertrader/gateway/store"
 )
 
 type spotHandle struct{ client exchange.SpotClient }
@@ -44,9 +44,9 @@ type factoryRuntimeGroupBuilder struct {
 	catalog    exchange.InstrumentCatalog
 }
 
-type factoryCandidateRoute struct{ handle clientHandle }
+type factoryConnectionRoute struct{ handle clientHandle }
 
-func (route factoryCandidateRoute) Probe(ctx context.Context) error {
+func (route factoryConnectionRoute) Probe(ctx context.Context) error {
 	if ctx == nil || route.handle == nil {
 		return fmt.Errorf("credential balance verification failed")
 	}
@@ -68,17 +68,17 @@ func (route factoryCandidateRoute) Probe(ctx context.Context) error {
 	return fmt.Errorf("credential balance verification failed")
 }
 
-func (route factoryCandidateRoute) Close() error { return route.handle.close() }
+func (route factoryConnectionRoute) Close() error { return route.handle.close() }
 
-func (route factoryCandidateRoute) SpotClient() (exchange.SpotClient, bool) {
+func (route factoryConnectionRoute) SpotClient() (exchange.SpotClient, bool) {
 	return route.handle.spot()
 }
 
-func (route factoryCandidateRoute) PerpClient() (exchange.PerpClient, bool) {
+func (route factoryConnectionRoute) PerpClient() (exchange.PerpClient, bool) {
 	return route.handle.perp()
 }
 
-func (route factoryCandidateRoute) OrderClient() (exchange.OrderREST, bool) {
+func (route factoryConnectionRoute) OrderClient() (exchange.OrderREST, bool) {
 	if client, ok := route.handle.spot(); ok {
 		return client, true
 	}
@@ -88,7 +88,7 @@ func (route factoryCandidateRoute) OrderClient() (exchange.OrderREST, bool) {
 	return nil, false
 }
 
-func (route factoryCandidateRoute) ExactLookupReady() bool {
+func (route factoryConnectionRoute) ExactLookupReady() bool {
 	return route.handle.exactLookupReady()
 }
 
@@ -96,12 +96,12 @@ func NewFactoryRuntimeGroupBuilder(httpClient *http.Client, catalog exchange.Ins
 	return factoryRuntimeGroupBuilder{httpClient: httpClient, catalog: catalog}
 }
 
-func (builder factoryRuntimeGroupBuilder) BuildRoute(_ context.Context, snapshot store.DesiredSnapshot, route store.RouteDefinition, decoded *credential.Decoded) (CandidateRoute, error) {
+func (builder factoryRuntimeGroupBuilder) BuildRoute(_ context.Context, snapshot ConnectionSpec, route RouteDefinition, decoded *credential.Decoded) (ConnectionRoute, error) {
 	environment, err := factoryEnvironment(snapshot.NativeEnvironment)
 	if err != nil || decoded == nil || decoded.Venue != snapshot.Venue || builder.httpClient == nil || builder.catalog == nil {
 		return nil, fmt.Errorf("construct runtime route failed")
 	}
-	options := []factory.Option{factory.WithEnvironment(environment), factory.WithHTTPClient(builder.httpClient), factory.WithInstrumentCatalog(builder.catalog)}
+	options := []factory.Option{factory.WithEnvironment(environment), factory.WithHTTPClient(ratelimit.WithPrincipal(builder.httpClient, string(snapshot.AccountID))), factory.WithInstrumentCatalog(builder.catalog)}
 	identity := snapshot.Venue + ":" + route.Product + ":" + route.SettlementAsset
 	var handle clientHandle
 	switch credentials := decoded.Credentials.(type) {
@@ -166,7 +166,7 @@ func (builder factoryRuntimeGroupBuilder) BuildRoute(_ context.Context, snapshot
 	if err != nil || handle == nil {
 		return nil, fmt.Errorf("construct runtime route failed")
 	}
-	return factoryCandidateRoute{handle: handle}, nil
+	return factoryConnectionRoute{handle: handle}, nil
 }
 
 func newSpotFactoryHandle(configuration factory.Config[exchange.SpotClient]) (clientHandle, error) {

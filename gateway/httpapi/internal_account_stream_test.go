@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	realtimewire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
-	"github.com/QuantProcessing/boltertrader/gateway/realtimewire"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -23,6 +23,12 @@ func TestInternalAccountStreamPublishesAllOwnedAccountsWithoutCursorReplay(t *te
 		t.Fatal(err)
 	}
 	t.Cleanup(hub.Close)
+	if _, err := hub.Publish(gatewayevent.PublishRequest{
+		PrincipalID: "principal-a", AccountID: "acct-b", EventID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c40",
+		ResourceVersion: 1, Kind: gatewayevent.KindAccountConnection, OccurredAt: time.Now().UTC(), Payload: []byte(`{"account_id":"acct-b","route_id":"perp-usdt","state":"connected"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	handler, err := NewInternalHandler(InternalOptions{
 		Authority: &fakeInternalAuthority{}, Authenticate: func(*http.Request) error { return nil },
 		AccountEvents: hub, AccountEventOwner: "principal-a",
@@ -45,15 +51,16 @@ func TestInternalAccountStreamPublishesAllOwnedAccountsWithoutCursorReplay(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var ack, checkpoint realtimewire.Message
+	var ack, connectionSnapshot realtimewire.Message
 	if err := wsjson.Read(ctx, connection, &ack); err != nil {
 		t.Fatal(err)
 	}
-	if err := wsjson.Read(ctx, connection, &checkpoint); err != nil {
+	if err := wsjson.Read(ctx, connection, &connectionSnapshot); err != nil {
 		t.Fatal(err)
 	}
-	if ack.Type != realtimewire.MessageAck || checkpoint.Type != realtimewire.MessageCheckpoint {
-		t.Fatalf("initial messages=%+v %+v", ack, checkpoint)
+	if ack.Type != realtimewire.MessageAck || connectionSnapshot.Type != realtimewire.MessageDelta ||
+		!strings.Contains(string(connectionSnapshot.Data), `"kind":"account.account_connection"`) {
+		t.Fatalf("initial messages=%+v %+v", ack, connectionSnapshot)
 	}
 	if _, err := hub.Publish(gatewayevent.PublishRequest{
 		PrincipalID: "principal-a", AccountID: "acct-b", EventID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c44",
@@ -68,19 +75,22 @@ func TestInternalAccountStreamPublishesAllOwnedAccountsWithoutCursorReplay(t *te
 	if update.Type != realtimewire.MessageDelta || !strings.Contains(string(update.Data), `"kind":"account.position"`) || !strings.Contains(string(update.Data), `"accountId":"acct-b"`) {
 		t.Fatalf("account update=%+v data=%s", update, update.Data)
 	}
-	if _, err := hub.PublishResync("principal-a", "acct-b", "private-stream-gap"); err != nil {
+	if _, err := hub.Publish(gatewayevent.PublishRequest{
+		PrincipalID: "principal-a", AccountID: "acct-b", EventID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c45",
+		ResourceVersion: 2, Kind: gatewayevent.KindAccountConnection, OccurredAt: time.Now().UTC(), Payload: []byte(`{"account_id":"acct-b","route_id":"perp-usdt","state":"disconnected","reason":"transport_closed"}`),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	var degraded realtimewire.Message
 	if err := wsjson.Read(ctx, connection, &degraded); err != nil {
 		t.Fatal(err)
 	}
-	if degraded.Type != realtimewire.MessageResyncRequired || degraded.Code != "UPSTREAM_GAP" {
+	if degraded.Type != realtimewire.MessageDelta || !strings.Contains(string(degraded.Data), `"state":"disconnected"`) {
 		t.Fatalf("account degraded message=%+v", degraded)
 	}
 	if _, err := hub.Publish(gatewayevent.PublishRequest{
-		PrincipalID: "principal-a", AccountID: "acct-b", EventID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c45",
-		ResourceVersion: 3, Kind: gatewayevent.KindAccountHealth, OccurredAt: time.Now().UTC(), Payload: []byte(`{"realtime_ready":true}`),
+		PrincipalID: "principal-a", AccountID: "acct-b", EventID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c46",
+		ResourceVersion: 3, Kind: gatewayevent.KindAccountConnection, OccurredAt: time.Now().UTC(), Payload: []byte(`{"account_id":"acct-b","route_id":"perp-usdt","state":"connected"}`),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +98,7 @@ func TestInternalAccountStreamPublishesAllOwnedAccountsWithoutCursorReplay(t *te
 	if err := wsjson.Read(ctx, connection, &recovered); err != nil {
 		t.Fatal(err)
 	}
-	if recovered.Type != realtimewire.MessageDelta || !strings.Contains(string(recovered.Data), `"kind":"account.account_health"`) {
+	if recovered.Type != realtimewire.MessageDelta || !strings.Contains(string(recovered.Data), `"state":"connected"`) {
 		t.Fatalf("account recovery message=%+v data=%s", recovered, recovered.Data)
 	}
 }

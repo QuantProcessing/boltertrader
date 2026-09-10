@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -20,6 +21,9 @@ import (
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real PostgreSQL integration requires non-short mode")
+	}
 	dsn := os.Getenv("GATEWAY_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("GATEWAY_TEST_POSTGRES_DSN is not set; skipping real PostgreSQL integration test")
@@ -79,18 +83,13 @@ func testAccountID(t *testing.T) domain.AccountID {
 
 func registerTestAccount(t *testing.T, ctx context.Context, postgresStore *Store) {
 	t.Helper()
-	_, err := postgresStore.CreateDesiredAccount(ctx, store.DesiredAccount{
-		AccountID:            testAccountID(t),
-		Venue:                "binance",
-		VenueEnvironment:     "live",
-		SecretRef:            strings.Repeat("A", 43),
-		DesiredStateRevision: 1,
-		RuntimeGeneration:    1,
-		CredentialVersion:    1,
-		RequestedState:       store.DesiredCreating,
-	})
+	cipher, err := secretstore.NewCipher(make([]byte, 32))
 	if err != nil {
-		t.Fatalf("CreateDesiredAccount: %v", err)
+		t.Fatal(err)
+	}
+	record := account.RegistrationRecord{Registration: account.Registration{ID: testAccountID(t), Venue: "binance", DisplayName: "Offline fixture", CreatedAt: time.Now().UTC(), ValidatedAt: time.Now().UTC()}, CredentialBundle: []byte(`{"fixture":"offline"}`)}
+	if err := NewRegistrationStore(postgresStore.pool, cipher).CreateRegistration(ctx, record); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -184,14 +183,20 @@ func TestMigrateRealPostgresUnlockFailureDiscardsConnectionAndDoesNotLeakLock(t 
 		t.Fatalf("Migrate after unlock connection failure: %v", err)
 	}
 
-	var acquired bool
-	if err := pool.QueryRow(retryCtx, `SELECT pg_try_advisory_lock($1, $2)`, migrationLockKey, int32(1)).Scan(&acquired); err != nil {
-		t.Fatalf("probe migration lock after retry: %v", err)
+	// Other integration packages may migrate another schema in this database.
+	// Wait for that legitimate owner, and release on the same physical connection.
+	conn, err := pool.Acquire(retryCtx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !acquired {
-		t.Fatal("migration advisory lock leaked after unlock connection failure")
+	defer conn.Release()
+	if _, err := conn.Exec(retryCtx, `SELECT pg_advisory_lock($1, $2)`, migrationLockKey, int32(1)); err != nil {
+		t.Fatalf("migration lock unavailable after retry: %v", err)
 	}
-	_, _ = pool.Exec(retryCtx, `SELECT pg_advisory_unlock($1, $2)`, migrationLockKey, int32(1))
+	if _, err := conn.Exec(retryCtx, `SELECT pg_advisory_unlock($1, $2)`, migrationLockKey, int32(1)); err != nil {
+		t.Fatal(err)
+	}
+
 }
 
 func TestMigrateRealPostgresUnlockFalseDiscardsConnection(t *testing.T) {
@@ -331,63 +336,6 @@ func TestCommandStoreRealPostgresReservesIdempotentlyAndAtomically(t *testing.T)
 		if strings.Contains(strings.ToLower(string(metadata)), forbidden) {
 			t.Fatalf("audit metadata contains forbidden %q: %s", forbidden, metadata)
 		}
-	}
-}
-
-func TestCommandStoreRealPostgresPersistsAndResolvesGenerationHandoff(t *testing.T) {
-	ctx := context.Background()
-	pool := newTestPool(t)
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	postgresStore := NewStore(pool)
-	registerTestAccount(t, ctx, postgresStore)
-	activeRef, err := secretstore.ParseOpaqueRef("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := runtimeSnapshotFixtureWithRef(t,
-		"018f0000-0000-7000-8000-000000000093",
-		"018f0000-0000-7000-8000-000000000094",
-		testAccountID(t), 1, activeRef)
-	prepareRuntimeSnapshotReady(t, ctx, postgresStore, active)
-	if _, err := postgresStore.PromotePending(ctx, store.PromotionRequest{
-		AccountID: active.AccountID, OperationID: active.OperationID,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	reserved, err := postgresStore.ReserveCommand(ctx, reserveRequest(t, json.RawMessage(`{"quantity":"0.001"}`)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := store.BeginOrderHandoffRequest{
-		HandoffID: "018f0000-0000-7000-8000-000000000090", CommandID: reserved.CommandID,
-		AccountID: testAccountID(t), RouteID: "spot",
-		Fence: active.Fence,
-	}
-	dispatching, err := postgresStore.MarkDispatching(ctx, store.MarkDispatchingRequest{
-		CommandID: reserved.CommandID, EventID: "018f0000-0000-7000-8000-000000000091",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	handoff, err := postgresStore.BeginOrderHandoff(ctx, request)
-	if err != nil || handoff.State != store.OrderHandoffStarted || handoff.ResolvedAt != nil {
-		t.Fatalf("started handoff=%+v err=%v", handoff, err)
-	}
-	replayed, err := postgresStore.BeginOrderHandoff(ctx, request)
-	if err != nil || replayed != handoff {
-		t.Fatalf("replayed handoff=%+v err=%v want=%+v", replayed, err, handoff)
-	}
-	if _, err := postgresStore.RecordVenueResult(ctx, store.RecordVenueResultRequest{
-		CommandID: reserved.CommandID, EventID: "018f0000-0000-7000-8000-000000000092",
-		NextState: domain.StateAccepted, ResourceVersion: dispatching.ResourceVersion,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := postgresStore.loadOrderHandoff(ctx, request.HandoffID)
-	if err != nil || resolved.State != store.OrderHandoffAccepted || resolved.ResolvedAt == nil {
-		t.Fatalf("resolved handoff=%+v err=%v", resolved, err)
 	}
 }
 
@@ -1100,27 +1048,4 @@ func runConcurrentReservations(ctx context.Context, postgresStore *Store, reques
 	}
 	wg.Wait()
 	return results, errs
-}
-
-func TestRegisterTestAccountRealPostgresSeedsTheDesiredAccountAuthority(t *testing.T) {
-	ctx := context.Background()
-	pool := newTestPool(t)
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	postgresStore := NewStore(pool)
-	registerTestAccount(t, ctx, postgresStore)
-
-	var venue, environment, requestedState string
-	err := pool.QueryRow(ctx, `
-		SELECT venue, venue_environment, requested_state
-		FROM gateway_desired_accounts
-		WHERE account_id = $1
-	`, testAccountID(t)).Scan(&venue, &environment, &requestedState)
-	if err != nil {
-		t.Fatalf("load desired account: %v", err)
-	}
-	if venue != "binance" || environment != "live" || requestedState != string(store.DesiredCreating) {
-		t.Fatalf("stored account metadata = %q/%q/%q", venue, environment, requestedState)
-	}
 }

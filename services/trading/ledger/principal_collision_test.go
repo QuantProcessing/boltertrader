@@ -37,10 +37,10 @@ func TestServiceSeparatesIdenticalEconomicIdentityAcrossPrincipals(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Funding != "1" || a.UnrealizedPnL != "3" || a.NetPnL != "4" {
+	if a.ByCurrency[0].Funding != "1" || a.ByCurrency[0].UnrealizedPnL != "3" || a.ByCurrency[0].NetPnL != "4" {
 		t.Fatalf("principal-a pnl=%+v", a)
 	}
-	if b.Funding != "2" || b.UnrealizedPnL != "4" || b.NetPnL != "6" {
+	if b.ByCurrency[0].Funding != "2" || b.ByCurrency[0].UnrealizedPnL != "4" || b.ByCurrency[0].NetPnL != "6" {
 		t.Fatalf("principal-b pnl=%+v", b)
 	}
 }

@@ -24,8 +24,10 @@ route profile. This discovery uses no account and no credentials; configuring
 an account later adds trading eligibility, not instruments. The gateway also
 exposes account-scoped `/v1/rules`, `/v1/capabilities`, and `/v1/risk-limits`.
 
-The Gateway exposes what the interface needs as `/api/v1/catalog/venues` and
-`/api/v1/catalog/instruments` through browser-shaped internal adapters. Instrument
+Auth Edge forwards `/api/v1/catalog/instruments` to the same
+`/internal/v1/catalog/instruments` contract used by the Go client: a `data` object
+with `revision`, `observedAt`, and `instruments`. Credential forms obtain venue
+metadata from `/api/v1/products/manual/venues`. Instrument
 identifiers are the canonical segmented form throughout — venue, environment,
 product, an optional settlement asset, then the canonical symbol — never a
 venue's own symbol string. See
@@ -51,17 +53,17 @@ There is one input identity and one output formatter:
   `instrument_identity_unresolved` are separate states.
 
 This contract is shared by the instrument picker, market data, candles,
-funding history, manual previews, arbitrage legs, positions, orders and fills.
+funding history, manual orders, positions, orders and fills.
 Adding another symbol parser in one of those consumers is a boundary violation.
 
 `/v1/risk-limits` answers honestly rather than approximately: venue risk limits
 are not normalized, so it reports that they are unavailable and says why. It is
 a placeholder with a reason attached, not a limit set you can trade against.
 
-Rules are enforced where they are known, which is at the gateway and again at
-the venue. The order ticket uses them to validate before it will seal a preview,
-so an operator sees "below minimum notional" while editing rather than as a
-rejection after confirming.
+Rules are enforced where they are known: in the browser for immediate guidance,
+in Trading when the command is accepted, and again at Gateway and the venue.
+Market-order rules that require an executable price remain venue-authoritative;
+the product does not add a blocking quote request merely to submit the order.
 
 ## Market data
 
@@ -145,13 +147,13 @@ third surface again, resolving on four product rows only; see
 
 Neither of the above is polled by the interface. Gateway serves public venue
 topics at `/api/v1/market/realtime/ws` and private change notifications at
-`/api/v1/account/realtime/ws`; Trading's `/api/v1/realtime/ws` carries only
-business projections. Latest-value topics start with a snapshot. Order-book
+`/api/v1/account/realtime/ws`. Latest-value topics start with a snapshot. Order-book
 depth is also WS-only: it starts with a WebSocket-derived snapshot and then
 uses native `delta` or self-contained `full` events. A gap emits
 `resync_required` before the native stream reopens with a new snapshot. Account
-events intentionally have no cursor replay; reconnecting clients reread
-authoritative REST projections.
+events intentionally have no cursor replay, generation, or resync state;
+reconnecting clients keep their timestamp-merged rows while the fixed
+60-second REST reconciliation repairs anything missed.
 
 ## What is available where
 

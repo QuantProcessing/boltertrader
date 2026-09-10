@@ -6,20 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
-	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
 )
 
 func TestTradingStoresImplementPlatformContracts(t *testing.T) {
-	var _ reservations.Store = (*ReservationStore)(nil)
 	var _ orders.Store = (*CommandStore)(nil)
 	var _ ledger.Store = (*LedgerStore)(nil)
 	var _ portfolio.Store = (*PortfolioStore)(nil)
-	var _ accountpositions.Store = (*AccountPositionStore)(nil)
-	if NewReservationStore(nil) != nil || NewCommandStore(nil) != nil || NewLedgerStore(nil) != nil || NewPortfolioStore(nil) != nil || NewAccountPositionStore(nil) != nil {
+	if NewCommandStore(nil) != nil || NewLedgerStore(nil) != nil || NewPortfolioStore(nil) != nil {
 		t.Fatal("nil database accepted")
 	}
 }
@@ -53,7 +49,7 @@ func TestPortfolioStorePersistsFillAndPositionInOneTransaction(t *testing.T) {
 		t.Fatal("portfolio fill transaction boundary missing")
 	}
 	applyFill := implementation[start : start+end]
-	for _, required := range []string{"BeginTx", "portfolio_fills", "ON CONFLICT (principal_id,fill_id) DO NOTHING", "positions", "upsertPortfolioPosition", "tx.Commit"} {
+	for _, required := range []string{"BeginTx", "portfolio_fills", "ON CONFLICT (principal_id,account_id,instrument_id,fill_id) DO NOTHING", "positions", "upsertPortfolioPosition", "tx.Commit"} {
 		if !strings.Contains(applyFill, required) {
 			t.Errorf("portfolio fill transaction missing %q", required)
 		}
@@ -99,24 +95,5 @@ func TestLedgerFundingSupersessionIsAtomicAndUnrealizedIsMonotonic(t *testing.T)
 	}
 	if !strings.Contains(implementation, "WHERE unrealized_pnl.as_of < EXCLUDED.as_of") {
 		t.Error("unrealized persistence can overwrite a newer observation")
-	}
-}
-
-func TestCommandStoreAtomicallyConsumesReservationAfterReplayCheck(t *testing.T) {
-	source, err := os.ReadFile("trading.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	implementation := string(source)
-	start := strings.Index(implementation, "func (store *CommandStore) ReserveWithReservation")
-	if start < 0 {
-		t.Fatal("command store has no atomic reservation path")
-	}
-	atomicStore := implementation[start:]
-	replay := strings.Index(atomicStore, "if rows == 0")
-	fence := strings.Index(atomicStore, "UPDATE reservations SET status='consumed'")
-	commit := strings.Index(atomicStore, "tx.Commit()")
-	if replay < 0 || fence < 0 || commit < 0 || replay > fence || fence > commit {
-		t.Fatal("reservation command path does not replay, fence, and commit in order")
 	}
 }

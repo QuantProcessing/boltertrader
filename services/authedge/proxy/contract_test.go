@@ -47,7 +47,7 @@ func TestTableMatchesWhatTradingServes(t *testing.T) {
 func TestTableMatchesWhatTheGatewayServes(t *testing.T) {
 	t.Parallel()
 	var want []string
-	for _, route := range gatewayhttp.InternalAccountLifecycleRoutes() {
+	for _, route := range gatewayhttp.InternalAccountRoutes() {
 		want = append(want, route.Method+" "+route.Pattern)
 	}
 	for _, route := range gatewayhttp.InternalPublicMarketRoutes() {
@@ -161,7 +161,6 @@ func TestRealtimeWebSocketsFollowDataOwnership(t *testing.T) {
 	}{
 		"GET /api/v1/market/realtime/ws":  {Gateway, true},
 		"GET /api/v1/account/realtime/ws": {Gateway, false},
-		"GET /api/v1/realtime/ws":         {Trading, true},
 	}
 	found := make(map[string]bool)
 	for _, route := range Routes() {
@@ -188,13 +187,10 @@ func TestPublicRoutesAreExactlyTheExpectedReads(t *testing.T) {
 	want := []string{
 		"GET /api/v1/candles",
 		"GET /api/v1/catalog/instruments",
-		"GET /api/v1/catalog/venues",
 		"GET /api/v1/funding-board",
 		"GET /api/v1/funding-history",
 		"GET /api/v1/market-data",
 		"GET /api/v1/market/realtime/ws",
-		"GET /api/v1/products/arbitrage/opportunities",
-		"GET /api/v1/realtime/ws",
 		"GET /api/v1/system/readiness",
 		"GET /api/v1/system/status",
 		"GET /api/v1/venues/connectivity",

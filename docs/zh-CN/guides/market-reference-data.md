@@ -21,8 +21,9 @@ Gateway 直接按每个受信 route profile 加载并刷新公开 Catalog；这�
 凭证。之后配置账户只会增加交易资格，不会增加 instrument。Gateway 还提供账户范围内的
 `/v1/rules`、`/v1/capabilities` 和 `/v1/risk-limits`。
 
-Gateway 通过浏览器请求适配提供 `/api/v1/catalog/venues` 与
-`/api/v1/catalog/instruments`。Instrument 标识全程使用规范的分段形式——venue、
+Auth Edge 将 `/api/v1/catalog/instruments` 转发到 Go 客户端使用的同一
+`/internal/v1/catalog/instruments` 契约；`data` 包含 `revision`、`observedAt` 与
+`instruments`。凭证表单从 `/api/v1/products/manual/venues` 获取交易所描述。Instrument 标识全程使用规范的分段形式——venue、
 environment、product、可选的结算资产，然后才是规范 symbol——绝不使用某个 venue 自己的 symbol
 字符串。见[Account 与 instrument](../concepts/accounts-instruments.md)。
 
@@ -41,15 +42,15 @@ environment、product、可选的结算资产，然后才是规范 symbol——�
 - 账户只增加可交易性，不负责创造 instrument，也不负责判断它是否上架。因此
   `account_unreachable` 与 `instrument_identity_unresolved` 是两种独立状态。
 
-Instrument picker、行情、K 线、资金费历史、手工下单预览、套利腿、持仓、订单和成交都遵守这份
+Instrument picker、行情、K 线、资金费历史、手工下单、持仓、订单和成交都遵守这份
 契约；任何消费方再单独添加 symbol parser，都属于越过身份边界。
 
 `/v1/risk-limits` 给的是诚实的答案而不是近似的答案：交易所风控限额没有被规范化，于是它报告
 「不可用」并说明原因。它是一个附了理由的占位，而不是一份你可以据以交易的限额表。
 
-规则在知道它的地方被执行，也就是 gateway 这一层，以及 venue 那一层。下单票在封签预览之前
-就用它们做校验，所以操作者是在编辑过程中看到「低于最小名义额」，而不是确认之后才收到一个
-拒绝。
+规则在知道它的地方被执行：浏览器负责即时提示，Trading 在接受命令时校验，Gateway 与 venue
+再次作为最终权威。需要可执行价格才能判断的市价单规则仍由 venue 确认，系统不会为了允许提交
+而增加一次阻塞式报价请求。
 
 ## 市场数据
 
@@ -113,10 +114,10 @@ Instrument picker、行情、K 线、资金费历史、手工下单预览、套�
 ## 实时更新
 
 上面两者都不由界面轮询。Gateway 的 `/api/v1/market/realtime/ws` 承载公共市场 topic，
-`/api/v1/account/realtime/ws` 承载私有变更通知；Trading 的 `/api/v1/realtime/ws` 只承载业务
-投影。最新值 topic 首帧为 snapshot；订单簿同样只走 WS，以 WebSocket 快照开始，随后接收
+`/api/v1/account/realtime/ws` 承载私有变更通知。最新值 topic 首帧为 snapshot；订单簿同样只走 WS，以 WebSocket 快照开始，随后接收
 原生 `delta` 或自包含 `full`。gap 时发送 `resync_required`，原生流重开后给出新快照。
-账户事件不做 cursor replay，重连后读取权威 REST 投影。
+账户事件不做 cursor replay、generation 或 resync 状态；重连期间保留按时间戳合并的行，
+固定 60 秒 REST reconciliation 会修复漏掉的变化。
 
 ## 什么在哪里可用
 

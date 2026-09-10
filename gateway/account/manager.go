@@ -25,7 +25,6 @@ var (
 	ErrProductMismatch   = errors.New("account product mismatch")
 	ErrManagerClosed     = errors.New("account manager closed")
 	ErrRuntimeExists     = errors.New("runtime account already exists")
-	ErrRuntimeRevision   = errors.New("runtime desired-state revision conflict")
 	ErrRuntimeBlocked    = errors.New("runtime transition blocked")
 	ErrStaleWriteFence   = errors.New("stale runtime write fence")
 	ErrLiveWriteDisabled = errors.New("live private writes disabled")
@@ -36,86 +35,39 @@ const (
 	ReasonClientUnavailable      = "client_unavailable"
 	ReasonExactLookupUnavailable = "exact_lookup_unavailable"
 	ReasonManagerClosed          = "manager_closed"
-	ReasonPrivateStreamGap       = "private_stream_gap"
 )
 
 type Options struct {
-	Secrets                 secret.Provider
-	ExchangeCatalog         exchange.InstrumentCatalog
-	GatewayCatalog          *catalog.Service
-	HTTPClient              *http.Client
-	RefreshInterval         time.Duration
-	AllowLiveWrites         bool
-	Lifecycle               RuntimeLifecycle
+	Secrets         secret.Provider
+	ExchangeCatalog exchange.InstrumentCatalog
+	GatewayCatalog  *catalog.Service
+	HTTPClient      *http.Client
+	RefreshInterval time.Duration
+	AllowLiveWrites bool
+
 	RuntimeGroupBuilder     RuntimeGroupBuilder
-	CredentialResolver      ScopedCredentialResolver
-	ProfileRegistry         *ProfileRegistry
-	RuntimeStore            RuntimeStateStore
 	PublicConnectors        *publicconn.Registry
 	RequirePublicConnectors bool
 }
 
-type RuntimeState string
-
-const (
-	RuntimeStateActive   RuntimeState = "active"
-	RuntimeStateDisabled RuntimeState = "disabled"
-	RuntimeStateDraining RuntimeState = "draining"
-)
-
-type DesiredRuntime struct {
-	AccountID            domain.AccountID `json:"accountId"`
-	RuntimeID            string           `json:"runtimeId"`
-	Venue                string           `json:"venue"`
-	VenueEnvironment     string           `json:"venueEnvironment"`
-	SecretRef            secret.OpaqueRef `json:"secretRef"`
-	DesiredStateRevision uint64           `json:"desiredStateRevision"`
-	RuntimeGeneration    uint64           `json:"runtimeGeneration"`
-	CredentialVersion    uint64           `json:"credentialVersion"`
-	RequestedState       RuntimeState     `json:"requestedState"`
-	RotationFence        string           `json:"rotationFence,omitempty"`
-}
-
-func (desired DesiredRuntime) Fence() WriteFence {
-	return WriteFence{
-		AccountID: desired.AccountID, RuntimeID: desired.RuntimeID,
-	}
-}
-
 type WriteFence struct {
-	AccountID            domain.AccountID `json:"accountId"`
-	RuntimeID            string           `json:"runtimeId"`
-	DesiredStateRevision uint64           `json:"desiredStateRevision"`
-	RuntimeGeneration    uint64           `json:"runtimeGeneration"`
-	CredentialVersion    uint64           `json:"credentialVersion"`
+	AccountID domain.AccountID `json:"accountId"`
+	RuntimeID string           `json:"runtimeId"`
 }
 
-type RuntimeBlockers struct {
-	OpenOrders        int `json:"openOrders"`
-	Positions         int `json:"positions"`
-	UncertainCommands int `json:"uncertainCommands"`
-}
-
-func (blockers RuntimeBlockers) Any() bool {
-	return blockers.OpenOrders > 0 || blockers.Positions > 0 || blockers.UncertainCommands > 0
-}
-
+// RuntimeAccount reports the local connection; it is not desired state.
 type RuntimeAccount struct {
-	Desired                         DesiredRuntime `json:"desired"`
-	State                           RuntimeState   `json:"state"`
-	Ready                           bool           `json:"ready"`
-	Reason                          string         `json:"reason,omitempty"`
-	RuntimeVersion                  uint64         `json:"runtimeVersion"`
-	LastAppliedDesiredStateRevision uint64         `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    uint64         `json:"lastAppliedRuntimeGeneration"`
-	ObservedAt                      time.Time      `json:"observedAt"`
+	AccountID        domain.AccountID `json:"accountId"`
+	RuntimeID        string           `json:"runtimeId"`
+	Venue            string           `json:"venue"`
+	VenueEnvironment string           `json:"venueEnvironment"`
+	Ready            bool             `json:"ready"`
+	Reason           string           `json:"reason,omitempty"`
+	ObservedAt       time.Time        `json:"observedAt"`
 }
 
-type RuntimeLifecycle interface {
-	Validate(context.Context, DesiredRuntime) error
-	Activate(context.Context, DesiredRuntime) error
-	Deactivate(context.Context, domain.AccountID) error
-	Blockers(context.Context, domain.AccountID) (RuntimeBlockers, error)
+func (runtime RuntimeAccount) Fence() WriteFence {
+	return WriteFence{AccountID: runtime.AccountID, RuntimeID: runtime.RuntimeID}
 }
 
 type Resource struct {
@@ -147,27 +99,24 @@ type RuntimeAccountObserver interface {
 }
 
 type Manager struct {
-	mu                      sync.RWMutex
-	runtimeMu               sync.Mutex
-	entries                 map[domain.AccountID]*entry
-	order                   []domain.AccountID
-	catalog                 *catalog.Service
-	closed                  bool
-	closeMu                 sync.Mutex
-	cleanup                 map[domain.AccountID]bool
-	refreshInterval         time.Duration
-	refreshCancel           context.CancelFunc
-	refreshDone             chan struct{}
-	started                 bool
-	runtimes                map[domain.AccountID]RuntimeAccount
-	allowLiveWrites         bool
-	lifecycle               RuntimeLifecycle
+	mu              sync.RWMutex
+	runtimeMu       sync.Mutex
+	entries         map[domain.AccountID]*entry
+	order           []domain.AccountID
+	catalog         *catalog.Service
+	closed          bool
+	closeMu         sync.Mutex
+	cleanup         map[domain.AccountID]bool
+	refreshInterval time.Duration
+	refreshCancel   context.CancelFunc
+	refreshDone     chan struct{}
+	started         bool
+	runtimes        map[domain.AccountID]RuntimeAccount
+	allowLiveWrites bool
+
 	groupMu                 sync.Mutex
 	groups                  map[domain.AccountID]*accountRuntime
 	groupBuilder            RuntimeGroupBuilder
-	credentialResolver      ScopedCredentialResolver
-	profileRegistry         *ProfileRegistry
-	runtimeStore            RuntimeStateStore
 	publicConnectors        *publicconn.Registry
 	requirePublicConnectors bool
 	observerMu              sync.RWMutex
@@ -193,7 +142,7 @@ type clientBuilder func(context.Context, config.AccountConfig, Options) (clientH
 func NewManager(ctx context.Context, accounts []config.AccountConfig, options Options) (*Manager, error) {
 	if options.GatewayCatalog == nil || options.HTTPClient == nil ||
 		(len(accounts) > 0 && (options.Secrets == nil || options.ExchangeCatalog == nil)) ||
-		(options.RequirePublicConnectors && (options.PublicConnectors == nil || options.RuntimeGroupBuilder == nil || options.CredentialResolver == nil)) {
+		(options.RequirePublicConnectors && (options.PublicConnectors == nil || options.RuntimeGroupBuilder == nil)) {
 		return nil, fmt.Errorf("account manager options are incomplete")
 	}
 	return newManager(ctx, accounts, options, buildFactoryClient)
@@ -210,24 +159,18 @@ func newManager(ctx context.Context, accounts []config.AccountConfig, options Op
 		return nil, fmt.Errorf("account manager dependencies are incomplete")
 	}
 	manager := &Manager{
-		entries:                 make(map[domain.AccountID]*entry, len(accounts)),
-		order:                   make([]domain.AccountID, 0, len(accounts)),
-		catalog:                 options.GatewayCatalog,
-		cleanup:                 make(map[domain.AccountID]bool, len(accounts)),
-		refreshInterval:         options.RefreshInterval,
-		runtimes:                make(map[domain.AccountID]RuntimeAccount),
-		allowLiveWrites:         options.AllowLiveWrites,
-		lifecycle:               options.Lifecycle,
+		entries:         make(map[domain.AccountID]*entry, len(accounts)),
+		order:           make([]domain.AccountID, 0, len(accounts)),
+		catalog:         options.GatewayCatalog,
+		cleanup:         make(map[domain.AccountID]bool, len(accounts)),
+		refreshInterval: options.RefreshInterval,
+		runtimes:        make(map[domain.AccountID]RuntimeAccount),
+		allowLiveWrites: options.AllowLiveWrites,
+
 		groups:                  make(map[domain.AccountID]*accountRuntime),
 		groupBuilder:            options.RuntimeGroupBuilder,
-		credentialResolver:      options.CredentialResolver,
-		profileRegistry:         options.ProfileRegistry,
-		runtimeStore:            options.RuntimeStore,
 		publicConnectors:        options.PublicConnectors,
 		requirePublicConnectors: options.RequirePublicConnectors,
-	}
-	if manager.profileRegistry == nil {
-		manager.profileRegistry = NewProfileRegistry(nil)
 	}
 	if manager.refreshInterval <= 0 {
 		manager.refreshInterval = 2 * time.Minute
@@ -564,7 +507,7 @@ func (manager *Manager) statusLocked(accountID domain.AccountID, _ bool) (Status
 	}
 	status.ReadReady = true
 	// No row is promoted for writes until exact reconciliation evidence exists.
-	status.WriteReady = entry.capability.WriteReadyDefault
+	status.WriteReady = entry.capability.TradingSupported
 	if !status.WriteReady {
 		status.Reason = ReasonCapabilityNotPromoted
 		return status, nil
@@ -805,7 +748,7 @@ func (manager *Manager) dynamicRouteStatus(access activeRouteAccess, enforceWrit
 		Environment: access.environment, Settlement: access.definition.SettlementAsset,
 	}
 	status := Status{Resource: resource}
-	clientRoute, clientReady := access.handle.(CandidateClientRoute)
+	clientRoute, clientReady := access.handle.(ConnectionClientRoute)
 	status.ClientReady = clientReady
 	if access.publicLease != nil {
 		status.Catalog = access.publicLease.Status()
@@ -816,10 +759,7 @@ func (manager *Manager) dynamicRouteStatus(access activeRouteAccess, enforceWrit
 		status.Reason = status.Catalog.Reason
 	} else {
 		status.ReadReady = true
-		row, promoted := routeCapability(access.venue, access.definition.Product, access.definition.SettlementAsset)
 		switch {
-		case !promoted || !row.WriteReadyDefault:
-			status.Reason = ReasonCapabilityNotPromoted
 		case !clientRoute.ExactLookupReady():
 			status.Reason = ReasonExactLookupUnavailable
 		case enforceWritePolicy && !manager.allowLiveWrites:
@@ -843,201 +783,6 @@ func routeCapability(venue exchange.Venue, product, settlement string) (capabili
 	return capability.Row{}, false
 }
 
-func (manager *Manager) CreateRuntime(ctx context.Context, desired DesiredRuntime) (RuntimeAccount, error) {
-	if err := manager.validateDesired(desired); err != nil {
-		return RuntimeAccount{}, err
-	}
-	if desired.RuntimeGeneration != 1 || desired.CredentialVersion != 1 || desired.RequestedState != RuntimeStateActive {
-		return RuntimeAccount{}, ErrRuntimeRevision
-	}
-	manager.runtimeMu.Lock()
-	defer manager.runtimeMu.Unlock()
-	manager.mu.RLock()
-	_, exists := manager.runtimes[desired.AccountID]
-	closed := manager.closed
-	manager.mu.RUnlock()
-	if closed {
-		return RuntimeAccount{}, ErrManagerClosed
-	}
-	if exists {
-		return RuntimeAccount{}, ErrRuntimeExists
-	}
-	if err := manager.validateAndActivate(ctx, desired); err != nil {
-		return RuntimeAccount{}, err
-	}
-	runtime := appliedRuntime(desired, RuntimeStateActive, true, 1)
-	manager.mu.Lock()
-	manager.runtimes[desired.AccountID] = runtime
-	manager.mu.Unlock()
-	return runtime, nil
-}
-
-func (manager *Manager) ValidateRuntime(ctx context.Context, desired DesiredRuntime) error {
-	if err := manager.validateDesired(desired); err != nil {
-		return err
-	}
-	if manager.lifecycle == nil {
-		return fmt.Errorf("runtime lifecycle unavailable")
-	}
-	if err := manager.lifecycle.Validate(ctx, desired); err != nil {
-		return fmt.Errorf("runtime validation failed")
-	}
-	return nil
-}
-
-func (manager *Manager) RotateRuntime(ctx context.Context, desired DesiredRuntime, expectedRevision uint64) (RuntimeAccount, error) {
-	if err := manager.validateDesired(desired); err != nil {
-		return RuntimeAccount{}, err
-	}
-	if desired.RequestedState != RuntimeStateActive || strings.TrimSpace(desired.RotationFence) == "" {
-		return RuntimeAccount{}, ErrRuntimeRevision
-	}
-	manager.runtimeMu.Lock()
-	defer manager.runtimeMu.Unlock()
-	manager.mu.RLock()
-	current, exists := manager.runtimes[desired.AccountID]
-	closed := manager.closed
-	manager.mu.RUnlock()
-	if closed {
-		return RuntimeAccount{}, ErrManagerClosed
-	}
-	if manager.lifecycle == nil {
-		return RuntimeAccount{}, fmt.Errorf("runtime lifecycle unavailable")
-	}
-	if !exists {
-		return RuntimeAccount{}, ErrUnknownAccount
-	}
-	if uint64(expectedRevision) < current.Desired.DesiredStateRevision ||
-		desired.DesiredStateRevision != expectedRevision+1 ||
-		desired.RuntimeGeneration != current.Desired.RuntimeGeneration+1 ||
-		desired.CredentialVersion != current.Desired.CredentialVersion+1 {
-		return RuntimeAccount{}, ErrRuntimeRevision
-	}
-	if err := manager.validateAndActivate(ctx, desired); err != nil {
-		return RuntimeAccount{}, err
-	}
-	runtime := appliedRuntime(desired, RuntimeStateActive, true, current.RuntimeVersion+1)
-	manager.mu.Lock()
-	manager.runtimes[desired.AccountID] = runtime
-	manager.mu.Unlock()
-	return runtime, nil
-}
-
-func (manager *Manager) DrainRuntime(ctx context.Context, accountID domain.AccountID, expectedRevision, nextRevision uint64) (RuntimeAccount, error) {
-	return manager.transitionRuntime(ctx, accountID, expectedRevision, nextRevision, RuntimeStateDraining, false)
-}
-
-func (manager *Manager) DisableRuntime(ctx context.Context, accountID domain.AccountID, expectedRevision, nextRevision uint64) (RuntimeAccount, error) {
-	return manager.transitionRuntime(ctx, accountID, expectedRevision, nextRevision, RuntimeStateDisabled, true)
-}
-
-func (manager *Manager) transitionRuntime(ctx context.Context, accountID domain.AccountID, expectedRevision, nextRevision uint64, state RuntimeState, deactivate bool) (RuntimeAccount, error) {
-	manager.runtimeMu.Lock()
-	defer manager.runtimeMu.Unlock()
-	current, err := manager.runtimeForMutation(accountID, expectedRevision)
-	if err != nil {
-		return RuntimeAccount{}, err
-	}
-	if nextRevision != current.Desired.DesiredStateRevision+1 {
-		return RuntimeAccount{}, ErrRuntimeRevision
-	}
-	blockers, err := manager.lifecycle.Blockers(ctx, accountID)
-	if err != nil {
-		return RuntimeAccount{}, fmt.Errorf("runtime blocker check failed")
-	}
-	if blockers.Any() {
-		return RuntimeAccount{}, ErrRuntimeBlocked
-	}
-	if deactivate {
-		if err := manager.lifecycle.Deactivate(ctx, accountID); err != nil {
-			return RuntimeAccount{}, fmt.Errorf("runtime deactivation failed")
-		}
-	}
-	current.Desired.DesiredStateRevision = nextRevision
-	current.Desired.RequestedState = state
-	current.State = state
-	current.Ready = !deactivate
-	current.RuntimeVersion++
-	current.LastAppliedDesiredStateRevision = current.Desired.DesiredStateRevision
-	current.LastAppliedRuntimeGeneration = current.Desired.RuntimeGeneration
-	current.ObservedAt = time.Now().UTC()
-	manager.mu.Lock()
-	manager.runtimes[accountID] = current
-	manager.mu.Unlock()
-	return current, nil
-}
-
-func (manager *Manager) RemoveRuntime(ctx context.Context, accountID domain.AccountID, expectedRevision uint64) error {
-	manager.runtimeMu.Lock()
-	defer manager.runtimeMu.Unlock()
-	if _, err := manager.runtimeForMutation(accountID, expectedRevision); err != nil {
-		return err
-	}
-	blockers, err := manager.lifecycle.Blockers(ctx, accountID)
-	if err != nil {
-		return fmt.Errorf("runtime blocker check failed")
-	}
-	if blockers.Any() {
-		return ErrRuntimeBlocked
-	}
-	if err := manager.lifecycle.Deactivate(ctx, accountID); err != nil {
-		return fmt.Errorf("runtime deactivation failed")
-	}
-	manager.mu.Lock()
-	delete(manager.runtimes, accountID)
-	manager.mu.Unlock()
-	return nil
-}
-
-func (manager *Manager) RestoreRuntimes(ctx context.Context, desiredRuntimes []DesiredRuntime) error {
-	manager.runtimeMu.Lock()
-	defer manager.runtimeMu.Unlock()
-	seen := make(map[domain.AccountID]struct{}, len(desiredRuntimes))
-	restored := make([]domain.AccountID, 0, len(desiredRuntimes))
-	for _, desired := range desiredRuntimes {
-		if err := manager.validateDesired(desired); err != nil {
-			manager.rollbackRestored(ctx, restored)
-			return err
-		}
-		if _, duplicate := seen[desired.AccountID]; duplicate {
-			manager.rollbackRestored(ctx, restored)
-			return ErrRuntimeExists
-		}
-		seen[desired.AccountID] = struct{}{}
-		runtime := appliedRuntime(desired, desired.RequestedState, false, 1)
-		if desired.RequestedState == RuntimeStateActive {
-			if err := manager.validateAndActivate(ctx, desired); err != nil {
-				manager.rollbackRestored(ctx, restored)
-				return err
-			}
-			runtime.Ready = true
-			restored = append(restored, desired.AccountID)
-		}
-		manager.mu.Lock()
-		manager.runtimes[desired.AccountID] = runtime
-		manager.mu.Unlock()
-	}
-	return nil
-}
-
-func appliedRuntime(desired DesiredRuntime, state RuntimeState, ready bool, version uint64) RuntimeAccount {
-	return RuntimeAccount{
-		Desired: desired, State: state, Ready: ready, RuntimeVersion: version,
-		LastAppliedDesiredStateRevision: desired.DesiredStateRevision,
-		LastAppliedRuntimeGeneration:    desired.RuntimeGeneration,
-		ObservedAt:                      time.Now().UTC(),
-	}
-}
-
-func (manager *Manager) rollbackRestored(ctx context.Context, accountIDs []domain.AccountID) {
-	for index := len(accountIDs) - 1; index >= 0; index-- {
-		_ = manager.lifecycle.Deactivate(ctx, accountIDs[index])
-		manager.mu.Lock()
-		delete(manager.runtimes, accountIDs[index])
-		manager.mu.Unlock()
-	}
-}
-
 func (manager *Manager) Runtime(accountID domain.AccountID) (RuntimeAccount, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
@@ -1055,7 +800,7 @@ func (manager *Manager) Runtimes() []RuntimeAccount {
 		result = append(result, runtime)
 	}
 	manager.mu.RUnlock()
-	sort.Slice(result, func(i, j int) bool { return result[i].Desired.AccountID < result[j].Desired.AccountID })
+	sort.Slice(result, func(i, j int) bool { return result[i].AccountID < result[j].AccountID })
 	return result
 }
 
@@ -1075,9 +820,6 @@ func (manager *Manager) RuntimeReadiness() (bool, int, int) {
 	}
 	active, ready := 0, 0
 	for _, runtime := range manager.runtimes {
-		if runtime.State != RuntimeStateActive {
-			continue
-		}
 		active++
 		if runtime.Ready {
 			ready++
@@ -1096,7 +838,7 @@ func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 	allowLiveWrites := manager.allowLiveWrites
 	manager.mu.RUnlock()
 	if ok {
-		if runtime.State != RuntimeStateActive || runtime.Desired.Fence() != fence {
+		if !runtime.Ready || runtime.Fence() != fence {
 			return ErrStaleWriteFence
 		}
 	} else {
@@ -1116,67 +858,11 @@ func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 	return nil
 }
 
-func (manager *Manager) runtimeForMutation(accountID domain.AccountID, expectedRevision uint64) (RuntimeAccount, error) {
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	if manager.closed {
-		return RuntimeAccount{}, ErrManagerClosed
-	}
-	if manager.lifecycle == nil {
-		return RuntimeAccount{}, fmt.Errorf("runtime lifecycle unavailable")
-	}
-	runtime, ok := manager.runtimes[accountID]
-	if !ok {
-		return RuntimeAccount{}, ErrUnknownAccount
-	}
-	if runtime.Desired.DesiredStateRevision != expectedRevision {
-		return RuntimeAccount{}, ErrRuntimeRevision
-	}
-	return runtime, nil
-}
-
-func (manager *Manager) validateDesired(desired DesiredRuntime) error {
-	if err := desired.AccountID.Validate(); err != nil {
-		return err
-	}
-	if err := config.ValidateRuntimeIdentity(string(desired.AccountID), desired.Venue, desired.VenueEnvironment); err != nil {
-		return err
-	}
-	if desired.SecretRef.IsZero() || desired.DesiredStateRevision == 0 || desired.RuntimeGeneration == 0 || desired.CredentialVersion == 0 {
-		return fmt.Errorf("runtime desired state is incomplete")
-	}
-	switch desired.RequestedState {
-	case RuntimeStateActive, RuntimeStateDisabled, RuntimeStateDraining:
-		return nil
-	default:
-		return fmt.Errorf("invalid runtime requested state")
-	}
-}
-
-func (manager *Manager) validateAndActivate(ctx context.Context, desired DesiredRuntime) error {
-	if manager.lifecycle == nil {
-		return fmt.Errorf("runtime lifecycle unavailable")
-	}
-	if err := manager.lifecycle.Validate(ctx, desired); err != nil {
-		return fmt.Errorf("runtime validation failed")
-	}
-	if err := manager.lifecycle.Activate(ctx, desired); err != nil {
-		return fmt.Errorf("runtime activation failed")
-	}
-	return nil
-}
-
 func (manager *Manager) Close() error {
 	manager.closeMu.Lock()
 	defer manager.closeMu.Unlock()
 	manager.mu.Lock()
 	manager.closed = true
-	runtimeIDs := make([]domain.AccountID, 0, len(manager.runtimes))
-	for accountID, runtime := range manager.runtimes {
-		if runtime.State == RuntimeStateActive {
-			runtimeIDs = append(runtimeIDs, accountID)
-		}
-	}
 	manager.mu.Unlock()
 	if manager.refreshCancel != nil {
 		manager.refreshCancel()
@@ -1186,13 +872,6 @@ func (manager *Manager) Close() error {
 		manager.refreshDone = nil
 	}
 	var failed bool
-	if manager.lifecycle != nil {
-		for _, accountID := range runtimeIDs {
-			if err := manager.lifecycle.Deactivate(context.Background(), accountID); err != nil {
-				failed = true
-			}
-		}
-	}
 	manager.groupMu.Lock()
 	groups := make([]*RuntimeGroup, 0)
 	seenGroups := make(map[*RuntimeGroup]struct{})
@@ -1208,10 +887,6 @@ func (manager *Manager) Close() error {
 			groups = append(groups, group)
 		}
 		appendGroup(runtime.activeGroup)
-		appendGroup(runtime.candidate)
-		for _, retiring := range runtime.retiring {
-			appendGroup(retiring)
-		}
 	}
 	manager.groupMu.Unlock()
 	for _, group := range groups {

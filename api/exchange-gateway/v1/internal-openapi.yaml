@@ -15,27 +15,23 @@ paths:
     get: {operationId: listInternalPositions, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/runtime/uncertain-commands:
     get: {operationId: listInternalUncertainCommands, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/accounts/desired:
+  /internal/v1/accounts:
+    get: {operationId: listAccounts, responses: {'200': {$ref: '#/components/responses/Accounts'}, default: {$ref: '#/components/responses/Error'}}}
+    post:
+      operationId: addAccount
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AddAccount'}}}}
+      responses: {'201': {$ref: '#/components/responses/Account'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/{accountId}:
     get:
-      operationId: listDesiredAccounts
-      responses: {'200': {$ref: '#/components/responses/DesiredAccounts'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}:
-    get:
-      operationId: getDesiredAccount
+      operationId: getAccount
       parameters: [{$ref: '#/components/parameters/AccountID'}]
-      responses: {'200': {$ref: '#/components/responses/RuntimeView'}, '404': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}/operations/{operationId}:
-    put:
-      operationId: applyDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
-      requestBody: {$ref: '#/components/requestBodies/DesiredApply'}
-      responses: {'200': {$ref: '#/components/responses/RuntimeView'}, '202': {$ref: '#/components/responses/RuntimeView'}, '409': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}/retirements/{operationId}:
-    put:
-      operationId: retireDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
-      requestBody: {$ref: '#/components/requestBodies/RetireAccount'}
-      responses: {'200': {$ref: '#/components/responses/RuntimeView'}, '202': {$ref: '#/components/responses/RuntimeView'}, '409': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+      responses: {'200': {$ref: '#/components/responses/Account'}, default: {$ref: '#/components/responses/Error'}}
+    delete:
+      operationId: deleteAccount
+      description: Disconnect locally and delete the saved credential. Does not cancel orders or close venue positions.
+      parameters: [{$ref: '#/components/parameters/AccountID'}]
+      responses: {'204': {description: Local account deleted}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/runtime:
     get: {operationId: listRuntimeAccounts, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/accounts/runtime/{accountId}:
@@ -52,20 +48,21 @@ paths:
     get: {operationId: listInternalVenues, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/catalog/instruments:
     get: {operationId: listInternalInstruments, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/browser/catalog/venues:
-    get: {operationId: listBrowserVenues, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/browser/catalog/instruments:
-    get: {operationId: listBrowserInstruments, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/browser/market-data:
-    get: {operationId: getBrowserMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/browser/candles:
-    get: {operationId: getBrowserCandles, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
-  /internal/v1/browser/funding-history:
-    get: {operationId: getBrowserFundingHistory, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/market-data:
-    get: {operationId: getInternalMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+    get:
+      operationId: getInternalMarketData
+      description: Canonical instrument identity only; venue, environment and product are resolved from the catalog. Extra or duplicate query fields are rejected.
+      parameters:
+        - {name: instrumentId, in: query, required: true, schema: {type: string}}
+      responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/candles:
-    get: {operationId: getInternalCandles, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+    get:
+      operationId: getInternalCandles
+      parameters:
+        - {name: instrumentId, in: query, required: true, schema: {type: string}}
+        - {name: interval, in: query, required: true, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500}}
+      responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/market/ws:
     get:
       operationId: streamInternalMarket
@@ -81,7 +78,7 @@ paths:
       operationId: streamInternalAccountEvents
       responses:
         '101':
-          description: Live Gateway account change notifications. The client reads authoritative REST snapshots after each checkpoint or reconnect; no account event replay or venue sequence is required.
+          description: Live Gateway account change notifications. Consumers load an initial authoritative REST snapshot and reconcile on a fixed interval; no checkpoint, replay cursor, venue sequence, or reconnect-triggered read is required.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/RealtimeMessage'}
@@ -95,7 +92,14 @@ paths:
   /internal/v1/funding-board:
     get: {operationId: getInternalFundingBoard, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/funding-history:
-    get: {operationId: getInternalFundingHistory, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+    get:
+      operationId: getInternalFundingHistory
+      description: Exact funding settlement range; applications translate their chosen display windows into these bounds.
+      parameters:
+        - {name: instrumentId, in: query, required: true, schema: {type: string}}
+        - {name: since, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: until, in: query, required: true, schema: {type: string, format: date-time}}
+      responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/venues/connectivity:
     get: {operationId: getInternalVenueConnectivity, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
 components:
@@ -103,11 +107,13 @@ components:
     gatewayAdapterAuth: {type: http, scheme: bearer}
   parameters:
     AccountID: {name: accountId, in: path, required: true, schema: {type: string, minLength: 1}}
-    OperationID: {name: operationId, in: path, required: true, schema: {type: string, format: uuid}}
-  requestBodies:
-    DesiredApply: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredApplyRequest'}}}}
-    RetireAccount: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RetireRequest'}}}}
   responses:
+    Account:
+      description: Validated account metadata. Credentials never appear in responses.
+      content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [account], properties: {account: {$ref: '#/components/schemas/Account'}}}}}}}
+    Accounts:
+      description: Saved accounts
+      content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [accounts], properties: {accounts: {type: array, items: {$ref: '#/components/schemas/Account'}}}}}}}}
     RuntimeStatus:
       description: detailed runtime status
       content:
@@ -126,8 +132,6 @@ components:
             additionalProperties: false
             required: [data]
             properties: {data: {$ref: '#/components/schemas/RuntimeReadiness'}}
-    DesiredRuntime: {description: redacted desired runtime, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}
-    DesiredAccounts: {description: desired accounts, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}}
     RuntimeView:
       description: redacted runtime truth
       content:
@@ -145,7 +149,7 @@ components:
       additionalProperties: false
       required: [type]
       properties:
-        type: {type: string, enum: [ack, snapshot, delta, full, checkpoint, resync_required, error, pong]}
+        type: {type: string, enum: [ack, snapshot, delta, full, resync_required, error, pong]}
         requestId: {type: string}
         subscriptionId: {type: string}
         topic: {type: string, enum: [market.order_book, market.bbo, market.candles, market.mark_price, funding.board, system.venue_connectivity]}
@@ -159,9 +163,8 @@ components:
     RuntimeStatus:
       type: object
       additionalProperties: false
-      required: [mode, accounts]
+      required: [accounts]
       properties:
-        mode: {type: string, enum: [test, live]}
         accounts: {type: array, items: {type: object}}
     RuntimeReadiness:
       type: object
@@ -169,29 +172,6 @@ components:
       required: [ready]
       properties:
         ready: {type: boolean}
-    DesiredRoute:
-      type: object
-      additionalProperties: false
-      required: [routeId, product, routeProfileId, requestedState]
-      properties:
-        routeId: {type: string, minLength: 1}
-        product: {type: string, enum: [spot, perp]}
-        settlementAsset: {type: string}
-        routeProfileId: {type: string, minLength: 1}
-        requestedState: {type: string, enum: [active, disabled]}
-    DesiredApplyRequest:
-      type: object
-      additionalProperties: false
-      required: [operationId, accountId, runtimeId, venue, nativeEnvironment, secretRef, requestedState, routes]
-      properties:
-        operationId: {type: string, format: uuid}
-        accountId: {type: string, minLength: 1}
-        runtimeId: {type: string, format: uuid}
-        venue: {type: string, minLength: 1}
-        nativeEnvironment: {type: string, enum: [demo, testnet, live]}
-        secretRef: {type: string, pattern: '^[A-Za-z0-9_-]{43}$', description: opaque reference; never credential material}
-        requestedState: {type: string, enum: [creating, active, disabled, removing, removed]}
-        routes: {type: array, minItems: 1, maxItems: 32, items: {$ref: '#/components/schemas/DesiredRoute'}}
     WriteFence:
       type: object
       additionalProperties: false
@@ -200,116 +180,6 @@ components:
         accountId: {type: string, minLength: 1}
         routeId: {type: string, minLength: 1}
         runtimeId: {type: string, format: uuid}
-    RetireRequest:
-      type: object
-      additionalProperties: false
-      required: [operationId, accountId, runtimeId]
-      properties:
-        operationId: {type: string, format: uuid}
-        accountId: {type: string, minLength: 1}
-        runtimeId: {type: string, format: uuid}
-    DesiredRuntimeView:
-      type: object
-      additionalProperties: false
-      required: [accountId, requestedState, routes]
-      properties:
-        accountId: {type: string}
-        requestedState: {type: string}
-        routes: {type: array, items: {$ref: '#/components/schemas/DesiredRoute'}}
-        active: {$ref: '#/components/schemas/RuntimeSnapshotView'}
-        pending: {$ref: '#/components/schemas/PendingSnapshotView'}
-    RuntimeView:
-      type: object
-      additionalProperties: false
-      required: [accountId, retiring, tombstoned, readiness, writeReadiness, blockedReason, capabilities]
-      allOf:
-        - if:
-            required: [active]
-          then:
-            required: [runtimeId, observedAt]
-      properties:
-        accountId: {type: string}
-        active: {$ref: '#/components/schemas/RuntimeSnapshotView'}
-        pending: {$ref: '#/components/schemas/PendingSnapshotView'}
-        retiring: {type: array, items: {$ref: '#/components/schemas/RuntimeSnapshotView'}}
-        tombstoned: {type: boolean}
-        runtimeId: {type: string, format: uuid}
-        readiness: {$ref: '#/components/schemas/RuntimeProjectionReadiness'}
-        writeReadiness: {$ref: '#/components/schemas/RuntimeProjectionReadiness'}
-        blockedReason: {type: [string, 'null']}
-        capabilities: {type: array, items: {$ref: '#/components/schemas/RuntimeCapabilityView'}}
-        observedAt: {type: string, format: date-time}
-    RuntimeProjectionReadiness:
-      type: object
-      additionalProperties: false
-      required: [ready]
-      properties:
-        ready: {type: boolean}
-        reason: {type: string}
-    RuntimeCapabilityView:
-      type: object
-      additionalProperties: false
-      required: [rowId, venue, product, writeReady, operations]
-      properties:
-        rowId: {type: string}
-        venue: {type: string}
-        product: {type: string, enum: [spot, perp]}
-        settlement: {type: string}
-        writeReady: {type: boolean}
-        operations: {$ref: '#/components/schemas/RuntimeCapabilityOperations'}
-    RuntimeCapabilityOperations:
-      type: object
-      additionalProperties: false
-      required: [place, amend, cancel, open_orders, order_history, fills, balances, account, positions, funding, account_funding_payments, leverage, private_stream, margin_mode, position_mode, funds_transfer]
-      properties:
-        place: {type: boolean}
-        amend: {type: boolean}
-        cancel: {type: boolean}
-        open_orders: {type: boolean}
-        order_history: {type: boolean}
-        fills: {type: boolean}
-        balances: {type: boolean}
-        account: {type: boolean}
-        positions: {type: boolean}
-        funding: {type: boolean}
-        account_funding_payments: {type: boolean}
-        leverage: {type: boolean}
-        private_stream: {type: boolean}
-        margin_mode: {type: boolean}
-        position_mode: {type: boolean}
-        funds_transfer: {type: boolean}
-    RouteRuntimeView:
-      type: object
-      additionalProperties: false
-      required: [routeId, product, routeProfileId, requestedState, ready]
-      properties:
-        routeId: {type: string}
-        product: {type: string, enum: [spot, perp]}
-        settlementAsset: {type: string}
-        routeProfileId: {type: string}
-        requestedState: {type: string, enum: [active, disabled]}
-        ready: {type: boolean}
-        reason: {type: string}
-    RuntimeSnapshotView:
-      type: object
-      additionalProperties: false
-      required: [operationId, runtimeId, requestedState, routes]
-      properties:
-        operationId: {type: string, format: uuid}
-        runtimeId: {type: string, format: uuid}
-        requestedState: {type: string, enum: [creating, active, disabled, removing, removed]}
-        routes: {type: array, items: {$ref: '#/components/schemas/RouteRuntimeView'}}
-    PendingSnapshotView:
-      type: object
-      additionalProperties: false
-      required: [operationId, runtimeId, requestedState, routes, state]
-      properties:
-        operationId: {type: string, format: uuid}
-        runtimeId: {type: string, format: uuid}
-        requestedState: {type: string, enum: [creating, active, disabled, removing, removed]}
-        routes: {type: array, items: {$ref: '#/components/schemas/RouteRuntimeView'}}
-        state: {type: string, enum: [prepared, candidate_ready, candidate_failed, applied]}
-        reason: {type: string}
     InternalErrorEnvelope:
       type: object
       additionalProperties: false
@@ -320,8 +190,58 @@ components:
           additionalProperties: false
           required: [code, message, requestId, retryable]
           properties:
-            code: {type: string, enum: [ACCOUNT_RUNTIME_BLOCKED, CANDIDATE_NOT_READY, CREDENTIAL_EXPIRED, CREDENTIAL_INVALID, CREDENTIAL_PERMISSION_DENIED, DESIRED_ACCOUNT_NOT_FOUND, DESIRED_STATE_REVISION_CONFLICT, GATEWAY_ADAPTER_AUTH_REQUIRED, HANDOFF_DRAIN_BLOCKED, IF_MATCH_REQUIRED, IF_NONE_MATCH_REQUIRED, INTERNAL_ERROR, INVALID_ACCOUNT_TRANSITION, LIVE_PRIVATE_WRITE_DISABLED, OPERATION_ID_CONFLICT, PROMOTION_FENCE_CONFLICT, RETIRED_SECRET_REFERENCE, STALE_RUNTIME_FENCE, VALIDATION_ERROR, VENUE_RATE_LIMITED, VENUE_RESPONSE_INVALID, VENUE_UNAVAILABLE]}
+            code: {type: string}
+            venueCode: {type: string}
             message: {type: string}
             requestId: {type: string}
             retryable: {type: boolean}
             details: {type: object}
+    RuntimeView:
+      type: object
+      additionalProperties: false
+      required: [accountId, runtimeId, connected, observedAt]
+      properties:
+        accountId: {type: string}
+        runtimeId: {type: string}
+        connected: {type: boolean}
+        observedAt: {type: string, format: date-time}
+    AddAccount:
+      type: object
+      additionalProperties: false
+      required: [venue, displayName, credentialBundle]
+      properties:
+        venue: {type: string}
+        displayName: {type: string, minLength: 1, maxLength: 128}
+        credentialBundle:
+          type: object
+          additionalProperties: false
+          required: [schemaVersion, venue, authKind, metadata, secrets]
+          properties:
+            schemaVersion: {const: 1}
+            venue: {type: string}
+            authKind: {type: string}
+            metadata: {type: object}
+            secrets: {type: object, writeOnly: true}
+    Account:
+      type: object
+      additionalProperties: false
+      required: [accountId, venue, displayName, nativeEnvironment, status, routes, lastValidatedAt, createdAt, updatedAt]
+      properties:
+        accountId: {type: string}
+        venue: {type: string}
+        displayName: {type: string}
+        nativeEnvironment: {const: live}
+        status: {const: active}
+        routes: {type: array, items: {$ref: '#/components/schemas/AccountRoute'}}
+        lastValidatedAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    AccountRoute:
+      type: object
+      additionalProperties: false
+      required: [routeId, product, routeProfileId]
+      properties:
+        routeId: {type: string}
+        product: {type: string}
+        settlementAsset: {type: string}
+        routeProfileId: {type: string}

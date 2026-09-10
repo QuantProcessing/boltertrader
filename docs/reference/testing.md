@@ -3,8 +3,9 @@
 > Canonical language: English. [Chinese mirror](../zh-CN/reference/testing.md)
 
 This page is the inventory of what you can run and what a green run proves.
-Every target is offline, credential-free, and deterministic. No target reaches a
-venue, and none places an order.
+The default Go suite uses local fixtures and no exchange credentials. Browser
+mock mode reads live public markets, so its prices and network availability can
+vary. No test target enables credentialed venue writes.
 
 ## The default path
 
@@ -12,8 +13,10 @@ venue, and none places an order.
 make test
 ```
 
-`go test -short ./...` across the repository. It needs no credentials, no
-Docker, and no network. This is the gate to run before every commit.
+`go test -short ./...` across the repository. It needs no credentials, Docker,
+external network or database; protocol tests may listen on local ports. Database
+tests skip before reading their opt-in environment in short mode. This is the
+gate to run before every commit.
 
 | Target | Scope |
 | --- | --- |
@@ -24,6 +27,8 @@ Docker, and no network. This is the gate to run before every commit.
 | `make test-exchange-redaction` | The six tests that prove credentials never reach an error string |
 | `make test-exchange-quality` | offline, then redaction, then race |
 | `make test-gateway-offline` | `./gateway/...` and `./cmd/exchange-gateway` |
+| `make test-gateway-client` | Shared wire DTOs, independent client/example, real Gateway HTTP/WS handler contracts |
+| `make test-monitor` | Independent monitor replay, persistence, local Gateway socket faults and CLI |
 | `make test-gateway-contract` | `contracts`, `domain`, `capability`, `store` |
 | `make test-gateway-security` | Import boundary, OpenAPI, config redaction, crosswalk |
 | `make test-gateway-race` | The gateway packages under `-race` |
@@ -37,7 +42,10 @@ runs them.
 Two gateway targets need a real PostgreSQL and read `GATEWAY_TEST_POSTGRES_DSN`
 from the environment; they fail fast when it is unset rather than skipping.
 `make test-gateway-postgres` covers migrations, the command store, the audit
-store, and account ownership. `make test-gateway-restart` covers the coordinator's
+store, account ownership, encrypted registrations, and the real HTTP account flow
+through Auth Edge, Gateway and Trading with fake venue clients. That flow verifies
+login/CSRF, zero-balance registration, venue errors, current positions, database
+reconnection and account deletion without trading. `make test-gateway-restart` covers the coordinator's
 process-crash windows. `make test-compose-postgres` provisions a throwaway
 cluster and runs both for you, which is the easier path.
 
@@ -53,7 +61,7 @@ Six sub-targets, in order:
 | --- | --- |
 | `test-compose-config` | The Compose file renders and the binaries load their config |
 | `test-compose-build` | Both images build |
-| `test-compose-security` | Non-root user, pinned entrypoint, no source or secrets in the image, all seven binaries present |
+| `test-compose-security` | Non-root user, pinned entrypoint, no source or secrets in the image, all nine binaries present |
 | `test-compose-smoke` | Migrators complete, services start, the gateway answers its own live and ready probes, and each service exits `0` within 15 seconds of `SIGTERM` |
 | `test-compose-persistence` | Data survives a container recreate |
 | `test-compose-postgres` | The real-PostgreSQL suites, against a throwaway cluster |
@@ -123,11 +131,14 @@ claiming:
 go run ./internal/testenv/cmd/noskipgotest -- -short ./exchange/... -count=1
 ```
 
-That command is `make test-exchange-offline`. The wrapper used to run the
-external acceptance targets, where a skip meant an absent credential; it now
-serves the offline claim, where a skip means the evidence is narrower than the
-target name suggests.
+`make test-exchange-offline` runs the ordinary short suite. Use the wrapper
+above separately when claiming zero skips; an ordinary green test run is not
+that evidence. A skip means the verified scope is narrower than the target name.
 
 Publish that summary and nothing else. No credentials, no raw logs, no account
 residuals, no local paths. Implementation, capability, and external evidence stay
 three separate claims.
+
+`make test-compose-postgres` also runs Trading storage and six real process-crash windows.
+`make test-compose-recovery` creates a disposable stack and verifies restarts, a database outage and backup/restore.
+For bounded public monitoring add `python3 scripts/acceptance/stack_recovery.py --public-seconds 180`.

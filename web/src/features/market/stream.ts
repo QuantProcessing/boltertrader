@@ -79,10 +79,16 @@ export function usePublicMarketStreams(
         const data = objectData(message);
         if ((message.type === "snapshot" || message.type === "delta") && typeof data?.price === "string" && data.price !== "") {
           const observedAt = message.observedAt ?? new Date().toISOString();
-          setMark({ instrumentId, price: data.price, observedAt, stale: false });
           if (markTimer) clearTimeout(markTimer);
-          const delay = markStaleDelay(observedAt, data.staleAfterMs);
-          markTimer = setTimeout(() => setMark((current) => current?.observedAt === observedAt ? { ...current, stale: true } : current), delay);
+          const delay = markStaleDelay(observedAt, data.staleAfterMs, data.ageMs);
+          const stale = delay <= 0;
+          setMark({ instrumentId, price: data.price, observedAt, stale });
+          if (!stale) {
+            markTimer = setTimeout(
+              () => setMark((current) => current?.observedAt === observedAt ? { ...current, stale: true } : current),
+              delay,
+            );
+          }
         } else if (message.type === "resync_required") setMark((current) => current ? { ...current, stale: true } : null);
       }));
     }
@@ -110,10 +116,18 @@ export function candleForSubscription(
 }
 
 /** The Gateway owns source cadence; the browser only evaluates its deadline. */
-export function markStaleDelay(observedAt: string, staleAfterMs: unknown, now = Date.now()): number {
+export function markStaleDelay(observedAt: string, staleAfterMs: unknown, receivedAgeMs?: unknown, now = Date.now()): number {
   const configured = typeof staleAfterMs === "number" && Number.isFinite(staleAfterMs) && staleAfterMs >= 1_000
     ? staleAfterMs
     : DEFAULT_MARK_STALE_AFTER_MS;
+  // Gateway computes age with the same clock that receives venue data. This
+  // uses its local receipt clock, avoiding both venue and browser clock skew
+  // turning every fresh packet into a brief
+  // fresh-then-stale flash. Older servers omit ageMs, so retain the timestamp
+  // calculation only as a compatibility fallback.
+  if (typeof receivedAgeMs === "number" && Number.isFinite(receivedAgeMs) && receivedAgeMs >= 0) {
+    return Math.max(0, configured - receivedAgeMs);
+  }
   const observed = Date.parse(observedAt);
   const deadline = Number.isFinite(observed) ? observed + configured : now + configured;
   return Math.max(0, deadline - now);

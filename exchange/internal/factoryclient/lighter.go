@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	"github.com/QuantProcessing/boltertrader/sdk/lighter"
 )
 
@@ -198,7 +199,7 @@ func (transport lighterTrackingTransport) RoundTrip(req *http.Request) (*http.Re
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		return nil, &lighterHTTPStatusError{status: resp.StatusCode}
+		return nil, venuehttp.WithHTTPResponse(&lighterHTTPStatusError{status: resp.StatusCode}, resp)
 	}
 	if tracker != nil && path == "/api/v1/account" && resp.Body != nil {
 		resp.Body = &lighterAccountIdentityBody{body: resp.Body, tracker: tracker}

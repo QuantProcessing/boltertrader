@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,7 @@ func TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO(t
 		if err != nil {
 			t.Fatalf("%s: %v", profile.ID, err)
 		}
+		t.Cleanup(func() { _ = connector.Close() })
 		if _, writes := any(connector).(exchange.OrderREST); writes {
 			t.Fatalf("%s public connector exposes order methods", profile.ID)
 		}
@@ -32,6 +34,32 @@ func TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO(t
 		}
 		if _, private := any(connector).(exchange.PerpAccountREST); private {
 			t.Fatalf("%s public connector exposes perp account methods", profile.ID)
+		}
+		socket := connector.WebSocket()
+		if socket == nil {
+			t.Fatalf("%s public connector has no market socket", profile.ID)
+		}
+		wantPerp := profile.Product == routeprofile.ProductPerp
+		if _, perp := socket.(exchange.PerpMarketWebSocket); perp != wantPerp {
+			t.Fatalf("%s public derivative socket capability = %v, want %v", profile.ID, perp, wantPerp)
+		}
+		if _, reference := socket.(exchange.DerivativeReferenceWebSocket); reference != wantPerp {
+			t.Fatalf("%s rich reference capability = %v, want %v", profile.ID, reference, wantPerp)
+		}
+		// Check the concrete value, not just its return interface. An account
+		// socket assigned to MarketWebSocket would still expose private methods
+		// through type assertions, even for a single method such as PlaceOrder.
+		allowed := map[string]bool{
+			"Close": true, "WatchOrderBook": true, "WatchBBO": true,
+			"WatchPublicTrades": true, "WatchCandles": true,
+			"WatchMarkPrice": wantPerp, "WatchFundingRate": wantPerp,
+			"WatchDerivativeReference": wantPerp,
+		}
+		typ := reflect.TypeOf(socket)
+		for index := 0; index < typ.NumMethod(); index++ {
+			if method := typ.Method(index).Name; !allowed[method] {
+				t.Fatalf("%s public socket exposes %s", profile.ID, method)
+			}
 		}
 		if err := connector.Close(); err != nil {
 			t.Fatalf("%s close: %v", profile.ID, err)

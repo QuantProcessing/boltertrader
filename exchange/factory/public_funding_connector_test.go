@@ -2,9 +2,9 @@ package factory
 
 import (
 	"context"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
@@ -22,14 +22,9 @@ func TestPublicDerivativeFeedConstruction(t *testing.T) {
 		{exchange.VenueNado, "USDT0"},
 	}
 	for _, profile := range profiles {
-		family := "perpetual"
-		if profile.venue == exchange.VenueBybit {
-			family = "linear"
-		}
-		feed, err := NewPublicDerivativeFeed(profile.venue, exchange.ProductPerp, profile.settlement, EnvironmentLive, &http.Client{}, []string{string(profile.venue) + ".perp.test.v1"}, family, staticDerivativeResolver{}, []exchange.MarketCapability{{
-			Venue: profile.venue, NativeMarketFamily: family, Dataset: exchange.DatasetFunding,
-			Transport: exchange.TransportREST, Granularity: exchange.GranularityAllMarket, NominalCadence: time.Second, RateLimitOperation: "funding_rates",
-		}}, nil)
+		family := exchange.NativeMarketFamily(profile.venue, exchange.ProductPerp, profile.settlement)
+		route, _ := routeprofile.DefaultRegistry().ResolveLegacy(string(profile.venue), "perp", profile.settlement)
+		feed, err := NewPublicDerivativeFeed(profile.venue, exchange.ProductPerp, profile.settlement, EnvironmentLive, &http.Client{}, []string{route.ID}, family, staticDerivativeResolver{}, exchange.MarketCapabilitiesFor(profile.venue, family), nil)
 		if err != nil {
 			t.Fatalf("NewPublicDerivativeFeed(%s/%s): %v", profile.venue, profile.settlement, err)
 		}
@@ -46,4 +41,12 @@ type staticDerivativeResolver struct{}
 
 func (staticDerivativeResolver) ResolveDerivativeInstrument(context.Context, string, string, string) (exchange.DerivativeFact, bool) {
 	return exchange.DerivativeFact{}, false
+}
+
+func TestPublicDerivativeFeedRejectsForeignOrInventedFamilies(t *testing.T) {
+	for _, ids := range [][]string{{"bybit.perp.test.v1"}, {"bybit.spot.v1"}, {"binance.perp.usdt.v1"}, {"bybit.perp.usdt.v1", "bybit.perp.usdt.v1"}} {
+		if _, err := NewPublicDerivativeFeed(exchange.VenueBybit, exchange.ProductPerp, "USDT", EnvironmentLive, &http.Client{}, ids, "linear", staticDerivativeResolver{}, nil, nil); err == nil {
+			t.Fatalf("accepted routes %v", ids)
+		}
+	}
 }

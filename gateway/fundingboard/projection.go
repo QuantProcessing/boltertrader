@@ -113,7 +113,7 @@ func (projection *Projection) freshnessFor(fact exchange.DerivativeFact) map[exc
 	result := make(map[exchange.MarketDataset]time.Duration, len(projection.fieldMaxAge))
 	for dataset, fallback := range projection.fieldMaxAge {
 		result[dataset] = fallback
-		family := marketcapability.NativeFamily(fact.Instrument.Venue, fact.Instrument.Product, fact.Instrument.SettleAsset)
+		family := exchange.NativeMarketFamily(fact.Instrument.Venue, fact.Instrument.Product, fact.Instrument.SettleAsset)
 		capability, err := projection.capabilities.Resolve(fact.Instrument.Venue, family, dataset, false)
 		if err != nil {
 			continue

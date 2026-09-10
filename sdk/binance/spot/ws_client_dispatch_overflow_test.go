@@ -37,7 +37,7 @@ func TestWSClientPausedDispatchOverflowClosesExactConnectionAndRecovers(t *testi
 
 	client := NewWSClient(context.Background(), wsURL+"/ws")
 	client.ReconnectWait = time.Millisecond
-	client.pongInterval = time.Hour
+	client.heartbeatInterval = time.Hour
 	client.dispatcher = wsdispatch.NewBoundedDispatcher(1)
 	client.PauseDispatch()
 	replacementEvent := make(chan struct{}, 1)

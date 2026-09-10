@@ -51,7 +51,7 @@ func TestCoordinatorConcurrentIdempotencyCallsDriverOnce(t *testing.T) {
 		if commandID == "" {
 			commandID, orderID = result.CommandID, result.GatewayOrderID
 		}
-		if result.CommandID != commandID || result.GatewayOrderID != orderID || result.ClientOrderID != "1" {
+		if result.AccountID != request.AccountID || result.InstrumentID != request.InstrumentID || result.CommandID != commandID || result.GatewayOrderID != orderID || result.ClientOrderID != "1" {
 			t.Fatalf("idempotent identity changed: %+v", result)
 		}
 	}
@@ -151,58 +151,6 @@ func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) 
 				t.Fatalf("stale %s fence made %d venue placement calls", race, calls)
 			}
 		})
-	}
-}
-
-func TestPromotionWaitsWhileOldGenerationHandoffIsBetweenFenceAndVenue(t *testing.T) {
-	fixture := newCoordinatorFixture(t)
-	if report, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil || !report.WriteReady {
-		t.Fatalf("initial recovery=%+v err=%v", report, err)
-	}
-	admission := newTestHandoffAdmission()
-	blocked := &blockingDriver{Driver: fixture.driver, entered: make(chan struct{}), release: make(chan struct{})}
-	fixture.router.route.Admission = admission
-	fixture.router.route.Driver = blocked
-
-	placed := make(chan error, 1)
-	go func() {
-		_, err := fixture.coordinator.Place(context.Background(), fixture.placeRequest())
-		placed <- err
-	}()
-	<-blocked.entered
-	fixture.store.mu.Lock()
-	if len(fixture.store.handoffs) != 1 {
-		fixture.store.mu.Unlock()
-		t.Fatalf("durable started handoffs=%d want=1", len(fixture.store.handoffs))
-	}
-	for _, handoff := range fixture.store.handoffs {
-		if handoff.State != store.OrderHandoffStarted || handoff.ResolvedAt != nil {
-			fixture.store.mu.Unlock()
-			t.Fatalf("handoff before venue release=%+v", handoff)
-		}
-	}
-	fixture.store.mu.Unlock()
-
-	promoted := make(chan error, 1)
-	go func() { promoted <- admission.CloseAndWait(context.Background()) }()
-	select {
-	case err := <-promoted:
-		t.Fatalf("promotion crossed in-flight handoff: %v", err)
-	default:
-	}
-	close(blocked.release)
-	if err := <-placed; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-promoted; err != nil {
-		t.Fatal(err)
-	}
-	fixture.store.mu.Lock()
-	defer fixture.store.mu.Unlock()
-	for _, handoff := range fixture.store.handoffs {
-		if handoff.State != store.OrderHandoffAccepted || handoff.ResolvedAt == nil {
-			t.Fatalf("resolved handoff=%+v", handoff)
-		}
 	}
 }
 
@@ -569,7 +517,7 @@ func TestCoordinatorReconcileDueUsesExactReadOnlyEvidenceAndNeverPlacesAgain(t *
 	fixture.driver.mu.Lock()
 	fixture.driver.placeErr = nil
 	fixture.driver.orders[result.ClientOrderID] = foundExactResult(
-		fixture.instrument, result.ClientOrderID, "venue-recovered", domain.StateOpen,
+		fixture.instrument, result.ClientOrderID, "venue-1", domain.StateOpen,
 	)
 	fixture.driver.mu.Unlock()
 	time.Sleep(time.Millisecond)
@@ -625,7 +573,7 @@ func TestCoordinatorPeriodicallyReconcilesAccountRegisteredAfterZeroAccountStart
 	fixture.driver.mu.Lock()
 	fixture.driver.placeErr = nil
 	fixture.driver.orders[result.ClientOrderID] = foundExactResult(
-		fixture.instrument, result.ClientOrderID, "venue-recovered", domain.StateOpen,
+		fixture.instrument, result.ClientOrderID, "venue-1", domain.StateOpen,
 	)
 	fixture.driver.mu.Unlock()
 
@@ -1337,7 +1285,6 @@ type memoryCommandStore struct {
 	byKey      map[string]*memoryRecord
 	byCommand  map[domain.CommandID]*memoryRecord
 	tasks      map[domain.GatewayOrderID]store.ReconciliationTask
-	handoffs   map[domain.EventID]store.OrderHandoff
 	reserveErr error
 }
 
@@ -1351,39 +1298,8 @@ type memoryRecord struct {
 func newMemoryCommandStore() *memoryCommandStore {
 	return &memoryCommandStore{
 		byKey: make(map[string]*memoryRecord), byCommand: make(map[domain.CommandID]*memoryRecord),
-		tasks:    make(map[domain.GatewayOrderID]store.ReconciliationTask),
-		handoffs: make(map[domain.EventID]store.OrderHandoff),
+		tasks: make(map[domain.GatewayOrderID]store.ReconciliationTask),
 	}
-}
-
-func (memory *memoryCommandStore) BeginOrderHandoff(_ context.Context, request store.BeginOrderHandoffRequest) (store.OrderHandoff, error) {
-	if err := request.Validate(); err != nil {
-		return store.OrderHandoff{}, err
-	}
-	memory.mu.Lock()
-	defer memory.mu.Unlock()
-	if existing, ok := memory.handoffs[request.HandoffID]; ok {
-		return existing, nil
-	}
-	handoff := store.OrderHandoff{BeginOrderHandoffRequest: request, State: store.OrderHandoffStarted, StartedAt: time.Now()}
-	memory.handoffs[request.HandoffID] = handoff
-	return handoff, nil
-}
-
-func (memory *memoryCommandStore) ResolveOrderHandoff(_ context.Context, request store.ResolveOrderHandoffRequest) (store.OrderHandoff, error) {
-	if err := request.Validate(); err != nil {
-		return store.OrderHandoff{}, err
-	}
-	memory.mu.Lock()
-	defer memory.mu.Unlock()
-	handoff, ok := memory.handoffs[request.HandoffID]
-	if !ok {
-		return store.OrderHandoff{}, store.ErrNotFound
-	}
-	now := time.Now()
-	handoff.State, handoff.ResolvedAt = request.State, &now
-	memory.handoffs[request.HandoffID] = handoff
-	return handoff, nil
 }
 
 func (memory *memoryCommandStore) ReserveCommand(_ context.Context, request store.ReserveCommandRequest) (store.ReservedCommand, error) {
@@ -1452,6 +1368,7 @@ func (memory *memoryCommandStore) RecordVenueResult(_ context.Context, request s
 		return store.StoredCommand{}, errors.New("unexpected reconciliation plan")
 	}
 	record.command.State = request.NextState
+	record.command.AcceptanceObserved = record.command.AcceptanceObserved || request.NextState.ConfirmsAcceptance()
 	record.command.ResourceVersion++
 	record.command.EventID = request.EventID
 	if request.VenueOrderID != "" {
@@ -1494,6 +1411,18 @@ func (memory *memoryCommandStore) LoadOrder(_ context.Context, request store.Loa
 		}
 	}
 	return store.StoredCommand{}, errors.New("order not found")
+}
+
+func (memory *memoryCommandStore) LoadOrderByIdempotencyKey(_ context.Context, principal domain.PrincipalID, key domain.IdempotencyKey) (store.StoredCommand, error) {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	record, ok := memory.byKey[string(principal)+"\x00"+string(key)]
+	if !ok {
+		return store.StoredCommand{}, store.ErrNotFound
+	}
+	command := cloneStored(record.command)
+	command.PrincipalID = record.principal
+	return command, nil
 }
 
 func (memory *memoryCommandStore) LoadOrderByVenueIdentity(_ context.Context, request store.LoadOrderByVenueIdentityRequest) (store.StoredCommand, error) {
@@ -1654,4 +1583,61 @@ func contains(value, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestPlacementFailureEvidenceControlsDurableReconciliation(t *testing.T) {
+	tests := []struct {
+		name      string
+		state     exchange.OrderAckState
+		err       error
+		uncertain bool
+	}{
+		{"transport failure", exchange.AckRejected, exchange.NewError(exchange.KindTransport, exchange.ErrorDetails{HTTPStatus: 503}), true},
+		{"permission rejection without acknowledgement", "", exchange.NewError(exchange.KindPermission, exchange.ErrorDetails{HTTPStatus: 403, Code: "PERMISSION_DENIED", SafeMessage: "API key cannot trade"}), false},
+		{"authentication rejection without acknowledgement", "", exchange.NewError(exchange.KindAuthentication, exchange.ErrorDetails{HTTPStatus: 401, Code: "INVALID_KEY", SafeMessage: "Invalid API key"}), false},
+		{"unclassified failure", exchange.AckResting, errors.New("lost response"), true},
+		{"ambiguous with authentication error", exchange.AckAmbiguous, exchange.NewError(exchange.KindAuthentication, exchange.ErrorDetails{}), true},
+		{"remote rate limit without definitive acknowledgement", exchange.AckAmbiguous, exchange.NewError(exchange.KindRateLimit, exchange.ErrorDetails{HTTPStatus: 429}), true},
+		{"local follow-up read limited", exchange.AckAmbiguous, exchange.NewError(exchange.KindRateLimit, exchange.ErrorDetails{Code: "LOCAL_RATE_LIMIT"}), true},
+		{"local placement not sent", exchange.AckAmbiguous, exchange.NewError(exchange.KindRateLimit, exchange.ErrorDetails{Code: "LOCAL_RATE_LIMIT", CommandNotSent: true}), false},
+		{"definitive venue rejection", exchange.AckRejected, exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{HTTPStatus: 400}), false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newCoordinatorFixture(t)
+			if _, err := f.coordinator.RecoverAccount(context.Background(), f.accountID); err != nil {
+				t.Fatal(err)
+			}
+			f.driver.placeAck.State = test.state
+			if test.state == exchange.AckRejected {
+				f.driver.placeAck.VenueCode = "REJECTED"
+			}
+			f.driver.placeErr = test.err
+			f.driver.recordAccepted = false
+			f.driver.lookupFallback = unconfirmedExactResult(f.instrument)
+			result, err := f.coordinator.Place(context.Background(), f.placeRequest())
+			if test.uncertain {
+				if !errors.Is(err, ErrOutcomeUncertain) || result.State != domain.StateUncertain || f.store.taskCount() != 1 {
+					t.Fatalf("result=%+v tasks=%d err=%v", result, f.store.taskCount(), err)
+				}
+				restarted := newTestCoordinator(t, f.store, f.router, f.publisher, Hooks{})
+				if report, err := restarted.RecoverAccount(context.Background(), f.accountID); err == nil || report.WriteReady {
+					t.Fatalf("report=%+v err=%v", report, err)
+				}
+				if _, err := restarted.Place(context.Background(), f.placeRequest()); !errors.Is(err, ErrWriteNotReady) {
+					t.Fatal(err)
+				}
+			} else {
+				if err != nil || result.State != domain.StateRejected || f.store.taskCount() != 0 {
+					t.Fatalf("result=%+v tasks=%d err=%v", result, f.store.taskCount(), err)
+				}
+				if replay, err := f.coordinator.Place(context.Background(), f.placeRequest()); err != nil || replay.State != domain.StateRejected {
+					t.Fatal(replay, err)
+				}
+			}
+			if f.driver.PlaceCalls() != 1 {
+				t.Fatal("command was resent")
+			}
+		})
+	}
 }

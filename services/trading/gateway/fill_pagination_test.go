@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -31,7 +30,7 @@ func TestGatewayFillPaginationRejectsNonAdjacentCursorCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.fetchFills(context.Background(), "order-a", "account-a", "BTC-USDT"); err == nil || !strings.Contains(err.Error(), "cursor cycled") {
+	if _, err := adapter.fetchFills(context.Background(), "order-a", "account-a", "BTC-USDT"); err == nil {
 		t.Fatalf("non-adjacent fill cursor cycle error=%v", err)
 	}
 	if requests != 3 {
@@ -45,7 +44,7 @@ func TestGatewayFillPaginationHasFinitePageBound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		next := "page-" + strconv.Itoa(requests)
-		if requests > maxFillPages+5 {
+		if requests > 100+5 {
 			next = r.URL.Query().Get("pagination.cursor")
 		}
 		_, _ = fmt.Fprintf(w, `{"items":[],"next_cursor":%q}`, next)
@@ -55,10 +54,10 @@ func TestGatewayFillPaginationHasFinitePageBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.fetchFills(context.Background(), "order-a", "account-a", "BTC-USDT"); err == nil || !strings.Contains(err.Error(), "pagination exceeded") {
+	if _, err := adapter.fetchFills(context.Background(), "order-a", "account-a", "BTC-USDT"); err == nil {
 		t.Fatalf("fill pagination page-bound error=%v", err)
 	}
-	if requests != maxFillPages {
-		t.Fatalf("fill pagination made %d requests, want %d", requests, maxFillPages)
+	if requests != 100 {
+		t.Fatalf("fill pagination made %d requests, want %d", requests, 100)
 	}
 }

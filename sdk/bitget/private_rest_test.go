@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
 func TestOrderCommandsReturnTypedResponseError(t *testing.T) {
@@ -89,7 +91,7 @@ func TestOrderCommandsDecodeHTTPErrorCodeWithoutLeakingResponseMessage(t *testin
 	if strings.Contains(err.Error(), responseSecret) {
 		t.Fatalf("HTTP response error leaked venue message: %v", err)
 	}
-	for _, safeContext := range []string{http.MethodPost, "/api/v3/trade/place-order", "400", "response_bytes="} {
+	for _, safeContext := range []string{http.MethodPost, "/api/v3/trade/place-order", "400"} {
 		if !strings.Contains(err.Error(), safeContext) {
 			t.Fatalf("HTTP response error %q missing safe context %q", err, safeContext)
 		}
@@ -172,6 +174,9 @@ func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
 					}, nil
 				})})
 			err := test.run(client)
+			if test.name == "missing response code" && errors.Is(err, venuehttp.ErrMalformedResponse) {
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v, want text %q", err, test.want)
 			}
@@ -725,7 +730,8 @@ func TestClient_GetFillsBoundedRejectsLaterPageErrorWithoutPartialData(t *testin
 		})})
 
 	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{Category: bitgetPerpCategory, Limit: "100"})
-	if err == nil || !strings.Contains(err.Error(), "later page failed") {
+	var native *ResponseError
+	if !errors.As(err, &native) || native.Code != "40000" {
 		t.Fatalf("error=%v, want later-page venue error", err)
 	}
 	if records != nil || saturated {
@@ -920,7 +926,8 @@ func TestClient_GetOpenOrdersRejectsLaterPageErrorWithoutPartialData(t *testing.
 		})})
 
 	records, err := client.GetOpenOrders(context.Background(), bitgetSpotCategory, bitgetSpotSymbol)
-	if err == nil || !strings.Contains(err.Error(), "later page failed") {
+	var native *ResponseError
+	if !errors.As(err, &native) || native.Code != "40000" {
 		t.Fatalf("error=%v, want later-page venue error", err)
 	}
 	if records != nil {

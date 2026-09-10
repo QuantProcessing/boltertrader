@@ -813,7 +813,8 @@ func okxCommandAck(product exchange.Product, operation string, op exchange.Order
 	return ack, nil
 }
 
-func okxCommandTransportAck(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string, err error) (exchange.OrderAcknowledgement, error) {
+func okxCommandTransportAck(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string, err error) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() { normalizeHTTPCommand(&returnAck, &returnErr, err, okxVenue, product, okxCommandOperation(op)) }()
 	ack := okxBaseAck(product, op, instrument, orderID, clientOrderID)
 	ack.State = exchange.AckAmbiguous
 	operation := okxCommandOperation(op)
@@ -928,9 +929,12 @@ func okxFill(row okx.Fill, multiplier decimal.Decimal) (exchange.Fill, error) {
 	if err != nil {
 		return exchange.Fill{}, err
 	}
-	fee, err := okxDecimal(row.Fee)
+	fee, err := decimal.NewFromString(row.Fee)
 	if err != nil {
 		return exchange.Fill{}, err
+	}
+	if !fee.IsZero() && row.FeeCcy == "" {
+		return exchange.Fill{}, errors.New("execution fee currency is missing")
 	}
 	liq := exchange.LiquidityTaker
 	if row.ExecType == "M" {
@@ -952,7 +956,7 @@ func okxFill(row okx.Fill, multiplier decimal.Decimal) (exchange.Fill, error) {
 		Side:          side,
 		Price:         price,
 		Quantity:      qty.Mul(multiplier),
-		Fee:           fee,
+		Fee:           fee.Neg(), // OKX reports charges negative and rebates positive.
 		FeeAsset:      row.FeeCcy,
 		Liquidity:     liq,
 		Time:          ts,
@@ -1268,7 +1272,8 @@ func okxReady(ctx context.Context, product exchange.Product, operation string, s
 	return nil
 }
 
-func okxNormalizeErr(product exchange.Product, operation string, err error) error {
+func okxNormalizeErr(product exchange.Product, operation string, err error) (returnErr error) {
+	defer func() { returnErr = normalizeHTTPError(returnErr, err, okxVenue, product, operation) }()
 	if err == nil {
 		return nil
 	}

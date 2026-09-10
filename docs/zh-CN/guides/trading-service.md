@@ -2,9 +2,8 @@
 
 > 英文为规范版本。[English](../../guides/trading-service.md)
 
-Trading 服务是装产品的地方。目前有两个：**手动交易**，一次下一笔；以及**资金费套利**，
-一次在两家交易所各下一笔。两者站在同一套命令账本、同一套预留、同一个 reconciler 和同一
-组投影之上——所谓一个产品，是一组端点加一种意图形状，而不是把这套机器再抄一份。
+Trading 服务承载**手动交易**、命令恢复、持仓账务与浏览器投影。
+执行过程使用同一套持久命令账本。
 
 服务不持有任何 venue 凭证，也不建立任何 venue 连接：每一次写都经过
 [交易所网关](exchange-gateway.md)。
@@ -19,7 +18,7 @@ Trading 服务是装产品的地方。目前有两个：**手动交易**，一�
 
 | 状态 | 含义 |
 | --- | --- |
-| `accepted` | 已记录、已预留，尚未交给 gateway |
+| `accepted` | 已记录命令及恢复任务，尚未交给 gateway |
 | `submitted` | 已交接；现在由 gateway 持有 |
 | `uncertain` | 交接的结果未知 |
 | `filled` / `canceled` / `failed` | 终态 |
@@ -49,73 +48,23 @@ Gateway 在接受这次下单时会铸造**它自己的** command 标识，以�
 
 ## 下单票
 
-手动下单是两步流程，而这个拆分本身就是要点。
+手动下单只发送一次请求。浏览器可以使用屏幕上已有的账户、仓位、catalog 与公共价格显示
+本地确认，确认后将订单意图直接提交到 `POST /api/v1/products/manual/commands`。
 
-`POST /api/v1/products/manual/execution-previews` 返回一份**封签过的**预览。服务先对
-意图定价，按 instrument 规则校验，向该 account 取得预留，然后对得到的对象签名，并给
-它一个很短的有效期。
+HTTP handler 负责认证、CSRF 和请求解码。manual 应用服务负责参数校验、账户和路由解析、
+命令创建与执行。新请求读取当前账户 runtime，校验无需可执行报价即可判断的 catalog 规则，
+在同一事务中保存命令与初始恢复任务。只有创建成功的请求会尝试执行，并须先通过
+`BeginExecution` 认领发送权。Gateway 和交易所仍负责最终就绪与接单判断。
+市价单不会为了获准提交而额外请求一次 REST 报价。
 
-`POST /api/v1/products/manual/commands` 接受的正是这份封签预览。它无法接受别的任何东西
-——不接受被改过的副本，不接受过期的，也不接受预览从未定过价的意图。其结果是：「操作者
-确认的东西」与「实际发往 venue 的东西」是同一个对象，而不是同一份表单的两次渲染。
+重试首先按 principal、method、path 和幂等键查原命令。用户下单参数相同，即使账户或
+catalog 离线、runtime 已变更或写入已关闭，也返回原命令。原命令记录的 route/runtime
+保持不变。重放不会执行，包括仍在等待原请求发送的 `accepted` 命令；用户参数改变则返回
+幂等冲突，不会创建另一笔订单。
 
-预留是独立资源（`/api/v1/reservations`），可以创建、消费或释放。没有被消费的预留会被
-释放，而不是继续占着额度。
-
-## 套利产品
-
-套利产品按资产特征分成两个策略族，而不是把所有同名 ticker 当成一种资产。
-**Crypto Continuous** 包含现货-永续基差和跨交易所永续资金费率；
-**TradFi Perpetual** 包含永续资金费率和跨交易所同类永续价差。资产类别来自
-标准化公共 catalog，服务不会根据 ticker 名称猜测它是加密货币、股票还是商品。
-一个完全匹配的标准现货/永续组合可以进入基差工作台，但仍保留
-`assetClass=unknown`；这里识别的是策略结构，并没有编造资产类别。
-
-各家公布出来的费率是不能直接比的。每家按自己的节奏结算资金费——这家四小时，那家八小时
-——所以一个原始费率在被归一之前什么都说明不了。所有费率先换算成日率（`rate × 24 ÷
-intervalHours`）再两两相比，价差是 `shortDaily − longDaily`，标题上的 APR 就是这个价差
-乘 365。一家说不出费率报价周期的交易所只保留在资金费看板中，不会被输出成套利机会；
-服务不会擅自默认按八小时算。
-
-`GET /api/v1/products/arbitrage/opportunities` 是公共读取，只使用 Trading 本地的
-catalog 和衍生品事实投影排名。匿名用户可以看全部公开机会；只有已登录用户才能传入
-`accountId` 计算账户可执行性。资金费策略要求费率与周期新鲜可用，基差和价差策略
-要求对应价格新鲜可用；OI 只参与展示、筛选和排序，永远不阻塞套利。是否上架由公开
-instrument directory 决定，账户可达性是另一条独立的执行事实，二者不能互相推断。
-
-下单完全复用手动那套形状。`POST /api/v1/products/arbitrage/execution-previews` 返回一份
-封签预览——同一种封签、同一个有效期——但会绕过机会投影，通过 Gateway 即时读取两条腿的
-最新 BBO，再向两个 account 取预留。任一报价不可用或超过两秒，就拒绝封存预览。
-它还带着 `warnings`，这些不是 blocker、也拦不住确认：`fees_excluded` 表示报出来的价差是
-毛的，`negative_spread` 表示排名在读取和预览之间翻了过来，`funding_rate_unavailable` 与
-`board_stale` 表示某条腿的数字比它看上去的更旧。
-
-`POST /api/v1/products/arbitrage/commands` 接过这份预览，并且承载全部三个动词，靠
-`action` 区分：
-
-| Action | 做什么 |
-| --- | --- |
-| `open` | 按封签预览一次请求下出两条腿 |
-| `close` | 一次请求把两条腿都 reduce-only 平掉 |
-| `cancel` | 撤掉指名的那一条挂着的腿 |
-
-三者都要求一个 `lineageId`，以及一个与 body 相符的 `Idempotency-Key`。**lineage** 就是这
-个对儿的身份：两家交易所上的两笔订单、两行命令，被一个标识拴在一起。正是它让「平掉这个
-对儿」成为一次操作，而不是要操作者自己按对顺序去撤两次；也正是它，是
-`GET /api/v1/products/arbitrage/positions` 用来分组的东西。一个读不回腿载荷的对儿会报
-`leg_payload_unreadable` 并拒绝平仓——它描述不出来的平仓，就是它证明不了的平仓。
-
-两条腿仍然是一条一条过账本的。这里没有跨两家的原子写，服务也不假装有：一个对儿完全可能
-一条腿成交、另一条腿 `uncertain`，而这正是账本存在要兜住的状态。Reconciliation 会各自
-对着各自的交易所把每条腿解决掉，对儿最终是什么样，取决于它的腿最终是什么样。
-
-这三个 action 和其他每一次私有写一样，都挡在同一道 live 写开关后面：开关关着时，
-`open`、`close`、`cancel` 在任何东西抵达交易所之前就返回 `403 LIVE_PRIVATE_WRITE_DISABLED`。
-
-它们过去是被无条件拒绝的，理由是：在这个产品拿到它当时还没有的证据之前，一个对儿可以先在
-test 那一层上练手。那一层已经没有了，所以这道拒绝再没有地方可以把人送过去，而开关就是
-一次 `open` 与两笔真实订单之间唯一挡着的东西。它当年替代的那个证据缺口并没有补上——套利
-背后的东西比手动产品少，而开关并不知道这件事。
+通用命令集合只读，`POST /api/v1/commands` 和全部 `/api/v1/reservations` 操作已经移除。
+Trading 不预留余额或保证金。历史预留行和命令关联保留用于追溯，运行中的服务不再创建、
+消费或检查这些预留。
 
 ## Reconciliation
 
@@ -140,14 +89,9 @@ Gateway 在它自己那一层、对它自己的持久订单，也跑着自己的
 - `/api/v1/fills`、`/api/v1/ledger`——发生了什么，以及它的账务。
 - `/api/v1/activity`——命令链条，按顺序，带时间戳。
 - `/api/v1/accounts/{accountId}/runtimes`——界面在每个 account 上显示的读写就绪。
-- `/api/v1/products/arbitrage/opportunities`、
-  `/api/v1/products/arbitrage/positions`——排过名的价差，和已开的对儿。
-- `/api/v1/realtime/ws`——套利机会等 Trading 业务投影；公共市场和私有账户连接由 Gateway
-  直接提供。
 
-资金费看板由 Gateway 维护，Trading 消费它来生成常驻套利机会投影。Trading 不再向浏览器
-代理 catalog、交易所深度、K 线、资金费历史、连接状态或账户事件。浏览器最多每秒接收一次
-合并后的业务机会更新，也不会因此建立第二条交易所连接。参见
+资金费看板和行情流由 Gateway 提供。Trading 不再保留第二份行情缓存，也不转发浏览器
+市场订阅。参见
 [市场与参考数据](market-reference-data.md)。
 
 集合响应的包封是 `{"data":{"items":[…]}}`，`data` 旁边还有一个 `meta` 对象。单资源响应把
@@ -174,6 +118,6 @@ make test
 make test-browser
 ```
 
-离线套件覆盖账本的状态机、预览封签和各个投影。没有任何测试会下单：外部写入阶梯已经
+离线套件覆盖账本的状态机、手动执行和各个投影。没有任何测试会下单：外部写入阶梯已经
 和它所依赖的 Demo、Testnet 环境一起删除。离线套件证明了什么、又没证明什么，
 见[测试与证据](../reference/testing.md)。

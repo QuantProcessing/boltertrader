@@ -1,16 +1,14 @@
 import type {
   Account,
-  AccountRoute,
+  AccountPosition,
   ActivityEvent,
-  ArbitrageExecution,
-  ArbitragePreview,
   Command,
   CommandProjection,
   ManualIntent,
-  ManualPreviewRequest,
+  ManualOrderRequest,
 } from "@/api/types";
 
-import { ACCOUNT, FILLS, HEDGE_ACCOUNT, OBSERVED_AT, instrumentOf } from "./fixtures";
+import { ACCOUNT, ACCOUNT_POSITIONS, FILLS, SECOND_ACCOUNT, OBSERVED_AT, VENUES, instrumentOf } from "./fixtures";
 
 /* ---------------------------------------------------------------------------
  * The mock's memory.
@@ -21,8 +19,8 @@ import { ACCOUNT, FILLS, HEDGE_ACCOUNT, OBSERVED_AT, instrumentOf } from "./fixt
  * record rather than append a second one.
  *
  * The state machine is the one the trading service actually runs — a placed
- * order rests in `submitted`, a cancel moves it to `canceled`, spending a
- * preview twice replays the first command instead of placing a second order,
+ * order rests in `submitted`, a cancel moves it to `canceled`, replaying an
+ * idempotency key returns the first command instead of placing a second order,
  * and every transition leaves an activity event behind. Those are the parts a
  * frontend can get wrong, so they are the parts that are modelled. Everything
  * else (matching, funding accrual, the venue) is out of scope: nothing in the
@@ -58,13 +56,10 @@ function writeSession(open: boolean): void {
 
 interface State {
   accounts: Account[];
-  /** Sealed manual previews, by id, until they are spent. */
-  previews: Map<string, ManualPreviewRequest>;
-  arbitragePreviews: Map<string, ArbitragePreview>;
-  /** What each spent preview produced, so a replay answers with it again. */
-  spent: Map<string, Command>;
+  /** What each manual idempotency key produced, so a replay answers with it again. */
+  manualCommandsByIdempotency: Map<string, Command>;
   orders: Command[];
-  hedges: ArbitrageExecution[];
+  accountPositions: AccountPosition[];
   activity: ActivityEvent[];
   counters: Record<string, number>;
 }
@@ -73,12 +68,10 @@ function empty(): State {
   return {
     // Cloned, so a mutation in one test cannot leak into the fixture module and
     // from there into the next one.
-    accounts: [structuredClone(ACCOUNT), structuredClone(HEDGE_ACCOUNT)],
-    previews: new Map(),
-    arbitragePreviews: new Map(),
-    spent: new Map(),
+    accounts: [structuredClone(ACCOUNT), structuredClone(SECOND_ACCOUNT)],
+    manualCommandsByIdempotency: new Map(),
     orders: [],
-    hedges: [],
+    accountPositions: structuredClone(ACCOUNT_POSITIONS.items),
     activity: seedActivity(),
     counters: {},
   };
@@ -152,14 +145,13 @@ export const accounts = {
    * nothing about it is echoed — `Account` has no field for a secret, which is
    * what makes the write-only rule a property of the API rather than a habit.
    */
-  create(request: { venue: string; displayName: string; productPolicy: string[]; routes: AccountRoute[] }): Account {
+  create(request: { venue: string; displayName: string }): Account {
     const account: Account = {
       accountId: nextId(`acct-${request.venue}`),
       venue: request.venue,
       nativeEnvironment: "live",
       displayName: request.displayName,
-      productPolicy: request.productPolicy,
-      routes: request.routes.map((route) => ({ ...route, requestedState: route.requestedState ?? "active" })),
+      routes: (VENUES.find(venue => venue.venue === request.venue)?.routeProfiles ?? []).map(profile => ({ ...profile })),
       status: "active",
       lastValidatedAt: OBSERVED_AT,
       updatedAt: OBSERVED_AT,
@@ -172,34 +164,12 @@ export const accounts = {
    * Credentials and runtime fences remain server-owned; browser mutations only
    * update the public lifecycle projection.
    */
-  mutate(accountId: string, change: Partial<Account>): Account | undefined {
-    const account = accounts.find(accountId);
-    if (!account) return undefined;
-    Object.assign(account, change, { updatedAt: OBSERVED_AT });
-    return account;
+  remove(accountId: string): void {
+    state.accounts = state.accounts.filter(account => account.accountId !== accountId);
   },
 };
 
 /* --- Manual orders -------------------------------------------------------- */
-
-export const previews = {
-  seal(request: ManualPreviewRequest): string {
-    const previewId = nextId("prev");
-    state.previews.set(previewId, request);
-    return previewId;
-  },
-
-  /** The sealed request, or undefined if it was never issued. */
-  get: (previewId: string): ManualPreviewRequest | undefined => state.previews.get(previewId),
-
-  sealArbitrage(preview: ArbitragePreview): void {
-    state.arbitragePreviews.set(preview.previewId, preview);
-  },
-
-  getArbitrage: (previewId: string): ArbitragePreview | undefined => state.arbitragePreviews.get(previewId),
-
-  nextArbitrageId: (): string => nextId("aprev"),
-};
 
 export const orders = {
   list: (): Command[] => state.orders,
@@ -213,21 +183,18 @@ export const orders = {
   },
 
   /**
-   * Spend a sealed preview.
-   *
    * `replay` distinguishes the two outcomes because the caller has to answer
    * 200 for one and 202 for the other: a retried submission must not place a
    * second order, and the client reads the returned command's state either way.
    */
-  place(request: { previewId: string; lineageId: string; idempotencyKey: string }): {
+  place(request: { order: ManualOrderRequest; lineageId: string; idempotencyKey: string }): {
     command: Command;
     replay: boolean;
-  } | null {
-    const existing = state.spent.get(request.previewId);
+  } {
+    const existing = state.manualCommandsByIdempotency.get(request.idempotencyKey);
     if (existing) return { command: existing, replay: true };
 
-    const intent = state.previews.get(request.previewId);
-    if (!intent) return null;
+    const intent = request.order;
 
     const account = accounts.find(intent.accountId);
     const command: Command = {
@@ -264,11 +231,9 @@ export const orders = {
       },
     };
 
-    // The seal is consumed whether or not anything else happens next, which is
-    // the property that makes a double-submit safe.
-    state.previews.delete(request.previewId);
-    state.spent.set(request.previewId, command);
+    state.manualCommandsByIdempotency.set(request.idempotencyKey, command);
     state.orders.unshift(command);
+    if (intent.reduceOnly) reduceAccountPosition(intent);
     record("command.submitted", command);
     return { command, replay: false };
   },
@@ -284,6 +249,33 @@ export const orders = {
     return order;
   },
 };
+
+export const accountPositions = {
+  list: (): AccountPosition[] => state.accountPositions,
+};
+
+function reduceAccountPosition(intent: ManualOrderRequest): void {
+  const index = state.accountPositions.findIndex((position) => {
+    if (position.accountId !== intent.accountId || position.instrumentId !== intent.instrumentId) return false;
+    const short = position.side === "sell" || position.quantity.trimStart().startsWith("-");
+    return intent.side === (short ? "buy" : "sell");
+  });
+  if (index < 0) return;
+  const position = state.accountPositions[index];
+  if (!position) return;
+  const current = Math.abs(Number(position.quantity));
+  const reduction = Number(intent.quantity);
+  if (!Number.isFinite(current) || !Number.isFinite(reduction) || reduction <= 0) return;
+  const remaining = Math.max(0, current - reduction);
+  if (remaining === 0) {
+    state.accountPositions.splice(index, 1);
+    return;
+  }
+  const short = position.side === "sell" || position.quantity.trimStart().startsWith("-");
+  position.quantity = `${short ? "-" : ""}${remaining}`;
+  position.resourceVersion = (position.resourceVersion ?? 0) + 1;
+  position.receivedAt = new Date().toISOString();
+}
 
 /** Which of the account's routes can carry this instrument's product. */
 function routeIdFor(account: Account | undefined, instrumentId: string): string {
@@ -325,22 +317,4 @@ export function record(kind: string, command: Command): ActivityEvent {
 
 export const activity = {
   list: (): ActivityEvent[] => state.activity,
-};
-
-/* --- Arbitrage pairs ------------------------------------------------------ */
-
-export const hedges = {
-  list: (): ArbitrageExecution[] => state.hedges,
-
-  /** Records an opened or closed pair, newest first. */
-  push(execution: ArbitrageExecution): void {
-    const existing = state.hedges.findIndex((pair) => pair.lineageId === execution.lineageId);
-    // Closing a pair edits the pair that was opened rather than appending a
-    // second row: the positions screen keys on the lineage, and two rows under
-    // one lineage is a state a real pair can never be in.
-    if (existing >= 0) state.hedges.splice(existing, 1);
-    state.hedges.unshift(execution);
-  },
-
-  nextLegId: (): string => nextId("cmd"),
 };

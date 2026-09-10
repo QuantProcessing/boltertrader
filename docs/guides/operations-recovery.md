@@ -2,159 +2,113 @@
 
 > Canonical language: English. [Chinese mirror](../zh-CN/guides/operations-recovery.md)
 
-This page covers running the stack and what to do when an outcome is unclear. It
-does not replace a venue's own runbook, and nothing here turns offline evidence
-into production readiness.
+The supported deployment is the existing single-host Compose stack: one
+PostgreSQL instance, Gateway, Trading, Auth edge and Web. The Go image also
+ships `gateway-market` and `gateway-monitor`; no separate monitoring service
+is needed. Published ports bind to loopback.
 
-## Running the stack
+## Start and diagnose
 
-Five commands cover the whole lifecycle.
+`make up` generates missing service credentials, builds the images, runs the
+three migrators, starts the services and checks readiness. `make down` keeps the
+database volume. `make down-hard` deletes it and is only appropriate for data you
+intend to discard. An existing database with schema/role drift needs inspection
+and a planned migration, not deletion as a troubleshooting shortcut.
 
-| Command | What it does |
-| --- | --- |
-| `make up` | Generates secrets and `.env.stack`, builds, starts, waits for health, then runs the doctor |
-| `make doctor` | Diagnoses a running stack without changing it |
-| `make logs` | Follows every container's output |
-| `make down` | Stops the stack and keeps the database volume |
-| `make down-hard` | Stops the stack and deletes the volume |
+Venue credentials are encrypted in PostgreSQL. Keep `.secrets/stack/secret_master_key`
+with the database backup: replacing it does not decrypt existing accounts. The
+remaining files in `.secrets/stack` are service tokens and login bootstrap
+material. Nothing uses `.secrets/store` any more.
 
-`make up` is safe to repeat. It regenerates what is missing, tightens what is
-loose, and leaves what is already correct alone.
+`make doctor` checks Docker, service-key files, the PostgreSQL role layout and
+HTTP readiness. It reports public quotes as **not checked** unless a specific
+instrument is requested:
 
-The difference between the two teardowns matters more than it looks. The
-Postgres image runs its initialization scripts exactly once, when the data
-directory is empty. A surviving volume therefore means a changed role set is
-never applied — so if you edit anything under `docker/postgres/initdb/`, only
-`make down-hard` will make that edit take effect.
+```sh
+go run ./internal/devsetup/cmd/doctor -instrument 'binance:live:spot:BTC-USDT'
+```
 
-## Reading `make doctor`
+Use an exact ID from `gateway-market`'s catalog. This diagnostic opens one BBO
+snapshot, validates its source timestamp and releases the subscription. A
+healthy process, a successful catalog load and a fresh quote are separate facts.
 
-The doctor runs its checks in a fixed order, and that order is the debugging
-order: everything below a failure tends to fail for the same reason.
+`gateway_market_hot_instruments{venue,market_family}` counts distinct instruments
+with active consumer demand. It is not a connection count or evidence that every
+derivative dataset has a subscription; the old `gateway_market_hot_subscriptions`
+metric incorrectly duplicated this count across datasets and has been removed.
 
-| Check | Healthy answer |
-| --- | --- |
-| `docker` | The daemon responds |
-| `.env.stack` | Present and non-empty |
-| `credentials` | Seven files, mode `0600`, in `.secrets/stack` |
-| `credential store` | Present and writable by the uid the gateway runs as |
-| `postgres` | The port accepts a connection |
-| `postgres roles` | Six roles, three databases, writer membership granted |
-| `gateway` | Authenticated `/v1/health/ready` returns `200` |
-| `trading` | Authenticated `/api/v1/system/readiness` returns `200` |
-| `auth edge` | `/api/v1/me` returns `401` without a session |
-| `web` | `/` returns `200` |
+If venue access requires a proxy, configure it explicitly:
 
-Three of these are worth explaining, because a plausible reading of each is
-wrong.
+```sh
+GATEWAY_HTTP_PROXY=http://127.0.0.1:10900 make up
+```
 
-**The gateway probe carries a bearer token.** Readiness sits behind the same
-authentication as every other `/v1` route, so an unauthenticated probe would
-report a healthy gateway as broken. The container image is distroless and has no
-shell to read the token file with, which is why the check runs on the host.
+Bootstrap rewrites loopback for Docker's `host.docker.internal`. Go does not use
+`ALL_PROXY` for these HTTP/WebSocket clients; a host-launched Gateway needs
+`HTTP_PROXY`, `HTTPS_PROXY` and an appropriate `NO_PROXY`. Image dependency
+fetches have a separate optional `BOLTER_DOCKER_HTTP_PROXY` build argument. A
+proxy that accepts TCP does not prove a venue route works; use the quote diagnostic.
 
-**A `401` from the auth edge is the pass.** A `200` there would mean the edge
-answered for a principal it never authenticated — the check treats any other
-status as a failure, including success.
+## Unknown orders
 
-**Role membership is verified explicitly.** A grant that did not happen leaves
-two roles that both exist and a service that cannot write, which otherwise
-surfaces at the first insert rather than at startup.
+An uncertain result is not a retry signal. Recovery only queries the existing
+order identity. The order-state tooltip exposes the persisted task's reason,
+attempt count, last diagnostic time and confirmed Gateway state/version. Query
+failures preserve prior fills and do not turn an order into `failed`.
 
-A skip is never the interesting line. Skips are downstream of a failure that is
-already reported above them.
+Keep the command, client-order and Gateway-order IDs. Check exchange orders,
+fills and current positions before deciding to place another order. The UI has
+no action to invent a terminal failure or automatically replace an unknown
+order. A newly created command that never began sending expires after 30 seconds;
+this is distinct from one whose send outcome is unknown.
 
-## Startup and shutdown
+Account deletion removes local credentials and connections; it does not cancel
+orders or close positions. Historical command and fill evidence remains queryable.
 
-The gateway refuses to serve before its own preconditions hold: configuration,
-credential decryption, database connectivity, schema version, catalog load,
-route profile, and readiness registration. A gateway that never becomes ready
-has failed one of those, and `make logs` names which. It does not start
-degraded, because a gateway that accepts writes before its catalog is loaded
-would validate orders against rules it does not have.
+## Backup and restore
 
-On the way down, the gateway drains for up to ten seconds inside the stack's
-fifteen-second stop window. In-flight requests finish; new ones do not start.
-The drain outcome is recorded as a metric, so a stack that is being stopped
-faster than it can drain is visible rather than inferred.
+Use a private directory outside the repository. Stop all four application
+containers so the three database dumps describe one maintenance point. Keep
+PostgreSQL running while taking the dumps:
 
-## Ambiguity is a state, not a retry signal
+```sh
+umask 077
+backup_dir="$HOME/bolter-backups/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
+docker compose --env-file .env.stack stop web authedge trading gateway
+for database in bolter_gateway bolter_trading bolter_authedge; do
+  docker compose --env-file .env.stack exec -T postgres \
+    pg_dump -U bolter_bootstrap -Fc "$database" > "$backup_dir/$database.dump" || exit 1
+done
+cp -R .secrets "$backup_dir/.secrets"
+cp .env.stack "$backup_dir/.env.stack"
+cp docker/gateway.docker.yaml "$backup_dir/gateway.yaml"
+docker compose --env-file .env.stack start gateway trading authedge web
+make doctor
+```
 
-A timeout or a transport error after submission can mean the venue accepted the
-order. This is the single most important operational fact on this page, and both
-layers are built around it.
+Also retain the exact source commit/image versions and any custom Gateway
+configuration selected through `GATEWAY_CONFIG_FILE`. Store the backup on a
+separate durable device; it contains account secrets and session data.
 
-The trading service's command ledger has an explicit `uncertain` state, and the
-reconciler puts a command there whenever the gateway lookup fails or returns
-evidence it cannot interpret. Retries back off from five seconds, doubling to a
-one-minute cap, and the command stays claimable the whole time. It does not
-become `failed` because a read failed.
+Restore into a **new empty deployment**, leaving the original data intact:
 
-**Do not submit a replacement with a new identity until the first outcome
-resolves.** Preserve the original command ID and any venue order ID and query by
-exactly those. A failed command is not proof that no write reached the venue.
+1. Use the recorded code/images. Restore `.secrets` before starting any application;
+   directories must be 0700 and files 0600. Adjust copied `.env.stack` paths, host
+   UID and ports for the new machine. Restore the custom Gateway config if used.
+2. Start only PostgreSQL: `docker compose --env-file .env.stack up -d --wait postgres`.
+   Its init script creates the required databases, owners and roles.
+3. Restore each custom-format dump into its corresponding empty database using
+   `docker compose --env-file .env.stack exec -T postgres pg_restore -U bolter_bootstrap
+   --exit-on-error -d bolter_gateway < "$backup_dir/bolter_gateway.dump"`, and repeat
+   for Trading and Auth edge. Preserve ownership and ACLs; do not use `--clean`
+   against an existing deployment.
+4. Run `make up` to apply checksum-verified migrations and readiness checks, then
+   query current exchange state. Do not treat restored local commands as new intents.
 
-| Observed outcome | Operator action |
-| --- | --- |
-| Validation, lifecycle, or risk rejection before venue handoff | Fix the request or the readiness condition; perform no venue cleanup for that attempt |
-| Acknowledged order | Retain the command and venue IDs; follow normal status and fill handling |
-| Possible venue handoff without an authoritative result | Freeze replacement writes, query by the exact known identity, reconcile, and leave the outcome ambiguous if evidence stays incomplete |
-| Authoritative terminal result | Apply only the cleanup that terminal order, fill, or account evidence justifies |
-
-Absence from a complete open-order list proves only that the order is not open.
-It does not supply a terminal cause, prove zero fills, or authorize a
-replacement. Use an exact status report and exact fill reports where the product
-implements them; otherwise the result stays unresolved.
-
-Terminal states reach the activity feed through the settlement observer and
-nowhere else, so what the interface shows is what the ledger settled — not what
-a response body suggested at submission time. See
-[the trading service](trading-service.md).
-
-## Stream gaps
-
-The gateway's public stream has no cursor replay by design. Every logical topic
-begins from a fresh authoritative snapshot. A detected native gap emits
-`resync_required`; the feed owner reconnects and publishes a new generation
-snapshot without interrupting unrelated topics on the browser socket.
-
-Treat that event as authoritative: discard the incomplete generation and take
-the new snapshot. Do not
-reconstruct orders or positions from the events you did receive. A gap means the
-sequence you hold is incomplete, and an incomplete sequence applied as if it
-were complete produces a position that looks settled and is not.
-
-Private account notifications are different: they are change hints over REST
-authority, not an event log used to reconstruct state. A native account-stream
-gap marks only that account degraded while the principal browser subscription
-remains open. Fixed 60-second REST reconciliation repairs any missed entity.
-
-## Cleanup is bounded
-
-Acceptance harnesses cancel only the orders they can identify as their own and
-flatten only exposure they can attribute and bound. On a zero exit, apply the
-test's exact product-scoped success definition. On any nonzero or ambiguous
-exit, the final state is unconfirmed even if deferred cleanup ran.
-
-Never blind-cancel unrelated orders or flatten an unproven position. **If a close
-outcome is ambiguous, an additional sell can create a short position.** The
-cleanup path is fail-closed for exactly this reason: stable nonzero position
-evidence after an ambiguous close blocks another flattening order rather than
-retrying it.
-
-Spot cleanup is bounded by the captured authoritative base-balance baseline, the
-observed fill quantity, a fee reserve, the size step, and the minimum notional.
-It never sells presumed ownership out of an account-wide balance. Perp cleanup is
-limited to the selected instrument and account scope, an explicit quantity cap,
-and reduce-only semantics.
-
-## Evidence
-
-Record the command, the environment and product, the client and venue IDs, the
-terminal reports, and the reconciliation result. Record no secrets. Keep raw
-execution evidence private; anything published carries only scoped, dated,
-zero-skip results.
-
-- [Testing](../reference/testing.md)
-- [State and reconciliation](../concepts/state-reconciliation.md)
-- [The local stack](../getting-started/local-stack.md)
+`make test-compose-recovery` rehearses outages and a three-database restore in a
+throwaway project. `--public-seconds 180` on `scripts/acceptance/stack_recovery.py`
+also runs a bounded Binance BTC spot / OKX BTC perpetual monitor through restarts,
+records resource samples and then removes all test containers, volumes and keys.
+This requires public network access but no venue credentials. The report states
+what was observed; a three-minute sample is not a long-duration reliability claim.

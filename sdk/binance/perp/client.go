@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/QuantProcessing/boltertrader/internal/mbx"
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
@@ -101,6 +102,9 @@ func (c *Client) WithCoinM() *Client {
 
 func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 	c.HTTPClient = httpClient
+	if venuehttp.UsesSharedHTTPBudget(httpClient) {
+		c.RateLimiter = nil
+	}
 	return c
 }
 
@@ -151,7 +155,7 @@ func (c *Client) endpoint(version string, path string) string {
 	return prefix + "/" + version + path
 }
 
-func (c *Client) call(ctx context.Context, method, endpoint string, params map[string]interface{}, signed bool, result interface{}) error {
+func (c *Client) call(ctx context.Context, method, endpoint string, params map[string]interface{}, signed bool, result interface{}) (returnErr error) {
 	if c.RateLimiter != nil {
 		if err := c.RateLimiter.Wait(ctx, c.rateLimitKeys(endpoint)); err != nil {
 			return err
@@ -188,7 +192,11 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 
 	c.Logger.Debugw("Request", "method", method, "path", u.Path)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "binance")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return fmt.Errorf("binance perp %s %s transport failed: %w", method, u.Path, mbx.TransportCause(err))
 	}

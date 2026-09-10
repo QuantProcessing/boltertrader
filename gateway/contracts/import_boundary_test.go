@@ -17,11 +17,12 @@ func TestGatewayProductionImportBoundary(t *testing.T) {
 		"github.com/QuantProcessing/boltertrader/sdk",
 	}
 	allowedRepo := map[string]bool{
-		"github.com/QuantProcessing/boltertrader/credential":       true,
-		"github.com/QuantProcessing/boltertrader/exchange":         true,
-		"github.com/QuantProcessing/boltertrader/exchange/factory": true,
-		"github.com/QuantProcessing/boltertrader/routeprofile":     true,
-		"github.com/QuantProcessing/boltertrader/secretstore":      true,
+		"github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1": true,
+		"github.com/QuantProcessing/boltertrader/credential":              true,
+		"github.com/QuantProcessing/boltertrader/exchange":                true,
+		"github.com/QuantProcessing/boltertrader/exchange/factory":        true,
+		"github.com/QuantProcessing/boltertrader/routeprofile":            true,
+		"github.com/QuantProcessing/boltertrader/secretstore":             true,
 	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir("..", func(path string, entry os.DirEntry, walkErr error) error {
@@ -34,6 +35,13 @@ func TestGatewayProductionImportBoundary(t *testing.T) {
 		}
 		for _, spec := range file.Imports {
 			importPath := strings.Trim(spec.Path.Value, "\"")
+			if importPath == "github.com/QuantProcessing/boltertrader/internal/venuehttp" {
+				directory := filepath.Base(filepath.Dir(path))
+				if directory != "ratelimit" && directory != "connectivity" {
+					t.Fatalf("%s imports HTTP infrastructure outside the transport boundary", path)
+				}
+				continue
+			}
 			for _, bad := range forbidden {
 				if importPath == bad || strings.HasPrefix(importPath, bad+"/") {
 					t.Fatalf("%s imports forbidden package %s", path, importPath)

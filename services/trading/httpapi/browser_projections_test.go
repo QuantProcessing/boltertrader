@@ -79,11 +79,8 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	if _, err := activity.Publish(ActivityRecord{PrincipalID: "other-principal", Kind: "command.accepted", ProductID: "manual", ResourceID: "other-command"}); err != nil {
 		t.Fatal(err)
 	}
-	runtimes := &runtimeProjectionFixture{items: []AccountRuntimeProjection{{
-		AccountID: "account-a", DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2, RuntimeVersion: 9,
-		Readiness: ProjectionReadiness{Ready: true}, WriteReadiness: ProjectionReadiness{Ready: true}, LastAppliedDesiredStateRevision: 7, LastAppliedRuntimeGeneration: 3,
-		Capabilities: []AccountCapabilityProjection{{RowID: "binance:perp:USDT", Venue: "binance", Product: "perp", Settlement: "USDT", WriteReady: true, Operations: CapabilityOperations{Place: true, Cancel: true, Fills: true, Positions: true}}}, ObservedAt: now,
-	}}}
+	runtimes := &runtimeProjectionFixture{items: []AccountRuntimeProjection{{AccountID: "account-a", RuntimeID: "runtime-a", Connected: true, ObservedAt: now}}}
+
 	commands := &commandProjectionFixture{commands: map[string][]orders.Command{
 		"manual": {
 			{CommandID: "manual-command", PrincipalID: testPrincipalID, AccountID: "account-a", LineageID: "manual-lineage", ProductID: "manual", IdempotencyKey: "manual-key", CommandKind: "order.place", State: orders.StateFilled, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExecutionEvidence: orders.ExecutionEvidence{Fills: []orders.FillEvidence{{FillID: "fill-a", AccountID: "account-a", InstrumentID: "btc-usdt", Side: "buy", Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}},
@@ -109,7 +106,7 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 		contains   []string
 		notContain []string
 	}{
-		{path: "/api/v1/accounts/account-a/runtimes", contains: []string{`"accountId":"account-a"`, `"cancel":true`}, notContain: []string{`"scaffold":true`, "gateway-adapter-token", `"runtimeVersion"`}},
+		{path: "/api/v1/accounts/account-a/runtimes", contains: []string{`"accountId":"account-a"`, `"connected":true`}, notContain: []string{`"scaffold":true`, "gateway-adapter-token", `"runtimeVersion"`}},
 		{path: "/api/v1/balances?accountId=account-a", contains: []string{`"accountId":"account-a"`, `"available":"123.45"`, `"availableMargin":"120"`}, notContain: []string{`"principalId"`, `"credential"`}},
 		{path: "/api/v1/account-positions?accountId=account-a&instrumentId=binance:live:perp:USDT:BTC-USDT", contains: []string{`"quantity":"-0.25"`, `"side":"sell"`, `"markPrice":"64000"`}, notContain: []string{`"principalId"`, `"credential"`}},
 		{path: "/api/v1/commands", contains: []string{`"commandId":"manual-command"`, `"commandId":"submitted-command"`}, notContain: []string{`"scaffold":true`, `"payload"`, `"principalId"`}},

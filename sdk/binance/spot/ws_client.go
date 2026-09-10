@@ -44,7 +44,7 @@ type WSClient struct {
 	ReconnectWait        time.Duration
 	maxReconnectAttempts int
 	reconnectAttempt     int
-	pongInterval         time.Duration
+	heartbeatInterval    time.Duration
 
 	// active subscriptions
 	subs map[string]Subscription
@@ -71,7 +71,7 @@ func NewWSClient(ctx context.Context, url string) *WSClient {
 		Logger:               zap.NewNop().Sugar().Named("binance-spot-ws"),
 		Debug:                os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1",
 		maxReconnectAttempts: 10,
-		pongInterval:         3 * time.Minute, // Spot might have different requirement, but 3m is safe-ish. Perp uses 1m.
+		heartbeatInterval:    3 * time.Minute,
 		subs:                 make(map[string]Subscription),
 		dispatcher:           wsdispatch.NewBoundedDispatcher(wsdispatch.DefaultBufferLimit),
 		ctx:                  ctx,
@@ -155,7 +155,7 @@ func (c *WSClient) setupPingHandlers(conn *websocket.Conn) {
 func (c *WSClient) keepAlive(conn *websocket.Conn) {
 	defer c.wg.Done()
 
-	ticker := time.NewTicker(c.pongInterval)
+	ticker := time.NewTicker(c.heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
@@ -163,13 +163,13 @@ func (c *WSClient) keepAlive(conn *websocket.Conn) {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			// Binance Spot typically expects Pong response to server Ping.
-			// But sending unsolicited Pong is also allowed as heartbeat.
+			// Server Pings are answered by setupPingHandlers. This client Ping is
+			// an independent liveness check and therefore expects an inbound Pong.
 			c.WriteMu.Lock()
-			err := conn.WriteMessage(websocket.PongMessage, []byte{})
+			err := conn.WriteMessage(websocket.PingMessage, []byte{})
 			c.WriteMu.Unlock()
 			if err != nil {
-				c.Logger.Errorw("Failed to send pong", "error", err)
+				c.Logger.Errorw("Failed to send ping", "error", err)
 				_ = conn.Close()
 				return
 			}

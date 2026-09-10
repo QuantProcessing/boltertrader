@@ -15,6 +15,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 	"github.com/QuantProcessing/boltertrader/sdk/lighter/common"
 )
@@ -112,7 +113,7 @@ func (c *Client) InvalidateNonce() {
 	c.nonceInit = false
 }
 
-func (c *Client) Post(ctx context.Context, path string, payload any, auth bool) ([]byte, error) {
+func (c *Client) Post(ctx context.Context, path string, payload any, auth bool) (_ []byte, returnErr error) {
 	var body io.Reader
 	if payload != nil {
 		jsonData, err := json.Marshal(payload)
@@ -141,7 +142,11 @@ func (c *Client) Post(ctx context.Context, path string, payload any, auth bool) 
 
 	c.Logger.Debugw("Request", "method", req.Method, "path", req.URL.Path)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -176,7 +181,7 @@ func (c *Client) CreateAuthToken(deadline time.Time) (string, error) {
 }
 
 // PostForm sends a multipart/form-data request
-func (c *Client) PostForm(ctx context.Context, path string, params map[string]string, auth bool) ([]byte, error) {
+func (c *Client) PostForm(ctx context.Context, path string, params map[string]string, auth bool) (_ []byte, returnErr error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -205,7 +210,11 @@ func (c *Client) PostForm(ctx context.Context, path string, params map[string]st
 
 	c.Logger.Debugw("Request", "method", req.Method, "path", req.URL.Path)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -229,12 +238,16 @@ func (c *Client) PostForm(ctx context.Context, path string, params map[string]st
 	return data, nil
 }
 
-func (c *Client) GetBlockHeight(ctx context.Context) (int64, error) {
+func (c *Client) GetBlockHeight(ctx context.Context) (_ int64, returnErr error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ExplorerAPIURL+"/blocks", nil)
 	if err != nil {
 		return 0, err
 	}
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return 0, err
 	}

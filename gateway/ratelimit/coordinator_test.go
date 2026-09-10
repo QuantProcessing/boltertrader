@@ -7,41 +7,56 @@ import (
 	"time"
 )
 
-func TestCoordinatorAtomicallyReservesHierarchicalBudgets(t *testing.T) {
+func TestWeightedBudgetsAreAtomicAndConfigurationDoesNotResetUsage(t *testing.T) {
 	now := time.Unix(100, 0)
-	coordinator := NewCoordinator(func() time.Time { return now })
-	profile := Key{Kind: VenueProfile, Value: "binance/test/binance.perp.usdt.v1"}
-	principal := Key{Kind: AuthenticatedPrincipal, Value: "binance/principal-fingerprint"}
-	if err := coordinator.Configure(profile, Quota{Limit: 2, Interval: time.Minute}); err != nil {
+	c := NewCoordinator(func() time.Time { return now })
+	venue := Key{VenueBudget, "binance"}
+	account := Key{EndpointBudget, "account"}
+	if err := c.Configure(venue, Quota{10, time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Configure(principal, Quota{Limit: 1, Interval: time.Minute}); err != nil {
+	if err := c.Configure(account, Quota{4, time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Acquire(context.Background(), []Key{principal, profile}); err != nil {
+	charges := []Charge{{Key: venue, Cost: 3}, {Key: account, Cost: 3}}
+	if delay, err := c.TryAcquire(context.Background(), charges); delay != 0 || err != nil {
+		t.Fatalf("delay=%s err=%v", delay, err)
+	}
+	if err := c.Configure(account, Quota{4, time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	if err := coordinator.Acquire(ctx, []Key{profile, principal}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err=%v", err)
+	if delay, err := c.TryAcquire(context.Background(), charges); delay != time.Minute || err != nil {
+		t.Fatalf("delay=%s err=%v", delay, err)
 	}
-	if used := coordinator.Used(profile); used != 1 {
-		t.Fatalf("profile partially consumed while principal blocked: %d", used)
+	if c.Used(venue) != 3 || c.Used(account) != 3 {
+		t.Fatal("partial charge or configuration reset")
+	}
+	if err := c.Configure(account, Quota{5, time.Minute}); !errors.Is(err, ErrInvalidBudget) {
+		t.Fatal(err)
 	}
 	now = now.Add(time.Minute)
-	if err := coordinator.Acquire(context.Background(), []Key{profile, principal}); err != nil {
-		t.Fatal(err)
+	if delay, err := c.TryAcquire(context.Background(), charges); delay != 0 || err != nil {
+		t.Fatalf("delay=%s err=%v", delay, err)
 	}
 }
 
-func TestCoordinatorRejectsDuplicateAndInvalidKeys(t *testing.T) {
-	coordinator := NewCoordinator(time.Now)
-	key := Key{Kind: VenueProfile, Value: "binance/test/profile"}
-	if err := coordinator.Configure(key, Quota{Limit: 1, Interval: time.Second}); err != nil {
+func TestBudgetInvalidVectorsAndCanceledCallsDoNotConsume(t *testing.T) {
+	c := NewCoordinator(nil)
+	key := Key{VenueBudget, "binance"}
+	if err := c.Configure(key, Quota{10, time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Acquire(context.Background(), []Key{key, key}); err == nil {
-		t.Fatal("duplicate budget vector accepted")
+	for _, charges := range [][]Charge{nil, {{Key: key, Cost: 1}, {Key: key, Cost: 1}}, {{Key: key, Cost: 0}}, {{Key: key, Cost: 11}}, {{Key: key, Cost: 1, Reserve: 10}}, {{Key: Key{VenueBudget, "unconfigured"}, Cost: 1}}} {
+		if _, err := c.TryAcquire(context.Background(), charges); !errors.Is(err, ErrInvalidBudget) {
+			t.Fatalf("vector=%+v err=%v", charges, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.TryAcquire(ctx, []Charge{{Key: key, Cost: 1}}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if c.Used(key) != 0 {
+		t.Fatal("invalid/canceled request consumed budget")
 	}
 }

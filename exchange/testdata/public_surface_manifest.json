@@ -4141,70 +4141,118 @@
   ],
   "symbols": [
     {
+      "id": "exchange.MarketWebSocket",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestPublicMarketFacetMethodSets",
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange.PerpMarketWebSocket",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestPublicMarketFacetMethodSets",
+        "TestPublicMarketConnectorsCoverProfilesWithoutCredentialsOrConstructionIO"
+      ]
+    },
+    {
+      "id": "exchange.PerpMarketREST",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestPublicMarketFacetMethodSets"
+      ]
+    },
+    {
       "id": "exchange/factory.NewPublicDerivativeFeed",
       "kind": "func",
       "coverage": "unit",
-      "tests": ["TestPublicDerivativeFeedConstruction"]
+      "tests": [
+        "TestPublicDerivativeFeedConstruction"
+      ]
     },
     {
       "id": "exchange.DerivativeFeed",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFeed.Bootstrap",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFeed.Stream",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFeed.Close",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeHotsetFeed",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestPublicDerivativeFeedConstruction"]
+      "tests": [
+        "TestPublicDerivativeFeedConstruction"
+      ]
     },
     {
       "id": "exchange.DerivativeHotsetFeed.SetHotInstrument",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestPublicDerivativeFeedConstruction"]
+      "tests": [
+        "TestPublicDerivativeFeedConstruction"
+      ]
     },
     {
       "id": "exchange.DerivativeInstrumentResolver",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeInstrumentResolver.ResolveDerivativeInstrument",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.MarketRequestCoordinator",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.MarketRequestCoordinator.Do",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.AckAcceptedPending",
@@ -4266,61 +4314,81 @@
       "id": "exchange.AssetClass",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassCommodity",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassCrypto",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassEquity",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassFX",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassIndex",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassPreIPO",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassRWAOther",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassRates",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.AssetClassUnknown",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.Balance",
@@ -4713,73 +4781,97 @@
       "id": "exchange.FundingPayment",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+      "tests": [
+        "TestFundingPaymentRESTIsOptionalPerpFacet"
+      ]
     },
     {
       "id": "exchange.FundingPaymentHistoryRequest",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+      "tests": [
+        "TestFundingPaymentRESTIsOptionalPerpFacet"
+      ]
     },
     {
       "id": "exchange.FundingPaymentPage",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingPaymentREST",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+      "tests": [
+        "TestFundingPaymentRESTIsOptionalPerpFacet"
+      ]
     },
     {
       "id": "exchange.FundingPaymentREST.FundingPayments",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+      "tests": [
+        "TestFundingPaymentRESTIsOptionalPerpFacet"
+      ]
     },
     {
       "id": "exchange.FundingPaymentStatus",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingPaymentWatermark",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingPaymentsComplete",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingPaymentsCompleteEmpty",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingPaymentsIncomplete",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingPaymentsTemporarilyUnavailable",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingPaymentsUnsupported",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+      "tests": [
+        "TestFundingPaymentPageStatusesAreExactScopeOnly"
+      ]
     },
     {
       "id": "exchange.FundingRate",
@@ -4801,19 +4893,25 @@
       "id": "exchange.DerivativeReferenceEvent",
       "kind": "type",
       "coverage": "unit",
-      "tests": ["TestPerpWebSocketSharesOneNativeReferenceStream"]
+      "tests": [
+        "TestPerpWebSocketSharesOneNativeReferenceStream"
+      ]
     },
     {
       "id": "exchange.DerivativeReferenceWebSocket",
       "kind": "interface",
       "coverage": "unit",
-      "tests": ["TestPerpWebSocketSharesOneNativeReferenceStream"]
+      "tests": [
+        "TestPerpWebSocketSharesOneNativeReferenceStream"
+      ]
     },
     {
       "id": "exchange.DerivativeReferenceWebSocket.WatchDerivativeReference",
       "kind": "interface_method",
       "coverage": "unit",
-      "tests": ["TestPerpWebSocketSharesOneNativeReferenceStream"]
+      "tests": [
+        "TestPerpWebSocketSharesOneNativeReferenceStream"
+      ]
     },
     {
       "id": "exchange.FundingRateHistoryRequest",
@@ -4875,7 +4973,9 @@
       "id": "exchange.Instrument.EffectiveMetadata",
       "kind": "method",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.Instrument.NativeSymbol",
@@ -4917,25 +5017,33 @@
       "id": "exchange.InstrumentCategories",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.InstrumentCategories.MarshalJSON",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.InstrumentCategories.UnmarshalJSON",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.InstrumentCategories.Values",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.InstrumentCatalog",
@@ -5031,7 +5139,9 @@
       "id": "exchange.InstrumentMetadata",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.InstrumentRules",
@@ -5290,25 +5400,33 @@
       "id": "exchange.MarketFamily",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.MarketFamilyBuilderPerpetual",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.MarketFamilySpot",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.MarketFamilyVenuePerpetual",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.MarketREST",
@@ -5447,7 +5565,9 @@
       "id": "exchange.NewInstrumentCategories",
       "kind": "func",
       "coverage": "unit",
-      "tests": ["TestInstrumentCategoriesRemainComparableAndMarshalAsArray"]
+      "tests": [
+        "TestInstrumentCategoriesRemainComparableAndMarshalAsArray"
+      ]
     },
     {
       "id": "exchange.NewMemoryCatalog",
@@ -5863,19 +5983,25 @@
       "id": "exchange.PerpFundingPaymentREST",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+      "tests": [
+        "TestFundingPaymentRESTIsOptionalPerpFacet"
+      ]
     },
     {
       "id": "exchange.PerpMarkPriceREST",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestPerpMarkPriceRESTIsOptionalPerpFacet"]
+      "tests": [
+        "TestPerpMarkPriceRESTIsOptionalPerpFacet"
+      ]
     },
     {
       "id": "exchange.PerpMarkPriceREST.MarkPrice",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestPerpMarkPriceRESTIsOptionalPerpFacet"]
+      "tests": [
+        "TestPerpMarkPriceRESTIsOptionalPerpFacet"
+      ]
     },
     {
       "id": "exchange.PerpClient.Close",
@@ -5902,7 +6028,7 @@
       ]
     },
     {
-      "id": "exchange.PerpREST.FundingRate",
+      "id": "exchange.PerpMarketREST.FundingRate",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -5910,7 +6036,7 @@
       ]
     },
     {
-      "id": "exchange.PerpREST.FundingRateHistory",
+      "id": "exchange.PerpMarketREST.FundingRateHistory",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -5934,7 +6060,7 @@
       ]
     },
     {
-      "id": "exchange.PerpWebSocket.WatchFundingRate",
+      "id": "exchange.PerpMarketWebSocket.WatchFundingRate",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -5942,7 +6068,7 @@
       ]
     },
     {
-      "id": "exchange.PerpWebSocket.WatchMarkPrice",
+      "id": "exchange.PerpMarketWebSocket.WatchMarkPrice",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -6230,7 +6356,7 @@
       ]
     },
     {
-      "id": "exchange.SpotWebSocket.Close",
+      "id": "exchange.MarketWebSocket.Close",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -6255,7 +6381,7 @@
       ]
     },
     {
-      "id": "exchange.SpotWebSocket.WatchBBO",
+      "id": "exchange.MarketWebSocket.WatchBBO",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -6263,7 +6389,7 @@
       ]
     },
     {
-      "id": "exchange.SpotWebSocket.WatchCandles",
+      "id": "exchange.MarketWebSocket.WatchCandles",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -6280,7 +6406,7 @@
       ]
     },
     {
-      "id": "exchange.SpotWebSocket.WatchOrderBook",
+      "id": "exchange.MarketWebSocket.WatchOrderBook",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -6297,7 +6423,7 @@
       ]
     },
     {
-      "id": "exchange.SpotWebSocket.WatchPublicTrades",
+      "id": "exchange.MarketWebSocket.WatchPublicTrades",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
@@ -7019,349 +7145,505 @@
       "id": "exchange.AccountEvent",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountEvent.Validate",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountEventKind",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
-    },
-    {
-      "id": "exchange.AccountEventPhase",
-      "kind": "type",
-      "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
-    },
-    {
-      "id": "exchange.AccountEventPhaseSnapshot",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
-    },
-    {
-      "id": "exchange.AccountEventPhaseLive",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountEventOrder",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountEventFill",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountEventBalance",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountEventPosition",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
-    },
-    {
-      "id": "exchange.AccountEventStreamStatus",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
-    },
-    {
-      "id": "exchange.AccountEventResyncRequired",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountRoute",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountRoute.Validate",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountInstrument",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountInstrumentIndexer",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountInstrumentIndexer.SetAccountInstruments",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.WatchAccountEventsRequest",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountWebSocket",
       "kind": "interface",
       "coverage": "compile",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.AccountWebSocket.WatchAccountEvents",
       "kind": "interface_method",
       "coverage": "compile",
-      "tests": ["TestAccountEventContractIsRouteScoped"]
+      "tests": [
+        "TestAccountEventContractIsRouteScoped"
+      ]
     },
     {
       "id": "exchange.MarketDataset",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetCatalog",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetBBO",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetDepth",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetCandle",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetMark",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetIndex",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetFunding",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DatasetOpenInterest",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.MarketTransport",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.TransportWebSocket",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.TransportREST",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.MarketGranularity",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.GranularityAllMarket",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.GranularityMultiSymbol",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.GranularitySingleInstrument",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.GranularityPollOnly",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.GranularityUnsupported",
       "kind": "const",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.MarketCapability",
       "kind": "type",
       "coverage": "contract",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.MarketCapability.Validate",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestMarketCapabilityContract"]
+      "tests": [
+        "TestMarketCapabilityContract"
+      ]
     },
     {
       "id": "exchange.DerivativeFact",
       "kind": "type",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFact.Validate",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFact.Freshness",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestDerivativeFactFreshnessUsesIndependentClocks"]
+      "tests": [
+        "TestDerivativeFactFreshnessUsesIndependentClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeField",
       "kind": "type",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldIdentity",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldFunding",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldFundingInterval",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldNextFundingTime",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldMark",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldIndex",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldOpenInterest",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldOpenInterestNotional",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeFieldAll",
       "kind": "const",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativeField.Has",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativePatch",
       "kind": "type",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.DerivativePatch.Validate",
       "kind": "method",
       "coverage": "unit",
-      "tests": ["TestDerivativePatchValidateRequiresCanonicalIdentity"]
+      "tests": [
+        "TestDerivativePatchValidateRequiresCanonicalIdentity"
+      ]
     },
     {
       "id": "exchange.ApplyDerivativePatch",
       "kind": "func",
       "coverage": "unit",
-      "tests": ["TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"]
+      "tests": [
+        "TestApplyDerivativePatchPreservesAbsentFieldsAndClocks"
+      ]
     },
     {
       "id": "exchange.FieldFreshness",
       "kind": "type",
       "coverage": "unit",
-      "tests": ["TestDerivativeFactFreshnessUsesIndependentClocks"]
+      "tests": [
+        "TestDerivativeFactFreshnessUsesIndependentClocks"
+      ]
+    },
+    {
+      "id": "exchange.MarketCapabilities",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.MarketCapabilitiesFor",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeMarketFamily",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeFamilySpot",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeFamilyLinear",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeFamilyUSDTFutures",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeFamilyUSDCFutures",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeFamilySwap",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeFamilyPerpetual",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
+    },
+    {
+      "id": "exchange.NativeFamilyUSDT0Perpetual",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily"
+      ]
     }
   ]
 }

@@ -47,29 +47,34 @@ func TestOpenAPIDocumentsImplementedFiltersPaginationBodiesAndStatuses(t *testin
 	}
 
 	wantParameters := map[string][]string{
-		"get /v1/accounts":                     {"query:pagination.limit"},
-		"get /v1/accounts/{account_id}":        {"path:account_id!"},
-		"get /v1/capabilities":                 {"query:account_id"},
-		"get /v1/instruments":                  {"query:account_id", "query:pagination.limit", "query:product", "query:venue"},
-		"get /v1/instruments/{instrument_id}":  {"path:instrument_id!"},
-		"get /v1/rules":                        {"query:account_id"},
-		"get /v1/risk-limits":                  {"query:account_id"},
-		"post /v1/orders":                      {"header:Idempotency-Key!"},
-		"get /v1/orders":                       {"query:account_id", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit"},
-		"get /v1/orders/{gateway_order_id}":    {"path:gateway_order_id!"},
-		"patch /v1/orders/{gateway_order_id}":  {"path:gateway_order_id!"},
-		"delete /v1/orders/{gateway_order_id}": {"path:gateway_order_id!"},
-		"get /v1/open-orders":                  {"query:account_id", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit"},
-		"get /v1/fills":                        {"query:account_id", "query:gateway_order_id", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit"},
-		"get /v1/balances":                     {"query:account_id", "query:pagination.limit"},
-		"get /v1/positions":                    {"query:account_id", "query:instrument_id", "query:pagination.limit"},
-		"get /v1/position-snapshot":            {"query:account_id!"},
-		"get /v1/funding-payments":             {"query:account_id!", "query:end!", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit", "query:settlement_asset", "query:start!"},
-		"get /v1/funding-rates":                {"query:account_id!", "query:instrument_id!"},
-		"get /v1/funding-rates/history":        {"query:account_id!", "query:end", "query:instrument_id!", "query:pagination.cursor", "query:pagination.limit", "query:start"},
-		"get /v1/order-book":                   {"query:account_id!", "query:instrument_id!", "query:limit"},
-		"get /v1/bbo":                          {"query:account_id!", "query:instrument_id!"},
-		"get /v1/mark-price":                   {"query:account_id!", "query:instrument_id!"},
+		"get /v1/market/instruments":                          {},
+		"get /v1/market/candles":                              {"query:instrument_id!", "query:interval!", "query:limit"},
+		"get /v1/market/snapshot":                             {"query:instrument_id!", "query:topic!", "query:depth", "query:interval"},
+		"get /v1/market/ws":                                   {},
+		"get /v1/accounts":                                    {"query:pagination.limit"},
+		"get /v1/accounts/{account_id}":                       {"path:account_id!"},
+		"get /v1/capabilities":                                {"query:account_id"},
+		"get /v1/instruments":                                 {"query:account_id", "query:pagination.limit", "query:product", "query:venue"},
+		"get /v1/instruments/{instrument_id}":                 {"path:instrument_id!"},
+		"get /v1/rules":                                       {"query:account_id"},
+		"get /v1/risk-limits":                                 {"query:account_id"},
+		"post /v1/orders":                                     {"header:Idempotency-Key!"},
+		"get /v1/orders":                                      {"query:account_id", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit"},
+		"get /v1/orders/by-idempotency-key/{idempotency_key}": {"path:idempotency_key!"},
+		"get /v1/orders/{gateway_order_id}":                   {"path:gateway_order_id!"},
+		"patch /v1/orders/{gateway_order_id}":                 {"path:gateway_order_id!"},
+		"delete /v1/orders/{gateway_order_id}":                {"path:gateway_order_id!"},
+		"get /v1/open-orders":                                 {"query:account_id", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit"},
+		"get /v1/fills":                                       {"query:account_id", "query:gateway_order_id", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit"},
+		"get /v1/balances":                                    {"query:account_id"},
+		"get /v1/positions":                                   {"query:account_id", "query:instrument_id", "query:pagination.limit"},
+		"get /v1/position-snapshot":                           {"query:account_id!"},
+		"get /v1/funding-payments":                            {"query:account_id!", "query:end!", "query:instrument_id", "query:pagination.cursor", "query:pagination.limit", "query:settlement_asset", "query:start!"},
+		"get /v1/funding-rates":                               {"query:account_id!", "query:instrument_id!"},
+		"get /v1/funding-rates/history":                       {"query:account_id!", "query:end", "query:instrument_id!", "query:pagination.cursor", "query:pagination.limit", "query:start"},
+		"get /v1/order-book":                                  {"query:account_id!", "query:instrument_id!", "query:limit"},
+		"get /v1/bbo":                                         {"query:account_id!", "query:instrument_id!"},
+		"get /v1/mark-price":                                  {"query:account_id!", "query:instrument_id!"},
 		"put /v1/accounts/{account_id}/instruments/{instrument_id}/leverage": {"path:account_id!", "path:instrument_id!"},
 		"get /v1/ws": {"query:account_id!", "query:kind"},
 	}
@@ -126,8 +131,6 @@ func TestOpenAPIRouteAwarePrivateWriteFences(t *testing.T) {
 		path, method, schema string
 	}{
 		{"/v1/orders", "post", "PlaceOrderRequest"},
-		{"/v1/orders/{gateway_order_id}", "patch", "AmendOrderRequest"},
-		{"/v1/orders/{gateway_order_id}", "delete", "CancelOrderRequest"},
 	} {
 		operation := paths[write.path].(map[string]any)[write.method].(map[string]any)
 		body, ok := operation["requestBody"].(map[string]any)
@@ -140,9 +143,15 @@ func TestOpenAPIRouteAwarePrivateWriteFences(t *testing.T) {
 			t.Errorf("%s %s schema=%v", write.method, write.path, got)
 		}
 	}
+	for _, method := range []string{"patch", "delete"} {
+		operation := paths["/v1/orders/{gateway_order_id}"].(map[string]any)[method].(map[string]any)
+		if _, exists := operation["requestBody"]; exists {
+			t.Errorf("%s must not advertise an unimplemented request body", method)
+		}
+	}
 	schemas := document["components"].(map[string]any)["schemas"].(map[string]any)
-	wantFence := []string{"account_id", "credential_version", "desired_state_revision", "route_id", "runtime_generation"}
-	for _, name := range []string{"PlaceOrderRequest", "AmendOrderRequest", "CancelOrderRequest"} {
+	wantFence := []string{"account_id", "route_id", "runtime_id"}
+	for _, name := range []string{"PlaceOrderRequest"} {
 		schema, ok := schemas[name].(map[string]any)
 		if !ok {
 			t.Errorf("missing schema %s", name)
@@ -180,7 +189,7 @@ func TestOpenAPIPrivateEventDocumentsEnvelopeAndClosedKinds(t *testing.T) {
 	properties := privateEvent["properties"].(map[string]any)
 	kind := properties["kind"].(map[string]any)
 	gotKinds := stringSlice(kind["enum"])
-	wantKinds := []string{"account_health", "balance", "fill", "order", "position", "resync_required"}
+	wantKinds := []string{"account_connection", "balance", "fill", "order", "position"}
 	sort.Strings(wantKinds)
 	if !reflect.DeepEqual(gotKinds, wantKinds) {
 		t.Fatalf("PrivateEvent kinds=%v want=%v", gotKinds, wantKinds)

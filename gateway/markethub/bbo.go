@@ -2,15 +2,13 @@ package markethub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
-	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
-	"golang.org/x/sync/singleflight"
 )
 
 type BBOQuote struct {
@@ -26,135 +24,134 @@ func (quote BBOQuote) valid() bool {
 		quote.Ask.Price.IsPositive() && quote.Ask.Quantity.IsPositive() && quote.Ask.Price.GreaterThanOrEqual(quote.Bid.Price) && !quote.ObservedAt.IsZero()
 }
 
-type BBOBootstrap interface {
-	SnapshotBBO(context.Context, string) (BBOQuote, error)
+// BBOKeyResolver maps a canonical instrument onto the same native owner key
+// used by browser market subscriptions. Execution previews must join that
+// owner instead of opening a second venue connection or falling back to REST.
+type BBOKeyResolver interface {
+	SubscriptionKey(context.Context, string, exchange.MarketDataset, string, int) (SubscriptionKey, error)
 }
 
-type RESTObserver interface {
-	RecordMarketREST(venue, operation, outcome string)
-}
-
-// BBOCache is kept separate from Hub's JSON fanout because execution previews
-// need typed, validated decimals and a singleflight REST fallback.
+// BBOCache is the typed execution view over Hub's retained latest BBO value.
+// Hub remains the only owner of the native WebSocket and its idle grace; this
+// type only validates decimals and freshness. Concurrent readers subscribe to
+// one Hub key and therefore still create exactly one native venue stream.
 type BBOCache struct {
-	bootstrap BBOBootstrap
-	now       func() time.Time
-	mu        sync.RWMutex
-	quotes    map[string]BBOQuote
-	group     singleflight.Group
-	observer  RESTObserver
-	requests  *ratelimit.MarketCoordinator
+	hub  *Hub
+	keys BBOKeyResolver
+	now  func() time.Time
 }
 
-func (cache *BBOCache) SetRequestCoordinator(coordinator *ratelimit.MarketCoordinator) {
-	if cache != nil {
-		cache.requests = coordinator
-	}
-}
-
-func (cache *BBOCache) SetObserver(observer RESTObserver) {
-	if cache != nil {
-		cache.observer = observer
-	}
-}
-
-func NewBBOCache(bootstrap BBOBootstrap, now func() time.Time) (*BBOCache, error) {
-	if bootstrap == nil {
-		return nil, fmt.Errorf("BBO bootstrap is required")
+func NewBBOCache(hub *Hub, keys BBOKeyResolver, now func() time.Time) (*BBOCache, error) {
+	if hub == nil || keys == nil {
+		return nil, fmt.Errorf("BBO Hub and key resolver are required")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &BBOCache{bootstrap: bootstrap, now: now, quotes: make(map[string]BBOQuote)}, nil
-}
-
-func (cache *BBOCache) Publish(quote BBOQuote) error {
-	if cache == nil || !quote.valid() {
-		return ErrQuoteUnavailable
-	}
-	quote.ObservedAt = quote.ObservedAt.UTC()
-	cache.mu.Lock()
-	current := cache.quotes[quote.InstrumentID]
-	if current.ObservedAt.IsZero() || !quote.ObservedAt.Before(current.ObservedAt) {
-		cache.quotes[quote.InstrumentID] = quote
-	}
-	cache.mu.Unlock()
-	return nil
+	return &BBOCache{hub: hub, keys: keys, now: now}, nil
 }
 
 func (cache *BBOCache) GetFreshBBO(ctx context.Context, instrumentID string, maxAge time.Duration) (BBOQuote, error) {
 	if cache == nil || ctx == nil || ctx.Err() != nil || strings.TrimSpace(instrumentID) == "" || maxAge <= 0 {
 		return BBOQuote{}, ErrQuoteUnavailable
 	}
-	if quote, ok := cache.fresh(instrumentID, maxAge); ok {
-		return quote, nil
-	}
-	value, err, _ := cache.group.Do(instrumentID, func() (any, error) {
-		if quote, ok := cache.fresh(instrumentID, maxAge); ok {
-			return quote, nil
-		}
-		venueName, _, _ := strings.Cut(instrumentID, ":")
-		load := func(callCtx context.Context) (any, error) { return cache.bootstrap.SnapshotBBO(callCtx, instrumentID) }
-		var raw any
-		var loadErr error
-		if cache.requests != nil {
-			raw, loadErr = cache.requests.Do(ctx, exchange.Venue(venueName), "bbo_snapshot", instrumentID, load)
-		} else {
-			raw, loadErr = load(ctx)
-		}
-		quote, _ := raw.(BBOQuote)
-		if loadErr != nil {
-			outcome := "error"
-			if errors.Is(loadErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				outcome = "timeout"
-			}
-			if cache.requests == nil {
-				cache.observeREST(instrumentID, outcome)
-			}
-			return BBOQuote{}, errors.Join(ErrQuoteUnavailable, loadErr)
-		}
-		if quote.InstrumentID != instrumentID || !quote.valid() {
-			return BBOQuote{}, ErrQuoteUnavailable
-		}
-		age := cache.now().UTC().Sub(quote.ObservedAt.UTC())
-		if age < 0 || age > maxAge {
-			if cache.requests == nil {
-				cache.observeREST(instrumentID, "error")
-			}
-			return BBOQuote{}, ErrQuoteStale
-		}
-		if publishErr := cache.Publish(quote); publishErr != nil {
-			if cache.requests == nil {
-				cache.observeREST(instrumentID, "error")
-			}
-			return BBOQuote{}, publishErr
-		}
-		if cache.requests == nil {
-			cache.observeREST(instrumentID, "success")
-		}
-		return quote, nil
-	})
+	key, err := cache.keys.SubscriptionKey(ctx, instrumentID, exchange.DatasetBBO, "", 0)
 	if err != nil {
-		return BBOQuote{}, err
+		return BBOQuote{}, errors.Join(ErrQuoteUnavailable, err)
 	}
-	return value.(BBOQuote), nil
+	if quote, status := cache.latest(key, instrumentID, maxAge); status == quoteFresh {
+		return quote, nil
+	}
+	return cache.awaitFresh(ctx, key, instrumentID, maxAge)
 }
 
-func (cache *BBOCache) observeREST(instrumentID, outcome string) {
-	if cache == nil || cache.observer == nil {
-		return
+type quoteStatus uint8
+
+const (
+	quoteUnavailable quoteStatus = iota
+	quoteStale
+	quoteFresh
+)
+
+func (cache *BBOCache) latest(key SubscriptionKey, instrumentID string, maxAge time.Duration) (BBOQuote, quoteStatus) {
+	message, ok := cache.hub.Latest(key)
+	if !ok {
+		return BBOQuote{}, quoteUnavailable
 	}
-	venue, _, _ := strings.Cut(instrumentID, ":")
-	cache.observer.RecordMarketREST(venue, "bbo_snapshot", outcome)
+	return cache.quoteFromMessage(instrumentID, message, maxAge)
 }
 
-func (cache *BBOCache) fresh(instrumentID string, maxAge time.Duration) (BBOQuote, bool) {
-	cache.mu.RLock()
-	quote, ok := cache.quotes[instrumentID]
-	cache.mu.RUnlock()
-	if !ok || !quote.valid() {
-		return BBOQuote{}, false
+func (cache *BBOCache) awaitFresh(ctx context.Context, key SubscriptionKey, instrumentID string, maxAge time.Duration) (BBOQuote, error) {
+	subscription, err := cache.hub.Subscribe(ctx, key, 4)
+	if err != nil {
+		return BBOQuote{}, errors.Join(ErrQuoteUnavailable, err)
 	}
-	age := cache.now().UTC().Sub(quote.ObservedAt.UTC())
-	return quote, age >= 0 && age <= maxAge
+	defer subscription.Close()
+	// Hub deliberately bounds BBO fanout to protect browser consumers while
+	// retaining every native update as latest. Inspect that in-memory latest on
+	// the same cadence so an execution read cannot miss a fresh quote merely
+	// because its wire notification was coalesced.
+	latestTicker := time.NewTicker(bboFanoutMinInterval)
+	defer latestTicker.Stop()
+
+	sawStale := false
+	for {
+		select {
+		case <-ctx.Done():
+			if sawStale {
+				return BBOQuote{}, errors.Join(ErrQuoteStale, ctx.Err())
+			}
+			return BBOQuote{}, errors.Join(ErrQuoteUnavailable, ctx.Err())
+		case <-latestTicker.C:
+			quote, status := cache.latest(key, instrumentID, maxAge)
+			switch status {
+			case quoteFresh:
+				return quote, nil
+			case quoteStale:
+				sawStale = true
+			}
+		case message, open := <-subscription.Events():
+			if !open {
+				if sawStale {
+					return BBOQuote{}, ErrQuoteStale
+				}
+				return BBOQuote{}, ErrQuoteUnavailable
+			}
+			if message.Kind == MessageResyncRequired {
+				continue
+			}
+			quote, status := cache.quoteFromMessage(instrumentID, message, maxAge)
+			switch status {
+			case quoteFresh:
+				return quote, nil
+			case quoteStale:
+				sawStale = true
+			}
+		}
+	}
+}
+
+func (cache *BBOCache) quoteFromMessage(instrumentID string, message Message, maxAge time.Duration) (BBOQuote, quoteStatus) {
+	if message.Kind != MessageSnapshot && message.Kind != MessageDelta && message.Kind != MessageFull {
+		return BBOQuote{}, quoteUnavailable
+	}
+	var value struct {
+		Bid exchange.BookLevel `json:"bid"`
+		Ask exchange.BookLevel `json:"ask"`
+	}
+	if json.Unmarshal(message.Data, &value) != nil {
+		return BBOQuote{}, quoteUnavailable
+	}
+	quote := BBOQuote{
+		InstrumentID: instrumentID, Bid: value.Bid, Ask: value.Ask,
+		ObservedAt: message.ObservedAt.UTC(), SourceSequence: message.SourceSequence,
+	}
+	if !quote.valid() {
+		return BBOQuote{}, quoteUnavailable
+	}
+	age := cache.now().UTC().Sub(quote.ObservedAt)
+	if age < 0 || age > maxAge {
+		return quote, quoteStale
+	}
+	return quote, quoteFresh
 }

@@ -1098,7 +1098,7 @@ func binanceSpotWSFillEvent(instrument exchange.Instrument, expectedSymbol strin
 	if err != nil {
 		return exchange.Fill{}, false, binanceSpotMalformed("WatchFills", "last fill price must be positive decimal")
 	}
-	fee, err := binanceNonNegativeDecimal(defaultZero(native.CommissionAmount))
+	fee, err := decimal.NewFromString(defaultZero(native.CommissionAmount))
 	if err != nil {
 		return exchange.Fill{}, false, binanceSpotMalformed("WatchFills", "commission must be non-negative decimal")
 	}
@@ -1273,7 +1273,7 @@ func binancePerpWSFillEvent(expectedInstrument exchange.Instrument, native *bina
 	if err != nil {
 		return exchange.Fill{}, false, binancePerpMalformed("WatchFills", "last fill price must be positive decimal")
 	}
-	fee, err := binanceNonNegativeDecimal(defaultZero(native.Order.Commission))
+	fee, err := decimal.NewFromString(defaultZero(native.Order.Commission))
 	if err != nil {
 		return exchange.Fill{}, false, binancePerpMalformed("WatchFills", "commission must be non-negative decimal")
 	}

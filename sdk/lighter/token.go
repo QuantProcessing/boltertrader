@@ -7,11 +7,13 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
 // GetTokens lists all active tokens for the account
 // Notice: This api not return api_token filed, what a shit......
-func (c *Client) GetTokens(ctx context.Context) ([]Token, error) {
+func (c *Client) GetTokens(ctx context.Context) (_ []Token, returnErr error) {
 	path := fmt.Sprintf("/api/v1/tokens?account_index=%d", c.AccountIndex)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -25,11 +27,18 @@ func (c *Client) GetTokens(ctx context.Context) ([]Token, error) {
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

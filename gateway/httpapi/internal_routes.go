@@ -6,19 +6,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
-	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/connectivity"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
 	"github.com/QuantProcessing/boltertrader/gateway/hotset"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
-	"github.com/QuantProcessing/boltertrader/routeprofile"
-	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 type AuthorityOperation string
@@ -29,11 +25,6 @@ const (
 	AuthorityRuntimeOpenOrders   AuthorityOperation = "runtime.open_orders"
 	AuthorityRuntimePositions    AuthorityOperation = "runtime.positions"
 	AuthorityRuntimeUncertain    AuthorityOperation = "runtime.uncertain_commands"
-	AuthorityListDesired         AuthorityOperation = "accounts.desired.list"
-	AuthorityGetDesired          AuthorityOperation = "accounts.desired.get"
-	AuthorityApplyDesired        AuthorityOperation = "accounts.desired.apply"
-	AuthorityRetireDesired       AuthorityOperation = "accounts.desired.retire"
-	AuthorityFinalizeRotation    AuthorityOperation = "accounts.desired.rotation_finalize"
 	AuthorityListRuntimeAccounts AuthorityOperation = "accounts.runtime.list"
 	AuthorityGetRuntimeAccount   AuthorityOperation = "accounts.runtime.get"
 	AuthorityRuntimeEvents       AuthorityOperation = "accounts.runtime.events"
@@ -46,160 +37,14 @@ const (
 	AuthorityFundingHistory      AuthorityOperation = "funding_history"
 )
 
-type RotationFence struct {
-	RotationFenceID       string `json:"rotationFenceId"`
-	State                 string `json:"state"`
-	FromCredentialVersion int64  `json:"fromCredentialVersion"`
-	ToCredentialVersion   int64  `json:"toCredentialVersion"`
-	FromRuntimeGeneration int64  `json:"fromRuntimeGeneration"`
-	ToRuntimeGeneration   int64  `json:"toRuntimeGeneration"`
-}
-
-type DesiredAccount struct {
-	AccountID            string         `json:"accountId"`
-	RuntimeID            string         `json:"runtimeId"`
-	Venue                string         `json:"venue"`
-	VenueEnvironment     string         `json:"venueEnvironment"`
-	SecretRef            string         `json:"secretRef"`
-	DesiredStateRevision int64          `json:"-"`
-	RuntimeGeneration    int64          `json:"-"`
-	CredentialVersion    int64          `json:"-"`
-	RequestedState       string         `json:"requestedState"`
-	RotationFence        *RotationFence `json:"rotationFence,omitempty"`
-}
-
-type DesiredRoute struct {
-	RouteID         string `json:"routeId"`
-	Product         string `json:"product"`
-	SettlementAsset string `json:"settlementAsset,omitempty"`
-	RouteProfileID  string `json:"routeProfileId"`
-	RequestedState  string `json:"requestedState"`
-}
-
-type DesiredApplyRequest struct {
-	OperationID          string         `json:"operationId"`
-	AccountID            string         `json:"accountId"`
-	RuntimeID            string         `json:"runtimeId"`
-	Venue                string         `json:"venue"`
-	NativeEnvironment    string         `json:"nativeEnvironment"`
-	SecretRef            string         `json:"secretRef"`
-	DesiredStateRevision int64          `json:"-"`
-	RuntimeGeneration    int64          `json:"-"`
-	CredentialVersion    int64          `json:"-"`
-	RequestedState       string         `json:"requestedState"`
-	Routes               []DesiredRoute `json:"routes"`
-}
-
-type RetireRequest struct {
-	OperationID          string `json:"operationId"`
-	AccountID            string `json:"accountId"`
-	RuntimeID            string `json:"runtimeId"`
-	DesiredStateRevision int64  `json:"-"`
-	RuntimeGeneration    int64  `json:"-"`
-	CredentialVersion    int64  `json:"-"`
-}
-
-type AccountFence struct {
-	AccountID            string `json:"accountId"`
-	RuntimeID            string `json:"runtimeId"`
-	DesiredStateRevision int64  `json:"-"`
-	RuntimeGeneration    int64  `json:"-"`
-	CredentialVersion    int64  `json:"-"`
-}
-
-type RotationFinalizationRequest struct {
-	OperationID           string       `json:"operationId"`
-	AccountID             string       `json:"accountId"`
-	ExpectedActiveFence   AccountFence `json:"expectedActiveFence"`
-	ExpectedRetiringFence AccountFence `json:"expectedRetiringFence"`
-}
-
-type RotationFinalizationProof struct {
-	OperationID          string       `json:"operationId"`
-	AccountID            string       `json:"accountId"`
-	ActiveFence          AccountFence `json:"activeFence"`
-	RetiringFence        AccountFence `json:"retiringFence"`
-	TombstoneRevision    int64        `json:"tombstoneRevision"`
-	RetiringState        string       `json:"retiringState"`
-	SecretReferenceState string       `json:"secretReferenceState"`
-	CompletedAt          time.Time    `json:"completedAt"`
-}
-
-type RuntimeRouteView struct {
-	RouteID         string `json:"routeId"`
-	Product         string `json:"product"`
-	SettlementAsset string `json:"settlementAsset,omitempty"`
-	RouteProfileID  string `json:"routeProfileId"`
-	RequestedState  string `json:"requestedState"`
-	Ready           bool   `json:"ready"`
-	Reason          string `json:"reason,omitempty"`
-}
-
-type RuntimeSnapshotView struct {
-	OperationID          string             `json:"operationId"`
-	RuntimeID            string             `json:"runtimeId"`
-	DesiredStateRevision int64              `json:"-"`
-	RuntimeGeneration    int64              `json:"-"`
-	CredentialVersion    int64              `json:"-"`
-	RequestedState       string             `json:"requestedState"`
-	Routes               []RuntimeRouteView `json:"routes"`
-}
-
-type PendingSnapshotView struct {
-	RuntimeSnapshotView
-	State  string `json:"state"`
-	Reason string `json:"reason,omitempty"`
-}
-
-type RuntimeProjectionReadiness struct {
-	Ready  bool   `json:"ready"`
-	Reason string `json:"reason,omitempty"`
-}
-
-type RuntimeCapabilityView struct {
-	RowID      string                `json:"rowId"`
-	Venue      string                `json:"venue"`
-	Product    string                `json:"product"`
-	Settlement string                `json:"settlement,omitempty"`
-	WriteReady bool                  `json:"writeReady"`
-	Operations capability.Operations `json:"operations"`
-}
-
-type RuntimeView struct {
-	AccountID                       string                     `json:"accountId"`
-	Active                          *RuntimeSnapshotView       `json:"active,omitempty"`
-	Pending                         *PendingSnapshotView       `json:"pending,omitempty"`
-	Retiring                        []RuntimeSnapshotView      `json:"retiring"`
-	Tombstoned                      bool                       `json:"tombstoned"`
-	RuntimeID                       string                     `json:"runtimeId,omitempty"`
-	DesiredStateRevision            int64                      `json:"-"`
-	RuntimeGeneration               int64                      `json:"-"`
-	CredentialVersion               int64                      `json:"-"`
-	Readiness                       RuntimeProjectionReadiness `json:"readiness"`
-	WriteReadiness                  RuntimeProjectionReadiness `json:"writeReadiness"`
-	LastAppliedDesiredStateRevision int64                      `json:"-"`
-	LastAppliedRuntimeGeneration    int64                      `json:"-"`
-	BlockedReason                   *string                    `json:"blockedReason"`
-	Capabilities                    []RuntimeCapabilityView    `json:"capabilities"`
-	ObservedAt                      time.Time                  `json:"observedAt,omitempty"`
-}
-
 type AuthorityRequest struct {
-	Operation            AuthorityOperation
-	AccountID            string
-	OperationID          string
-	ExpectedRevision     int64
-	Desired              *DesiredAccount
-	DesiredApply         *DesiredApplyRequest
-	Retirement           *RetireRequest
-	RotationFinalization *RotationFinalizationRequest
-	Query                url.Values
+	Operation AuthorityOperation
+	AccountID string
+	Query     url.Values
 }
-
 type AuthorityResponse struct {
-	Body                 any
-	DesiredStateRevision int64
-	Status               int
+	Body   any
+	Status int
 }
 
 type RuntimeReadiness struct {
@@ -223,9 +68,6 @@ type InternalOptions struct {
 	Authenticate func(*http.Request) error
 	MaxBodyBytes int64
 	WriteReady   func() bool
-	// PublicMarkets is the credential-free exchange stream used by the browser
-	// through the auth edge. It is optional in migration-validation processes.
-	PublicMarkets InternalPublicMarketStreams
 	// FundingBoardChanges is the resident public-facts projection. It carries
 	// only change sequences; the handler obtains each canonical wire snapshot
 	// through Authority so HTTP and WebSocket cannot drift in shape.
@@ -233,20 +75,14 @@ type InternalOptions struct {
 	MarketFacts         InternalMarketFacts
 	VenueConnectivity   InternalVenueConnectivity
 	FreshBBO            InternalFreshBBO
-	MarketHub           InternalMarketHub
-	MarketKeys          InternalMarketKeys
+	MarketHub           MarketHub
+	MarketKeys          MarketKeys
 	AccountEvents       InternalAccountEvents
 	AccountEventOwner   domain.PrincipalID
 	FundingSettlements  InternalFundingSettlements
-	Hotset              InternalHotset
+	Hotset              MarketHotset
 	Now                 func() time.Time
-	// Lifecycle is optional. A gateway without a durable account store can
-	// still serve the runtime and catalog surfaces, so the account lifecycle
-	// routes are only mounted when something can answer them.
-	Lifecycle AccountLifecycle
-	// Blockers is required alongside Lifecycle: draining or removing an account
-	// while inventory remains open would strand it.
-	Blockers AccountBlockers
+	Accounts            AccountRegistrations
 }
 
 type InternalHandler struct {
@@ -254,19 +90,17 @@ type InternalHandler struct {
 	authenticate        func(*http.Request) error
 	bodyLimit           int64
 	writeReady          func() bool
-	lifecycle           AccountLifecycle
-	blockers            AccountBlockers
-	publicMarkets       InternalPublicMarketStreams
+	accounts            AccountRegistrations
 	fundingBoardChanges InternalFundingBoardChanges
 	marketFacts         InternalMarketFacts
 	venueConnectivity   InternalVenueConnectivity
 	freshBBO            InternalFreshBBO
-	marketHub           InternalMarketHub
-	marketKeys          InternalMarketKeys
+	marketHub           MarketHub
+	marketKeys          MarketKeys
 	accountEvents       InternalAccountEvents
 	accountEventOwner   domain.PrincipalID
 	fundingSettlements  InternalFundingSettlements
-	hotset              InternalHotset
+	hotset              MarketHotset
 	now                 func() time.Time
 	mux                 *http.ServeMux
 }
@@ -277,20 +111,11 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/runtime/open-orders"},
 	{http.MethodGet, "/internal/v1/runtime/positions"},
 	{http.MethodGet, "/internal/v1/runtime/uncertain-commands"},
-	{http.MethodGet, "/internal/v1/accounts/desired"},
-	{http.MethodGet, "/internal/v1/accounts/desired/{accountId}"},
-	{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/operations/{operationId}"},
-	{http.MethodPut, "/internal/v1/accounts/desired/{accountId}/retirements/{operationId}"},
 	{http.MethodGet, "/internal/v1/accounts/runtime"},
 	{http.MethodGet, "/internal/v1/accounts/runtime/{accountId}"},
 	{http.MethodGet, "/internal/v1/accounts/runtime/{accountId}/events"},
 	{http.MethodGet, "/internal/v1/catalog/venues"},
 	{http.MethodGet, "/internal/v1/catalog/instruments"},
-	{http.MethodGet, "/internal/v1/browser/catalog/venues"},
-	{http.MethodGet, "/internal/v1/browser/catalog/instruments"},
-	{http.MethodGet, "/internal/v1/browser/market-data"},
-	{http.MethodGet, "/internal/v1/browser/candles"},
-	{http.MethodGet, "/internal/v1/browser/funding-history"},
 	{http.MethodGet, "/internal/v1/market-data"},
 	{http.MethodGet, "/internal/v1/candles"},
 	{http.MethodGet, "/internal/v1/market/ws"},
@@ -311,12 +136,11 @@ func InternalRoutes() []Route { return append([]Route(nil), internalRoutes...) }
 // table.
 func InternalPublicMarketRoutes() []Route {
 	return []Route{
-		{Method: http.MethodGet, Pattern: "/internal/v1/browser/catalog/venues"},
-		{Method: http.MethodGet, Pattern: "/internal/v1/browser/catalog/instruments"},
-		{Method: http.MethodGet, Pattern: "/internal/v1/browser/market-data"},
-		{Method: http.MethodGet, Pattern: "/internal/v1/browser/candles"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/catalog/instruments"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/market-data"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/candles"},
+		{Method: http.MethodGet, Pattern: "/internal/v1/funding-history"},
 		{Method: http.MethodGet, Pattern: "/internal/v1/funding-board"},
-		{Method: http.MethodGet, Pattern: "/internal/v1/browser/funding-history"},
 		{Method: http.MethodGet, Pattern: "/internal/v1/venues/connectivity"},
 		{Method: http.MethodGet, Pattern: "/internal/v1/market/ws"},
 	}
@@ -333,9 +157,6 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.Authority == nil || options.Authenticate == nil {
 		return nil, fmt.Errorf("internal HTTP API dependencies are incomplete")
 	}
-	if options.Lifecycle != nil && options.Blockers == nil {
-		return nil, fmt.Errorf("internal HTTP API account lifecycle requires a blockers source")
-	}
 	if options.AccountEvents != nil && options.AccountEventOwner.Validate() != nil {
 		return nil, fmt.Errorf("internal HTTP API account events require an owner")
 	}
@@ -345,10 +166,10 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, publicMarkets: options.PublicMarkets, fundingBoardChanges: options.FundingBoardChanges, marketFacts: options.MarketFacts, venueConnectivity: options.VenueConnectivity, freshBBO: options.FreshBBO, marketHub: options.MarketHub, marketKeys: options.MarketKeys, accountEvents: options.AccountEvents, accountEventOwner: options.AccountEventOwner, fundingSettlements: options.FundingSettlements, hotset: options.Hotset, now: options.Now, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, accounts: options.Accounts, fundingBoardChanges: options.FundingBoardChanges, marketFacts: options.MarketFacts, venueConnectivity: options.VenueConnectivity, freshBBO: options.FreshBBO, marketHub: options.MarketHub, marketKeys: options.MarketKeys, accountEvents: options.AccountEvents, accountEventOwner: options.AccountEventOwner, fundingSettlements: options.FundingSettlements, hotset: options.Hotset, now: options.Now, mux: http.NewServeMux()}
 	handler.register()
-	if handler.lifecycle != nil {
-		handler.registerAccountLifecycle()
+	if handler.accounts != nil {
+		handler.registerAccountRegistrations()
 	}
 	return handler, nil
 }
@@ -371,22 +192,13 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/runtime/open-orders", handler.read(AuthorityRuntimeOpenOrders))
 	handler.mux.HandleFunc("GET /internal/v1/runtime/positions", handler.read(AuthorityRuntimePositions))
 	handler.mux.HandleFunc("GET /internal/v1/runtime/uncertain-commands", handler.read(AuthorityRuntimeUncertain))
-	handler.mux.HandleFunc("GET /internal/v1/accounts/desired", handler.read(AuthorityListDesired))
-	handler.mux.HandleFunc("GET /internal/v1/accounts/desired/{accountId}", handler.accountRead(AuthorityGetDesired))
-	handler.mux.HandleFunc("PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}", handler.applyDesired)
-	handler.mux.HandleFunc("PUT /internal/v1/accounts/desired/{accountId}/retirements/{operationId}", handler.retireDesired)
 	handler.mux.HandleFunc("GET /internal/v1/accounts/runtime", handler.read(AuthorityListRuntimeAccounts))
 	handler.mux.HandleFunc("GET /internal/v1/accounts/runtime/{accountId}", handler.accountRead(AuthorityGetRuntimeAccount))
 	handler.mux.HandleFunc("GET /internal/v1/accounts/runtime/{accountId}/events", handler.accountRead(AuthorityRuntimeEvents))
 	handler.mux.HandleFunc("GET /internal/v1/catalog/venues", handler.read(AuthorityCatalogVenues))
 	handler.mux.HandleFunc("GET /internal/v1/catalog/instruments", handler.read(AuthorityCatalogInstruments))
-	handler.mux.HandleFunc("GET /internal/v1/browser/catalog/venues", handler.browserCatalogVenues)
-	handler.mux.HandleFunc("GET /internal/v1/browser/catalog/instruments", handler.browserCatalogInstruments)
-	handler.mux.HandleFunc("GET /internal/v1/browser/market-data", handler.browserMarketData)
-	handler.mux.HandleFunc("GET /internal/v1/browser/candles", handler.browserCandles)
-	handler.mux.HandleFunc("GET /internal/v1/browser/funding-history", handler.browserFundingHistory)
-	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.read(AuthorityMarketData))
-	handler.mux.HandleFunc("GET /internal/v1/candles", handler.read(AuthorityCandles))
+	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.marketOverview)
+	handler.mux.HandleFunc("GET /internal/v1/candles", handler.instrumentCandles)
 	handler.mux.HandleFunc("GET /internal/v1/market/ws", handler.unifiedMarketStream)
 	handler.mux.HandleFunc("GET /internal/v1/account/ws", handler.accountEventStream)
 	handler.mux.HandleFunc("GET /internal/v1/market-facts", handler.marketFactsSnapshot)
@@ -402,12 +214,8 @@ type InternalFundingSettlements interface {
 	TrackActive(context.Context, string, string) (func(), error)
 }
 
-type InternalHotset interface {
-	Acquire(context.Context, hotset.Key, hotset.Reason) (*hotset.Lease, error)
-}
-
 type InternalAccountEvents interface {
-	SubscribePrincipal(context.Context, domain.PrincipalID, int) (*gatewayevent.Subscription, error)
+	SubscribePrincipalWithConnections(context.Context, domain.PrincipalID, int) (*gatewayevent.Subscription, []gatewayevent.Event, error)
 }
 
 func (handler *InternalHandler) fundingHistoryRead(w http.ResponseWriter, r *http.Request) {
@@ -467,15 +275,6 @@ type InternalFreshBBO interface {
 	GetFreshBBO(context.Context, string, time.Duration) (markethub.BBOQuote, error)
 }
 
-type InternalMarketHub interface {
-	Subscribe(context.Context, markethub.SubscriptionKey, int) (*markethub.Subscription, error)
-	Latest(markethub.SubscriptionKey) (markethub.Message, bool)
-}
-
-type InternalMarketKeys interface {
-	SubscriptionKey(context.Context, string, exchange.MarketDataset, string, int) (markethub.SubscriptionKey, error)
-}
-
 func (handler *InternalHandler) freshBBOSnapshot(w http.ResponseWriter, r *http.Request) {
 	if handler.freshBBO == nil || len(r.URL.Query()) != 1 || strings.TrimSpace(r.URL.Query().Get("instrumentId")) == "" {
 		if handler.freshBBO == nil {
@@ -517,43 +316,6 @@ func (handler *InternalHandler) venueConnectivitySnapshot(w http.ResponseWriter,
 	writeJSON(w, http.StatusOK, map[string]any{"data": connectivityWireSnapshot(handler.venueConnectivity.Snapshot())})
 }
 
-func (handler *InternalHandler) applyDesired(w http.ResponseWriter, r *http.Request) {
-	var desired DesiredApplyRequest
-	if err := decodeStrictJSON(w, r, handler.bodyLimit, &desired); err != nil || desired.validate(r.PathValue("accountId"), r.PathValue("operationId")) != nil {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	handler.execute(w, r, http.StatusAccepted, AuthorityRequest{
-		Operation: AuthorityApplyDesired, AccountID: desired.AccountID,
-		OperationID: desired.OperationID, DesiredApply: &desired,
-	})
-}
-
-func (handler *InternalHandler) retireDesired(w http.ResponseWriter, r *http.Request) {
-	var retirement RetireRequest
-	if err := decodeStrictJSON(w, r, handler.bodyLimit, &retirement); err != nil || retirement.validate(r.PathValue("accountId"), r.PathValue("operationId")) != nil {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	handler.execute(w, r, http.StatusAccepted, AuthorityRequest{
-		Operation: AuthorityRetireDesired, AccountID: retirement.AccountID,
-		OperationID: retirement.OperationID, Retirement: &retirement,
-	})
-}
-
-func (handler *InternalHandler) finalizeRotation(w http.ResponseWriter, r *http.Request) {
-	var finalization RotationFinalizationRequest
-	if err := decodeStrictJSON(w, r, handler.bodyLimit, &finalization); err != nil ||
-		finalization.validate(r.PathValue("accountId"), r.PathValue("operationId")) != nil || len(r.URL.Query()) != 0 {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	handler.execute(w, r, http.StatusOK, AuthorityRequest{
-		Operation: AuthorityFinalizeRotation, AccountID: finalization.AccountID,
-		OperationID: finalization.OperationID, RotationFinalization: &finalization,
-	})
-}
-
 func (handler *InternalHandler) read(operation AuthorityOperation) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handler.execute(w, r, http.StatusOK, AuthorityRequest{Operation: operation, Query: r.URL.Query()})
@@ -570,9 +332,6 @@ func (handler *InternalHandler) execute(w http.ResponseWriter, r *http.Request, 
 	response, ok := handler.executeAuthority(w, r, request)
 	if !ok {
 		return
-	}
-	if response.DesiredStateRevision > 0 {
-		w.Header().Set("ETag", desiredETag(response.DesiredStateRevision))
 	}
 	if response.Status != 0 {
 		if response.Status != http.StatusOK && response.Status != http.StatusAccepted && response.Status != http.StatusCreated && response.Status != http.StatusNoContent {
@@ -607,111 +366,8 @@ func (handler *InternalHandler) executeAuthority(w http.ResponseWriter, r *http.
 	return response, true
 }
 
-func (desired DesiredApplyRequest) validate(accountID, operationID string) error {
-	parsedOperation, err := secretstore.ParseOperationID(desired.OperationID)
-	if err != nil || string(parsedOperation) != operationID || desired.AccountID != accountID || strings.TrimSpace(accountID) == "" {
-		return errors.New("invalid desired operation identity")
-	}
-	if _, err := secretstore.ParseOpaqueRef(desired.SecretRef); err != nil {
-		return errors.New("invalid desired secret reference")
-	}
-	if strings.TrimSpace(desired.Venue) == "" || desired.Venue != strings.TrimSpace(desired.Venue) || len(desired.Venue) > 64 || strings.TrimSpace(desired.RuntimeID) == "" || desired.RuntimeID != strings.TrimSpace(desired.RuntimeID) || !validRequestedState(desired.RequestedState) || len(desired.Routes) < 1 || len(desired.Routes) > 32 {
-		return errors.New("invalid desired account")
-	}
-	// A route profile no longer names an environment, but the request still
-	// does, because it is stored beside the account and re-read on every
-	// restart. Only live endpoints exist, so a request naming anything else
-	// describes a runtime nothing can dial and is refused at the edge rather
-	// than persisted and failed later.
-	if desired.NativeEnvironment != string(exchange.EnvironmentLive) {
-		return errors.New("invalid desired native environment")
-	}
-	seen := make(map[string]struct{}, len(desired.Routes))
-	active := 0
-	for _, route := range desired.Routes {
-		if strings.TrimSpace(route.RouteID) == "" || route.RouteID != strings.TrimSpace(route.RouteID) || route.RouteProfileID == "" {
-			return errors.New("invalid desired route")
-		}
-		if _, exists := seen[route.RouteID]; exists {
-			return errors.New("duplicate desired route")
-		}
-		seen[route.RouteID] = struct{}{}
-		profile, err := routeprofile.DefaultRegistry().Resolve(desired.Venue, route.RouteProfileID)
-		if err != nil || string(profile.Product) != route.Product || profile.SettlementAsset != route.SettlementAsset {
-			return errors.New("desired route profile conflict")
-		}
-		switch route.RequestedState {
-		case "active":
-			active++
-		case "disabled":
-		default:
-			return errors.New("invalid desired route state")
-		}
-	}
-	if (desired.RequestedState == "creating" || desired.RequestedState == "active" || desired.RequestedState == "rotating") && active == 0 {
-		return errors.New("desired account requires an active route")
-	}
-	return nil
-}
-
-func (retirement RetireRequest) validate(accountID, operationID string) error {
-	parsedOperation, err := secretstore.ParseOperationID(retirement.OperationID)
-	if err != nil || string(parsedOperation) != operationID || retirement.AccountID != accountID || strings.TrimSpace(accountID) == "" || strings.TrimSpace(retirement.RuntimeID) == "" {
-		return errors.New("invalid retirement request")
-	}
-	return nil
-}
-
-func (request RotationFinalizationRequest) validate(accountID, operationID string) error {
-	parsedOperation, err := secretstore.ParseOperationID(request.OperationID)
-	if err != nil || string(parsedOperation) != operationID || request.AccountID != accountID || strings.TrimSpace(accountID) == "" {
-		return errors.New("invalid rotation finalization identity")
-	}
-	if request.ExpectedActiveFence.validate(accountID) != nil || request.ExpectedRetiringFence.validate(accountID) != nil {
-		return errors.New("invalid rotation finalization fence")
-	}
-	if request.ExpectedActiveFence.RuntimeID == request.ExpectedRetiringFence.RuntimeID {
-		return errors.New("invalid rotation finalization runtime identity")
-	}
-	return nil
-}
-
-func (fence AccountFence) validate(accountID string) error {
-	if fence.AccountID != accountID || strings.TrimSpace(fence.RuntimeID) == "" {
-		return errors.New("invalid account fence")
-	}
-	return nil
-}
-
 func (handler *InternalHandler) writeError(w http.ResponseWriter, r *http.Request, status int, code string, retryable bool) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{
 		"code": code, "message": "request denied", "requestId": r.Header.Get("X-Request-ID"), "retryable": retryable,
 	}})
-}
-
-func desiredETag(revision int64) string { return fmt.Sprintf(`"desired-state-revision-%d"`, revision) }
-
-func parseDesiredETag(value string) (int64, error) {
-	if value == "" || strings.Contains(value, ",") || strings.HasPrefix(value, "W/") || len(value) < 3 || value[0] != '"' || value[len(value)-1] != '"' {
-		return 0, errors.New("invalid If-Match")
-	}
-	const prefix = "desired-state-revision-"
-	inner := value[1 : len(value)-1]
-	if !strings.HasPrefix(inner, prefix) {
-		return 0, errors.New("invalid If-Match")
-	}
-	revision, err := strconv.ParseInt(strings.TrimPrefix(inner, prefix), 10, 64)
-	if err != nil || revision <= 0 {
-		return 0, errors.New("invalid If-Match")
-	}
-	return revision, nil
-}
-
-func validRequestedState(state string) bool {
-	switch state {
-	case "creating", "active", "rotating", "draining", "drained", "disabled", "removing", "removed":
-		return true
-	default:
-		return false
-	}
 }

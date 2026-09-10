@@ -6,8 +6,14 @@ import { applyBookEvent, candleForSubscription, markStaleDelay, mergeLiveCandle,
 describe("public market stream reducers", () => {
   it("uses the Gateway-provided mark freshness window instead of a fixed two-second timeout", () => {
     const now = Date.parse("2026-08-20T00:00:10Z");
-    expect(markStaleDelay("2026-08-20T00:00:00Z", 45_000, now)).toBe(35_000);
-    expect(markStaleDelay("2026-08-20T00:00:00Z", undefined, now)).toBe(0);
+    expect(markStaleDelay("2026-08-20T00:00:00Z", 45_000, undefined, now)).toBe(35_000);
+    expect(markStaleDelay("2026-08-20T00:00:00Z", undefined, undefined, now)).toBe(0);
+  });
+
+  it("uses Gateway age so browser clock skew cannot flash a fresh mark stale", () => {
+    const browserClockOneHourAhead = Date.parse("2026-08-20T01:00:00Z");
+    expect(markStaleDelay("2026-08-20T00:00:00Z", 5_000, 250, browserClockOneHourAhead)).toBe(4_750);
+    expect(markStaleDelay("2026-08-20T00:00:00Z", 5_000, 5_001, browserClockOneHourAhead)).toBe(0);
   });
 
   it("applies a one-sided order-book delta without erasing the other side", () => {

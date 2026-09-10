@@ -11,6 +11,7 @@ import (
 func TestProjectionMaintainsProductAttributedPositionAndRealizedPnL(t *testing.T) {
 	projection := NewProjection()
 	base := Fill{PrincipalID: "principal-a",
+		InstrumentProduct: "perp", BaseAsset: "BTC",
 		FillID: "fill-1", CommandID: "command-1", LineageID: "lineage-a", ProductID: "manual",
 		AccountID: "account-a", InstrumentID: "BTC-USDT", Side: SideBuy,
 		Quantity: "2", Price: "100", Fee: "1", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Now(),

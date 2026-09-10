@@ -19,7 +19,7 @@ import (
 
 func TestHandlerPassesCorrelationIntoAtomicPlaceAudit(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-audit","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-audit","side":"buy","type":"market","quantity":"0.001","runtime_id":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewBufferString(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")

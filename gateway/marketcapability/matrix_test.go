@@ -24,7 +24,7 @@ func TestFreshnessWindowAllowsThreeMissedNativeObservations(t *testing.T) {
 
 func TestMatrixIsValidAndHasNoDuplicateNativePath(t *testing.T) {
 	seen := make(map[[5]string]struct{})
-	for _, capability := range Matrix() {
+	for _, capability := range exchange.MarketCapabilities() {
 		if err := capability.Validate(); err != nil {
 			t.Fatalf("invalid capability %#v: %v", capability, err)
 		}
@@ -37,18 +37,18 @@ func TestMatrixIsValidAndHasNoDuplicateNativePath(t *testing.T) {
 }
 
 func TestBybitUsesOneLinearAllMarketOwner(t *testing.T) {
-	for _, capability := range Matrix() {
-		if capability.Venue != exchange.VenueBybit || capability.Granularity != exchange.GranularityAllMarket || capability.NativeMarketFamily == FamilySpot {
+	for _, capability := range exchange.MarketCapabilities() {
+		if capability.Venue != exchange.VenueBybit || capability.Granularity != exchange.GranularityAllMarket || capability.NativeMarketFamily == exchange.NativeFamilySpot {
 			continue
 		}
-		if capability.NativeMarketFamily != FamilyLinear {
+		if capability.NativeMarketFamily != exchange.NativeFamilyLinear {
 			t.Fatalf("Bybit all-market capability split by route: %#v", capability)
 		}
 	}
 }
 
 func TestOKXHasNoAllMarketWebSocketFacts(t *testing.T) {
-	for _, capability := range Matrix() {
+	for _, capability := range exchange.MarketCapabilities() {
 		if capability.Venue == exchange.VenueOKX && capability.Transport == exchange.TransportWebSocket && capability.Granularity != exchange.GranularitySingleInstrument {
 			t.Fatalf("OKX broad websocket capability reintroduced: %#v", capability)
 		}
@@ -77,10 +77,10 @@ func TestRegistryHotCapacityUsesNativeFamilyLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := registry.HotCapacity(exchange.VenueBitget, FamilyUSDTFutures); got != 50 {
+	if got := registry.HotCapacity(exchange.VenueBitget, exchange.NativeFamilyUSDTFutures); got != 50 {
 		t.Fatalf("Bitget hot capacity=%d want=50", got)
 	}
-	if got := registry.HotCapacity(exchange.VenueLighter, FamilyPerpetual); got < 1000 {
+	if got := registry.HotCapacity(exchange.VenueLighter, exchange.NativeFamilyPerpetual); got < 1000 {
 		t.Fatalf("broad-feed capacity=%d, want effectively unbounded", got)
 	}
 }
@@ -91,17 +91,26 @@ func TestMatrixDoesNotInventCatalogWideOIOrRESTJoinedDepth(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, venue := range []exchange.Venue{exchange.VenueBinance, exchange.VenueAster} {
-		if capability, resolveErr := registry.Resolve(venue, FamilyPerpetual, exchange.DatasetOpenInterest, false); resolveErr == nil {
+		if capability, resolveErr := registry.Resolve(venue, exchange.NativeFamilyPerpetual, exchange.DatasetOpenInterest, false); resolveErr == nil {
 			t.Fatalf("%s broad OI capability unexpectedly present: %+v", venue, capability)
 		}
 	}
+	for _, family := range []string{exchange.NativeFamilyUSDTFutures, exchange.NativeFamilyUSDCFutures} {
+		if capability, resolveErr := registry.Resolve(exchange.VenueBitget, family, exchange.DatasetOpenInterest, false); resolveErr == nil {
+			t.Fatalf("Bitget %s broad OI capability unexpectedly present: %+v", family, capability)
+		}
+		capability, resolveErr := registry.Resolve(exchange.VenueBitget, family, exchange.DatasetOpenInterest, true)
+		if resolveErr != nil || capability.Transport != exchange.TransportWebSocket || capability.Granularity != exchange.GranularitySingleInstrument {
+			t.Fatalf("Bitget %s hot OI capability=%+v err=%v", family, capability, resolveErr)
+		}
+	}
 	for _, venue := range []exchange.Venue{exchange.VenueHyperliquid, exchange.VenueLighter} {
-		capability, resolveErr := registry.Resolve(venue, FamilyPerpetual, exchange.DatasetOpenInterest, false)
+		capability, resolveErr := registry.Resolve(venue, exchange.NativeFamilyPerpetual, exchange.DatasetOpenInterest, false)
 		if resolveErr != nil || capability.Transport != exchange.TransportWebSocket || capability.Granularity != exchange.GranularityAllMarket {
 			t.Fatalf("%s all-market OI capability=%+v err=%v", venue, capability, resolveErr)
 		}
 	}
-	for _, family := range []string{FamilySpot, FamilyUSDT0Perpetual} {
+	for _, family := range []string{exchange.NativeFamilySpot, exchange.NativeFamilyUSDT0Perpetual} {
 		if capability, resolveErr := registry.Resolve(exchange.VenueNado, family, exchange.DatasetDepth, true); resolveErr == nil {
 			t.Fatalf("Nado REST-joined depth capability unexpectedly present: %+v", capability)
 		}

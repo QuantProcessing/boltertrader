@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
 type nonceManager struct {
@@ -16,7 +18,7 @@ type nonceManager struct {
 }
 
 // Fetch queries the next nonce from the Lighter API for the configured account/apiKey indices.
-func (n *nonceManager) Fetch(ctx context.Context) (int64, error) {
+func (n *nonceManager) Fetch(ctx context.Context) (_ int64, returnErr error) {
 	u, err := url.Parse(n.baseURL + "/api/v1/nextNonce")
 	if err != nil {
 		return 0, err
@@ -36,11 +38,18 @@ func (n *nonceManager) Fetch(ctx context.Context) (int64, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	res, err := client.Do(req)
+	res, err := venuehttp.DoHTTP(client, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, res)
+	}()
+
 	if err != nil {
 		return 0, err
 	}
 	defer res.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(res); err != nil {
+		return 0, err
+	}
 	var body struct {
 		Code  int    `json:"code"`
 		Msg   string `json:"message"`

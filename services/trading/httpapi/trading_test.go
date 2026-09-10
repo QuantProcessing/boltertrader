@@ -9,20 +9,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
-	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
 )
 
 func TestPositionsReturnsInternalErrorWhenPortfolioRepositoryFails(t *testing.T) {
 	store := &portfolioListFailureStore{err: errors.New("portfolio read failed")}
 	mux := http.NewServeMux()
 	err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
-		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
-		Portfolio:    portfolio.NewPersistentProjection(store), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
+		Commands:  newCommandService(orders.NewMemoryStore(), time.Now),
+		Portfolio: portfolio.NewPersistentProjection(store), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
 		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
@@ -67,9 +66,8 @@ func TestTradingReadsSeparateExactAccountingTupleAcrossPrincipals(t *testing.T) 
 	currentPrincipal := "principal-a"
 	mux := http.NewServeMux()
 	if err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
-		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
-		Portfolio:    positions, Ledger: ledgerService,
+		Commands:  newCommandService(orders.NewMemoryStore(), time.Now),
+		Portfolio: positions, Ledger: ledgerService,
 		Principal:         func(*http.Request) (string, error) { return currentPrincipal, nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	}); err != nil {
@@ -81,7 +79,7 @@ func TestTradingReadsSeparateExactAccountingTupleAcrossPrincipals(t *testing.T) 
 		for path, expected := range map[string]string{
 			"/api/v1/positions?productId=manual&accountId=shared-account":                                          `"quantity":"` + wantQuantity + `"`,
 			"/api/v1/ledger?productId=manual&lineageId=shared-lineage":                                             `"amount":"` + wantAmount + `"`,
-			"/api/v1/pnl?productId=manual&lineageId=shared-lineage&accountId=shared-account&instrumentId=BTC-USDT": `"netPnl":"` + wantAmount + `"`,
+			"/api/v1/pnl?productId=manual&lineageId=shared-lineage&accountId=shared-account&instrumentId=BTC-USDT": `"bookedNetPnl":"` + wantAmount + `"`,
 		} {
 			response := httptest.NewRecorder()
 			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -114,156 +112,8 @@ func (store *portfolioListFailureStore) List(ctx context.Context, _ string, _, _
 	return nil, store.err
 }
 
-func TestTradingRoutesRejectUnknownFieldsAndCreateReservation(t *testing.T) {
-	mux := http.NewServeMux()
-	err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
-		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
-		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
-		AuthorizeMutation: func(*http.Request) error { return nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"unknown":true}`
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
-	request.Header.Set("Idempotency-Key", "reserve-a")
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
-		t.Fatalf("unknown field response=%d %s", response.Code, response.Body.String())
-	}
-	body = `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null}`
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
-	request.Header.Set("Idempotency-Key", "reserve-a")
-	response = httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"productId":"manual"`) {
-		t.Fatalf("create response=%d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestTradingRoutesRequireExactlyOneReservationSizing(t *testing.T) {
-	reservationService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
-	mux := http.NewServeMux()
-	err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations: reservationService,
-		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
-		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
-		AuthorizeMutation: func(*http.Request) error { return nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	scope := `"nettingScope":{"accountId":"account-long","venue":"venue-a","instrumentId":"btc-a","positionMode":null,"settlementScope":null,"venueEnvironment":"live"}`
-	both := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":"0.5","notional":"50","currency":"USDT"}`
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(both))
-	request.Header.Set("Idempotency-Key", "close-long-both")
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
-		t.Fatalf("quantity and notional together=%d body=%s", response.Code, response.Body.String())
-	}
-
-	neither := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":null,"notional":null,"currency":"USDT"}`
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(neither))
-	request.Header.Set("Idempotency-Key", "close-long-neither")
-	response = httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
-		t.Fatalf("neither quantity nor notional=%d body=%s", response.Code, response.Body.String())
-	}
-
-	notionalOnly := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":null,"notional":"50","currency":"USDT"}`
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(notionalOnly))
-	request.Header.Set("Idempotency-Key", "close-long-notional")
-	response = httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("notional-only reservation=%d body=%s", response.Code, response.Body.String())
-	}
-	items, err := reservationService.List(context.Background(), "principal-a")
-	if err != nil || len(items) != 1 || items[0].Quantity != nil || items[0].Notional == nil || *items[0].Notional != "50" || items[0].Currency == nil || *items[0].Currency != "USDT" {
-		t.Fatalf("persisted reservations=%+v err=%v", items, err)
-	}
-}
-
-func TestTradingMutationRejectsMissingCSRFAheadOfSideEffects(t *testing.T) {
-	reservationsService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
-	allow := false
-	mux := http.NewServeMux()
-	err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations: reservationsService,
-		Commands:     newCommandService(orders.NewMemoryStore(), nil, time.Now),
-		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal: func(*http.Request) (string, error) { return "principal-a", nil },
-		AuthorizeMutation: func(*http.Request) error {
-			if !allow {
-				return errMissingCSRF
-			}
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null}`
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
-	request.Header.Set("Idempotency-Key", "reserve-csrf")
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("cookie-only mutation=%d body=%s", response.Code, response.Body.String())
-	}
-	allow = true
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
-	request.Header.Set("Idempotency-Key", "reserve-csrf")
-	response = httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("authorized mutation=%d body=%s", response.Code, response.Body.String())
-	}
-}
-
-func TestTradingCSRFProtectsCommandsButNotReservationReads(t *testing.T) {
-	commandStore := orders.NewMemoryStore()
-	commandService := newCommandService(commandStore, nil, time.Now)
-	mux := http.NewServeMux()
-	err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
-		Commands:     commandService,
-		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
-		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
-		AuthorizeMutation: func(*http.Request) error { return errMissingCSRF },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	listResponse := httptest.NewRecorder()
-	mux.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/api/v1/reservations", nil))
-	if listResponse.Code != http.StatusOK {
-		t.Fatalf("list without csrf=%d body=%s", listResponse.Code, listResponse.Body.String())
-	}
-
-	commandBody := `{"accountId":"account-a","productId":"manual","lineageId":"lineage-a","reservationId":"","idempotencyKey":"command-csrf","commandKind":"place","payload":{}}`
-	commandRequest := httptest.NewRequest(http.MethodPost, "/api/v1/commands", strings.NewReader(commandBody))
-	commandRequest.Header.Set("Idempotency-Key", "command-csrf")
-	commandResponse := httptest.NewRecorder()
-	mux.ServeHTTP(commandResponse, commandRequest)
-	if commandResponse.Code != http.StatusForbidden {
-		t.Fatalf("command without csrf=%d body=%s", commandResponse.Code, commandResponse.Body.String())
-	}
-	if _, err := commandService.Get(context.Background(), "command_0000000000000001"); !errors.Is(err, orders.ErrNotFound) {
-		t.Fatalf("command side effect occurred: %v", err)
-	}
-}
-
 func TestCommandDetailUsesRedactedBrowserProjection(t *testing.T) {
-	commandService := newCommandService(orders.NewMemoryStore(), nil, time.Now)
+	commandService := newCommandService(orders.NewMemoryStore(), time.Now)
 	command, _, err := commandService.Create(context.Background(), orders.CreateRequest{
 		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
 		IdempotencyKey: "command-detail", Method: http.MethodPost, Path: "/api/v1/commands", CommandKind: "order.place", Payload: []byte(`{"private":"payload"}`),
@@ -278,8 +128,7 @@ func TestCommandDetailUsesRedactedBrowserProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	if err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now), Commands: commandService,
+	if err := RegisterTradingRoutes(mux, TradingOptions{Commands: commandService,
 		Portfolio: portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
 		Principal: func(*http.Request) (string, error) { return "principal-a", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
 	}); err != nil {
@@ -297,18 +146,17 @@ func TestCommandDetailUsesRedactedBrowserProjection(t *testing.T) {
 	}
 }
 
-func TestGenericCommandRouteRejectsManualBeforePersistenceAndGatewayHandoff(t *testing.T) {
-	commandService := newCommandService(orders.NewMemoryStore(), nil, time.Now)
+func TestRemovedGenericCommandRouteCannotPersistOrSend(t *testing.T) {
+	commandService := newCommandService(orders.NewMemoryStore(), time.Now)
 	portfolioProjection := portfolio.NewProjection()
 	ledgerService := ledger.NewService(ledger.NewMemoryStore(), time.Now)
 	gateway := &manualGatewayFixture{}
 	mux := http.NewServeMux()
 	err := RegisterTradingRoutes(mux, TradingOptions{
-		Reservations:      reservations.NewService(reservations.NewMemoryStore(), time.Now),
 		Commands:          commandService,
 		Portfolio:         portfolioProjection,
 		Ledger:            ledgerService,
-		Manual:            manual.NewGatewayService(commandService, portfolioProjection, ledgerService, gateway, time.Now),
+		Manual:            manual.NewService(manual.Options{Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Gateway: gateway, Now: time.Now}),
 		Principal:         func(*http.Request) (string, error) { return "principal-a", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
@@ -321,7 +169,7 @@ func TestGenericCommandRouteRejectsManualBeforePersistenceAndGatewayHandoff(t *t
 	commandRequest.Header.Set("Idempotency-Key", "manual-fill-1")
 	commandResponse := httptest.NewRecorder()
 	mux.ServeHTTP(commandResponse, commandRequest)
-	if commandResponse.Code != http.StatusBadRequest || !strings.Contains(commandResponse.Body.String(), `"code":"VALIDATION_ERROR"`) {
+	if commandResponse.Code != http.StatusNotFound {
 		t.Fatalf("manual command response=%d body=%s", commandResponse.Code, commandResponse.Body.String())
 	}
 	if gateway.calls != 0 {
@@ -386,8 +234,8 @@ var errMissingCSRF = errors.New("missing csrf token")
 // is covered where it lives, in orders, manual, and the gateway client; nothing
 // on this surface asserts against it, so there is no reason to leave one of
 // these deliberately unarmed.
-func newCommandService(store orders.Store, gate orders.ReservationGate, now func() time.Time) *orders.Service {
-	service := orders.NewService(store, gate, now)
+func newCommandService(store orders.Store, now func() time.Time) *orders.Service {
+	service := orders.NewService(store, now)
 	service.SetLiveWritesEnabled(true)
 	return service
 }
@@ -398,8 +246,13 @@ func newCommandService(store orders.Store, gate orders.ReservationGate, now func
 // its own switch, and app.go arms both from the same config flag. Arming one and
 // not the other stops the write one layer further down with the identical code,
 // which reads like the first switch never took.
-func newManualService(commands *orders.Service, positions *portfolio.Projection, ledgerService *ledger.Service, gateway manual.Gateway, now func() time.Time, previewKey []byte) *manual.Service {
-	service := manual.NewGatewayServiceWithPreviewKey(commands, positions, ledgerService, gateway, now, previewKey)
+func newManualService(commands *orders.Service, positions *portfolio.Projection, ledgerService *ledger.Service, gateway manual.Gateway, now func() time.Time, readers ...manual.CatalogReader) *manual.Service {
+	projection, _ := catalog.NewProjection(manualCatalogSource{}, time.Minute, now)
+	var reader manual.CatalogReader = projection
+	if len(readers) > 0 {
+		reader = readers[0]
+	}
+	service := manual.NewService(manual.Options{Commands: commands, Portfolio: positions, Ledger: ledgerService, Gateway: gateway, Now: now, Accounts: &staticManualAccounts{account: readyManualAccount()}, Catalog: reader})
 	// Only a nil receiver can fail this, and it was just constructed.
 	_ = service.SetExecutionAdmission(true)
 	return service

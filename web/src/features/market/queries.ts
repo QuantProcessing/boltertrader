@@ -58,28 +58,13 @@ export function useInstruments(): UseQueryResult<Projected<Instrument>> {
  * an empty list and a ticket that already knows how to say "no account for this
  * venue", rather than a 401 behind a panel that looks broken.
  */
-const LIFECYCLE_IN_FLIGHT = new Set<Account["status"]>([
-  "creating",
-  "removing",
-]);
-
-/** Poll only while the server still owes the operator a lifecycle outcome. */
-export function accountLifecyclePollInterval(accounts: Account[] | undefined): number | false {
-  return accounts?.some((account) => LIFECYCLE_IN_FLIGHT.has(account.status)) === true
-    ? 2_000
-    : false;
-}
-
-export function useAccounts(options: { watchLifecycle?: boolean } = {}): UseQueryResult<Account[]> {
+export function useAccounts(): UseQueryResult<Account[]> {
   const readOnly = useReadOnly();
   return useQuery({
     queryKey: marketKeys.accounts(),
     queryFn: ({ signal }) => accounts.list(signal),
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: options.watchLifecycle
-      ? (query) => accountLifecyclePollInterval(query.state.data)
-      : false,
     staleTime: 30_000,
   });
 }

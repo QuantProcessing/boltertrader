@@ -2,7 +2,9 @@ package orders
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -51,8 +53,11 @@ func (runner *Reconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(runner.interval)
 	defer ticker.Stop()
 	for {
-		if err := runner.RunOnce(ctx); err != nil && ctx.Err() != nil {
-			return
+		if err := runner.RunOnce(ctx); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Error("command reconciliation failed", "cause", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -63,17 +68,27 @@ func (runner *Reconciler) Run(ctx context.Context) {
 }
 
 func (runner *Reconciler) RunOnce(ctx context.Context) error {
-	now := runner.now().UTC()
-	tasks, err := runner.commands.ClaimDueReconciliation(ctx, now, runner.lease, 20)
-	if err != nil {
-		return err
-	}
-	for _, task := range tasks {
-		if err := runner.reconcile(ctx, task); err != nil && ctx.Err() != nil {
-			return ctx.Err()
+	var failures []error
+	// Claim only the task we can work on now. Leasing a batch up front lets
+	// slow reads consume the leases of tasks that have not even started.
+	for range 20 {
+		now := runner.now().UTC()
+		tasks, err := runner.commands.ClaimDueReconciliation(ctx, now, runner.lease, 1)
+		if err != nil {
+			return errors.Join(append(failures, err)...)
+		}
+		if len(tasks) == 0 {
+			break
+		}
+		if err := runner.reconcile(ctx, tasks[0]); err != nil {
+			failures = append(failures, err)
+			if ctx.Err() != nil {
+				break
+			}
 		}
 	}
-	return nil
+
+	return errors.Join(failures...)
 }
 
 func (runner *Reconciler) reconcile(ctx context.Context, task ReconciliationTask) error {
@@ -81,7 +96,26 @@ func (runner *Reconciler) reconcile(ctx context.Context, task ReconciliationTask
 	if err != nil {
 		return err
 	}
-	handoff, lookupErr := runner.gateway.Reconcile(ctx, command)
+	if terminalState(command.State) {
+		return nil
+	}
+	if task.Reason == ReconciliationAwaitingHandoff {
+		if command.State != StateAccepted {
+			return nil // the sender replaced this stale task with its own schedule
+		}
+		settled, err := runner.commands.Transition(ctx, TransitionRequest{CommandID: command.CommandID,
+			ExpectedState: StateAccepted, State: StateFailed, Blockers: []Blocker{{Code: HandoffNotStarted}}})
+		if errors.Is(err, ErrInvalidTransition) {
+			return nil
+		} // a sender won the race
+		if err == nil && runner.onSettled != nil {
+			runner.onSettled(settled)
+		}
+		return err
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, runner.lease/2)
+	handoff, lookupErr := runner.gateway.Reconcile(lookupCtx, command)
+	cancel()
 	if lookupErr != nil || (handoff.Outcome != HandoffAccepted && handoff.Outcome != HandoffRejected) {
 		_, err = runner.commands.Transition(ctx, TransitionRequest{
 			CommandID: command.CommandID, State: StateUncertain, Reason: ReconciliationLookupFailed,

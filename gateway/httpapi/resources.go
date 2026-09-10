@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	wire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/auth"
@@ -24,6 +25,8 @@ type fillResource struct {
 	InstrumentID    domain.InstrumentID   `json:"instrument_id,omitempty"`
 	GatewayOrderID  domain.GatewayOrderID `json:"gateway_order_id,omitempty"`
 	SettlementAsset string                `json:"settlement_asset"`
+	Product         exchange.Product      `json:"product"`
+	BaseAsset       string                `json:"base_asset"`
 	Fill            exchange.Fill         `json:"fill"`
 }
 
@@ -228,6 +231,7 @@ func (handler *Handler) listFills(w http.ResponseWriter, r *http.Request) {
 			}
 			items = append(items, fillResource{
 				AccountID: resource.AccountID, InstrumentID: resolvedInstrumentID,
+				Product: resource.Product, BaseAsset: resolvedInstrument.Identity.BaseAsset,
 				GatewayOrderID: rowGatewayOrderID, SettlementAsset: settlementAsset, Fill: fill,
 			})
 			if len(items) == selection.limit {
@@ -252,6 +256,13 @@ func fillSettlementAsset(instrument *exchange.Instrument) string {
 }
 
 func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
+	// Reject legacy pagination rather than silently returning only part of an account.
+	for key, values := range r.URL.Query() {
+		if key != "account_id" || len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+			handler.invalid(w)
+			return
+		}
+	}
 	selection, err := handler.resourceSelection(r, false)
 	if err != nil {
 		handler.invalid(w)
@@ -259,9 +270,6 @@ func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]balanceResource, 0)
 	for _, resource := range selection.accounts {
-		if len(items) == selection.limit {
-			break
-		}
 		var balances []exchange.Balance
 		var availableMargin string
 		switch resource.Product {
@@ -303,12 +311,16 @@ func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
 				AccountID: resource.AccountID, Product: resource.Product,
 				SettlementAsset: resource.Settlement, AvailableMargin: availableMargin, Balance: balance,
 			})
-			if len(items) == selection.limit {
-				break
+			if len(items) > wire.MaxBalanceItems {
+				writeJSON(w, http.StatusBadGateway, errorEnvelope{Error: errorBody{Code: "BALANCE_SNAPSHOT_TOO_LARGE", Message: "complete balance snapshot exceeds resource limit", Retryable: false}})
+				return
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, collection[balanceResource]{Items: items})
+	writeJSON(w, http.StatusOK, struct {
+		Items    []balanceResource `json:"items"`
+		Complete bool              `json:"complete"`
+	}{Items: items, Complete: true})
 }
 
 func (handler *Handler) listPositions(w http.ResponseWriter, r *http.Request) {

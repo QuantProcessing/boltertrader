@@ -45,6 +45,9 @@ type Dependencies struct {
 	Listen                   func(network, address string) (net.Listener, error)
 	HandlerFactory           func(*health.Monitor, PostgresPool, AccountManager, OrderCoordinator) (http.Handler, error)
 	ValidationHandlerFactory func(*health.Monitor, PostgresPool) (http.Handler, error)
+	// WrapHTTP surrounds the completed handler, including the readiness gate.
+	// The executable uses it to authenticate before disclosing operational state.
+	WrapHTTP func(http.Handler) http.Handler
 }
 
 type Service struct {
@@ -190,6 +193,9 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 }
 
 func startHTTP(file config.File, deps Dependencies, service *Service, handler http.Handler) (*Service, error) {
+	if handler != nil && deps.WrapHTTP != nil {
+		handler = deps.WrapHTTP(handler)
+	}
 	listener, err := deps.Listen("tcp", file.Server.Listen)
 	if err != nil {
 		return nil, safeErr("listen", err)

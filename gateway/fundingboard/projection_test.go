@@ -66,7 +66,7 @@ func TestProjectionUsesNativeCadenceForMarkFreshness(t *testing.T) {
 	}
 	if err := store.Apply(exchange.DerivativePatch{
 		Kind: exchange.EventSnapshot, Scope: exchange.CatalogScope{Venue: exchange.VenueBybit, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"},
-		NativeFamily: marketcapability.FamilyLinear, Generation: 1, ObservedAt: now,
+		NativeFamily: exchange.NativeFamilyLinear, Generation: 1, ObservedAt: now,
 		Fields: exchange.DerivativeFieldIdentity | exchange.DerivativeFieldMark, Facts: []exchange.DerivativeFact{fact},
 	}); err != nil {
 		t.Fatal(err)

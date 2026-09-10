@@ -139,7 +139,7 @@ func TestPrivateWebSocketSlowConsumerUsesStablePolicyClose(t *testing.T) {
 	var event gatewayevent.Event
 	err = wsjson.Read(ctx, connection, &event)
 	if websocket.CloseStatus(err) != websocket.StatusPolicyViolation ||
-		!strings.Contains(err.Error(), "slow_consumer_resync_required") {
+		!strings.Contains(err.Error(), "slow_consumer") {
 		t.Fatalf("slow consumer close error=%v status=%d", err, websocket.CloseStatus(err))
 	}
 }
@@ -195,7 +195,7 @@ func publishHubEvent(t *testing.T, hub *gatewayevent.Hub, account domain.Account
 		t.Fatal(err)
 	}
 	event, err := hub.Publish(gatewayevent.PublishRequest{
-		PrincipalID: "token-4c5dc9b7708905f7", AccountID: account, EventID: eventID,
+		PrincipalID: "gateway-owner", AccountID: account, EventID: eventID,
 		ResourceVersion: 1, Kind: kind, Payload: json.RawMessage(payload),
 	})
 	if err != nil {

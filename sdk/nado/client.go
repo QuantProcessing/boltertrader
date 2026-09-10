@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
@@ -179,7 +180,7 @@ func (c *Client) Execute(ctx context.Context, reqBody interface{}) ([]byte, erro
 	return c.execute(ctx, reqBody)
 }
 
-func (c *Client) execute(ctx context.Context, reqBody interface{}) ([]byte, error) {
+func (c *Client) execute(ctx context.Context, reqBody interface{}) (_ []byte, returnErr error) {
 	var bodyReader io.Reader
 	if reqBody != nil {
 		jsonBytes, err := json.Marshal(reqBody)
@@ -199,7 +200,11 @@ func (c *Client) execute(ctx context.Context, reqBody interface{}) ([]byte, erro
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := venuehttp.DoHTTP(c.client, req, "nado")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, fmt.Errorf("perform request: %w", err)
 	}
@@ -236,7 +241,7 @@ func (c *Client) execute(ctx context.Context, reqBody interface{}) ([]byte, erro
 }
 
 // QueryV1 v1 endpoints api: support get and post method
-func (c *Client) QueryGateWayV1(ctx context.Context, method string, req map[string]interface{}) ([]byte, error) {
+func (c *Client) QueryGateWayV1(ctx context.Context, method string, req map[string]interface{}) (_ []byte, returnErr error) {
 	var (
 		data []byte
 	)
@@ -256,7 +261,8 @@ func (c *Client) QueryGateWayV1(ctx context.Context, method string, req map[stri
 		if err != nil {
 			return nil, err
 		}
-		resp, err := c.client.Do(req)
+		resp, err := venuehttp.DoHTTP(c.client, req, "nado")
+		defer func() { returnErr = venuehttp.WithHTTPResponse(returnErr, resp) }()
 		if err != nil {
 			return nil, err
 		}
@@ -282,7 +288,8 @@ func (c *Client) QueryGateWayV1(ctx context.Context, method string, req map[stri
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.client.Do(req)
+		resp, err := venuehttp.DoHTTP(c.client, req, "nado")
+		defer func() { returnErr = venuehttp.WithHTTPResponse(returnErr, resp) }()
 		if err != nil {
 			return nil, err
 		}
@@ -314,7 +321,7 @@ func (c *Client) QueryGateWayV1(ctx context.Context, method string, req map[stri
 }
 
 // QueryGatewayV2 v2 endpoints api: only support get method
-func (c *Client) QueryGatewayV2(ctx context.Context, path string, params url.Values, dest interface{}) error {
+func (c *Client) QueryGatewayV2(ctx context.Context, path string, params url.Values, dest interface{}) (returnErr error) {
 	u, err := url.Parse(c.profile.GatewayV2URL() + path)
 	if err != nil {
 		return err
@@ -328,7 +335,11 @@ func (c *Client) QueryGatewayV2(ctx context.Context, path string, params url.Val
 		return err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := venuehttp.DoHTTP(c.client, req, "nado")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return err
 	}
@@ -364,7 +375,11 @@ func (c *Client) QueryArchiveV1(ctx context.Context, params interface{}) (data [
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "gzip")
-	resp, err := c.client.Do(req)
+	resp, err := venuehttp.DoHTTP(c.client, req, "nado")
+	defer func() {
+		err = venuehttp.WithHTTPResponse(err, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
@@ -392,7 +407,7 @@ func (c *Client) QueryArchiveV1(ctx context.Context, params interface{}) (data [
 }
 
 // QueryArchiveV2 v2 endpoints api: only support get method
-func (c *Client) QueryArchiveV2(ctx context.Context, path string, params url.Values, dest interface{}) error {
+func (c *Client) QueryArchiveV2(ctx context.Context, path string, params url.Values, dest interface{}) (returnErr error) {
 	u, err := url.Parse(c.profile.ArchiveV2URL() + path)
 	if err != nil {
 		return err
@@ -406,7 +421,11 @@ func (c *Client) QueryArchiveV2(ctx context.Context, path string, params url.Val
 		return err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := venuehttp.DoHTTP(c.client, req, "nado")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return err
 	}

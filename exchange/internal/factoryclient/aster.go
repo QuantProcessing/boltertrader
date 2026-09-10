@@ -729,7 +729,8 @@ func asterMalformed(product exchange.Product, operation, msg string) error {
 	return asterErr(product, operation, exchange.KindMalformedResponse, msg)
 }
 
-func asterNormalizeErr(product exchange.Product, operation string, err error) error {
+func asterNormalizeErr(product exchange.Product, operation string, err error) (returnErr error) {
+	defer func() { returnErr = normalizeHTTPError(returnErr, err, exchange.VenueAster, product, operation) }()
 	if err == nil {
 		return nil
 	}
@@ -1069,7 +1070,8 @@ func asterAck(product exchange.Product, op exchange.OrderOperation, instrument s
 	return ack, ack.Validate()
 }
 
-func asterCommandAck(product exchange.Product, op exchange.OrderOperation, instrument, orderID, clientID string, err error) (exchange.OrderAcknowledgement, error) {
+func asterCommandAck(product exchange.Product, op exchange.OrderOperation, instrument, orderID, clientID string, err error) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() { normalizeHTTPCommand(&returnAck, &returnErr, err, exchange.VenueAster, product, string(op)) }()
 	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueAster, Product: product, Operation: op, State: exchange.AckAmbiguous, NativeSymbol: instrument, OrderID: orderID, ClientOrderID: clientID}
 	var venueErr *astercommon.VenueError
 	if errors.As(err, &venueErr) {

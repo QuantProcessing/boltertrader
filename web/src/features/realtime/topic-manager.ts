@@ -6,7 +6,6 @@ export type RealtimeTopic =
   | "market.candles"
   | "market.mark_price"
   | "funding.board"
-  | "arbitrage.opportunities"
   | "system.venue_connectivity"
   | "account.events";
 
@@ -18,7 +17,7 @@ export interface RealtimeTopicRequest {
 }
 
 export interface RealtimeMessage<T = unknown> {
-  type: "ack" | "snapshot" | "delta" | "full" | "checkpoint" | "resync_required" | "error" | "pong";
+  type: "ack" | "snapshot" | "delta" | "full" | "resync_required" | "error" | "pong";
   requestId?: string;
   subscriptionId?: string;
   topic?: RealtimeTopic;
@@ -166,22 +165,20 @@ export class RealtimeTopicManager {
     entry.generation = generation;
     if (sequence > 0) entry.sequence = sequence;
     this.notify(entry, message);
-    if (message.type === "snapshot" || message.type === "delta" || message.type === "full" || message.type === "checkpoint") {
-      const recoveredAccount = accountHealthIdentity(message);
+    if (message.type === "snapshot" || message.type === "delta" || message.type === "full") {
+      const connection = accountConnection(message);
+      if (connection?.state === "disconnected") entry.degradedResources.add(connection.key);
+      if (connection?.state === "connected") {
+        entry.degradedResources.delete(connection.key);
+        entry.degradedResources.delete(`${connection.accountId}\u0000`);
+      }
       if (entry.request.topic !== "account.events") entry.degradedResources.clear();
-      else if (recoveredAccount) entry.degradedResources.delete(recoveredAccount);
-      else if (message.type === "checkpoint") entry.degradedResources.delete("*");
       this.refreshOpenState();
     }
     if (message.type === "resync_required") {
       // A market gap stays on the same logical subscription. Gateway reopens
       // the native WS feed and follows the resync marker with a new snapshot;
       // reconnecting this socket would interrupt unrelated healthy topics.
-      if (message.code === "UPSTREAM_GAP") {
-        entry.degradedResources.add(accountIdentity(message) ?? "*");
-        this.refreshOpenState();
-        return;
-      }
       if (message.code === "UPSTREAM_UNAVAILABLE") {
         entry.degradedResources.add("*");
         this.refreshOpenState();
@@ -196,6 +193,17 @@ export class RealtimeTopicManager {
           this.sendSubscribe(key!, entry);
         }
       }, 250);
+    }
+    if (message.type === "error") {
+      entry.degradedResources.add("*");
+      this.refreshOpenState();
+      if (entry.subscriptionId) this.active.delete(entry.subscriptionId);
+      entry.subscriptionId = undefined;
+      window.setTimeout(() => {
+        if (this.socket === socket && socket.readyState === WebSocket.OPEN && this.entries.get(key!) === entry && !entry.requestId && !entry.subscriptionId) {
+          this.sendSubscribe(key!, entry);
+        }
+      }, 500);
     }
   }
 
@@ -295,23 +303,19 @@ function topicKey(request: RealtimeTopicRequest): string {
   ]);
 }
 
-function accountIdentity(message: RealtimeMessage): string | undefined {
+function accountConnection(message: RealtimeMessage): { accountId: string; key: string; state: "connected" | "disconnected" } | undefined {
   if (typeof message.data !== "object" || message.data === null) return undefined;
-  const accountId = (message.data as { accountId?: unknown }).accountId;
-  return typeof accountId === "string" && accountId.length > 0 ? accountId : undefined;
-}
-
-function accountHealthIdentity(message: RealtimeMessage): string | undefined {
-  if (typeof message.data !== "object" || message.data === null) return undefined;
-  const data = message.data as { accountId?: unknown; kind?: unknown };
-  return data.kind === "account.account_health" && typeof data.accountId === "string" && data.accountId.length > 0
-    ? data.accountId
-    : undefined;
+  const data = message.data as { accountId?: unknown; kind?: unknown; payload?: unknown };
+  if (data.kind !== "account.account_connection" || typeof data.accountId !== "string" || data.accountId.length === 0 ||
+    typeof data.payload !== "object" || data.payload === null) return undefined;
+  const payload = data.payload as { route_id?: unknown; state?: unknown };
+  if (payload.state !== "connected" && payload.state !== "disconnected") return undefined;
+  const routeId = typeof payload.route_id === "string" ? payload.route_id : "";
+  return { accountId: data.accountId, key: `${data.accountId}\u0000${routeId}`, state: payload.state };
 }
 
 const marketTopics = new RealtimeTopicManager(paths.marketRealtimeSocket);
 const accountTopics = new RealtimeTopicManager(paths.accountRealtimeSocket);
-const businessTopics = new RealtimeTopicManager(paths.realtimeSocket);
 
 /**
  * Route subscriptions to the service that owns the fact. Public venue data and
@@ -322,13 +326,11 @@ export const realtimeTopics = {
     switch (request.topic) {
       case "account.events":
         return accountTopics.subscribe(request, listener);
-      case "arbitrage.opportunities":
-        return businessTopics.subscribe(request, listener);
       default:
         return marketTopics.subscribe(request, listener);
     }
   },
-  watchConnection(owner: "market" | "account" | "business", listener: StateListener): () => void {
-    return { market: marketTopics, account: accountTopics, business: businessTopics }[owner].watchState(listener);
+  watchConnection(owner: "market" | "account", listener: StateListener): () => void {
+    return { market: marketTopics, account: accountTopics }[owner].watchState(listener);
   },
 };

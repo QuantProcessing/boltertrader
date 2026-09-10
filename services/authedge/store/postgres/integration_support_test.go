@@ -21,6 +21,9 @@ var integrationSchemaSequence atomic.Uint64
 // is the same isolation the deployment relies on.
 func openIntegrationDatabase(t *testing.T) (*sql.DB, func() *sql.DB) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("PostgreSQL integration requires explicit non-short tests")
+	}
 	dsn := strings.TrimSpace(os.Getenv("BT_TEST_POSTGRES_DSN"))
 	if dsn == "" {
 		t.Skip("BT_TEST_POSTGRES_DSN is not set")

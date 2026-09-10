@@ -20,6 +20,7 @@ import (
 
 func main() {
 	waitTrading := flag.Duration("wait-trading", 0, "wait up to this duration for Trading readiness during stack startup")
+	instrument := flag.String("instrument", "", "optionally verify a fresh public BBO for this exact catalog instrument_id")
 	flag.Parse()
 	if *waitTrading < 0 {
 		fmt.Fprintln(os.Stderr, "doctor: -wait-trading must not be negative")
@@ -45,7 +46,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	checks, err := devsetup.DiagnoseWithOptions(ctx, root, devsetup.DiagnoseOptions{TradingReadyWait: *waitTrading})
+	checks, err := devsetup.DiagnoseWithOptions(ctx, root, devsetup.DiagnoseOptions{TradingReadyWait: *waitTrading, MarketInstrument: *instrument})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "doctor: %v\n", err)
 		os.Exit(1)
@@ -71,7 +72,7 @@ func report(checks []devsetup.Check) {
 	var fixes []string
 	for _, check := range checks {
 		fmt.Printf("%s  %-*s  %s\n", marker(check.Status), width, check.Name, check.Detail)
-		if check.Status == devsetup.Fail && check.Fix != "" {
+		if check.Fix != "" {
 			fixes = append(fixes, "  "+check.Name+": "+check.Fix)
 		}
 	}

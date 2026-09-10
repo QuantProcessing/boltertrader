@@ -117,3 +117,37 @@ func TestBearerMiddlewareUnauthorizedResponseNeverLeaksTokenCanary(t *testing.T)
 		t.Fatalf("unauthorized correlation_id=%q: %v", correlationID, err)
 	}
 }
+
+func TestOwnerIdentitySurvivesServiceTokenReplacement(t *testing.T) {
+	ref, err := secret.ParseRef("env://GATEWAY_TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := auth.NewBearerMiddleware(t.Context(), secret.StaticProvider{ref.RawForProvider(): "old-offline-token"}, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := auth.NewBearerMiddleware(t.Context(), secret.StaticProvider{ref.RawForProvider(): "new-offline-token"}, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PrincipalID() != next.PrincipalID() || first.PrincipalID() != "gateway-owner" {
+		t.Fatal("service secret changed durable ownership")
+	}
+	handler := next.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	for _, headers := range [][]string{{"Bearer old-offline-token"}, {"Bearer new-offline-token", "Bearer new-offline-token"}, {"Bearer new-offline-token"}} {
+		request := httptest.NewRequest("GET", "/v1/accounts", nil)
+		for _, header := range headers {
+			request.Header.Add("Authorization", header)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		want := 401
+		if len(headers) == 1 && headers[0] == "Bearer new-offline-token" {
+			want = 204
+		}
+		if response.Code != want {
+			t.Fatalf("status=%d want=%d", response.Code, want)
+		}
+	}
+}

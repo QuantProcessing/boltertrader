@@ -9,10 +9,11 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 )
 
-func TestPlatformRuntimeConcurrentReadsObserveWholeGenerations(t *testing.T) {
+func TestPlatformRuntimeConcurrentReadsDuringSiblingRegistration(t *testing.T) {
 	harness := newPlatformHarness(t)
-	first := platformSnapshot(t, "race-first", "account-race", 1, 1, rawOpaqueRef, spotRoute(), perpRoute())
-	harness.promote(t, first)
+	first := domain.AccountID("account-race")
+	harness.register(t, first)
+	firstFence := harness.manager.ActiveSnapshot(first).Fence
 	router, err := order.NewAccountRouter(harness.manager)
 	if err != nil {
 		t.Fatal(err)
@@ -27,12 +28,12 @@ func TestPlatformRuntimeConcurrentReadsObserveWholeGenerations(t *testing.T) {
 			defer readers.Done()
 			<-start
 			for iteration := 0; iteration < 300; iteration++ {
-				active := harness.manager.ActiveSnapshot(first.AccountID)
+				active := harness.manager.ActiveSnapshot(first)
 				if active == nil || len(active.Routes) != 2 {
 					errorsFound <- fmt.Errorf("partial active snapshot: %+v", active)
 					return
 				}
-				if active.Fence.RuntimeGeneration != 1 && active.Fence.RuntimeGeneration != 2 {
+				if active.Fence != firstFence {
 					errorsFound <- fmt.Errorf("unexpected generation: %+v", active.Fence)
 					return
 				}
@@ -44,7 +45,7 @@ func TestPlatformRuntimeConcurrentReadsObserveWholeGenerations(t *testing.T) {
 					errorsFound <- fmt.Errorf("perp route absent: %+v", active.Routes)
 					return
 				}
-				if _, err := router.Route(t.Context(), first.AccountID, "binance:live:spot:BTC-USDT"); err != nil {
+				if _, err := router.Route(t.Context(), first, "binance:live:spot:BTC-USDT"); err != nil {
 					errorsFound <- fmt.Errorf("route during promotion: %w", err)
 					return
 				}
@@ -55,14 +56,17 @@ func TestPlatformRuntimeConcurrentReadsObserveWholeGenerations(t *testing.T) {
 	}
 
 	close(start)
-	second := platformSnapshot(t, "race-second", first.AccountID, 2, 2, alternateOpaqueRef().RawForTrustedBoundary(), spotRoute(), perpRoute())
-	harness.promote(t, second)
+	second := domain.AccountID("account-sibling")
+	harness.register(t, second)
+	if err := harness.manager.DisconnectRegistration(t.Context(), second); err != nil {
+		t.Fatal(err)
+	}
 	readers.Wait()
 	close(errorsFound)
 	for err := range errorsFound {
 		t.Error(err)
 	}
-	if final := harness.manager.ActiveSnapshot(first.AccountID); final == nil || final.Fence != second.Fence || len(final.Routes) != 2 {
+	if final := harness.manager.ActiveSnapshot(first); final == nil || final.Fence != firstFence || len(final.Routes) != 2 {
 		t.Fatalf("final active=%+v", final)
 	}
 }

@@ -16,25 +16,22 @@ type MarketObserver interface {
 	RecordMarketREST(venue, operation, outcome string)
 }
 
-// MarketCoordinator is the process-wide public REST gate. Every catalog,
-// broad-feed bootstrap and FreshBBO fallback shares its venue budget and
-// collapse group instead of creating a subsystem-local limiter.
+// MarketCoordinator coalesces public reads and observes application-level
+// cooldowns. Actual weighted request budgets belong to the shared HTTP transport.
 type MarketCoordinator struct {
-	budget   *Coordinator
 	observer MarketObserver
 	now      func() time.Time
 	group    singleflight.Group
 
-	mu         sync.Mutex
-	configured map[Key]struct{}
-	cooldown   map[string]time.Time
+	mu       sync.Mutex
+	cooldown map[string]time.Time
 }
 
 func NewMarketCoordinator(observer MarketObserver, now func() time.Time) *MarketCoordinator {
 	if now == nil {
 		now = time.Now
 	}
-	return &MarketCoordinator{budget: NewCoordinator(now), observer: observer, now: now, configured: make(map[Key]struct{}), cooldown: make(map[string]time.Time)}
+	return &MarketCoordinator{observer: observer, now: now, cooldown: make(map[string]time.Time)}
 }
 
 func (coordinator *MarketCoordinator) Do(ctx context.Context, venue exchange.Venue, operation, collapseKey string, call func(context.Context) (any, error)) (any, error) {
@@ -47,13 +44,6 @@ func (coordinator *MarketCoordinator) Do(ctx context.Context, venue exchange.Ven
 		if waitErr := coordinator.waitCooldown(ctx, venue, operation); waitErr != nil {
 			coordinator.observe(venue, operation, "timeout")
 			return nil, waitErr
-		}
-		keys := []Key{{Kind: VenueProfile, Value: string(venue) + "/public"}, {Kind: RouteEndpoint, Value: string(venue) + "/" + operation}}
-		coordinator.ensure(keys[0], Quota{Limit: 1200, Interval: time.Minute})
-		coordinator.ensure(keys[1], Quota{Limit: 600, Interval: time.Minute})
-		if acquireErr := coordinator.budget.Acquire(ctx, keys); acquireErr != nil {
-			coordinator.observe(venue, operation, "timeout")
-			return nil, acquireErr
 		}
 		result, callErr := call(ctx)
 		outcome := "success"
@@ -74,16 +64,6 @@ func (coordinator *MarketCoordinator) Do(ctx context.Context, venue exchange.Ven
 	return value, err
 }
 
-func (coordinator *MarketCoordinator) ensure(key Key, quota Quota) {
-	coordinator.mu.Lock()
-	defer coordinator.mu.Unlock()
-	if _, exists := coordinator.configured[key]; exists {
-		return
-	}
-	_ = coordinator.budget.Configure(key, quota)
-	coordinator.configured[key] = struct{}{}
-}
-
 func (coordinator *MarketCoordinator) applyRetryAfter(venue exchange.Venue, operation string, err error) {
 	delay := time.Second
 	var venueErr *exchange.Error
@@ -91,7 +71,11 @@ func (coordinator *MarketCoordinator) applyRetryAfter(venue exchange.Venue, oper
 		delay = venueErr.Details().RetryAfter
 	}
 	coordinator.mu.Lock()
-	coordinator.cooldown[string(venue)+"|"+operation] = coordinator.now().UTC().Add(delay)
+	key := string(venue) + "|" + operation
+	until := coordinator.now().UTC().Add(delay)
+	if until.After(coordinator.cooldown[key]) {
+		coordinator.cooldown[key] = until
+	}
 	coordinator.mu.Unlock()
 }
 

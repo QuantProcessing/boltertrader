@@ -121,6 +121,7 @@ export interface Command {
   accountId: string;
   lineageId: string;
   productId: string;
+  /** Historical association only; new commands have no reservation. */
   reservationId: string | null;
   idempotencyKey: string;
   commandKind: string;
@@ -130,6 +131,7 @@ export interface Command {
   createdAt: string;
   updatedAt: string;
   executionEvidence?: ExecutionEvidence;
+  reconciliation?: { reason: string; nextAttemptAt: string; attemptCount: number };
 }
 
 /** The shape `manual.submitPlace` seals into `Command.payload`. */
@@ -160,6 +162,7 @@ export interface CommandProjection {
   accountId: string;
   lineageId: string;
   productId: string;
+  /** Historical association only; new commands have no reservation. */
   reservationId: string | null;
   idempotencyKey: string;
   commandKind: string;
@@ -173,19 +176,16 @@ export interface CommandProjection {
 
 export type OrderSide = "buy" | "sell";
 export type OrderType = "limit" | "market";
-export type ManualAction = "place" | "cancel" | "close";
+export type ManualAction = "place" | "cancel";
 
 /**
- * The preview request body.
- *
- * `manualPreviewRequest` carries no json tags, so Go matches these names
- * case-insensitively. camelCase is what the rest of the API uses and what the
- * server's own tests send; do not "correct" it to PascalCase.
+ * The manual order intent carried by a place command.
  *
  * `limitPrice` must be empty for a market order and a positive decimal for a
- * limit order — `validateManualPreview` rejects anything else with 400.
+ * limit order. Trading validates the shape and catalog rules in the same
+ * request that creates the command.
  */
-export interface ManualPreviewRequest {
+export interface ManualOrderRequest {
   accountId: string;
   instrumentId: string;
   side: OrderSide;
@@ -199,59 +199,22 @@ export interface ManualPreviewRequest {
 }
 
 /**
- * The preview response.
- *
- * The server echoes the request back beside these three fields, but under
- * PascalCase keys — the embedded struct has no tags either. We ignore the echo
- * entirely: the request is already in hand, and consuming a key whose casing is
- * an accident of Go's default marshalling is how a rename breaks the UI.
- */
-export interface ManualPreview {
-  previewId: string;
-  blockers: string[];
-  warnings: string[];
-  /** Server-side checks against the catalog revision sealed into this preview. */
-  checks?: ManualPreviewCheck[];
-  /** Exact quantity × limit price. Absent for market orders. */
-  notional?: string;
-}
-
-export interface ManualPreviewCheck {
-  code: string;
-  status: "passed" | "blocked" | "unavailable";
-  actual?: string;
-  required?: string;
-}
-
-/**
- * How long a sealed preview stays valid: `manualPreviewTTL` in
- * `services/trading/httpapi/manual_product.go`.
- *
- * The deadline is sealed inside the token and is NOT returned, so the countdown
- * is computed client-side from the moment the response arrived. That makes it a
- * lower bound — network latency is spent before the clock starts, never after —
- * which is the safe direction to be wrong in.
- */
-export const MANUAL_PREVIEW_TTL_MS = 30_000;
-
-/**
  * The command request body.
  *
- * The three actions are distinguished by which identifiers are present, and the
+ * The two actions are distinguished by which fields are present, and the
  * server rejects any other combination with 400:
  *
- *   place  → previewId set,   orderId empty
- *   cancel → previewId empty, orderId set
- *   close  → both empty       (matched to a position by lineageId)
+ *   place  → order set,   orderId empty
+ *   cancel → order empty, orderId set
  *
  * `idempotencyKey` must be byte-identical to the `Idempotency-Key` header.
  */
 export interface ManualCommandRequest {
-  previewId: string;
   action: ManualAction;
   lineageId: string;
   orderId: string;
   idempotencyKey: string;
+  order?: ManualOrderRequest;
 }
 
 /* --- Catalog ------------------------------------------------------------- */
@@ -347,7 +310,7 @@ export interface Instrument {
   ready: boolean;
 }
 
-/** The `projection` sibling that `catalog/*` returns beside `data`. */
+/** Revision and observation time from the Gateway catalog snapshot. */
 export interface CatalogProjectionMeta {
   revision: string;
   observedAt: string;
@@ -610,6 +573,7 @@ export const FUNDING_HISTORY_INSTRUMENT_UNKNOWN = "FUNDING_HISTORY_INSTRUMENT_UN
 
 /** `portfolio.Position`. A negative `quantity` is short. */
 export interface Position {
+  accountingStatus?: "ready" | "legacy_fee_review";
   lineageId: string;
   productId: string;
   accountId: string;
@@ -711,6 +675,7 @@ export interface AccountPositionSnapshot {
 
 /** `ledger.Entry` */
 export interface LedgerEntry {
+	accountingStatus?: "ready" | "legacy_fee_review";
   entryId: string;
   lineageId: string;
   productId: string;
@@ -724,17 +689,21 @@ export interface LedgerEntry {
 
 /** `ledger.PnLSnapshot` */
 export interface PnLSnapshot {
-  pnlSnapshotId: string;
   lineageId: string;
   productId: string;
   accountId: string;
   instrumentId: string;
-  realizedPnl: string;
-  unrealizedPnl: string;
-  fees: string;
-  funding: string;
-  netPnl: string;
+  byCurrency: Array<{
+    currency: string;
+    realizedPnl: string;
+    fees: string;
+    funding: string;
+    bookedNetPnl: string;
+    unrealizedPnl?: string;
+    netPnl?: string;
+  }>;
   asOf: string;
+  valuationAsOf?: string;
 }
 
 /** `httpapi.FillProjection` */
@@ -753,251 +722,6 @@ export interface Fill {
   settlementCurrency?: string;
   venueSequence: number | null;
   occurredAt: string;
-}
-
-/* --- Arbitrage product --------------------------------------------------- */
-
-/** `httpapi.arbitrageLegRequest` — one side of the hedge, as asked for. */
-export interface ArbitrageLegRequest {
-  accountId: string;
-  instrumentId: string;
-  /** Required when `orderType` is `limit`; ignored otherwise. */
-  limitPrice?: string;
-}
-
-export type ArbitrageStrategy =
-  | "cross_perp_funding"
-  | "spot_perp_basis"
-  | "cross_perp_spread";
-
-/**
- * `httpapi.arbitragePreviewRequest`.
- *
- * One quantity for both legs, because a hedge whose sides differ in size is not
- * delta-neutral and the server refuses it.
- */
-export interface ArbitragePreviewRequest {
-  strategy: ArbitrageStrategy;
-  long: ArbitrageLegRequest;
-  short: ArbitrageLegRequest;
-  quantity: string;
-  orderType: OrderType;
-  timeInForce?: string;
-}
-
-/**
- * `httpapi.arbitrageProductHandler.createCommand`'s three actions.
- *
- * They take mutually exclusive fields and the server validates the combination
- * before doing anything: `open` needs `previewId` and no `orderId`, `close`
- * needs neither, `cancel` needs `orderId` and no `previewId`. `cancel` exists
- * for a `partially_open` pair — it disposes of the one leg that stood up, which
- * is the only way out of a half-hedge, since the product will not unwind one
- * automatically.
- */
-export type ArbitrageAction = "open" | "close" | "cancel";
-
-/** `httpapi.arbitrageCommandRequest` */
-export interface ArbitrageCommandRequest {
-  previewId?: string;
-  action: ArbitrageAction;
-  lineageId: string;
-  orderId?: string;
-  idempotencyKey: string;
-}
-
-/**
- * `httpapi.arbitragePreviewLeg` — a leg priced against the funding board.
- *
- * `rate` is per interval and `dailyRate` is the same number normalised to a day
- * (`rate * 24 / intervalHours`), which is the only form in which two venues on
- * different settlement clocks can be compared. Both are sent so the UI can show
- * what the venue quoted next to what it means.
- */
-export interface ArbitragePreviewLeg {
-  accountId: string;
-  instrumentId: string;
-  venue: string;
-  environment: string;
-  product: "spot" | "perp";
-  symbol?: string;
-  side: OrderSide;
-  limitPrice?: string;
-  rate?: string;
-  intervalHours?: number;
-  nextFundingTime?: string;
-  markPrice?: string;
-  bestBid?: string;
-  bestAsk?: string;
-  executionPrice?: string;
-  dailyRate?: string;
-  stale?: boolean;
-}
-
-/**
- * `httpapi.arbitragePreview` — the sealed quote a two-leg open is spent against.
- *
- * `blockers` is what stops the open; `warnings` is what the operator should see
- * and may still proceed through. A negative spread arrives as a warning rather
- * than a blocker: paying to hold a hedge is a legitimate thing to choose.
- */
-export interface ArbitragePreview {
-  previewId: string;
-  strategy: ArbitrageStrategy;
-  request: ArbitragePreviewRequest;
-  long: ArbitragePreviewLeg;
-  short: ArbitragePreviewLeg;
-  quantity: string;
-  notional?: string;
-  spreadDaily?: string;
-  spreadApr?: string;
-  basisRate?: string;
-  priceSpread?: string;
-  dailyFunding?: string;
-  blockers: string[];
-  warnings: string[];
-}
-
-/** `arbitragePreviewTTL`. The seal is refused after this, and the UI should say so first. */
-export const ARBITRAGE_PREVIEW_TTL_MS = 30_000;
-
-/** `httpapi.arbitrageOpportunityLeg` */
-export interface ArbitrageOpportunityLeg {
-  venue: string;
-  environment: string;
-  product: "spot" | "perp";
-  routeProfileId: string;
-  settlement?: string;
-  marketFamily: MarketFamily;
-  assetClass: AssetClass;
-  classificationSource?: string;
-  /** Present only when the caller named an account that can reach this venue. */
-  accountId?: string;
-  /** Canonical public-catalog identity; unresolved rows are not opportunities. */
-  instrumentId: string;
-  rate?: string;
-  intervalHours?: number;
-  nextFundingTime?: string;
-  markPrice?: string;
-  indexPrice?: string;
-  referencePrice?: string;
-  openInterest?: string;
-  openInterestNotional?: string;
-  openInterestNotionalAsset?: string;
-  fundingObservedAt?: string;
-  priceObservedAt?: string;
-  openInterestObservedAt?: string;
-  venueStatus?: "live" | "degraded" | "unavailable";
-  dailyRate?: string;
-  stale?: boolean;
-}
-
-/**
- * `httpapi.arbitrageOpportunity` — one underlying's best cross-venue pair.
- *
- * The venue paying most is the short leg and the one paying least is the long
- * leg, because longs pay funding where the rate is positive. `executable` is
- * false until both legs resolve to an account the caller actually holds, and
- * `blockers` says which half is missing.
- */
-export interface ArbitrageOpportunity {
-  id: string;
-  symbol: string;
-  baseAsset: string;
-  quoteAsset: string;
-  assetClass: AssetClass;
-  strategyFamily: "crypto_continuous" | "tradfi_perpetual" | "unclassified";
-  strategy: ArbitrageStrategy;
-  long: ArbitrageOpportunityLeg;
-  short: ArbitrageOpportunityLeg;
-  spreadDaily?: string;
-  spreadApr?: string;
-  basisRate?: string;
-  priceSpread?: string;
-  score?: string;
-  executable: boolean;
-  blockers: string[];
-}
-
-/** `arbitrage.Leg` */
-export type ArbitrageLeg = "long" | "short";
-
-/**
- * `arbitrage.PairState`.
- *
- * `partially_open` is the one that matters: one leg filled and the other did
- * not, leaving directional exposure the operator did not ask for. The server
- * deliberately does not unwind it — that would be an order nobody previewed —
- * so this state has to be rendered loudly and given its own way out.
- */
-export type ArbitragePairState =
-  | "opening"
-  | "open"
-  | "partially_open"
-  | "closing"
-  | "closed"
-  | "failed";
-
-/** `arbitrage.LegView` — one leg's command, as the pair sees it. */
-export interface ArbitrageLegView {
-  leg: ArbitrageLeg;
-  commandId: string;
-  lineageId: string;
-  accountId: string;
-  instrumentId: string;
-  side: OrderSide;
-  quantity: string;
-  orderType: OrderType;
-  limitPrice?: string;
-  closing?: boolean;
-  reduceOnly: boolean;
-  state: CommandState;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** `httpapi.arbitrageAmount` — accrued funding in one settlement currency. */
-export interface ArbitrageAmount {
-  currency: string;
-  amount: string;
-}
-
-/**
- * `httpapi.arbitragePair` — one lineage, both legs, everything it still holds.
- *
- * `funding` is a list rather than a single amount because a hedge spans two
- * venues that may settle in different currencies, and summing those would
- * invent an exchange rate the server never observed.
- */
-export interface ArbitragePair {
-  lineageId: string;
-  state: ArbitragePairState;
-  legs: ArbitrageLegView[];
-  positions: Position[];
-  funding: ArbitrageAmount[];
-  blockers: string[];
-  updatedAt: string;
-}
-
-/** `httpapi.arbitrageLegFailure` — which leg gave up, and where. */
-export interface ArbitrageLegFailure {
-  leg: ArbitrageLeg;
-  stage: string;
-  code: string;
-}
-
-/**
- * `httpapi.arbitrageExecution` — what an `open` or `close` did.
- *
- * Both legs stay in `legs` even when one failed; the failed one is what tells
- * the operator which side is missing. 202 means the legs were submitted now,
- * 200 means this was an idempotent replay of a submission that already happened.
- */
-export interface ArbitrageExecution {
-  lineageId: string;
-  state: ArbitragePairState;
-  legs: ArbitrageLegView[];
-  failures: ArbitrageLegFailure[];
 }
 
 /* --- Activity ------------------------------------------------------------ */
@@ -1022,36 +746,23 @@ export interface ActivityEvent {
 
 /* --- Accounts ------------------------------------------------------------ */
 
-/** `lifecycle.RouteState` */
-export type RouteState = "active" | "disabled";
 
-/**
- * `lifecycle.State`. The whole vocabulary, from `gateway/account/lifecycle/state.go`.
- *
- * Credentials are immutable. The visible lifecycle only creates, activates,
- * disables and removes an account.
- */
-export type AccountStatus =
-  | "creating"
-  | "active"
-  | "disabled"
-  | "removing"
-  | "removed";
+/** A saved account has already passed its initial balance check. */
+export type AccountStatus = "active";
 
-/** `lifecycle.AccountRoute` */
+/** Adapter routes derived by Gateway */
 export interface AccountRoute {
   routeId: string;
   product: string;
   settlementAsset?: string;
   routeProfileId: string;
-  requestedState: RouteState;
 }
 
 /**
  * What the gateway accepts as credential material.
  *
  * The shape is fixed by `validateCredentialBundle` in
- * `gateway/httpapi/account_lifecycle.go`: five top-level keys, and inside
+ * `gateway/httpapi/account_registration.go`: five top-level keys, and inside
  * `metadata` / `secrets` only the keys the credential decoder knows. Anything
  * else is a 400 that deliberately does not say which field was wrong, so the
  * UI has to build this from the venue's own `CredentialSchema` rather than
@@ -1077,7 +788,7 @@ export interface CredentialBundle {
 }
 
 /**
- * `lifecycle.PublicAccount`, served by the gateway's account plane.
+ * Saved account metadata served by Gateway.
  *
  * Note there is no credential material anywhere in this type, by construction:
  * the gateway never returns a secret it was given. PRODUCT.md's write-only rule
@@ -1088,7 +799,6 @@ export interface Account {
   venue: string;
   nativeEnvironment: string;
   displayName: string;
-  productPolicy: string[];
   routes?: AccountRoute[];
   status: AccountStatus;
   lastValidatedAt: string | null;
@@ -1101,68 +811,11 @@ export interface ProjectionReadiness {
   reason?: string;
 }
 
-/** `httpapi.CapabilityOperations` — what the venue lets this account actually do. */
-export interface CapabilityOperations {
-  place: boolean;
-  amend: boolean;
-  cancel: boolean;
-  openOrders: boolean;
-  orderHistory: boolean;
-  fills: boolean;
-  balances: boolean;
-  account: boolean;
-  positions: boolean;
-  leverage: boolean;
-  privateStream: boolean;
-  marginMode: boolean;
-  positionMode: boolean;
-  fundsTransfer: boolean;
-}
-
-/** `httpapi.AccountCapabilityProjection` */
-export interface AccountCapability {
-  rowId: string;
-  venue: string;
-  product: string;
-  settlement?: string;
-  writeReady: boolean;
-  operations: CapabilityOperations;
-}
-
-/** `httpapi.RouteRuntimeProjection` */
-export interface RouteRuntime {
-  routeId: string;
-  product: string;
-  settlementAsset?: string;
-  routeProfileId: string;
-  requestedState: string;
-  ready: boolean;
-  reason?: string;
-}
-
-/** `httpapi.RuntimeSnapshotProjection` */
-export interface RuntimeSnapshot {
-	requestedState: string;
-  routes: RouteRuntime[];
-}
-
-/** `httpapi.PendingRuntimeSnapshotProjection` */
-export interface PendingRuntimeSnapshot extends RuntimeSnapshot {
-  state: string;
-  reason: string;
-}
-
-/** `httpapi.AccountRuntimeProjection`: internal connection readiness only. */
+/** A local exchange connection, not a permission grant. */
 export interface AccountRuntime {
-  accountId: string;
-  active?: RuntimeSnapshot;
-  pending?: PendingRuntimeSnapshot;
-  retiring: RuntimeSnapshot[];
-  readiness: ProjectionReadiness;
-  writeReadiness: ProjectionReadiness;
-  blockedReason: string | null;
-  capabilities: AccountCapability[];
-  observedAt: string;
+ accountId: string;
+ connected: boolean;
+ observedAt: string;
 }
 
 /* --- System -------------------------------------------------------------- */
@@ -1186,32 +839,4 @@ export interface SystemComponent {
 export interface SystemSnapshot {
   ready: boolean;
   components: Record<string, SystemComponent>;
-}
-
-/* --- Reservations -------------------------------------------------------- */
-
-/** `reservations.NettingScope` */
-export interface NettingScope {
-  accountId: string;
-  venue: string;
-  instrumentId: string;
-  positionMode: string | null;
-  settlementScope: string | null;
-  venueEnvironment: string;
-}
-
-/** `reservations.Reservation` */
-export interface Reservation {
-  reservationId: string;
-  productId: string;
-  reservationKind: string;
-  nettingScope: NettingScope;
-  quantity: string | null;
-  notional: string | null;
-  currency: string | null;
-  status: string;
-  expiresAt: string | null;
-  blockedReason: string | null;
-  createdAt: string;
-  updatedAt: string;
 }

@@ -91,9 +91,9 @@ describe("pivotRows", () => {
     expect(rows.every((entry) => entry.venueCount === 1)).toBe(true);
   });
 
-  it("labels the row with a venue's own spelling, which the hedge link needs", () => {
-    // `symbol` is what the operator reads and what the hedge link hands to the
-    // ticket, so it stays a string some venue actually quoted — never the
+  it("labels the row with a venue's own spelling", () => {
+    // `symbol` is what the operator reads, so it stays a string some venue
+    // actually quoted — never the
     // synthesized key.
     const rows = pivotRows(board(venue("okx", "USDT", [row("ETH-USDT-SWAP", "ETH", "USDT")])));
 

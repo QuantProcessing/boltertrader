@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { AccountPositionSnapshot, Command } from "@/api/types";
-import { applyOrderOverlays, applyPositionOverlays, recordAccountRealtimeEvent } from "@/features/trade/account-realtime-overlay";
+import type { AccountBalance, AccountPositionSnapshot, Command } from "@/api/types";
+import { applyBalanceOverlays, applyOrderOverlays, applyPositionOverlays, recordAccountRealtimeEvent } from "@/features/trade/account-realtime-overlay";
 
 describe("account realtime overlay", () => {
   it("does not let an older REST position overwrite a newer WS entity", () => {
@@ -55,6 +55,30 @@ describe("account realtime overlay", () => {
     })).toBe("order");
     expect(applyOrderOverlays([command])[0]?.state).toBe("filled");
     expect(applyOrderOverlays([order("2026-08-26T00:00:03Z", "failed")])[0]?.state).toBe("failed");
+  });
+
+  it("merges balances by entity key and lets the next periodic REST read reconcile", () => {
+    const balance: AccountBalance = {
+      accountId: "account-a", product: "perp", settlementAsset: "USDT", asset: "USDT",
+      available: "100", locked: "0", total: "100",
+    };
+    expect(recordAccountRealtimeEvent({
+      eventId: "event-balance-2",
+      accountId: "account-a",
+      resourceVersion: 2,
+      kind: "account.balance",
+      observedAt: "2026-08-26T00:00:02Z",
+      payload: {
+        account_id: "account-a",
+        product: "perp",
+        settlement_asset: "USDT",
+        balance: { asset: "USDT", available: "125", locked: "5", total: "130" },
+      },
+    })).toBe("balance");
+
+    expect(applyBalanceOverlays([balance], "account-a")[0]).toMatchObject({ available: "125", locked: "5", total: "130" });
+    const rest = [{ ...balance, available: "140", total: "145" }];
+    expect(applyBalanceOverlays(rest, "account-a", "2026-08-26T00:00:03Z")).toEqual(rest);
   });
 });
 

@@ -17,7 +17,7 @@ layer depends only on the one below it:
 ```text
 web                        the only frontend
 services/authedge          browser sessions and path forwarding
-services/trading           manual trading and funding arbitrage
+services/trading           manual trading, recovery and accounting
 gateway                    shared capability plane
 exchange                   venue-neutral typed clients
 sdk                        one package per venue's native API
@@ -56,6 +56,8 @@ Exchange module:
 Services:
 
 - [Exchange Gateway](guides/exchange-gateway.md)
+- [Gateway Go client and independent market example](guides/gateway-client.md)
+- [Independent public market monitor](guides/gateway-monitor.md)
 - [Trading service](guides/trading-service.md)
 - [Auth edge](guides/auth-edge.md)
 - [Web app](guides/web-app.md)

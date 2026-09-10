@@ -9,6 +9,8 @@ V1 是交易网关，不是统一清算系统。它不提供跨所 shared margin
 smart order routing、资金划转、充值或 withdrawal endpoint。服务 **no Redis**，
 也 **no gRPC**；PostgreSQL 是唯一必需的持久化依赖。
 
+Go 脚本与监控应用可以使用[独立 Gateway 客户端](gateway-client.md)，无需引用 Trading 或交易所 SDK。
+
 ## 选择这个产品
 
 BolterTrader 在交易所之上提供两种同级路径：
@@ -19,8 +21,7 @@ BolterTrader 在交易所之上提供两种同级路径：
   和私有事件时，使用 Exchange Gateway。
 
 Gateway 构建在 `exchange` 之上，并不替代它。产品服务位于 Gateway 之上而非
-之侧：trading 服务持有自己的命令账本并调用这里的资源，它也是 Gateway 唯一
-面向的调用方类型。见 [trading 服务](trading-service.md)。
+之侧：trading 服务持有自己的命令账本并调用这里的资源。个人脚本、监控和预警应用也应复用 Gateway 能力；当前稳定公开接口与内部市场接口仍需逐步统一。见 [trading 服务](trading-service.md)。
 
 ## 服务形态
 
@@ -43,15 +44,24 @@ REST + 公共/私有 WebSocket + /metrics
 - `/metrics` Prometheus 指标；
 - `/v1/health/live` 存活检查和 `/v1/health/ready` 就绪检查。
 
-TLS 应在部署 ingress 终止。Bearer token 与全部交易所凭证只能通过明确的
-secret reference 解析，YAML 不得包含 secret 明文。
+TLS 应在部署 ingress 终止。服务 token 通过 secret reference 解析；交易所凭证
+在登录后添加并加密存入 PostgreSQL，YAML 不包含 secret 明文。
 
 ## 配置
 
 YAML 文件只配置进程本身：监听地址、bearer token 引用与 PostgreSQL DSN
-引用。账户属于持久化状态而非文件状态，通过内部监听器的
-`PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}`
-声明并存入 PostgreSQL，重启后自动加载，无需改动任何文件。
+引用。登录后在设置中添加账户：内部接口 `POST /internal/v1/accounts` 只接受
+venue、displayName 和 credentialBundle。余额查询成功后保存加密凭证，返回 201；
+零余额可以通过。GET 查看，DELETE 只删除本地凭证和连接，保留交易所订单及持仓。
+没有停用、轮换、更新权限或期望状态接口。
+
+API 权限由交易所判断，拒绝操作时返回交易所的安全错误消息。重启恢复已保存的
+连接，当前持仓直接查询交易所，不导入历史订单。旧安装需要重新添加凭证，
+不会导入旧账户记录；迁移 012 只建立新账户表并解除旧账户外键依赖。
+
+`BT_SECRET_MASTER_KEY_FILE` 指向保存 32 字节主密钥（64 位十六进制、0600 权限）的绝对路径文件，保持其私密且
+持久化。它用于加密账户记录，不是用户需要额外申请的权限。详见
+[简单账户设计](../../design/simple-accounts-2026-09-10.md)。
 
 ```yaml
 server:
@@ -86,7 +96,7 @@ curl -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
   "http://127.0.0.1:8080/v1/instruments?account_id=binance-spot"
 ```
 
-下单必须提供 account、Gateway instrument ID 和 idempotency key：
+下单必须提供 account、route、Gateway instrument ID、idempotency key，以及账户当前的 `runtime_id`。下面的运行时占位符必须替换为 `/v1/accounts/{account_id}` 返回的值：
 
 ```sh
 curl -X POST \
@@ -96,6 +106,8 @@ curl -X POST \
   http://127.0.0.1:8080/v1/orders \
   -d '{
     "account_id":"binance-spot",
+    "route_id":"spot",
+    "runtime_id":"REPLACE_WITH_CURRENT_ACCOUNT_RUNTIME_ID",
     "instrument_id":"binance:live:spot:BTC-USDT",
     "idempotency_key":"manual-10001",
     "side":"buy",
@@ -109,6 +121,10 @@ curl -X POST \
 Gateway 在首次交易所 write 前先提交 command intent。相同 idempotency key
 和相同规范 payload 会重放原 command；相同 key 配不同 payload 返回冲突。
 write handoff 后超时会进入 `uncertain`，绝不盲目重发。
+
+`runtime_id` 是下单的运行时所有权屏障，旧的三个版本计数字段不再接受。撤单使用 `DELETE /v1/orders/{gateway_order_id}`，无需请求体，账户和路由取自已保存的订单。改单仍返回 `501`。曾经确认接单的订单，即使多次查询不到，也保持待对账状态，不能仅凭缺失推断拒单。
+
+成交的 `fill.fill_id` 是交易所原始 ID。去重身份必须同时包含 `account_id` 和 `instrument_id`；跨品种或跨账户相同的原始 ID 表示不同成交。
 
 查询包括 `/v1/orders`、`/v1/open-orders`、`/v1/fills`、`/v1/balances`、
 `/v1/positions`、`/v1/funding-rates`、`/v1/funding-rates/history`、
@@ -129,10 +145,20 @@ idempotency 和重启 reconciliation 模型后才会开放。底层
 
 ## 公共行情
 
-公共行情读取仍必须携带 Gateway Bearer token、`account_id` 和规范化
-`instrument_id`。账户决定使用哪个由 Gateway 持有的交易所 client，并把请求
-绑定到已配置的 product/environment。调用方既不提交也不会收到交易所凭证、
-native symbol、native ID、instrument encoding 或原始交易所错误。
+独立应用现在可以通过 `/v1/market` 访问公共行情：
+
+- `GET /v1/market/instruments`：公共商品目录，明确报告覆盖不完整。
+- `GET /v1/market/candles`：按 `instrument_id`、`interval` 读取有界历史。
+- `GET /v1/market/snapshot`：读取一次共享 topic 的完整快照。
+- `GET /v1/market/ws`：订阅订单簿、BBO、K 线与标记价。
+
+这些入口需要现有 Gateway Bearer token，但不需要交易所账户或凭证。该 token
+仍拥有完整 Gateway 权限；本批没有引入只读 token。`complete=false` 表示目录
+覆盖或新鲜度不完整，不代表实时行情中断；已知商品仍可从过期目录继续读取行情。
+请求方式、断流恢复、范围与示例见[应用行情 API 说明](../../design/market-api-2026-09-10.md)。
+
+原 `/v1/order-book`、`/v1/bbo`、`/v1/mark-price`、`/v1/candles` 和资金费率
+接口保持账户范围，兼容现有调用方；新行情应用应使用 `/v1/market`。
 
 `/internal/v1/market/ws` 是 Gateway 的多路复用服务间行情协议，公开 topic 包括订单簿、
 BBO、K 线、标记价、资费看板和交易所连接状态。生产能力矩阵决定每个 dataset 的
@@ -150,12 +176,13 @@ OKX 和 Nado 使用各自批量能力。Binance 与 Aster 只有逐 symbol 当�
 将该字段留空，不再遍历 catalog 触发大量请求，也不会把其他交易所 OI 冒充为其 OI。
 
 热点订单簿、BBO、K 线与 mark topic 在每个 feed owner 内共用一个原生 socket。引用计数
-hotset 依次按 position、open-order、execution、browser、arbitrage-top 与
+hotset 依次按 position、open-order、execution、browser 与
 funding-history 排序；position、open-order 与 execution 不会因交易所 topic 上限被淘汰，
-最后一个原因释放后仍保留 30 秒。全市场轮询、catalog 刷新与 FreshBBO fallback 共用
-按 venue operation 编排的 rate-limit coordinator 和 singleflight。
+最后一个原因释放后仍保留 30 秒。全市场轮询与 catalog 刷新共用按 venue operation
+编排的 rate-limit coordinator 和 singleflight。FreshBBO 直接加入 Market Hub 中同一条
+保留的 BBO WebSocket，不依赖浏览器是否订阅，也不再退化到 REST 报价。
 
-内部监听器上的公共行情操作是这条「必须带账户」规则的例外：`/internal/v1/market/ws`、
+内部监听器继续为现有服务消费者保留公共行情操作：`/internal/v1/market/ws`、
 `/internal/v1/market-facts`、`/internal/v1/funding-board`、
 `/internal/v1/funding-history` 与 `/internal/v1/venues/connectivity`。它们不收 `account_id`，因为 Gateway 使用
 免凭证的交易所 client 回答。它们仍由内部 bearer token 保护，也不会暴露凭证、
@@ -180,7 +207,7 @@ family 做一次 bootstrap，随后按能力矩阵选择全市场 WebSocket 或�
 
 资费 topic 首帧发送完整 `snapshot`，后续最多每秒发送一次合并更新。慢消费者或流缺口会
 收到 `resync_required`。资金费、mark、index 与 OI 分别计算 freshness；过期值保留用于诊断，
-并通过 `staleFields` 明确标注，但不会进入套利计算。缺失值保持 absent，禁止写成零。
+并通过 `staleFields` 明确标注，但不会进入费差计算。缺失值保持 absent，禁止写成零。
 
 历史读取仍是按需调用。它收 venue、environment、symbol，以及一对明确的
 `since`/`until`，返回
@@ -201,17 +228,14 @@ GET /v1/ws?account_id=binance-spot
 Authorization: Bearer <token>
 ```
 
-每个账户 route 只持有一个产品/账户级原生流，数量不随 catalog 增长。订单、成交、余额、
-仓位、账户健康及 `resync_required` 都会被标准化，并携带稳定实体 ID、resource version 与
-来源事件时间。消费者按实体身份和来源时间合并，不依赖 Gateway 自造的 stream sequence，
-也不需要 snapshot barrier。
+每个账户 route 只持有一个产品/账户级原生流，数量不随 catalog 增长。订单、成交、余额和
+仓位都携带稳定实体 ID、resource version 与来源事件时间。消费者按实体身份和来源时间合并；
+私有事件没有 sequence、generation、gap phase，也不需要 snapshot barrier。
 
 内部 `/v1/ws` 保留给服务投影。浏览器经 Auth Edge 使用 Gateway 的 live-only
-`/internal/v1/account/ws`，重连时不会回放一段无界的浏览器 backlog。流故障只会把账户实时
-状态标为不可用，并以带 jitter 的指数退避重连；它不会暂停下单，也不会触发 REST。
-固定的 60 秒 reconciliation 负责修复漏掉的状态。单个账户故障只发送该账户范围的
-`UPSTREAM_GAP`，不会关闭 principal 级浏览器订阅，也不会把其他账户标为降级；后续
-account-health 事件只恢复对应账户。
+`/internal/v1/account/ws`，重连时不会回放一段无界的浏览器 backlog。每个 route 只发布
+`connected` 或 `disconnected`，并以带 jitter 的指数退避重连。连接状态只用于展示：不会暂停
+下单、不会改写仓位 freshness，也不会触发 REST。固定的 60 秒 reconciliation 负责修复漏掉的状态。
 
 ## 恢复与 reconciliation
 

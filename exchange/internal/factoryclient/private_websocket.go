@@ -26,14 +26,13 @@ type perpPrivateWSBackend interface {
 }
 
 type accountBackendEvent struct {
-	Kind           exchange.AccountEventKind
-	NativeSymbol   string
-	NativeID       string
-	SourceSequence string
-	Order          *exchange.OrderEvent
-	Fill           *exchange.FillEvent
-	Balance        *exchange.BalanceEvent
-	Position       *exchange.PositionEvent
+	Kind         exchange.AccountEventKind
+	NativeSymbol string
+	NativeID     string
+	Order        *exchange.OrderEvent
+	Fill         *exchange.FillEvent
+	Balance      *exchange.BalanceEvent
+	Position     *exchange.PositionEvent
 }
 
 type accountEventCallbacks struct {
@@ -144,7 +143,7 @@ func projectAccountBackendEvent(route exchange.AccountRoute, index accountInstru
 		if !ok {
 			return nil, fmt.Errorf("account order native instrument is unknown")
 		}
-		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, InstrumentID: item.InstrumentID, ObservedAt: observedAccountTime(event.Order.Order.UpdatedAt), Phase: accountPhase(event.Order.Kind), Order: event.Order}}, nil
+		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, InstrumentID: item.InstrumentID, ObservedAt: observedAccountTime(event.Order.Order.UpdatedAt), Order: event.Order}}, nil
 	case exchange.AccountEventFill:
 		if event.Fill == nil {
 			return nil, fmt.Errorf("account fill event payload is missing")
@@ -153,12 +152,12 @@ func projectAccountBackendEvent(route exchange.AccountRoute, index accountInstru
 		if !ok {
 			return nil, fmt.Errorf("account fill native instrument is unknown")
 		}
-		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, InstrumentID: item.InstrumentID, ObservedAt: observedAccountTime(event.Fill.Fill.Time), Phase: accountPhase(event.Fill.Kind), Fill: event.Fill}}, nil
+		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, InstrumentID: item.InstrumentID, ObservedAt: observedAccountTime(event.Fill.Fill.Time), Fill: event.Fill}}, nil
 	case exchange.AccountEventBalance:
 		if event.Balance == nil {
 			return nil, fmt.Errorf("account balance event payload is missing")
 		}
-		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, ObservedAt: observedAccountTime(event.Balance.Time), Phase: accountPhase(event.Balance.Kind), Balance: event.Balance}}, nil
+		return []exchange.AccountEvent{{Kind: event.Kind, Route: route, ObservedAt: observedAccountTime(event.Balance.Time), Balance: event.Balance}}, nil
 	case exchange.AccountEventPosition:
 		if event.Position == nil {
 			return nil, fmt.Errorf("account position event payload is missing")
@@ -184,7 +183,7 @@ func projectAccountBackendEvent(route exchange.AccountRoute, index accountInstru
 		result := make([]exchange.AccountEvent, 0, len(byInstrument))
 		for instrumentID, positions := range byInstrument {
 			projected := &exchange.PositionEvent{Kind: event.Position.Kind, Positions: positions, Time: event.Position.Time}
-			result = append(result, exchange.AccountEvent{Kind: event.Kind, Route: route, InstrumentID: items[instrumentID].InstrumentID, ObservedAt: observedAccountTime(event.Position.Time), Phase: accountPhase(event.Position.Kind), Position: projected})
+			result = append(result, exchange.AccountEvent{Kind: event.Kind, Route: route, InstrumentID: items[instrumentID].InstrumentID, ObservedAt: observedAccountTime(event.Position.Time), Position: projected})
 		}
 		return result, nil
 	default:

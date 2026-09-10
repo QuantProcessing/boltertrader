@@ -221,6 +221,7 @@ func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest)
 		return Result{}, fmt.Errorf("reserve order command failed")
 	}
 	result := resultFromReservation(reserved)
+	result.AccountID, result.InstrumentID = request.AccountID, request.InstrumentID
 	if reserved.Conflict != store.ConflictNone {
 		return result, ErrIdempotencyConflict
 	}
@@ -276,6 +277,17 @@ func (coordinator *Coordinator) List(ctx context.Context, request ListRequest) (
 		results[index] = resultFromStored(command)
 	}
 	return results, nil
+}
+
+func (coordinator *Coordinator) GetByIdempotencyKey(ctx context.Context, principal domain.PrincipalID, key domain.IdempotencyKey) (Result, error) {
+	if ctx == nil {
+		return Result{}, fmt.Errorf("get order context is required")
+	}
+	command, err := coordinator.store.LoadOrderByIdempotencyKey(ctx, principal, key)
+	if err != nil {
+		return Result{}, err
+	}
+	return resultFromStored(command), nil
 }
 
 func (coordinator *Coordinator) ObserveVenueOrder(ctx context.Context, observation VenueOrderObservation) (Result, error) {
@@ -682,25 +694,6 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 			return resultFromStored(dispatching), err
 		}
 	}
-	handoffID, err := coordinator.identity.EventID()
-	if err != nil {
-		return resultFromStored(dispatching), ErrOutcomeUncertain
-	}
-	if _, err := coordinator.store.BeginOrderHandoff(ctx, store.BeginOrderHandoffRequest{
-		HandoffID: handoffID, CommandID: dispatching.CommandID, AccountID: dispatching.AccountID,
-		RouteID: routeID, Fence: domain.AccountFence{
-			AccountID: fence.AccountID, RuntimeID: fence.RuntimeID,
-		},
-	}); err != nil {
-		return resultFromStored(dispatching), ErrOutcomeUncertain
-	}
-	handoffState := store.OrderHandoffUncertain
-	defer func() {
-		resolveCtx := context.WithoutCancel(ctx)
-		if _, err := coordinator.store.ResolveOrderHandoff(resolveCtx, store.ResolveOrderHandoffRequest{HandoffID: handoffID, State: handoffState}); err != nil && returnErr == nil {
-			returnErr = ErrOutcomeUncertain
-		}
-	}()
 
 	ack, placeErr := route.Driver.PlaceOrder(ctx, request)
 	if err := runHook(ctx, coordinator.hooks.AfterVenue, dispatching); err != nil {
@@ -759,11 +752,6 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 	if uncertain || current.State == domain.StateUncertain {
 		return result, ErrOutcomeUncertain
 	}
-	if current.State == domain.StateRejected {
-		handoffState = store.OrderHandoffRejected
-	} else {
-		handoffState = store.OrderHandoffAccepted
-	}
 	return result, nil
 }
 
@@ -771,7 +759,7 @@ func safeVenueRejection(ack exchange.OrderAcknowledgement, err error) (string, s
 	code := strings.TrimSpace(ack.VenueCode)
 	message := strings.TrimSpace(ack.VenueMessage)
 	var venueErr *exchange.Error
-	if errors.As(err, &venueErr) && venueErr.Kind() == exchange.KindVenueRejected {
+	if errors.As(err, &venueErr) && (venueErr.Kind() == exchange.KindVenueRejected || venueErr.Kind() == exchange.KindPermission || venueErr.Kind() == exchange.KindAuthentication) {
 		details := venueErr.Details()
 		if code == "" {
 			code = strings.TrimSpace(details.Code)
@@ -801,7 +789,11 @@ func (coordinator *Coordinator) reconcile(ctx context.Context, route Route, comm
 	case exchange.ExactOrderUnconfirmed:
 		return coordinator.leaveUncertain(ctx, command, store.ReconciliationEvidenceUnconfirmed)
 	case exchange.ExactOrderNotFound:
-		if command.State == domain.StateDispatching || command.State == domain.StateUncertain {
+		// Absence is not rejection once positive acceptance evidence exists.
+		// The durable history is needed because the latest state may already
+		// be uncertain after a previous miss, including across a restart.
+		accepted := command.AcceptanceObserved || command.State.ConfirmsAcceptance() || command.VenueOrderID != ""
+		if !accepted && (command.State == domain.StateDispatching || command.State == domain.StateUncertain) {
 			updated, transitionErr := coordinator.transition(ctx, command, domain.StateRejected, "", "")
 			return transitionErr == nil && updated.State == domain.StateRejected, transitionErr
 		}
@@ -880,12 +872,29 @@ func (coordinator *Coordinator) reconciliationPlan(reason store.ReconciliationRe
 
 func classifyPlaceResult(route Route, request exchange.PlaceOrderRequest, ack exchange.OrderAcknowledgement, err error) ([]domain.OrderState, string, bool) {
 	if err != nil {
-		if errors.Is(err, exchange.ErrAmbiguousOutcome) || errors.Is(err, exchange.ErrMalformedResponse) ||
+		var normalized *exchange.Error
+		if errors.As(err, &normalized) && normalized.Details().CommandNotSent {
+			return []domain.OrderState{domain.StateRejected}, ack.OrderID, false
+		}
+		// Ambiguous acknowledgements and transport failures never establish rejection.
+		if ack.State == exchange.AckAmbiguous || errors.Is(err, exchange.ErrTransport) ||
+			errors.Is(err, exchange.ErrAmbiguousOutcome) || errors.Is(err, exchange.ErrMalformedResponse) ||
 			errors.Is(err, exchange.ErrCanceled) || errors.Is(err, exchange.ErrDeadlineExceeded) {
 			return []domain.OrderState{domain.StateUncertain}, ack.OrderID, true
 		}
-		return []domain.OrderState{domain.StateRejected}, ack.OrderID, false
+		if (errors.Is(err, exchange.ErrPermission) || errors.Is(err, exchange.ErrAuthentication)) && (ack.State == "" || ack.State == exchange.AckRejected) {
+			return []domain.OrderState{domain.StateRejected}, ack.OrderID, false
+		}
+		if ack.State != exchange.AckRejected {
+			// Only local validation failures are definitive without a venue acknowledgement.
+			if errors.As(err, &normalized) && normalized.Details().HTTPStatus == 0 &&
+				(errors.Is(err, exchange.ErrInvalidRequest) || errors.Is(err, exchange.ErrInvalidConfig) || errors.Is(err, exchange.ErrUnsupported)) {
+				return []domain.OrderState{domain.StateRejected}, ack.OrderID, false
+			}
+			return []domain.OrderState{domain.StateUncertain}, ack.OrderID, true
+		}
 	}
+
 	if ack.Validate() != nil || ack.Venue != route.Instrument.Identity.Venue || ack.Product != route.Product ||
 		ack.Operation != exchange.OrderOperationPlace || ack.NativeSymbol != route.Instrument.Identity.NativeSymbol ||
 		(ack.ClientOrderID != "" && ack.ClientOrderID != request.ClientOrderID) {

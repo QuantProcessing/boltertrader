@@ -4,8 +4,8 @@
  * Every failure the UI can encounter arrives as one of three things, and they
  * need to be told apart because the operator's next move differs:
  *
- *   ApiError       the server answered, and said no. There is a code, and often
- *                  a `retryable` flag the server computed. Show it.
+ *   ApiError       the server answered with an error. A status lookup may have
+ *                  failed after execution; its code determines what is known.
  *   NetworkError   nothing answered. Retrying is reasonable; the request may
  *                  also have been received and executed. Never assume it wasn't.
  *   StaleSession   the request was abandoned because the session it was
@@ -96,6 +96,7 @@ export function isApiError(value: unknown): value is ApiError {
  * follows when it prints a refused password.
  */
 export function describeError(error: unknown, t: Translate): string {
+  if (error instanceof ApiError && error.code === "ACCOUNTING_REVIEW_REQUIRED") return t("portfolio.accountingReview");
   if (isApiError(error)) {
     // `INVALID_RESPONSE` is the one body no server sent — `client.ts` builds it
     // when the JSON will not parse, so its message is ours to say.
@@ -120,6 +121,11 @@ export function describeError(error: unknown, t: Translate): string {
   // does not say the thing that matters — that a write may have landed anyway.
   if (error instanceof NetworkError) return t("error.network");
   return error instanceof Error ? error.message : t("error.unknown");
+}
+
+/** A failed transport or status read does not prove that an order was rejected. */
+export function isExecutionStatusUnknown(error: unknown): boolean {
+  return error instanceof NetworkError || !(error instanceof ApiError) || error.status >= 500 || error.code === "INVALID_RESPONSE";
 }
 
 export function isStaleSession(value: unknown): value is StaleSessionError {

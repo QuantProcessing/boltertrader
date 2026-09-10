@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"net/http"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -23,8 +24,16 @@ func NewPublicDerivativeFeed(
 	requests exchange.MarketRequestCoordinator,
 ) (exchange.DerivativeFeed, error) {
 	configName, ok := publicConnectorConfigName(venue, product, settlement)
-	if !ok || httpClient == nil || len(routeProfileIDs) == 0 || nativeFamily == "" || resolver == nil {
+	if !ok || httpClient == nil || len(routeProfileIDs) == 0 || nativeFamily == "" || nativeFamily != exchange.NativeMarketFamily(venue, product, settlement) || product != exchange.ProductPerp || resolver == nil {
 		return nil, invalidConfig("public derivative feed profile is unsupported")
+	}
+	seen := map[string]bool{}
+	for _, id := range routeProfileIDs {
+		profile, err := routeprofile.DefaultRegistry().Resolve(string(venue), id)
+		if err != nil || seen[id] || profile.Product != routeprofile.ProductPerp || exchange.NativeMarketFamily(venue, exchange.Product(profile.Product), profile.SettlementAsset) != nativeFamily {
+			return nil, invalidConfig("public derivative feed routes do not share a native family")
+		}
+		seen[id] = true
 	}
 	settings := newSettings([]Option{WithEnvironment(environment), WithHTTPClient(httpClient)})
 	if err := settings.validate(); err != nil {

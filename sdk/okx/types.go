@@ -591,6 +591,8 @@ type Order struct {
 	ExecType           string          `json:"execType"`
 	Fee                string          `json:"fee"`
 	FeeCcy             string          `json:"feeCcy"`
+	FillFee            string          `json:"fillFee"`
+	FillFeeCcy         string          `json:"fillFeeCcy"`
 	FillPx             string          `json:"fillPx"`
 	FillSz             string          `json:"fillSz"`
 	FillTime           string          `json:"fillTime"`

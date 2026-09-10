@@ -21,6 +21,16 @@ var integrationSchemaSequence atomic.Uint64
 // is the same isolation the deployment relies on.
 func openIntegrationDatabase(t *testing.T) (*sql.DB, func() *sql.DB) {
 	t.Helper()
+	return openIntegrationDatabaseAtVersion(t, 0)
+}
+
+// A positive version prepares an older real schema for upgrade regression
+// tests. Zero uses the normal production migration runner.
+func openIntegrationDatabaseAtVersion(t *testing.T, version int) (*sql.DB, func() *sql.DB) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("PostgreSQL integration requires explicit non-short tests")
+	}
 	dsn := strings.TrimSpace(os.Getenv("BT_TEST_POSTGRES_DSN"))
 	if dsn == "" {
 		t.Skip("BT_TEST_POSTGRES_DSN is not set")
@@ -64,8 +74,28 @@ func openIntegrationDatabase(t *testing.T) (*sql.DB, func() *sql.DB) {
 	// Going through Migrate rather than replaying the SQL by hand means these
 	// tests run against the schema the service would actually create, and the
 	// runner itself is covered by every integration test that follows.
-	if err := Migrate(context.Background(), database); err != nil {
-		t.Fatal(err)
+	if version == 0 {
+		if err := Migrate(context.Background(), database); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		migrations, err := embeddedMigrations()
+		if err != nil {
+			t.Fatal(err)
+		}
+		connection, err := database.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		for _, migration := range migrations {
+			if migration.version > version {
+				break
+			}
+			if err := applyMigration(context.Background(), connection, migration); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	return database, reopen
 }

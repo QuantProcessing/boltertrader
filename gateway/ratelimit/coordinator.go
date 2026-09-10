@@ -3,7 +3,6 @@ package ratelimit
 import (
 	"context"
 	"errors"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,9 +13,8 @@ var ErrInvalidBudget = errors.New("invalid gateway rate-limit budget")
 type KeyKind string
 
 const (
-	VenueProfile           KeyKind = "venue_profile"
-	AuthenticatedPrincipal KeyKind = "authenticated_principal"
-	RouteEndpoint          KeyKind = "route_endpoint"
+	VenueBudget    KeyKind = "venue"
+	EndpointBudget KeyKind = "endpoint"
 )
 
 type Key struct {
@@ -26,7 +24,7 @@ type Key struct {
 
 func (key Key) validate() error {
 	switch key.Kind {
-	case VenueProfile, AuthenticatedPrincipal, RouteEndpoint:
+	case VenueBudget, EndpointBudget:
 	default:
 		return ErrInvalidBudget
 	}
@@ -42,9 +40,10 @@ type Quota struct {
 }
 
 type window struct {
-	quota Quota
-	start time.Time
-	used  int
+	quota        Quota
+	start        time.Time
+	used         int
+	blockedUntil time.Time
 }
 
 type Coordinator struct {
@@ -66,61 +65,14 @@ func (coordinator *Coordinator) Configure(key Key, quota Quota) error {
 	}
 	coordinator.mu.Lock()
 	defer coordinator.mu.Unlock()
+	if existing := coordinator.windows[key]; existing != nil {
+		if existing.quota != quota {
+			return ErrInvalidBudget
+		}
+		return nil
+	}
 	coordinator.windows[key] = &window{quota: quota, start: coordinator.now()}
 	return nil
-}
-
-func (coordinator *Coordinator) Acquire(ctx context.Context, keys []Key) error {
-	if ctx == nil {
-		return context.Canceled
-	}
-	ordered, err := normalizeKeys(keys)
-	if err != nil {
-		return err
-	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		now := coordinator.now()
-		coordinator.mu.Lock()
-		wait := time.Duration(0)
-		for _, key := range ordered {
-			current, configured := coordinator.windows[key]
-			if !configured {
-				continue
-			}
-			if !now.Before(current.start.Add(current.quota.Interval)) {
-				current.start = now
-				current.used = 0
-			}
-			if current.used >= current.quota.Limit {
-				delay := current.start.Add(current.quota.Interval).Sub(now)
-				if delay > wait {
-					wait = delay
-				}
-			}
-		}
-		if wait == 0 {
-			for _, key := range ordered {
-				if current := coordinator.windows[key]; current != nil {
-					current.used++
-				}
-			}
-			coordinator.mu.Unlock()
-			return nil
-		}
-		coordinator.mu.Unlock()
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
 }
 
 func (coordinator *Coordinator) Used(key Key) int {
@@ -137,26 +89,56 @@ func (coordinator *Coordinator) Used(key Key) int {
 	return current.used
 }
 
-func normalizeKeys(keys []Key) ([]Key, error) {
-	if len(keys) == 0 {
-		return nil, ErrInvalidBudget
+// Charge reserves weighted capacity atomically with the other dimensions.
+// Reserve leaves headroom for more urgent callers sharing the same quota.
+type Charge struct {
+	Key     Key
+	Cost    int
+	Reserve int
+}
+
+func (coordinator *Coordinator) TryAcquire(ctx context.Context, charges []Charge) (time.Duration, error) {
+	if ctx == nil {
+		return 0, context.Canceled
 	}
-	result := append([]Key(nil), keys...)
-	for _, key := range result {
-		if err := key.validate(); err != nil {
-			return nil, err
-		}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Kind == result[j].Kind {
-			return result[i].Value < result[j].Value
-		}
-		return result[i].Kind < result[j].Kind
-	})
-	for index := 1; index < len(result); index++ {
-		if result[index] == result[index-1] {
-			return nil, ErrInvalidBudget
-		}
+	if len(charges) == 0 {
+		return 0, ErrInvalidBudget
 	}
-	return result, nil
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	seen := make(map[Key]bool, len(charges))
+	now := coordinator.now()
+	var delay time.Duration
+	for _, charge := range charges {
+		current := coordinator.windows[charge.Key]
+		if current == nil || seen[charge.Key] || charge.Cost <= 0 || charge.Reserve < 0 || charge.Cost > current.quota.Limit-charge.Reserve {
+			return 0, ErrInvalidBudget
+		}
+		seen[charge.Key] = true
+		if !now.Before(current.start.Add(current.quota.Interval)) {
+			current.start = now
+			current.used = 0
+		}
+		if current.used+charge.Cost > current.quota.Limit-charge.Reserve {
+			delay = max(delay, current.start.Add(current.quota.Interval).Sub(now))
+		}
+		delay = max(delay, current.blockedUntil.Sub(now))
+	}
+	if delay > 0 {
+		return delay, nil
+	}
+	for _, charge := range charges {
+		coordinator.windows[charge.Key].used += charge.Cost
+	}
+	return 0, nil
+}
+func (coordinator *Coordinator) Block(key Key, until time.Time) {
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	if current := coordinator.windows[key]; current != nil && until.After(current.blockedUntil) {
+		current.blockedUntil = until
+	}
 }

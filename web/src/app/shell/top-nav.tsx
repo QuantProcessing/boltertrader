@@ -1,11 +1,10 @@
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { ChevronDown, Eye, Languages, LogIn, LogOut, Settings } from "lucide-react";
+import { Eye, Languages, LogIn, LogOut, Settings } from "lucide-react";
 
 import { modeStore, useReadOnly } from "@/app/mode";
 import { preferencesStore, usePreferences } from "@/app/preferences";
 import { useSession, sessionStore } from "@/app/session";
 import { Button } from "@/components/ui/button";
-import { ARBITRAGE_VIEWS } from "@/features/arbitrage/strategy";
 import {
   MenuContent,
   MenuItem,
@@ -88,7 +87,7 @@ export function TopNav() {
               section.private && readOnly && "text-dim",
             )}
             activeProps={{ className: "bg-raised font-semibold text-text" }}
-            // Exact, and blind to the query string. The arbitrage section owns
+            // Match the pathname independently of search parameters.
             // a separate grouped menu, so `/funding` must not claim its routes.
             activeOptions={{ exact: true, includeSearch: false }}
             title={section.private && readOnly ? privateHint : undefined}
@@ -97,7 +96,6 @@ export function TopNav() {
             {section.private && readOnly ? <span className="sr-only"> — {privateHint}</span> : null}
           </Link>
         ))}
-        <ArbitrageMenu readOnly={readOnly} privateHint={privateHint} />
         {SECTIONS.slice(2).map((section) => (
           <Link
             key={section.to}
@@ -142,49 +140,6 @@ export function TopNav() {
         <SettingsPopover />
       </div>
     </header>
-  );
-}
-
-function ArbitrageMenu({ readOnly, privateHint }: { readOnly: boolean; privateHint: string }) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const t = useT();
-  const active = location.pathname === "/arbitrage" || location.pathname.startsWith("/arbitrage/");
-  const groups = ["crypto_continuous", "tradfi_perpetual"] as const;
-
-  return (
-    <MenuRoot>
-      <MenuTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "flex h-7 items-center gap-1 rounded-card px-2.5 text-title text-muted transition-colors hover:bg-raised hover:text-text",
-            active && "bg-raised font-semibold text-text",
-            readOnly && !active && "text-dim",
-          )}
-          title={readOnly ? privateHint : undefined}
-        >
-          {t("nav.arbitrage")}
-          <ChevronDown aria-hidden className="size-3" />
-          {readOnly ? <span className="sr-only"> — {privateHint}</span> : null}
-        </button>
-      </MenuTrigger>
-      <MenuContent align="start" className="w-60">
-        {groups.map((family, index) => (
-          <div key={family}>
-            {index > 0 ? <MenuSeparator /> : null}
-            <MenuLabel>
-              {t(family === "crypto_continuous" ? "arb.family.cryptoContinuous" : "arb.family.tradfiPerpetual")}
-            </MenuLabel>
-            {ARBITRAGE_VIEWS.filter((view) => view.family === family).map((view) => (
-              <MenuItem key={view.id} onSelect={() => void navigate({ to: view.path })}>
-                {t(view.label)}
-              </MenuItem>
-            ))}
-          </div>
-        ))}
-      </MenuContent>
-    </MenuRoot>
   );
 }
 

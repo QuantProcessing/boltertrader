@@ -6,7 +6,7 @@ import "net/http"
 type UpstreamName string
 
 const (
-	// Trading is the manual-trading service: the command ledger, reservations,
+	// Trading is the manual-trading service: the command ledger,
 	// positions, accounting, and business projections.
 	Trading UpstreamName = "trading"
 	// Gateway is the shared exchange capability layer. Public market and private
@@ -74,11 +74,6 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/audit", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/system/status", Upstream: Trading, Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/system/readiness", Upstream: Trading, Public: true},
-	{Method: http.MethodGet, Path: "/api/v1/realtime/ws", Upstream: Trading, Public: true, WebSocket: true},
-	{Method: http.MethodPost, Path: "/api/v1/reservations", Upstream: Trading},
-	{Method: http.MethodGet, Path: "/api/v1/reservations", Upstream: Trading},
-	{Method: http.MethodDelete, Path: "/api/v1/reservations/{reservationId}", Upstream: Trading},
-	{Method: http.MethodPost, Path: "/api/v1/commands", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/commands", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/commands/{commandId}", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/positions", Upstream: Trading},
@@ -91,24 +86,17 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/account-positions", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/portfolio/positions", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/venues", Upstream: Trading},
-	{Method: http.MethodPost, Path: "/api/v1/products/manual/execution-previews", Upstream: Trading},
 	{Method: http.MethodPost, Path: "/api/v1/products/manual/commands", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/orders", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/orders/{orderId}", Upstream: Trading},
 
-	{Method: http.MethodGet, Path: "/api/v1/products/arbitrage/opportunities", Upstream: Trading, Public: true},
-	{Method: http.MethodPost, Path: "/api/v1/products/arbitrage/execution-previews", Upstream: Trading},
-	{Method: http.MethodPost, Path: "/api/v1/products/arbitrage/commands", Upstream: Trading},
-	{Method: http.MethodGet, Path: "/api/v1/products/arbitrage/positions", Upstream: Trading},
-
 	// Gateway: direct venue data plus account lifecycle, rewritten onto the
 	// internal plane. The auth edge still owns browser session authorization.
-	{Method: http.MethodGet, Path: "/api/v1/catalog/venues", Upstream: Gateway, Target: "/internal/v1/browser/catalog/venues", Public: true},
-	{Method: http.MethodGet, Path: "/api/v1/catalog/instruments", Upstream: Gateway, Target: "/internal/v1/browser/catalog/instruments", Public: true},
-	{Method: http.MethodGet, Path: "/api/v1/market-data", Upstream: Gateway, Target: "/internal/v1/browser/market-data", Public: true},
-	{Method: http.MethodGet, Path: "/api/v1/candles", Upstream: Gateway, Target: "/internal/v1/browser/candles", Public: true},
+	{Method: http.MethodGet, Path: "/api/v1/catalog/instruments", Upstream: Gateway, Target: "/internal/v1/catalog/instruments", Public: true},
+	{Method: http.MethodGet, Path: "/api/v1/market-data", Upstream: Gateway, Target: "/internal/v1/market-data", Public: true},
+	{Method: http.MethodGet, Path: "/api/v1/candles", Upstream: Gateway, Target: "/internal/v1/candles", Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-board", Upstream: Gateway, Target: "/internal/v1/funding-board", Public: true},
-	{Method: http.MethodGet, Path: "/api/v1/funding-history", Upstream: Gateway, Target: "/internal/v1/browser/funding-history", Public: true},
+	{Method: http.MethodGet, Path: "/api/v1/funding-history", Upstream: Gateway, Target: "/internal/v1/funding-history", Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/venues/connectivity", Upstream: Gateway, Target: "/internal/v1/venues/connectivity", Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/market/realtime/ws", Upstream: Gateway, Target: "/internal/v1/market/ws", Public: true, WebSocket: true},
 	{Method: http.MethodGet, Path: "/api/v1/account/realtime/ws", Upstream: Gateway, Target: "/internal/v1/account/ws", WebSocket: true},
@@ -116,7 +104,6 @@ var routes = []Route{
 	{Method: http.MethodPost, Path: "/api/v1/accounts", Upstream: Gateway, Target: "/internal/v1/accounts"},
 	{Method: http.MethodGet, Path: "/api/v1/accounts/{accountId}", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}"},
 	{Method: http.MethodDelete, Path: "/api/v1/accounts/{accountId}", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}"},
-	{Method: http.MethodPost, Path: "/api/v1/accounts/{accountId}/disable", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}/disable"},
 }
 
 // Routes reports the forwarding table. The copy is deliberate: the table is

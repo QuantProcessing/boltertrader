@@ -24,7 +24,7 @@ func NewBinanceSpot(apiKey, secretKey string, settings Settings) exchange.SpotCl
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
 	if settings.HTTPClient != nil {
-		sdkClient.HTTPClient = settings.HTTPClient
+		sdkClient.WithHTTPClient(settings.HTTPClient)
 	}
 	if settings.WebSocketEndpoint != "" {
 		wsProfile.WSBaseURL = settings.WebSocketEndpoint

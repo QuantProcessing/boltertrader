@@ -39,3 +39,8 @@ Makefile
 
 tmp
 temp
+
+.secrets
+.local
+output
+.playwright-cli

@@ -17,7 +17,7 @@ import (
 
 // ContractVersion is the frozen product-platform contract every listener
 // stamps onto its responses.
-const ContractVersion = "boltertrader-product-platform-upgrade/v4"
+const ContractVersion = "boltertrader-product-platform-upgrade/v7"
 
 // Meta builds the success envelope's metadata block.
 func Meta(r *http.Request) map[string]any {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	wire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -63,6 +64,7 @@ type ReferenceService interface {
 type OrderService interface {
 	Place(context.Context, order.PlaceRequest) (order.Result, error)
 	Get(context.Context, domain.PrincipalID, domain.GatewayOrderID) (order.Result, error)
+	GetByIdempotencyKey(context.Context, domain.PrincipalID, domain.IdempotencyKey) (order.Result, error)
 	List(context.Context, order.ListRequest) ([]order.Result, error)
 	Cancel(context.Context, order.CancelRequest) (order.Result, error)
 	AccountWriteStatus(domain.AccountID) order.AccountWriteStatus
@@ -75,6 +77,7 @@ type Options struct {
 	Orders       OrderService
 	Events       *gatewayevent.Hub
 	Positions    *gatewayevent.PositionProjection
+	Markets      MarketOptions
 	Auditor      store.AuditStore
 	Identity     *domain.IdentityGenerator
 	MaxBodyBytes int64
@@ -87,6 +90,7 @@ type Handler struct {
 	orders     OrderService
 	events     *gatewayevent.Hub
 	positions  *gatewayevent.PositionProjection
+	markets    MarketOptions
 	auditor    store.AuditStore
 	identity   *domain.IdentityGenerator
 	bodyLimit  int64
@@ -134,6 +138,7 @@ var routes = []Route{
 	{http.MethodPost, "/v1/orders"},
 	{http.MethodGet, "/v1/orders"},
 	{http.MethodGet, "/v1/orders/{gateway_order_id}"},
+	{http.MethodGet, "/v1/orders/by-idempotency-key/{idempotency_key}"},
 	{http.MethodPatch, "/v1/orders/{gateway_order_id}"},
 	{http.MethodDelete, "/v1/orders/{gateway_order_id}"},
 	{http.MethodGet, "/v1/open-orders"},
@@ -150,6 +155,10 @@ var routes = []Route{
 	{http.MethodGet, "/v1/candles"},
 	{http.MethodPut, "/v1/accounts/{account_id}/instruments/{instrument_id}/leverage"},
 	{http.MethodGet, "/v1/ws"},
+	{http.MethodGet, "/v1/market/instruments"},
+	{http.MethodGet, "/v1/market/candles"},
+	{http.MethodGet, "/v1/market/snapshot"},
+	{http.MethodGet, "/v1/market/ws"},
 }
 
 func Routes() []Route {
@@ -164,6 +173,12 @@ func NewMigrationValidationHandler(monitor *health.Monitor) http.Handler {
 	mux.HandleFunc("GET /v1/health/live", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, monitor.Liveness()) })
 	mux.HandleFunc("GET /v1/health/ready", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, monitor.Readiness()) })
 	for _, route := range routes {
+		if strings.HasPrefix(route.Pattern, "/v1/market/") {
+			mux.HandleFunc(route.Method+" "+route.Pattern, func(w http.ResponseWriter, _ *http.Request) {
+				writeError(w, http.StatusServiceUnavailable, "market_unavailable", "market data is unavailable", "", true)
+			})
+			continue
+		}
 		if route.Method != http.MethodGet || strings.HasPrefix(route.Pattern, "/v1/health/") || strings.HasSuffix(route.Pattern, "/ws") {
 			continue
 		}
@@ -186,7 +201,7 @@ func NewHandler(options Options) (*Handler, error) {
 	}
 	handler := &Handler{
 		monitor: options.Monitor, accounts: options.Accounts, references: options.References,
-		orders: options.Orders, events: options.Events, positions: options.Positions, auditor: options.Auditor,
+		orders: options.Orders, events: options.Events, positions: options.Positions, markets: options.Markets, auditor: options.Auditor,
 		identity: options.Identity, bodyLimit: bodyLimit,
 		mux: http.NewServeMux(),
 	}
@@ -215,6 +230,7 @@ func (handler *Handler) register() {
 	handler.mux.HandleFunc("POST /v1/orders", handler.placeOrder)
 	handler.mux.HandleFunc("GET /v1/orders", handler.listOrders(false))
 	handler.mux.HandleFunc("GET /v1/orders/{gateway_order_id}", handler.getOrder)
+	handler.mux.HandleFunc("GET /v1/orders/by-idempotency-key/{idempotency_key}", handler.getOrderByIdempotencyKey)
 	handler.mux.HandleFunc("PATCH /v1/orders/{gateway_order_id}", handler.amendOrder)
 	handler.mux.HandleFunc("DELETE /v1/orders/{gateway_order_id}", handler.cancelOrder)
 	handler.mux.HandleFunc("GET /v1/open-orders", handler.listOrders(true))
@@ -231,6 +247,10 @@ func (handler *Handler) register() {
 	handler.mux.HandleFunc("GET /v1/candles", handler.getCandles)
 	handler.mux.HandleFunc("PUT /v1/accounts/{account_id}/instruments/{instrument_id}/leverage", handler.setLeverage)
 	handler.mux.HandleFunc("GET /v1/ws", handler.privateEvents)
+	handler.mux.HandleFunc("GET /v1/market/instruments", handler.marketCatalog)
+	handler.mux.HandleFunc("GET /v1/market/candles", handler.marketCandles)
+	handler.mux.HandleFunc("GET /v1/market/snapshot", handler.marketSnapshot)
+	handler.mux.HandleFunc("GET /v1/market/ws", handler.marketStream)
 
 	seen := make(map[string]struct{}, len(routes))
 	for _, route := range routes {
@@ -391,26 +411,7 @@ func (handler *Handler) listRiskLimits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, handler.references.RiskLimits(accountID))
 }
 
-type placeOrderBody struct {
-	AccountID string `json:"account_id"`
-	// RouteID pins the account route the caller believes it is trading
-	// through. It belongs with the write fence below rather than with the
-	// order's economics: the caller states what it observed, and the
-	// coordinator refuses the placement if the account has since been routed
-	// elsewhere. Required, because an order that does not say which route it
-	// was priced against cannot be checked against one.
-	RouteID        string `json:"route_id"`
-	InstrumentID   string `json:"instrument_id"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Side           string `json:"side"`
-	Type           string `json:"type"`
-	Quantity       string `json:"quantity"`
-	LimitPrice     string `json:"limit_price"`
-	LimitPolicy    string `json:"limit_policy"`
-	ReduceOnly     bool   `json:"reduce_only"`
-	Leverage       int    `json:"leverage"`
-	RuntimeID      string `json:"runtime_id"`
-}
+type placeOrderBody wire.PlaceOrderRequest
 
 func (handler *Handler) placeOrder(w http.ResponseWriter, r *http.Request) {
 	var body placeOrderBody
@@ -464,6 +465,9 @@ func (body placeOrderBody) placeRequest(principal domain.PrincipalID, correlatio
 	}
 	accountID, err := parseAccountID(body.AccountID)
 	if err != nil {
+		return order.PlaceRequest{}, err
+	}
+	if err := (domain.AccountFence{AccountID: accountID, RuntimeID: body.RuntimeID}).Validate(); err != nil {
 		return order.PlaceRequest{}, err
 	}
 	routeID := domain.RouteID(body.RouteID)
@@ -571,6 +575,28 @@ func (handler *Handler) getOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+type orderLookupResponse struct {
+	IdempotencyKey domain.IdempotencyKey `json:"idempotency_key"`
+	AccountID      domain.AccountID      `json:"account_id"`
+	InstrumentID   domain.InstrumentID   `json:"instrument_id"`
+	Order          order.Result          `json:"order"`
+}
+
+func (handler *Handler) getOrderByIdempotencyKey(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.Principal(r.Context())
+	key := domain.IdempotencyKey(r.PathValue("idempotency_key"))
+	if err := key.Validate(); err != nil {
+		handler.invalid(w)
+		return
+	}
+	result, err := handler.orders.GetByIdempotencyKey(r.Context(), principal, key)
+	if err != nil {
+		handler.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, orderLookupResponse{IdempotencyKey: key, AccountID: result.AccountID, InstrumentID: result.InstrumentID, Order: result})
 }
 
 func (handler *Handler) amendOrder(w http.ResponseWriter, r *http.Request) {
@@ -705,7 +731,7 @@ func closePrivateEventStream(connection *websocket.Conn, streamErr error) {
 	case streamErr == nil, errors.Is(streamErr, gatewayevent.ErrClosed):
 		_ = connection.Close(websocket.StatusNormalClosure, "event_stream_complete")
 	case errors.Is(streamErr, gatewayevent.ErrSlowConsumer):
-		_ = connection.Close(websocket.StatusPolicyViolation, "slow_consumer_resync_required")
+		_ = connection.Close(websocket.StatusPolicyViolation, "slow_consumer")
 	default:
 		_ = connection.Close(websocket.StatusInternalError, "event_stream_unavailable")
 	}
@@ -721,7 +747,7 @@ func parseEventKinds(values []string) ([]gatewayevent.Kind, error) {
 		kind := gatewayevent.Kind(value)
 		switch kind {
 		case gatewayevent.KindOrder, gatewayevent.KindFill, gatewayevent.KindBalance,
-			gatewayevent.KindPosition, gatewayevent.KindAccountHealth:
+			gatewayevent.KindPosition, gatewayevent.KindAccountConnection:
 		default:
 			return nil, fmt.Errorf("private event kind is invalid")
 		}
@@ -768,6 +794,17 @@ func (handler *Handler) fail(w http.ResponseWriter, err error) {
 // idempotency_conflict, rate_limited — are ordinary traffic rather than faults.
 func (handler *Handler) failWithCorrelation(w http.ResponseWriter, err error, correlationID domain.EventID) {
 	status, code, retryable := classifyError(err)
+	var venueError *exchange.Error
+	if status == http.StatusTooManyRequests && errors.As(err, &venueError) {
+		delay := venueError.Details().RetryAfter
+		if delay > 0 {
+			seconds := int64(delay / time.Second)
+			if delay%time.Second != 0 {
+				seconds++
+			}
+			w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+		}
+	}
 	if code == "internal_error" {
 		slog.Error("gateway public request failed", "correlationId", string(correlationID), "cause", err)
 	}

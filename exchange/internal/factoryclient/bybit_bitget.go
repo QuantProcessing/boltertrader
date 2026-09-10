@@ -1748,7 +1748,7 @@ func convertBybitFills(ctx context.Context, meta clientMeta, op string, rows []b
 		if err != nil {
 			return nil, err
 		}
-		fee, err := parseOptionalDecimal(meta, op, row.ExecFee)
+		fee, err := parseRequiredDecimal(meta, op, "execution fee", row.ExecFee)
 		if err != nil {
 			return nil, err
 		}
@@ -1756,7 +1756,18 @@ func convertBybitFills(ctx context.Context, meta clientMeta, op string, rows []b
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Fill{NativeSymbol: row.Symbol, NativeID: nativeID, OrderID: row.OrderID, ClientOrderID: row.OrderLinkID, FillID: row.ExecID, Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: row.FeeCurrency, Liquidity: liq, Time: executedAt})
+		if row.FeeCoin != "" && row.FeeCurrency != "" && row.FeeCoin != row.FeeCurrency {
+			return nil, malformed(meta, op, "execution fee currencies conflict")
+		}
+		if !fee.IsZero() && row.FeeCoin == "" && row.FeeCurrency == "" {
+			return nil, malformed(meta, op, "execution fee currency is missing")
+		}
+		switch strings.TrimSpace(string(row.ExtraFees)) {
+		case "", `""`, "null", "[]":
+		default:
+			return nil, exchange.NewError(exchange.KindUnsupported, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: op, SafeMessage: "regional additional execution fees are not supported"})
+		}
+		out = append(out, exchange.Fill{NativeSymbol: row.Symbol, NativeID: nativeID, OrderID: row.OrderID, ClientOrderID: row.OrderLinkID, FillID: row.ExecID, Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: firstNonEmpty(row.FeeCoin, row.FeeCurrency), Liquidity: liq, Time: executedAt})
 	}
 	return out, nil
 }
@@ -1771,15 +1782,25 @@ func convertBitgetFills(ctx context.Context, meta clientMeta, op string, rows []
 		if err != nil {
 			return nil, err
 		}
+		if row.FeeDetail == nil {
+			return nil, malformed(meta, op, "execution fee details are missing")
+		}
 		feeAsset, fee := "", decimal.Zero
-		if len(row.FeeDetail) > 0 {
-			feeAsset = row.FeeDetail[0].FeeCoin
-			parsedFee, err := parseOptionalDecimal(meta, op, row.FeeDetail[0].Fee)
+		for _, charge := range row.FeeDetail {
+			if charge.FeeCoin == "" {
+				return nil, malformed(meta, op, "execution fee currency is missing")
+			}
+			if feeAsset != "" && charge.FeeCoin != feeAsset {
+				return nil, exchange.NewError(exchange.KindUnsupported, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: op, SafeMessage: "multiple fee currencies on one fill are not supported"})
+			}
+			feeAsset = charge.FeeCoin
+			parsedFee, err := parseRequiredDecimal(meta, op, "execution fee", charge.Fee)
 			if err != nil {
 				return nil, err
 			}
-			fee = parsedFee
+			fee = fee.Add(parsedFee)
 		}
+
 		side, err := parseSide(meta, op, row.Side)
 		if err != nil {
 			return nil, err
@@ -1983,7 +2004,8 @@ func ctxErr(ctx context.Context, meta clientMeta, op string) error {
 	return nil
 }
 
-func normErr(meta clientMeta, op string, err error) error {
+func normErr(meta clientMeta, op string, err error) (returnErr error) {
+	defer func() { returnErr = normalizeHTTPError(returnErr, err, meta.venue, meta.product, op) }()
 	if err == nil {
 		return nil
 	}
@@ -2073,7 +2095,8 @@ func validateSuccessfulOrderAction(meta clientMeta, operation string, kind excha
 	return nil
 }
 
-func commandAck(meta clientMeta, operation string, kind exchange.OrderOperation, instrument, orderID, clientID string, err error) (exchange.OrderAcknowledgement, error) {
+func commandAck(meta clientMeta, operation string, kind exchange.OrderOperation, instrument, orderID, clientID string, err error) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() { normalizeHTTPCommand(&returnAck, &returnErr, err, meta.venue, meta.product, operation) }()
 	ack := baseAck(meta, kind, instrument, orderID, clientID)
 	ack.State = exchange.AckAmbiguous
 	if bybit.IsDefinitiveCommandRejection(err) || bitget.IsDefinitiveCommandRejection(err) {

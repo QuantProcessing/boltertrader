@@ -40,8 +40,7 @@ After sign-in the header carries the four routes: **Trade**, **Portfolio**,
 
 Go to **Settings** and choose **Add account**. You supply:
 
-- the venue and the route profiles this account may use,
-- the product policy — which product rows this account may trade,
+- the venue and an optional display name,
 - the venue's credential fields, whose labels come from the gateway rather than
   from the frontend, because they differ per venue.
 
@@ -53,19 +52,18 @@ Which venues and product rows exist is in
 [Venue support](../venues/README.md). Which credential fields each venue expects
 is in [Configuration](../reference/configuration.md).
 
-## 4. Wait for the account to be ready
+## 4. Finish the balance check
 
-The account panel shows the desired-state revision, the runtime generation, and
-the credential version. Below them the **Runtime** panel reports two separate
-readiness answers from the trading service: **Read** and **Write**.
+Adding an account checks its credential format and queries a venue balance.
+On success, Gateway saves the encrypted credentials and connects the account;
+zero balance is valid. A failed check returns the venue error in the form.
 
-Use **Validate** to ask the gateway to prove the credential against the venue.
-Do not continue until write readiness is true — a blocked account has a reason
-attached, and placing into it produces a rejection rather than an order.
-
-Registration is asynchronous by design: the gateway records the desired state,
-then a reconciler brings the runtime to it. See
-[State and reconciliation](../concepts/state-reconciliation.md).
+There is no separate activation, permission update, or credential rotation.
+The venue decides whether the key can trade and returns its own error if an
+operation lacks permission. To replace credentials, delete the account and add
+it again. Deletion removes local credentials and connections only; it does not
+cancel orders or close positions. Current positions come directly from Gateway's
+venue snapshot and require no historical order migration.
 
 ## 5. Open the trade terminal
 
@@ -74,21 +72,18 @@ chart, the order book, the order ticket, and the blotter. Venue data arrives
 directly from Gateway at `/api/v1/market/realtime/ws`; account notifications use
 the separate authenticated Gateway socket.
 
-Pick an instrument your account's product policy allows.
+Pick a supported instrument on the account's venue.
 
 ## 6. Review, then place
 
 Fill the ticket: **Limit**, a side, a quantity, and a price far enough from the
-touch that the order rests instead of filling. Then **Review order**.
+touch that the order rests instead of filling. If order confirmation is enabled,
+review the selected account, side, quantity, price and notional value locally.
 
-Review is not cosmetic. The trading service returns a *sealed* preview: the
-priced, validated, and reserved intent, signed and given a short expiry. The
-confirmation panel counts that expiry down. **Confirm** submits the sealed
-preview; it cannot submit anything the preview did not price.
-
-If the seal expires, the button says so and you review again. This is the
-mechanism that makes "what you confirmed" and "what was sent" the same object —
-see [Execution and risk](../concepts/execution-risk.md).
+**Confirm** sends one command request. Trading checks the current connection,
+route and instrument rules before submitting it to Gateway. Idempotency protects
+request retries; an uncertain venue result is resolved by lookup rather than
+another submission. See [Execution and risk](../concepts/execution-risk.md).
 
 ## 7. Watch it rest
 

@@ -16,6 +16,7 @@ type fakeOwner struct {
 	mu               sync.Mutex
 	opens            int
 	snapshot         json.RawMessage
+	snapshotAt       time.Time
 	snapshotSequence string
 	replay           json.RawMessage
 	replaySequence   string
@@ -31,8 +32,12 @@ func (owner *fakeOwner) Open(context.Context, SubscriptionKey) (NativeStream, er
 	if len(snapshot) == 0 {
 		snapshot = json.RawMessage(`{"price":"1"}`)
 	}
+	snapshotAt := owner.snapshotAt
+	if snapshotAt.IsZero() {
+		snapshotAt = time.Now().UTC()
+	}
 	return NativeStream{
-		Snapshot: Message{Kind: MessageSnapshot, ObservedAt: time.Now().UTC(), SourceSequence: owner.snapshotSequence, Data: snapshot},
+		Snapshot: Message{Kind: MessageSnapshot, ObservedAt: snapshotAt, SourceSequence: owner.snapshotSequence, Data: snapshot},
 		Events:   owner.events, Errors: make(chan error), Replay: func() (Message, bool) {
 			owner.mu.Lock()
 			defer owner.mu.Unlock()
@@ -287,23 +292,28 @@ func TestHubKeepsLogicalSubscriptionAcrossOpenFailures(t *testing.T) {
 	}
 }
 
-type fakeBBOBootstrap struct {
-	mu    sync.Mutex
-	calls int
-	quote BBOQuote
+type fakeBBOKeyResolver struct{ key SubscriptionKey }
+
+func (resolver fakeBBOKeyResolver) SubscriptionKey(context.Context, string, exchange.MarketDataset, string, int) (SubscriptionKey, error) {
+	return resolver.key, nil
 }
 
-func (source *fakeBBOBootstrap) SnapshotBBO(context.Context, string) (BBOQuote, error) {
-	source.mu.Lock()
-	defer source.mu.Unlock()
-	source.calls++
-	return source.quote, nil
-}
-
-func TestFreshBBOUsesCacheAndSingleflightFallback(t *testing.T) {
-	now := time.Date(2026, 8, 25, 2, 0, 0, 0, time.UTC)
-	source := &fakeBBOBootstrap{quote: BBOQuote{InstrumentID: "btc", Bid: exchange.BookLevel{Price: decimal.NewFromInt(99), Quantity: decimal.NewFromInt(1)}, Ask: exchange.BookLevel{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(2)}, ObservedAt: now}}
-	cache, err := NewBBOCache(source, func() time.Time { return now })
+func TestFreshBBOJoinsSharedHubWebSocket(t *testing.T) {
+	now := time.Now().UTC()
+	key := SubscriptionKey{Owner: OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"}, Dataset: exchange.DatasetBBO, InstrumentID: "btc"}
+	owner := &fakeOwner{
+		snapshot: Encode(map[string]any{
+			"bid": exchange.BookLevel{Price: decimal.NewFromInt(99), Quantity: decimal.NewFromInt(1)},
+			"ask": exchange.BookLevel{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(2)},
+		}),
+		snapshotAt: now, snapshotSequence: "7", events: make(chan Message, 2), closed: make(chan struct{}),
+	}
+	hub, err := New(Options{Owner: owner, IdleGrace: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	cache, err := NewBBOCache(hub, fakeBBOKeyResolver{key: key}, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,19 +328,135 @@ func TestFreshBBOUsesCacheAndSingleflightFallback(t *testing.T) {
 		}()
 	}
 	wait.Wait()
-	source.mu.Lock()
-	calls := source.calls
-	source.mu.Unlock()
-	if calls != 1 {
-		t.Fatalf("REST calls = %d, want 1", calls)
+	owner.mu.Lock()
+	opens := owner.opens
+	owner.mu.Unlock()
+	if opens != 1 {
+		t.Fatalf("native BBO opens = %d, want 1", opens)
 	}
-	if _, err := cache.GetFreshBBO(context.Background(), "btc", 2*time.Second); err != nil {
+	quote, err := cache.GetFreshBBO(context.Background(), "btc", 2*time.Second)
+	if err != nil {
 		t.Fatal(err)
 	}
-	source.mu.Lock()
-	calls = source.calls
-	source.mu.Unlock()
-	if calls != 1 {
-		t.Fatalf("cache miss caused REST calls = %d", calls)
+	if quote.SourceSequence != "7" || !quote.Bid.Price.Equal(decimal.NewFromInt(99)) || !quote.Ask.Price.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("quote = %+v", quote)
+	}
+	owner.mu.Lock()
+	opens = owner.opens
+	owner.mu.Unlock()
+	if opens != 1 {
+		t.Fatalf("Hub latest read opened another BBO stream: %d", opens)
+	}
+}
+
+func TestFreshBBOWaitsPastStaleSnapshotForLiveUpdate(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	key := SubscriptionKey{Owner: OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"}, Dataset: exchange.DatasetBBO, InstrumentID: "btc"}
+	owner := &fakeOwner{
+		snapshot: Encode(map[string]any{
+			"bid": exchange.BookLevel{Price: decimal.NewFromInt(98), Quantity: decimal.NewFromInt(1)},
+			"ask": exchange.BookLevel{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(1)},
+		}),
+		snapshotAt: now.Add(-time.Minute), events: make(chan Message, 2), closed: make(chan struct{}),
+	}
+	hub, err := New(Options{Owner: owner, IdleGrace: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	cache, err := NewBBOCache(hub, fakeBBOKeyResolver{key: key}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan BBOQuote, 1)
+	failures := make(chan error, 1)
+	go func() {
+		quote, readErr := cache.GetFreshBBO(t.Context(), "btc", 2*time.Second)
+		if readErr != nil {
+			failures <- readErr
+			return
+		}
+		result <- quote
+	}()
+
+	deadline := time.After(time.Second)
+	for {
+		owner.mu.Lock()
+		opens := owner.opens
+		owner.mu.Unlock()
+		if opens == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("BBO stream did not open")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	owner.events <- Message{Kind: MessageDelta, ObservedAt: now, SourceSequence: "8", Data: Encode(map[string]any{
+		"bid": exchange.BookLevel{Price: decimal.NewFromInt(99), Quantity: decimal.NewFromInt(2)},
+		"ask": exchange.BookLevel{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(3)},
+	})}
+	select {
+	case err := <-failures:
+		t.Fatal(err)
+	case quote := <-result:
+		if quote.SourceSequence != "8" || !quote.Bid.Price.Equal(decimal.NewFromInt(99)) {
+			t.Fatalf("quote = %+v", quote)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("FreshBBO did not wait for a live update")
+	}
+}
+
+type isolatedOwners struct{ healthy *fakeOwner }
+
+func (o isolatedOwners) Open(ctx context.Context, key SubscriptionKey) (NativeStream, error) {
+	if key.Owner.Venue == exchange.VenueOKX {
+		return NativeStream{}, errors.New("venue unavailable")
+	}
+	return o.healthy.Open(ctx, key)
+}
+
+func TestOneVenueFailureAndSlowReaderDoNotStopAnotherVenue(t *testing.T) {
+	healthy := &fakeOwner{events: make(chan Message, 4), closed: make(chan struct{})}
+	hub, err := New(Options{Owner: isolatedOwners{healthy}, ReconnectMinimum: time.Millisecond, ReconnectMaximum: 5 * time.Millisecond, IdleGrace: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	key := SubscriptionKey{Owner: OwnerKey{Venue: exchange.VenueOKX, Environment: exchange.EnvironmentLive, NativeFamily: "swap"}, Dataset: exchange.DatasetMark}
+	failed, err := hub.Subscribe(t.Context(), key, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer failed.Close()
+	// Never drain the failed venue's reconnect notifications.
+	key.Owner.Venue, key.Owner.NativeFamily = exchange.VenueBinance, "perpetual"
+	good, err := hub.Subscribe(t.Context(), key, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer good.Close()
+	select {
+	case <-good.Events():
+	case <-time.After(time.Second):
+		t.Fatal("healthy snapshot blocked by other venue")
+	}
+	healthy.events <- Message{ObservedAt: time.Now().UTC(), Data: Encode(map[string]any{"price": "2"})}
+	select {
+	case event := <-good.Events():
+		if event.Kind != MessageDelta {
+			t.Fatalf("healthy event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("healthy updates blocked by other venue")
+	}
+	good.Close()
+	select {
+	case <-healthy.closed:
+	case <-time.After(time.Second):
+		t.Fatal("healthy upstream leaked after unsubscribe")
 	}
 }

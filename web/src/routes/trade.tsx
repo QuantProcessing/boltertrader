@@ -151,6 +151,7 @@ export function TradePage() {
                 positionsError={accountPositions.isError}
                 positionAccounts={accountPositions.data?.accounts ?? []}
                 liveMark={liveMark}
+                instrument={instrument}
               />
             )}
           </div>

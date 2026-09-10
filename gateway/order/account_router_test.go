@@ -117,7 +117,7 @@ func TestAccountRouterUsesRouteRecoveryStatusForDynamicRuntime(t *testing.T) {
 	registry := &routeAwareRecoveryRegistry{routingRegistry: &routingRegistry{
 		instrument: instrument,
 		status: account.Status{Resource: account.Resource{
-			AccountID: "binance-dynamic", Product: exchange.ProductSpot, ReadReady: true, Reason: account.ReasonPrivateStreamGap,
+			AccountID: "binance-dynamic", Product: exchange.ProductSpot, ReadReady: true, Reason: account.ReasonClientUnavailable,
 		}},
 		recoveryStatus: account.Status{Resource: account.Resource{
 			AccountID: "binance-dynamic", Product: exchange.ProductSpot, ReadReady: true, WriteReady: true,

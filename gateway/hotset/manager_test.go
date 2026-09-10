@@ -69,9 +69,9 @@ func TestManagerPriorityAndProtectedOverflow(t *testing.T) {
 	defer manager.Close()
 	browser, _ := manager.Acquire(context.Background(), testKey("browser"), ReasonBrowser)
 	defer browser.Release()
-	arbitrage, _ := manager.Acquire(context.Background(), testKey("arbitrage"), ReasonArbitrageTop)
-	defer arbitrage.Release()
-	if !activation.isActive(testKey("browser")) || activation.isActive(testKey("arbitrage")) {
+	history, _ := manager.Acquire(context.Background(), testKey("history"), ReasonFundingHistory)
+	defer history.Release()
+	if !activation.isActive(testKey("browser")) || activation.isActive(testKey("history")) {
 		t.Fatal("capacity did not retain the higher-priority browser lease")
 	}
 	position, _ := manager.Acquire(context.Background(), testKey("position"), ReasonPosition)
@@ -87,7 +87,7 @@ func TestManagerPriorityAndProtectedOverflow(t *testing.T) {
 }
 
 func TestManagerReasonsHaveLockedPriorityOrder(t *testing.T) {
-	want := []Reason{ReasonPosition, ReasonOpenOrder, ReasonExecution, ReasonBrowser, ReasonArbitrageTop, ReasonFundingHistory}
+	want := []Reason{ReasonPosition, ReasonOpenOrder, ReasonExecution, ReasonBrowser, ReasonFundingHistory}
 	for index := 1; index < len(want); index++ {
 		if priorities[want[index-1]] <= priorities[want[index]] {
 			t.Fatalf("priority order changed at %s/%s", want[index-1], want[index])

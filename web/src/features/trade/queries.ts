@@ -1,22 +1,18 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 
 import { accountData, manual, trading } from "@/api/endpoints";
-import type { AccountBalance, AccountPositionSnapshot, Command, Fill, ManualPreview, ManualPreviewRequest, Position } from "@/api/types";
+import type { AccountBalance, AccountPositionSnapshot, Command, Fill, ManualOrderRequest, Position } from "@/api/types";
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 
-import { applyOrderOverlays, applyPositionOverlays } from "./account-realtime-overlay";
+import { applyBalanceOverlays, applyOrderOverlays, applyPositionOverlays } from "./account-realtime-overlay";
 
 /* ---------------------------------------------------------------------------
  * The order path, and the ledgers it moves.
  *
- * Placing is two calls, not one, and that is a property of the server rather
- * than a UI flourish: `POST execution-previews` prices and validates the intent
- * and hands back a token with a 30-second deadline sealed inside it, and
- * `POST commands` is the only thing that will act on such a token. There is no
- * single-shot route. The ticket is built around that shape instead of hiding it
- * — an operator who cannot see what they are about to send has not confirmed
- * anything.
+ * Placing is one command. The browser may show a local confirmation using the
+ * catalog, position and public prices already on screen, while Trading checks
+ * the current account, route, runtime fence and venue rules in the same request.
  *
  * Both `lineageId` and `idempotencyKey` are minted here rather than by the
  * server. The key is what makes a retry safe (a repeat returns 200 with the
@@ -85,7 +81,11 @@ export function useAccountBalances(accountId: string): UseQueryResult<AccountBal
   const readOnly = useReadOnly();
   return useQuery({
     queryKey: tradeKeys.balances(accountId),
-    queryFn: ({ signal }) => accountData.balances(accountId, signal),
+    queryFn: async ({ signal }) => {
+      const startedAt = new Date().toISOString();
+      const balances = await accountData.balances(accountId, signal);
+      return applyBalanceOverlays(balances, accountId, startedAt);
+    },
     enabled: !readOnly && accountId !== "",
     meta: PRIVATE_QUERY_META,
     refetchInterval: privateFallbackInterval,
@@ -118,23 +118,6 @@ export function useFills(): UseQueryResult<Fill[]> {
   });
 }
 
-/** A sealed preview, plus the moment its clock started. */
-export interface SealedPreview {
-  preview: ManualPreview;
-  request: ManualPreviewRequest;
-  /** `Date.now()` when the response landed — the deadline is not in the body. */
-  sealedAt: number;
-}
-
-export function usePreviewOrder() {
-  return useMutation({
-    mutationFn: async (request: ManualPreviewRequest): Promise<SealedPreview> => {
-      const preview = await manual.preview(request);
-      return { preview, request, sealedAt: Date.now() };
-    },
-  });
-}
-
 function freshId(): string {
   return crypto.randomUUID();
 }
@@ -142,14 +125,14 @@ function freshId(): string {
 export function usePlaceOrder() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (previewId: string): Promise<Command> =>
+    mutationFn: (order: ManualOrderRequest): Promise<Command> =>
       manual.command({
-        previewId,
         action: "place",
         // A new lineage per order: this one is not a follow-up to anything.
         lineageId: freshId(),
         orderId: "",
         idempotencyKey: freshId(),
+        order,
       }),
     onSuccess: () => invalidateTradeLedgers(queryClient),
   });
@@ -165,7 +148,6 @@ export function useCancelOrder() {
   return useMutation({
     mutationFn: (order: Command): Promise<Command> =>
       manual.command({
-        previewId: "",
         action: "cancel",
         lineageId: order.lineageId,
         orderId: order.commandId,
@@ -185,6 +167,5 @@ export async function invalidateTradeLedgers(queryClient: ReturnType<typeof useQ
 		queryClient.invalidateQueries({ queryKey: tradeKeys.fills() }),
 		queryClient.invalidateQueries({ queryKey: ["trading", "ledger"] }),
 		queryClient.invalidateQueries({ queryKey: ["trading", "pnl"] }),
-		queryClient.invalidateQueries({ queryKey: ["arbitrage", "positions"] }),
 	]);
 }

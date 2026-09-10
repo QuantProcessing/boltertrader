@@ -3,6 +3,7 @@ package okx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -141,9 +142,13 @@ func TestClient_PlaceOrderTopLevelFailureIncludesOrderDetails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected API error")
 	}
-	want := `details=[{"ordId":"","clOrdId":"client-reject","sCode":"51008","sMsg":"insufficient balance"`
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("error %q does not include %q", err.Error(), want)
+	want := `[{"ordId":"","clOrdId":"client-reject","sCode":"51008","sMsg":"insufficient balance"`
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Details, want) {
+		t.Fatalf("typed API error lost order details: %v", err)
+	}
+	if strings.Contains(err.Error(), "insufficient balance") {
+		t.Fatal("HTTP error rendered raw response details")
 	}
 }
 

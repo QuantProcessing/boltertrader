@@ -24,7 +24,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/process"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
 	"github.com/QuantProcessing/boltertrader/internal/livewrite"
-	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 func TestVenueProbeTimeoutDefaultsAndValidatesOverride(t *testing.T) {
@@ -162,7 +161,7 @@ func (source *metricAccountSourceStub) RouteStatus(accountID domain.AccountID, p
 
 func TestDefaultAccountManagerBuilderSupportsDynamicOnlyRuntime(t *testing.T) {
 	t.Setenv(livewrite.EnvName, "true")
-	builder := defaultBuildAccountManager(nil, nil, authorityCredentialResolver{})
+	builder := defaultBuildAccountManager(nil, &http.Client{})
 	built, err := builder(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +180,7 @@ func TestDefaultAccountManagerBuilderSupportsDynamicOnlyRuntime(t *testing.T) {
 
 func TestDefaultAccountManagerBuilderRejectsAmbiguousLiveWriteSwitch(t *testing.T) {
 	t.Setenv(livewrite.EnvName, "yes")
-	if _, err := defaultBuildAccountManager(nil, nil, authorityCredentialResolver{})(context.Background()); err == nil {
+	if _, err := defaultBuildAccountManager(nil, &http.Client{})(context.Background()); err == nil {
 		t.Fatal("ambiguous live-write switch was accepted")
 	}
 }
@@ -459,37 +458,6 @@ func TestMigrationValidationSkipsPrivateRuntimeConstruction(t *testing.T) {
 // live namespace's material. There is one namespace now, so the refusal is
 // simpler and stricter: anything other than secretstore.Namespace is rejected,
 // including the two mode-scoped names this gateway used to accept.
-func TestProductionGatewayCredentialResolverRefusesForeignNamespace(t *testing.T) {
-	root := t.TempDir()
-	keyFile := filepath.Join(root, "credentials", "secret-store-master.key")
-	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyFile, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("BT_SECRET_KEY_SOURCE", "file")
-	t.Setenv("BT_SECRET_STORE_DIR", filepath.Join(root, "secret-store"))
-	t.Setenv("BT_SECRET_STORE_NAMESPACE", secretstore.Namespace)
-	t.Setenv("BT_SECRET_MASTER_KEY_VERSION", "v1")
-	t.Setenv("BT_SECRET_MASTER_KEY_FILE", keyFile)
-	t.Setenv("BT_SECRET_KEYCHAIN_SERVICE", "")
-	t.Setenv("BT_SECRET_KEYCHAIN_ACCOUNT", "")
-
-	provider, resolver, err := newGatewayCredentialResolver()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer provider.Close()
-	if err := resolver.Check(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("BT_SECRET_STORE_NAMESPACE", secretstore.Namespace+"/live")
-	if _, _, err := newGatewayCredentialResolver(); err == nil {
-		t.Fatal("foreign namespace credential resolver configuration succeeded")
-	}
-}
 
 func TestRunExitsOnServeFailureWithSafeErrorAndExactCleanup(t *testing.T) {
 	dir := t.TempDir()

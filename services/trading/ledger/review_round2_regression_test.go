@@ -44,7 +44,7 @@ func TestFundingSupersessionReplayDoesNotRestoreOriginalEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Funding != "2" {
-		t.Fatalf("replayed Funding PnL=%s, want 2", snapshot.Funding)
+	if snapshot.ByCurrency[0].Funding != "2" {
+		t.Fatalf("replayed Funding PnL=%s, want 2", snapshot.ByCurrency[0].Funding)
 	}
 }

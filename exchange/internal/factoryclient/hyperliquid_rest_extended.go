@@ -165,7 +165,10 @@ func (client *hyperliquidPerpClient) SetLeverage(ctx context.Context, req exchan
 	return exchange.Leverage{NativeSymbol: req.Instrument.Identity.NativeSymbol, NativeID: req.Instrument.Identity.NativeID, Effective: req.Leverage}, nil
 }
 
-func hlLeverageMutationErr(err error, tracker *hyperliquidRequestTracker) error {
+func hlLeverageMutationErr(err error, tracker *hyperliquidRequestTracker) (returnErr error) {
+	defer func() {
+		returnErr = normalizeHTTPError(returnErr, err, hyperliquidVenue, exchange.ProductPerp, "SetLeverage")
+	}()
 	const operation = "SetLeverage"
 	details := exchange.ErrorDetails{
 		Venue:       hyperliquidVenue,

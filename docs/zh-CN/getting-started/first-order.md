@@ -36,8 +36,7 @@ auth edge。正因如此，会话 cookie 才能保持 `HttpOnly` 与 `SameSite=S
 
 进入 **Settings**，选择 **Add account**。你需要提供：
 
-- venue 以及该 account 可以使用的 route profile，
-- product policy——该 account 允许交易哪些 product 行，
+- 交易所和可选的账户名称，
 - venue 的凭证字段，其标签来自 gateway 而不是前端，因为各 venue 各不相同。
 
 Credential value 是只写的。它们只发送一次，加密进 gateway 的凭证库，之后绝不返回
@@ -46,17 +45,14 @@ Credential value 是只写的。它们只发送一次，加密进 gateway 的凭
 有哪些 venue 与 product 行见 [Venue 支持](../venues/README.md)。各 venue 需要哪些
 凭证字段见[配置](../reference/configuration.md)。
 
-## 4. 等待 account 就绪
+## 4. 完成余额验证
 
-Account 面板会显示 desired-state revision、runtime generation 和 credential
-version。下面的 **Runtime** 面板报告 trading 服务给出的两个独立就绪答案：
-**Read** 与 **Write**。
+添加时会检查凭证格式并查询交易所余额。成功后 Gateway 保存加密凭证、接通账户；
+余额为零也可以添加。失败时在表单显示交易所返回的错误。
 
-用 **Validate** 让 gateway 拿凭证去 venue 侧验证。在写就绪为真之前不要继续——
-被阻塞的 account 会附带原因，向它下单只会得到一个拒绝，而不是一笔订单。
-
-注册是刻意做成异步的：gateway 先记录 desired state，再由 reconciler 把 runtime
-收敛过去。见[状态与 reconciliation](../concepts/state-reconciliation.md)。
+无需另行激活、更新权限或轮换凭证。API key 能否交易由交易所决定，权限不足时返回
+交易所错误。更换凭证时删除后重新添加；删除只移除本地凭证和连接，不撤单、不平仓。
+当前持仓直接读取 Gateway 的交易所快照，无需迁移历史订单。
 
 ## 5. 打开交易终端
 
@@ -64,19 +60,17 @@ version。下面的 **Runtime** 面板报告 trading 服务给出的两个独立
 市场更新通过 Gateway 的 `/api/v1/market/realtime/ws` 到达；账户通知使用另一条需要认证的
 Gateway WebSocket。
 
-挑一个你的 account product policy 允许的 instrument。
+选择该账户交易所支持的交易标的。
 
-## 6. 先复核，再下单
+## 6. 确认后下单
 
 填写下单票：**Limit**、方向、数量，以及一个离盘口足够远、能挂住而不会立刻成交的
-价格。然后点 **Review order**。
+价格。然后点下单按钮。若设置中启用了下单确认，确认面板会立即使用当前账户、方向、数量、
+价格和名义价值展示本地复核信息，不会先等待后端预检。
 
-复核不是装饰。Trading 服务返回的是一份**封签过的**预览：已定价、已校验、已预留的
-意图，带签名和一个很短的有效期。确认面板会把这个有效期倒计时。**Confirm** 提交的
-是这份封签预览；它无法提交预览没有定过价的任何东西。
-
-如果封签过期，按钮会直接这么说，你重新复核即可。正是这个机制让「你确认的东西」
-与「实际发出去的东西」是同一个对象——见[执行与风险](../concepts/execution-risk.md)。
+点击 **Confirm** 后只发送一次命令请求。Trading 在该请求内读取当前账户 runtime、route 和
+catalog 规则，再创建预留并交给 Gateway；Gateway 与交易所仍会做最终校验。网络重试由幂等键
+保护，不依赖会过期的 preview ID。见[执行与风险](../concepts/execution-risk.md)。
 
 ## 7. 看它挂住
 

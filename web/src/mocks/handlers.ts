@@ -2,28 +2,18 @@ import { HttpResponse, http } from "msw";
 
 import type {
   Account,
-  AccountRoute,
-  ArbitrageExecution,
-  ArbitrageLegView,
-  ArbitrageOpportunity,
-  ArbitrageOpportunityLeg,
-  ArbitragePair,
-  ArbitragePreview,
-  ArbitragePreviewLeg,
-  ArbitragePreviewRequest,
   CandleInterval,
   Command,
   CredentialBundle,
   FundingBoardRow,
   FundingBoardSnapshot,
   FundingBoardVenue,
-  FundingWindow,
   Instrument,
   ManualCommandRequest,
-  ManualPreviewRequest,
+  ManualOrderRequest,
 } from "@/api/types";
 
-import { accounts, activity, hedges, orders, previews, session } from "./db";
+import { accountPositions, accounts, activity, orders, session } from "./db";
 import { PUBLIC_PATHS } from "./public-paths";
 import {
   CREDENTIALS,
@@ -36,7 +26,6 @@ import {
   OBSERVED_AT,
   PNL,
   POSITIONS,
-  PROJECTION,
   RATE_LIMIT,
   SESSION,
   SYSTEM,
@@ -57,20 +46,14 @@ import { fetchCandles, fetchFundingBoard, fetchFundingHistory, fetchMarketFact }
  * front of an operator, which is the only reason it is worth mirroring the
  * table rather than returning one convenient shape everywhere:
  *
- *   catalog/*                    {meta, data: T[], projection}
+ *   catalog/instruments          {data: {revision, observedAt, instruments}}
  *   market-data, candles,        {meta, data: T, rateLimit}
  *     funding-board, -history
  *   the trading ledgers          {meta, data: {items: T[]}}
- *   pnl, previews, commands      {meta, data: T}
+ *   pnl, commands      {meta, data: T}
  *   products/manual/venues       {meta, data: {revision, items}}
- *   products/arbitrage/…         {meta, data: {items, observedAt}}
- *     opportunities
  *   /api/v1/accounts/*           {data: {account | accounts}}   — no meta
  *
- * Two routes in the proxy table have no browser caller: `POST /reservations`
- * and `GET /audit` (which `endpoints.ts` records as being retired). They fall
- * through to the catch-all at the bottom rather than getting invented
- * behaviour, so nothing here implies a contract the frontend does not use.
  * ------------------------------------------------------------------------- */
 
 const REQUEST_ID = META.requestId;
@@ -85,7 +68,6 @@ const data = <T>(value: T, status = 200) => envelope({ meta: META, data: value }
 const items = <T>(list: T[]) => envelope({ meta: META, data: { items: list } });
 
 /** `{meta, data, projection}` — the catalog reads, which carry a revision. */
-const projected = <T>(list: T[]) => envelope({ meta: META, data: list, projection: PROJECTION });
 
 /** `{meta, data, rateLimit}` — the metered reads, which spend a venue budget. */
 const metered = <T>(value: T) => envelope({ meta: META, data: value, rateLimit: RATE_LIMIT });
@@ -223,8 +205,7 @@ const unreachable = (venue: string, error: unknown) =>
   );
 
 const catalog = [
-  http.get("/api/v1/catalog/venues", () => projected(VENUES)),
-  http.get("/api/v1/catalog/instruments", () => projected(INSTRUMENTS)),
+  http.get("/api/v1/catalog/instruments", () => data({ revision: "mock-catalog-v1", observedAt: new Date().toISOString(), instruments: INSTRUMENTS })),
 
   http.get("/api/v1/market-data", async ({ request }) => {
     const instrumentId = new URL(request.url).searchParams.get("instrumentId") ?? "";
@@ -280,7 +261,12 @@ const funding = [
   http.get("/api/v1/funding-history", async ({ request }) => {
     const query = new URL(request.url).searchParams;
     const instrument = instrumentOf(query.get("instrumentId") ?? "");
-    const window = (query.get("window") ?? "7d") as FundingWindow;
+    const since = Date.parse(query.get("since") ?? "");
+    const until = Date.parse(query.get("until") ?? "");
+    const span = until - since;
+    if (!Number.isFinite(span) || span <= 0 || span > 30 * 86_400_000) {
+      return failure(400, "FUNDING_HISTORY_WINDOW_UNSUPPORTED", "Invalid history range");
+    }
 
     if (!instrument) return notFound("instrument");
 
@@ -292,7 +278,7 @@ const funding = [
     }
 
     try {
-      const series = await fetchFundingHistory(instrument, window);
+      const series = await fetchFundingHistory(instrument, new Date(since), new Date(until));
       // Every venue here reports an unknown instrument as a 200 — an empty
       // array, or a failure code in the body — so "no points" is the only
       // signal there is, and it is the one the venue gives for "not listed".
@@ -312,10 +298,7 @@ const FUNDING_HISTORY_VENUES = new Set(["binance", "bybit", "okx", "lighter"]);
 /* --- Trading ledgers and projections -------------------------------------- */
 
 const trading = [
-  http.get("/api/v1/reservations", () => items([])),
 
-  // Nothing here holds a reservation, so there is never one to release.
-  http.delete("/api/v1/reservations/:reservationId", () => notFound("reservation")),
 
   http.get("/api/v1/commands", ({ request }) => {
     const query = new URL(request.url).searchParams;
@@ -409,7 +392,7 @@ const trading = [
 ];
 
 function filterAccountPositions(filters: Record<string, string | null>) {
-  const selected = ACCOUNT_POSITIONS.items.filter((position) =>
+  const selected = accountPositions.list().filter((position) =>
     (!filters.accountId || position.accountId === filters.accountId) &&
     (!filters.instrumentId || position.instrumentId === filters.instrumentId) &&
     (!filters.venue || position.venue === filters.venue) &&
@@ -455,12 +438,10 @@ async function touch(instrument: Instrument) {
  * ticket that renders "min 0.00001" and a preview that rejects 0.000005 are
  * quoting one number rather than two that happen to agree.
  *
- * A market order has no price of its own, so its notional is measured against
- * the real touch. If the venue cannot be reached the notional floor is not
- * checked rather than checked against a guess: a preview that blocks on an
- * invented price is worse than one that lets the venue decide.
+ * A market order has no price of its own, so the venue checks its notional at
+ * submission. The mock does not invent a price for that check.
  */
-async function manualBlockers(instrument: Instrument, request: ManualPreviewRequest): Promise<string[]> {
+function manualBlockers(instrument: Instrument, request: ManualOrderRequest): string[] {
   const blockers: string[] = [];
   const quantity = num(request.quantity);
   const minQuantity = num(instrument.rules.minQuantity);
@@ -469,8 +450,7 @@ async function manualBlockers(instrument: Instrument, request: ManualPreviewRequ
   if (quantity <= 0) blockers.push("QUANTITY_REQUIRED");
   else if (minQuantity > 0 && quantity < minQuantity) blockers.push("BELOW_MIN_QUANTITY");
 
-  const reference =
-    request.orderType === "limit" ? num(request.limitPrice) : num((await touch(instrument))?.bestAsk);
+  const reference = request.orderType === "limit" ? num(request.limitPrice) : 0;
   if (minNotional > 0 && reference > 0 && quantity * reference < minNotional) {
     blockers.push("BELOW_MIN_NOTIONAL");
   }
@@ -484,27 +464,6 @@ const manual = [
     envelope({ meta: META, data: { revision: VENUE_REVISION, items: VENUES } }),
   ),
 
-  http.post("/api/v1/products/manual/execution-previews", async ({ request }) => {
-    const body = (await request.json()) as ManualPreviewRequest;
-
-    // A market order carrying a price is a client bug, not a preference: the
-    // price would be silently discarded and the operator would believe it was
-    // honoured.
-    if (body.orderType === "market" && body.limitPrice) {
-      return invalid("market order must not carry a price");
-    }
-    if (body.orderType === "limit" && !body.limitPrice) {
-      return invalid("limit order must carry a price");
-    }
-
-    const instrument = instrumentOf(body.instrumentId);
-    if (!instrument) return notFound("instrument");
-    if (!accounts.find(body.accountId)) return notFound("account");
-
-    const previewId = previews.seal(body);
-    return data({ previewId, blockers: await manualBlockers(instrument, body), warnings: [] }, 201);
-  }),
-
   http.post("/api/v1/products/manual/commands", async ({ request }) => {
     const body = (await request.json()) as ManualCommandRequest;
 
@@ -517,12 +476,19 @@ const manual = [
     }
 
     if (body.action === "place") {
+      const order = body.order;
+      if (!order) return invalid("place command requires an order");
+      if (order.orderType === "market" && order.limitPrice) return invalid("market order must not carry a price");
+      if (order.orderType === "limit" && !order.limitPrice) return invalid("limit order must carry a price");
+      const instrument = instrumentOf(order.instrumentId);
+      if (!instrument) return notFound("instrument");
+      if (!accounts.find(order.accountId)) return notFound("account");
+      if (manualBlockers(instrument, order).length > 0) return invalid("order violates venue rules");
       const placed = orders.place({
-        previewId: body.previewId,
+        order,
         lineageId: body.lineageId,
         idempotencyKey: body.idempotencyKey,
       });
-      if (!placed) return notFound("execution preview");
       // 200 for the replay, 202 for the order that was actually sent. The body
       // is identical, which is the point: a retry is indistinguishable from the
       // original except in the status line.
@@ -535,9 +501,6 @@ const manual = [
       return data(canceled, 202);
     }
 
-    // `close` is in the request type but no screen sends it, and the request
-    // carries neither a preview nor an order id for it to act on. Answering it
-    // would mean inventing which position it meant.
     return invalid(`unsupported action ${String(body.action)}`);
   }),
 
@@ -559,369 +522,6 @@ const manual = [
   }),
 ];
 
-/* --- Arbitrage product ---------------------------------------------------- */
-
-const DAILY_INTERVALS = 3;
-
-/**
- * The next settlement, derived rather than stored.
- *
- * Every venue on this board settles on the same 8-hour UTC grid — 00:00, 08:00,
- * 16:00 — so the next one is arithmetic on the clock. It used to be a fixed
- * date, which was in the past for most of the time anyone would run this and
- * made the countdown beside it read zero.
- */
-function nextSettlement(): string {
-  const now = Date.now();
-  const period = 8 * 3_600_000;
-  return new Date(Math.ceil(now / period) * period).toISOString();
-}
-
-async function previewLeg(accountId: string, instrumentId: string, side: "buy" | "sell", limitPrice?: string) {
-  const instrument = instrumentOf(instrumentId);
-  const fact = instrument ? await touch(instrument) : null;
-  const rate = fact?.fundingRate;
-  const leg: ArbitragePreviewLeg = {
-    accountId,
-    instrumentId,
-    venue: instrument?.venue ?? "",
-    environment: instrument?.environment ?? "live",
-    product: instrument?.product === "spot" ? "spot" : "perp",
-    symbol: instrument?.symbol,
-    side,
-    limitPrice,
-    rate,
-    intervalHours: rate ? 8 : undefined,
-    nextFundingTime: rate ? nextSettlement() : undefined,
-    markPrice: fact?.markPrice,
-    dailyRate: rate ? String(num(rate) * DAILY_INTERVALS) : undefined,
-  };
-  return leg;
-}
-
-function legView(execution: { lineageId: string }, leg: "long" | "short", preview: ArbitragePreview): ArbitrageLegView {
-  const source = leg === "long" ? preview.long : preview.short;
-  return {
-    leg,
-    commandId: hedges.nextLegId(),
-    lineageId: execution.lineageId,
-    accountId: source.accountId,
-    instrumentId: source.instrumentId,
-    side: source.side,
-    quantity: preview.quantity,
-    orderType: preview.request.orderType,
-    limitPrice: source.limitPrice,
-    reduceOnly: false,
-    // Submitted, not filled. There is no venue here to have filled against, and
-    // reporting a fill the mock never observed is the one thing that would make
-    // the arbitrage screens lie about exposure.
-    state: "submitted",
-    createdAt: OBSERVED_AT,
-    updatedAt: OBSERVED_AT,
-  };
-}
-
-function asPair(execution: ArbitrageExecution): ArbitragePair {
-  return {
-    lineageId: execution.lineageId,
-    state: execution.state,
-    legs: execution.legs,
-    positions: [],
-    funding: [],
-    blockers: [],
-    updatedAt: OBSERVED_AT,
-  };
-}
-
-/* --- Arbitrage ------------------------------------------------------------ */
-
-/**
- * The opportunities the real board implies, derived the way the server derives
- * them (`services/trading/httpapi/arbitrage_product.go`).
- *
- * Group the board by underlying, then take the extremes: the venue paying most
- * is the one to be short on, the venue paying least the one to be long on. Any
- * other pairing on the same underlying earns strictly less, so there is exactly
- * one interesting pair per row.
- *
- * The comparison is on the *daily* rate, never the per-interval one — an hourly
- * 0.0001 pays eight times what an eight-hourly 0.0001 does, and a board that
- * ranks them together is worse than no board. A venue that published no interval
- * cannot be ranked at all: it still appears, with `funding_interval_unknown`
- * saying why the spread is missing.
- */
-function dailyRate(rate: string | undefined, intervalHours: number | undefined): number | null {
-  const value = Number(rate);
-  if (!Number.isFinite(value) || !intervalHours || intervalHours <= 0) return null;
-  return (value * 24) / intervalHours;
-}
-
-function legOf(venue: FundingBoardVenue, row: FundingBoardRow, holder: Account | undefined): ArbitrageOpportunityLeg {
-  const daily = dailyRate(row.rate, row.intervalHours);
-  // The account is attached only when the caller actually holds one on this
-  // venue, and the instrument only when the catalog lists this underlying there
-  // — an operator with two accounts asking about a four-venue board is the
-  // normal case, so the gaps are reported as blockers rather than as errors.
-  const instrument = INSTRUMENTS.find(
-    (candidate) =>
-      candidate.venue === venue.venue &&
-      candidate.product === "perp" &&
-      candidate.baseAsset === row.baseAsset &&
-      candidate.quoteAsset === row.quoteAsset,
-  );
-  return {
-    venue: venue.venue,
-    environment: venue.environment,
-    product: "perp",
-    routeProfileId: venue.routeProfileId,
-    settlement: venue.settlement,
-    marketFamily: row.marketFamily,
-    assetClass: row.assetClass,
-    ...(holder ? { accountId: holder.accountId } : {}),
-    instrumentId: instrument?.instrumentId ?? "",
-    rate: row.rate,
-    ...(row.intervalHours !== undefined ? { intervalHours: row.intervalHours } : {}),
-    ...(row.nextFundingTime !== undefined ? { nextFundingTime: row.nextFundingTime } : {}),
-    ...(row.markPrice !== undefined ? { markPrice: row.markPrice } : {}),
-    ...(row.openInterest !== undefined ? { openInterest: row.openInterest } : {}),
-    ...(daily !== null ? { dailyRate: String(daily) } : {}),
-    stale: venue.stale,
-  };
-}
-
-function opportunitiesFrom(board: FundingBoardSnapshot, held: Account[]): ArbitrageOpportunity[] {
-  const grouped = new Map<string, { symbol: string; legs: ArbitrageOpportunityLeg[] }>();
-  for (const venue of board.venues) {
-    if (venue.unavailable || venue.product !== "perp") continue;
-    const holder = held.find((account) => account.venue === venue.venue);
-    for (const row of venue.rows) {
-      if (!row.baseAsset || !row.quoteAsset || !row.rate) continue;
-      // Keyed by the underlying, not by the symbol: okx spells the same market
-      // BTC-USDT-SWAP where binance spells it BTC-USDT, and a hedge between
-      // them is still a hedge.
-      //
-      // The label is then whichever spelling the *last* column used, because
-      // that is what the server does (`symbols[key] = row.Symbol`, reassigned
-      // per row). It is not obviously the right choice — for BTC/USDT it makes
-      // the row read `BTC-USDT-SWAP` when three of the four venues call it
-      // BTC-USDT — but it is the choice the operator will see in production,
-      // and a mock that quietly picked the nicer spelling would hide that.
-      const key = `${row.baseAsset}/${row.quoteAsset}`;
-      const entry = grouped.get(key) ?? { symbol: row.symbol, legs: [] };
-      entry.symbol = row.symbol;
-      entry.legs.push(legOf(venue, row, holder));
-      grouped.set(key, entry);
-    }
-  }
-
-  const items: ArbitrageOpportunity[] = [];
-  for (const [key, { symbol, legs }] of grouped) {
-    // One quote per exchange. A hedge with both legs on one exchange is not a
-    // hedge — it nets inside a single position and pays no spread.
-    const venues: ArbitrageOpportunityLeg[] = [];
-    for (const leg of legs.filter((candidate) => candidate.instrumentId !== "")) {
-      if (!venues.some((taken) => taken.venue === leg.venue)) venues.push(leg);
-    }
-    if (venues.length < 2) continue;
-
-    // Indices rather than values, because the two extremes can otherwise
-    // coincide: an underlying only one venue dated leaves both on `venues[0]`
-    // and would report a zero spread between a venue and itself.
-    let lowest = 0;
-    let highest = 0;
-    for (let index = 1; index < venues.length; index += 1) {
-      if (compareLegs(venues[index]!, venues[lowest]!) < 0) lowest = index;
-      if (compareLegs(venues[index]!, venues[highest]!) > 0) highest = index;
-    }
-    if (lowest === highest) highest = (lowest + 1) % venues.length;
-    const long = venues[lowest]!;
-    const short = venues[highest]!;
-
-    const [baseAsset, quoteAsset] = key.split("/") as [string, string];
-    const blockers: string[] = [];
-    const longDaily = long.dailyRate === undefined ? null : Number(long.dailyRate);
-    const shortDaily = short.dailyRate === undefined ? null : Number(short.dailyRate);
-    const spread = longDaily !== null && shortDaily !== null ? shortDaily - longDaily : null;
-    if (spread === null) blockers.push("funding_interval_unknown");
-    if (!long.accountId || !short.accountId) blockers.push("account_unreachable");
-    if (!long.instrumentId || !short.instrumentId) blockers.push("instrument_unlisted");
-    if (long.stale || short.stale) blockers.push("board_stale");
-
-    items.push({
-      id: `cross_perp_funding:${baseAsset}:${long.venue}:${short.venue}`,
-      symbol: symbol || `${baseAsset}-${quoteAsset}`,
-      baseAsset,
-      quoteAsset,
-      assetClass: "crypto",
-      strategyFamily: "crypto_continuous",
-      strategy: "cross_perp_funding",
-      long,
-      short,
-      ...(spread !== null ? { spreadDaily: String(spread), spreadApr: String(spread * 365) } : {}),
-      executable: blockers.length === 0,
-      blockers,
-    });
-  }
-
-  // Comparable spreads first and largest first within them; an underlying no
-  // venue published an interval for still appears, at the bottom, rather than
-  // being dropped for being unrankable.
-  return items.sort((left, right) => {
-    if (left.spreadDaily === undefined && right.spreadDaily === undefined) {
-      return left.symbol.localeCompare(right.symbol);
-    }
-    if (left.spreadDaily === undefined) return 1;
-    if (right.spreadDaily === undefined) return -1;
-    const difference = Number(right.spreadDaily) - Number(left.spreadDaily);
-    return difference !== 0 ? difference : left.symbol.localeCompare(right.symbol);
-  });
-}
-
-/** Refuses to order two legs when either published no interval. */
-function compareLegs(left: ArbitrageOpportunityLeg, right: ArbitrageOpportunityLeg): number {
-  if (left.dailyRate === undefined || right.dailyRate === undefined) return 0;
-  return Number(left.dailyRate) - Number(right.dailyRate);
-}
-
-const arbitrage = [
-  // `{meta, data: {items, observedAt}}` — this route's shape and no other's.
-  http.get("/api/v1/products/arbitrage/opportunities", async ({ request }) => {
-    const named = new Set(new URL(request.url).searchParams.getAll("accountId"));
-    const held = accounts.list().filter((account) => named.has(account.accountId));
-    try {
-      const board = await fetchFundingBoard();
-      return envelope({
-        meta: META,
-        data: { items: opportunitiesFrom(board, held), observedAt: board.observedAt },
-      });
-    } catch (error) {
-      return unreachable("funding board", error);
-    }
-  }),
-
-  http.post("/api/v1/products/arbitrage/execution-previews", async ({ request }) => {
-    const body = (await request.json()) as ArbitragePreviewRequest;
-
-    if (body.orderType === "market" && (body.long.limitPrice || body.short.limitPrice)) {
-      return invalid("market order must not carry a price");
-    }
-
-    const long = instrumentOf(body.long.instrumentId);
-    const short = instrumentOf(body.short.instrumentId);
-    if (!long || !short) return notFound("instrument");
-    if (!accounts.find(body.long.accountId) || !accounts.find(body.short.accountId)) return notFound("account");
-
-    const blockers: string[] = [];
-    // One account cannot hedge itself: both legs would net inside the same
-    // venue position and the pair would carry no exposure at all.
-    if (body.long.accountId === body.short.accountId) blockers.push("LEGS_SHARE_ONE_ACCOUNT");
-
-    const quantity = num(body.quantity);
-    for (const instrument of [long, short]) {
-      const minQuantity = num(instrument.rules.minQuantity);
-      if (minQuantity > 0 && quantity < minQuantity) blockers.push("BELOW_MIN_QUANTITY");
-    }
-
-    // Both legs at once: they are two venues answering independently, and a
-    // hedge quoted from books a round-trip apart is a hedge quoted at two times.
-    const [longLeg, shortLeg, longFact] = await Promise.all([
-      previewLeg(body.long.accountId, body.long.instrumentId, "buy", body.long.limitPrice),
-      previewLeg(body.short.accountId, body.short.instrumentId, "sell", body.short.limitPrice),
-      touch(long),
-    ]);
-    const spread = num(shortLeg.dailyRate) - num(longLeg.dailyRate);
-    const notional = quantity * num(longFact?.markPrice ?? longFact?.bestAsk);
-
-    const preview: ArbitragePreview = {
-      previewId: previews.nextArbitrageId(),
-      strategy: body.strategy,
-      request: body,
-      long: longLeg,
-      short: shortLeg,
-      quantity: body.quantity,
-      notional: String(notional),
-      spreadDaily: String(spread),
-      spreadApr: String(spread * 365),
-      dailyFunding: String(spread * notional),
-      blockers,
-      warnings: [],
-    };
-    previews.sealArbitrage(preview);
-    return data(preview, 201);
-  }),
-
-  http.post("/api/v1/products/arbitrage/commands", async ({ request }) => {
-    const body = (await request.json()) as {
-      previewId?: string;
-      action: "open" | "close" | "cancel";
-      lineageId: string;
-      orderId?: string;
-      idempotencyKey: string;
-    };
-
-    if (request.headers.get("Idempotency-Key") !== body.idempotencyKey) {
-      return invalid("idempotency key header and body disagree");
-    }
-
-    if (body.action === "open") {
-      const preview = body.previewId ? previews.getArbitrage(body.previewId) : undefined;
-      if (!preview) return notFound("execution preview");
-
-      const execution: ArbitrageExecution = {
-        lineageId: body.lineageId,
-        // Opening, not open: both legs are resting orders. A pair only becomes
-        // open once both have filled, and `partially_open` is what one filled
-        // leg looks like — states this mock has no way to reach honestly.
-        state: "opening",
-        legs: [],
-        failures: [],
-      };
-      execution.legs = [
-        legView(execution, "long", preview),
-        legView(execution, "short", preview),
-      ];
-      hedges.push(execution);
-      return data(execution, 202);
-    }
-
-    if (body.action === "close") {
-      const pair = hedges.list().find((entry) => entry.lineageId === body.lineageId);
-      if (!pair) return notFound("pair");
-      const closing: ArbitrageExecution = { ...pair, state: "closing" };
-      hedges.push(closing);
-      return data(closing, 202);
-    }
-
-    // Cancelling one leg answers with that leg's command — the same URL as the
-    // two above, with a different body type.
-    const pair = hedges.list().find((entry) => entry.legs.some((leg) => leg.commandId === body.orderId));
-    const leg = pair?.legs.find((entry) => entry.commandId === body.orderId);
-    if (!pair || !leg) return notFound("order");
-    leg.state = "canceled";
-    leg.updatedAt = OBSERVED_AT;
-
-    const command: Command = {
-      commandId: leg.commandId,
-      accountId: leg.accountId,
-      lineageId: leg.lineageId,
-      productId: "arbitrage",
-      reservationId: null,
-      idempotencyKey: body.idempotencyKey,
-      commandKind: "cancel",
-      state: "canceled",
-      payload: { instrumentId: leg.instrumentId, side: leg.side, quantity: leg.quantity },
-      blockers: [],
-      createdAt: leg.createdAt,
-      updatedAt: OBSERVED_AT,
-    };
-    return data(command, 202);
-  }),
-
-  http.get("/api/v1/products/arbitrage/positions", () => items(hedges.list().map(asPair))),
-];
-
-/* --- The gateway's account plane ------------------------------------------ */
-
 const accountPlane = [
   http.get("/api/v1/accounts", () => gateway({ accounts: accounts.list() })),
 
@@ -929,20 +529,17 @@ const accountPlane = [
     const body = (await request.json()) as {
       venue: string;
       displayName: string;
-      productPolicy: string[];
-      routes: AccountRoute[];
       credentialBundle: CredentialBundle;
     };
     if (!request.headers.get("Idempotency-Key")) return invalid("idempotency key is required");
     if (!body.venue || !body.displayName) return invalid("venue and displayName are required");
-    if (!body.routes?.length) return invalid("at least one route is required");
     if (!body.credentialBundle) return invalid("credential bundle is required");
 
     // The bundle is destructured away and never reaches storage. `Account` has
     // no field that could carry it back out, which is what makes the write-only
     // rule a property of the response type rather than a habit of this handler.
     const { credentialBundle: _secret, ...record } = body;
-    return gateway({ account: accounts.create(record) }, 201);
+    return gateway({ account: accounts.create({venue:record.venue, displayName:record.displayName}) }, 201);
   }),
 
   http.get("/api/v1/accounts/:accountId", ({ params }) => {
@@ -950,30 +547,22 @@ const accountPlane = [
     return account ? gateway({ account }) : notFound("account");
   }),
 
-  http.delete("/api/v1/accounts/:accountId", ({ params, request }) => {
-    if (!request.headers.get("Idempotency-Key")) return invalid("idempotency key is required");
-    const account = accounts.mutate(String(params.accountId), { status: "removing" });
-    return account ? gateway({ account }, 202) : notFound("account");
-  }),
-
-  http.post("/api/v1/accounts/:accountId/disable", ({ params }) => {
-    const account = accounts.mutate(String(params.accountId), { status: "disabled" });
-    return account ? gateway({ account }) : notFound("account");
+  http.delete("/api/v1/accounts/:accountId", ({ params }) => {
+    accounts.remove(String(params.accountId));
+    return new HttpResponse(null, { status: 204 });
   }),
 ];
 
 /* --- Anything else -------------------------------------------------------- */
 
-/**
- * An empty trading list rather than a 404.
- *
- * A path that reaches here is one the frontend asked for and this file has not
- * implemented. Answering 404 would make that look like "the resource does not
- * exist", which is a thing screens render explanations for; an empty list makes
- * it look like "nothing to show", which is what an unimplemented read of a
- * ledger honestly is.
- */
-const fallthrough = http.all("/api/v1/*", () => items([]));
+/** Unknown routes must fail, as they do on the auth edge. */
+const fallthrough = http.all("/api/v1/*", ({ request }) => {
+  // The command collection still has a GET route, matching Auth Edge's 405.
+  if (new URL(request.url).pathname === "/api/v1/commands") {
+    return failure(405, "METHOD_NOT_ALLOWED", "command collection is read-only");
+  }
+  return notFound("route");
+});
 
 export const handlers = [
   gate,
@@ -983,7 +572,6 @@ export const handlers = [
   ...funding,
   ...trading,
   ...manual,
-  ...arbitrage,
   ...accountPlane,
   fallthrough,
 ];

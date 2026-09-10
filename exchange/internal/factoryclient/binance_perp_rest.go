@@ -641,7 +641,10 @@ func binancePerpOrderAck(operation exchange.OrderOperation, expectedInstrument e
 	return ack, nil
 }
 
-func binancePerpCommandErrorAck(operation string, ack exchange.OrderAcknowledgement, err error) (exchange.OrderAcknowledgement, error) {
+func binancePerpCommandErrorAck(operation string, ack exchange.OrderAcknowledgement, err error) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() {
+		normalizeHTTPCommand(&returnAck, &returnErr, err, binancePerpVenue, binancePerpProduct, operation)
+	}()
 	var apiErr *binanceperp.APIError
 	if errors.As(err, &apiErr) && binanceperp.IsDefinitiveOrderRejection(err) {
 		ack.State = exchange.AckRejected
@@ -768,7 +771,7 @@ func binancePerpFill(trade binanceperp.Trade) (exchange.Fill, error) {
 	if err != nil {
 		return exchange.Fill{}, err
 	}
-	fee, err := binancePerpNonNegativeDecimal(trade.Commission)
+	fee, err := decimal.NewFromString(trade.Commission)
 	if err != nil {
 		return exchange.Fill{}, err
 	}
@@ -1221,7 +1224,10 @@ func binancePerpPositiveInt64(raw interface{}) (int64, error) {
 	}
 }
 
-func binancePerpNormalizeError(operation string, err error) error {
+func binancePerpNormalizeError(operation string, err error) (returnErr error) {
+	defer func() {
+		returnErr = normalizeHTTPError(returnErr, err, binancePerpVenue, binancePerpProduct, operation)
+	}()
 	if err == nil {
 		return nil
 	}

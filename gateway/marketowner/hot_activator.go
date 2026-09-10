@@ -13,7 +13,7 @@ import (
 // reference streams when a venue offers them. It deliberately does not create
 // BBO, depth, candle, or mark Hub subscriptions: those datasets are owned by
 // their real consumers (browser topics and execution quotes). A generic
-// position/arbitrage hot reason must never fan out into an unrelated high-rate
+// position hot reason must never fan out into an unrelated high-rate
 // bookTicker subscription for every selected symbol.
 type HotActivator struct {
 	marks       BoardMarks
@@ -21,7 +21,7 @@ type HotActivator struct {
 		SetHot(hotset.Key, bool)
 	}
 	metrics interface {
-		SetMarketHot(venue, family, dataset string, hot int)
+		SetMarketHot(venue, family string, hot int)
 	}
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -33,7 +33,7 @@ type HotActivator struct {
 func NewHotActivator(marks BoardMarks, derivatives interface {
 	SetHot(hotset.Key, bool)
 }, metrics interface {
-	SetMarketHot(venue, family, dataset string, hot int)
+	SetMarketHot(venue, family string, hot int)
 }) *HotActivator {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &HotActivator{marks: marks, derivatives: derivatives, metrics: metrics, ctx: ctx, cancel: cancel, active: make(map[hotset.Key]context.CancelFunc), counts: make(map[markethub.OwnerKey]int)}
@@ -76,10 +76,8 @@ func (activator *HotActivator) observeLocked(owner markethub.OwnerKey) {
 	if activator.metrics == nil {
 		return
 	}
-	count := activator.counts[owner]
-	for _, dataset := range []exchange.MarketDataset{exchange.DatasetFunding, exchange.DatasetMark, exchange.DatasetIndex, exchange.DatasetOpenInterest} {
-		activator.metrics.SetMarketHot(string(owner.Venue), owner.NativeFamily, string(dataset), count)
-	}
+	// Hotset tracks instrument demand, not which native datasets were opened.
+	activator.metrics.SetMarketHot(string(owner.Venue), owner.NativeFamily, activator.counts[owner])
 }
 
 func (activator *HotActivator) run(ctx context.Context, key hotset.Key) {

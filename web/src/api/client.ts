@@ -198,7 +198,7 @@ function buildUrl(path: string, query?: QueryParams): string {
     // as sending it empty — trading rejects a named-but-blank query field.
     if (value === undefined || value === null || value === "") continue;
     if (Array.isArray(value)) {
-      // Repeated key rather than one comma-joined value: the arbitrage scan
+      // Repeated key rather than one comma-joined value: the API
       // reads `r.URL.Query()["accountId"]`, so "a,b" would arrive as a single
       // account id nobody holds and silently narrow the result instead of
       // widening it. An empty array sends nothing, which is the correct

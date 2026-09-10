@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"strings"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,12 +21,11 @@ var (
 type Kind string
 
 const (
-	KindOrder          Kind = "order"
-	KindFill           Kind = "fill"
-	KindBalance        Kind = "balance"
-	KindPosition       Kind = "position"
-	KindAccountHealth  Kind = "account_health"
-	KindResyncRequired Kind = "resync_required"
+	KindOrder             Kind = "order"
+	KindFill              Kind = "fill"
+	KindBalance           Kind = "balance"
+	KindPosition          Kind = "position"
+	KindAccountConnection Kind = "account_connection"
 )
 
 // Event is a live account change notification. EventID deduplicates repeated
@@ -43,9 +41,18 @@ type Event struct {
 	PrincipalID     domain.PrincipalID     `json:"-"`
 }
 
-type ResyncPayload struct {
-	Reason    string   `json:"reason"`
-	Resources []string `json:"resources"`
+type AccountConnectionState string
+
+const (
+	AccountConnected    AccountConnectionState = "connected"
+	AccountDisconnected AccountConnectionState = "disconnected"
+)
+
+type AccountConnectionPayload struct {
+	AccountID domain.AccountID       `json:"account_id"`
+	RouteID   domain.RouteID         `json:"route_id,omitempty"`
+	State     AccountConnectionState `json:"state"`
+	Reason    string                 `json:"reason,omitempty"`
 }
 
 type OrderPayload struct {
@@ -82,7 +89,7 @@ func (request PublishRequest) validate() error {
 	if err := request.ResourceVersion.Validate(); err != nil {
 		return err
 	}
-	if !request.Kind.valid() || request.Kind == KindResyncRequired {
+	if !request.Kind.valid() {
 		return fmt.Errorf("event kind is invalid")
 	}
 	if len(request.Payload) == 0 || !json.Valid(request.Payload) {
@@ -93,7 +100,7 @@ func (request PublishRequest) validate() error {
 
 func (kind Kind) valid() bool {
 	switch kind {
-	case KindOrder, KindFill, KindBalance, KindPosition, KindAccountHealth, KindResyncRequired:
+	case KindOrder, KindFill, KindBalance, KindPosition, KindAccountConnection:
 		return true
 	default:
 		return false
@@ -104,11 +111,6 @@ type Options struct {
 	SubscriberBuffer int
 	Identity         *domain.IdentityGenerator
 	Now              func() time.Time
-	Observer         ResyncObserver
-}
-
-type ResyncObserver interface {
-	ObserveResync(string)
 }
 
 // Hub fans out live account notifications. It deliberately keeps no replay
@@ -119,10 +121,16 @@ type Hub struct {
 	subscriberBuffer int
 	identity         *domain.IdentityGenerator
 	now              func() time.Time
-	observer         ResyncObserver
 	subscribers      map[uint64]*subscriber
+	connections      map[accountConnectionKey]Event
 	nextSubscriber   uint64
 	closed           bool
+}
+
+type accountConnectionKey struct {
+	principal domain.PrincipalID
+	account   domain.AccountID
+	route     domain.RouteID
 }
 
 type subscriber struct {
@@ -148,8 +156,8 @@ func NewHub(options Options) (*Hub, error) {
 		subscriberBuffer: options.SubscriberBuffer,
 		identity:         options.Identity,
 		now:              options.Now,
-		observer:         options.Observer,
 		subscribers:      make(map[uint64]*subscriber),
+		connections:      make(map[accountConnectionKey]Event),
 	}, nil
 }
 
@@ -173,6 +181,11 @@ func (hub *Hub) Publish(request PublishRequest) (Event, error) {
 	defer hub.mu.Unlock()
 	if hub.closed {
 		return Event{}, ErrClosed
+	}
+	if event.Kind == KindAccountConnection {
+		if err := hub.updateConnectionLocked(event); err != nil {
+			return Event{}, err
+		}
 	}
 	hub.publishLocked(event)
 	return event, nil
@@ -202,43 +215,6 @@ func (hub *Hub) PublishCommitted(ctx context.Context, command store.StoredComman
 	return err
 }
 
-func (hub *Hub) PublishResync(principal domain.PrincipalID, accountID domain.AccountID, reason string) (Event, error) {
-	if hub == nil {
-		return Event{}, ErrClosed
-	}
-	if err := principal.Validate(); err != nil {
-		return Event{}, err
-	}
-	if err := accountID.Validate(); err != nil {
-		return Event{}, err
-	}
-	if strings.TrimSpace(reason) == "" || strings.TrimSpace(reason) != reason || strings.ContainsAny(reason, "\n\r\t") {
-		return Event{}, fmt.Errorf("resync reason is invalid")
-	}
-	eventID, err := hub.identity.EventID()
-	if err != nil {
-		return Event{}, fmt.Errorf("allocate resync event failed")
-	}
-	payload, err := hub.resyncPayload(accountID, reason)
-	if err != nil {
-		return Event{}, err
-	}
-	event := Event{
-		EventID: eventID, AccountID: accountID, Kind: KindResyncRequired,
-		OccurredAt: hub.now().UTC(), Payload: payload, PrincipalID: principal,
-	}
-	hub.mu.Lock()
-	defer hub.mu.Unlock()
-	if hub.closed {
-		return Event{}, ErrClosed
-	}
-	hub.publishLocked(event)
-	if hub.observer != nil {
-		hub.observer.ObserveResync(reason)
-	}
-	return event, nil
-}
-
 type SubscribeRequest struct {
 	PrincipalID domain.PrincipalID
 	AccountID   domain.AccountID
@@ -254,7 +230,7 @@ func (request SubscribeRequest) validate() error {
 		return err
 	}
 	for _, kind := range request.Kinds {
-		if !kind.valid() || kind == KindResyncRequired {
+		if !kind.valid() {
 			return fmt.Errorf("subscription event kind is invalid")
 		}
 	}
@@ -268,7 +244,8 @@ func (hub *Hub) Subscribe(ctx context.Context, request SubscribeRequest) (*Subsc
 	if err := request.validate(); err != nil {
 		return nil, err
 	}
-	return hub.subscribe(ctx, request.PrincipalID, request.AccountID, request.Kinds, request.Buffer)
+	subscription, _, err := hub.subscribe(ctx, request.PrincipalID, request.AccountID, request.Kinds, request.Buffer, false)
+	return subscription, err
 }
 
 // SubscribePrincipal receives live events for every account owned by a
@@ -278,21 +255,48 @@ func (hub *Hub) SubscribePrincipal(ctx context.Context, principal domain.Princip
 	if err := principal.Validate(); err != nil {
 		return nil, err
 	}
-	return hub.subscribe(ctx, principal, "", nil, buffer)
+	subscription, _, err := hub.subscribe(ctx, principal, "", nil, buffer, false)
+	return subscription, err
 }
 
-func (hub *Hub) subscribe(ctx context.Context, principal domain.PrincipalID, account domain.AccountID, kinds []Kind, buffer int) (*Subscription, error) {
+// SubscribePrincipalWithConnections atomically captures the latest connection
+// state before releasing the hub lock. Events published after that snapshot are
+// queued on the returned subscription, so a late browser cannot observe an old
+// connection state after a newer one.
+func (hub *Hub) SubscribePrincipalWithConnections(ctx context.Context, principal domain.PrincipalID, buffer int) (*Subscription, []Event, error) {
+	if err := principal.Validate(); err != nil {
+		return nil, nil, err
+	}
+	return hub.subscribe(ctx, principal, "", nil, buffer, true)
+}
+
+func (hub *Hub) AccountConnections(principal domain.PrincipalID) []Event {
+	if hub == nil || principal.Validate() != nil {
+		return nil
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	connections := make([]Event, 0)
+	for key, event := range hub.connections {
+		if key.principal == principal {
+			connections = append(connections, event)
+		}
+	}
+	return connections
+}
+
+func (hub *Hub) subscribe(ctx context.Context, principal domain.PrincipalID, account domain.AccountID, kinds []Kind, buffer int, includeConnections bool) (*Subscription, []Event, error) {
 	if hub == nil {
-		return nil, ErrClosed
+		return nil, nil, ErrClosed
 	}
 	if ctx == nil {
-		return nil, fmt.Errorf("subscription context is required")
+		return nil, nil, fmt.Errorf("subscription context is required")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if buffer < 0 || buffer > 4096 {
-		return nil, fmt.Errorf("subscription buffer is invalid")
+		return nil, nil, fmt.Errorf("subscription buffer is invalid")
 	}
 	if buffer == 0 {
 		buffer = hub.subscriberBuffer
@@ -310,11 +314,25 @@ func (hub *Hub) subscribe(ctx context.Context, principal domain.PrincipalID, acc
 		hub.mu.Unlock()
 		close(target.events)
 		close(target.errors)
-		return nil, ErrClosed
+		return nil, nil, ErrClosed
 	}
 	hub.nextSubscriber++
 	target.id = hub.nextSubscriber
 	hub.subscribers[target.id] = target
+	connections := make([]Event, 0)
+	if includeConnections {
+		for key, event := range hub.connections {
+			if key.principal == principal {
+				connections = append(connections, event)
+			}
+		}
+		sort.Slice(connections, func(i, j int) bool {
+			if connections[i].AccountID != connections[j].AccountID {
+				return connections[i].AccountID < connections[j].AccountID
+			}
+			return connections[i].ResourceVersion < connections[j].ResourceVersion
+		})
+	}
 	hub.mu.Unlock()
 
 	subscription := &Subscription{hub: hub, id: target.id, events: target.events, errors: target.errors, stop: make(chan struct{})}
@@ -325,7 +343,7 @@ func (hub *Hub) subscribe(ctx context.Context, principal domain.PrincipalID, acc
 		case <-subscription.stop:
 		}
 	}()
-	return subscription, nil
+	return subscription, connections, nil
 }
 
 type Subscription struct {
@@ -378,29 +396,30 @@ func (hub *Hub) publishLocked(event Event) {
 	}
 }
 
-func (hub *Hub) resyncPayload(accountID domain.AccountID, reason string) (json.RawMessage, error) {
-	payload, err := json.Marshal(ResyncPayload{
-		Reason: reason,
-		Resources: []string{
-			"/v1/accounts/" + url.PathEscape(string(accountID)),
-			"/v1/orders?account_id=" + url.QueryEscape(string(accountID)),
-			"/v1/fills?account_id=" + url.QueryEscape(string(accountID)),
-			"/v1/balances?account_id=" + url.QueryEscape(string(accountID)),
-			"/v1/positions?account_id=" + url.QueryEscape(string(accountID)),
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encode resync event failed")
-	}
-	return payload, nil
-}
-
 func (subscriber *subscriber) accepts(kind Kind) bool {
-	if kind == KindResyncRequired {
-		return true
-	}
 	_, selected := subscriber.kinds[kind]
 	return len(subscriber.kinds) == 0 || selected
+}
+
+func (hub *Hub) updateConnectionLocked(event Event) error {
+	var payload AccountConnectionPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.AccountID != event.AccountID ||
+		(payload.State != AccountConnected && payload.State != AccountDisconnected) {
+		return fmt.Errorf("account connection event is invalid")
+	}
+	key := accountConnectionKey{principal: event.PrincipalID, account: event.AccountID, route: payload.RouteID}
+	if payload.State == AccountDisconnected && payload.RouteID == "" {
+		for existing := range hub.connections {
+			if existing.principal == key.principal && existing.account == key.account {
+				delete(hub.connections, existing)
+			}
+		}
+	}
+	if payload.State == AccountConnected && payload.RouteID != "" {
+		delete(hub.connections, accountConnectionKey{principal: key.principal, account: key.account})
+	}
+	hub.connections[key] = event
+	return nil
 }
 
 func (hub *Hub) unsubscribe(id uint64) {

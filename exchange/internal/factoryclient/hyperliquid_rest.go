@@ -1204,7 +1204,8 @@ func hlCancelAck(product exchange.Product, instrument exchange.Instrument, order
 	return hlBaseAck(product, exchange.OrderOperationCancel, instrument, orderID, "", exchange.AckAcceptedPending), nil
 }
 
-func hlMutationErr(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, cloid string, err error, tracker *hyperliquidRequestTracker) (exchange.OrderAcknowledgement, error) {
+func hlMutationErr(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, cloid string, err error, tracker *hyperliquidRequestTracker) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() { normalizeHTTPCommand(&returnAck, &returnErr, err, hyperliquidVenue, product, string(op)) }()
 	operation := "PlaceOrder"
 	if op == exchange.OrderOperationCancel {
 		operation = "CancelOrder"
@@ -1537,7 +1538,8 @@ func hlRequireCtx(ctx context.Context, product exchange.Product, operation strin
 	return nil
 }
 
-func hlNormalizeQueryErr(product exchange.Product, operation string, err error, tracker *hyperliquidRequestTracker) error {
+func hlNormalizeQueryErr(product exchange.Product, operation string, err error, tracker *hyperliquidRequestTracker) (returnErr error) {
+	defer func() { returnErr = normalizeHTTPError(returnErr, err, hyperliquidVenue, product, operation) }()
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return hlContextErr(product, operation, err)
 	}

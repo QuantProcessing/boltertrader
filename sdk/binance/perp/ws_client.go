@@ -42,7 +42,7 @@ type WSClient struct {
 	ReconnectWait        time.Duration
 	maxReconnectAttempts int
 	reconnectAttempt     int
-	pongInterval         time.Duration
+	heartbeatInterval    time.Duration
 
 	// active subscriptions
 	subs map[string]Subscription
@@ -70,7 +70,7 @@ func NewWSClient(ctx context.Context, url string) *WSClient {
 		Logger:               zap.NewNop().Sugar().Named("binance-perp"),
 		Debug:                os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1",
 		maxReconnectAttempts: 10,
-		pongInterval:         1 * time.Minute,
+		heartbeatInterval:    1 * time.Minute,
 		subs:                 make(map[string]Subscription),
 		dispatcher:           wsdispatch.NewBoundedDispatcher(wsdispatch.DefaultBufferLimit),
 		ctx:                  ctx,
@@ -143,12 +143,13 @@ func (c *WSClient) setupPingHandlers(conn *websocket.Conn) {
 	})
 }
 
-// keepAlive sends unsolicited Pongs as heartbeats if needed, or just relies on reacting to Pings?
-// The original code had a loop sending Pongs. We'll strict copy that behavior.
+// keepAlive actively verifies the peer with a Ping. An unsolicited Pong does
+// not elicit an inbound frame, so it cannot keep the read deadline alive on a
+// quiet account stream.
 func (c *WSClient) keepAlive(conn *websocket.Conn) {
 	defer c.wg.Done()
 
-	ticker := time.NewTicker(c.pongInterval)
+	ticker := time.NewTicker(c.heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
@@ -157,10 +158,10 @@ func (c *WSClient) keepAlive(conn *websocket.Conn) {
 			return
 		case <-ticker.C:
 			c.WriteMu.Lock()
-			err := conn.WriteMessage(websocket.PongMessage, []byte{})
+			err := conn.WriteMessage(websocket.PingMessage, []byte{})
 			c.WriteMu.Unlock()
 			if err != nil {
-				c.Logger.Errorw("Failed to send pong", "error", err)
+				c.Logger.Errorw("Failed to send ping", "error", err)
 				_ = conn.Close()
 				return
 			}

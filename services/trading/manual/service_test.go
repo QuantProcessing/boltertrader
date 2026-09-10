@@ -35,7 +35,10 @@ type failingTransitionStore struct {
 	err error
 }
 
-func (store failingTransitionStore) Transition(context.Context, orders.TransitionRequest, time.Time) (orders.Command, error) {
+func (store failingTransitionStore) Transition(ctx context.Context, request orders.TransitionRequest, now time.Time) (orders.Command, error) {
+	if request.ExpectedState == orders.StateAccepted {
+		return store.Store.Transition(ctx, request, now)
+	}
 	return orders.Command{}, store.err
 }
 func (fixture *gatewayFixture) Execute(_ context.Context, request GatewayRequest) (GatewayResult, error) {
@@ -173,7 +176,7 @@ func TestExecuteAppliesOnlyGatewayAuthoritativeFillFacts(t *testing.T) {
 		t.Fatalf("Gateway calls=%d, want 1", len(fixture.requests))
 	}
 	request := fixture.requests[0]
-	if request.CommandID != command.CommandID || request.IdempotencyKey != command.IdempotencyKey || request.ReservationID != "reservation-a" {
+	if request.CommandID != command.CommandID || request.IdempotencyKey != command.IdempotencyKey {
 		t.Fatalf("Gateway request lost durable authority fields: %+v", request)
 	}
 	positions := projection.List("principal-a", "account-a", "manual")
@@ -204,7 +207,7 @@ func TestApplyFillsKeepsFeeAndSettlementCurrenciesIndependent(t *testing.T) {
 	service, _, _, ledgerService := newFixture(nil)
 	command := orders.Command{CommandID: "command-1", PrincipalID: "principal-a", LineageID: "lineage-a", ProductID: "manual"}
 	base := FillFact{
-		FillID: "fill-open", CommandID: command.CommandID, AccountID: "account-a", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy, Quantity: "1", Price: "100", Fee: "0.01", FeeCurrency: "BNB", SettlementCurrency: "USDT", OccurredAt: fixtureTime,
+		FillID: "fill-open", CommandID: command.CommandID, AccountID: "account-a", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy, Quantity: "1", Price: "100", Fee: "0.01", FeeCurrency: "BNB", InstrumentProduct: "perp", BaseAsset: "BTC", SettlementCurrency: "USDT", OccurredAt: fixtureTime,
 	}
 	if err := service.applyFills(context.Background(), command, []FillFact{base}); err != nil {
 		t.Fatal(err)
@@ -231,8 +234,8 @@ func TestApplyFillsKeepsFeeAndSettlementCurrenciesIndependent(t *testing.T) {
 	if feeCurrency != "BNB" || realizedCurrency != "USDT" {
 		t.Fatalf("entries=%+v", entries)
 	}
-	if _, err := ledgerService.PnL(context.Background(), query); !errors.Is(err, ledger.ErrCurrencyMismatch) {
-		t.Fatalf("PnL error=%v, want ErrCurrencyMismatch", err)
+	if snapshot, err := ledgerService.PnL(context.Background(), query); err != nil || len(snapshot.ByCurrency) != 2 {
+		t.Fatalf("PnL=%+v err=%v", snapshot, err)
 	}
 }
 
@@ -320,7 +323,7 @@ func TestReconciliationAppliesPartialThenTerminalFillsIdempotently(t *testing.T)
 	}
 }
 
-func TestExecuteResumesUncertainGatewayHandoffWithSameIdentity(t *testing.T) {
+func TestExecuteDoesNotResendUncertainHandoffAndReconciliationRecoversIt(t *testing.T) {
 	fixture := &gatewayFixture{
 		results: []GatewayResult{{}, filledResult()},
 		errors:  []error{errors.New("ambiguous transport handoff")},
@@ -336,12 +339,13 @@ func TestExecuteResumesUncertainGatewayHandoffWithSameIdentity(t *testing.T) {
 	if claimErr != nil || len(tasks) != 1 || tasks[0].Reason != orders.ReconciliationAmbiguousHandoff {
 		t.Fatalf("reconciliation tasks=%+v err=%v", tasks, claimErr)
 	}
-	filled, err := service.Execute(context.Background(), uncertain)
-	if err != nil || filled.State != orders.StateFilled {
-		t.Fatalf("resume Execute() result=%+v err=%v", filled, err)
+	replayed, err := service.Execute(context.Background(), uncertain)
+	if err != nil || replayed.State != orders.StateUncertain || len(fixture.requests) != 1 {
+		t.Fatalf("replayed Execute() result=%+v err=%v requests=%+v", replayed, err, fixture.requests)
 	}
-	if len(fixture.requests) != 2 || fixture.requests[0] != fixture.requests[1] {
-		t.Fatalf("Gateway replay identity changed: %+v", fixture.requests)
+	filled, err := service.RecordReconciliation(context.Background(), replayed, authoritativeHandoff("filled", 2, filledResult().Fills))
+	if err != nil || filled.State != orders.StateFilled || len(fixture.requests) != 1 {
+		t.Fatalf("reconciliation result=%+v err=%v requests=%+v", filled, err, fixture.requests)
 	}
 	positions := projection.List("principal-a", "account-a", "manual")
 	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", ProductID: "manual"})
@@ -372,9 +376,9 @@ func TestAmbiguousHandoffPersistsKnownEvidenceAndSurfacesTransitionFailure(t *te
 	t.Run("transition failure is surfaced", func(t *testing.T) {
 		transitionErr := errors.New("persist uncertain transition")
 		commandStore := failingTransitionStore{Store: orders.NewMemoryStore(), err: transitionErr}
-		commands := orders.NewService(commandStore, nil, func() time.Time { return fixtureTime })
+		commands := orders.NewService(commandStore, func() time.Time { return fixtureTime })
 		commands.SetLiveWritesEnabled(true)
-		service := NewGatewayService(commands, portfolio.NewProjection(), ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return fixtureTime }), ambiguous, func() time.Time { return fixtureTime })
+		service := NewService(Options{Commands: commands, Portfolio: portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return fixtureTime }), Gateway: ambiguous, Now: func() time.Time { return fixtureTime }})
 		// This one builds its own service to reach the failing store, so it has to
 		// arm both switches the way newFixture does.
 		_ = service.SetExecutionAdmission(true)
@@ -471,29 +475,6 @@ func TestExecuteAdmissionIsExplicit(t *testing.T) {
 	})
 }
 
-func TestPreviewTokenReconstructsAcrossServiceInstancesAndRejectsTampering(t *testing.T) {
-	key := []byte("shared-preview-signing-key-with-32-bytes")
-	first := NewGatewayServiceWithPreviewKey(nil, nil, nil, nil, time.Now, key)
-	second := NewGatewayServiceWithPreviewKey(nil, nil, nil, nil, time.Now, key)
-	payload := []byte(`{"accountId":"account-a","instrumentId":"BTC-USDT","quantity":"2"}`)
-
-	token, err := first.SealPreview("principal-a", payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, err := second.OpenPreview("principal-a", token)
-	if err != nil || string(decoded) != string(payload) {
-		t.Fatalf("decoded=%s err=%v", decoded, err)
-	}
-	if _, err := second.OpenPreview("principal-b", token); err == nil {
-		t.Fatal("preview token crossed principal ownership")
-	}
-	tampered := token[:len(token)-1] + "A"
-	if _, err := second.OpenPreview("principal-a", tampered); err == nil {
-		t.Fatal("tampered preview token was accepted")
-	}
-}
-
 // newFixture arms both write switches: the command service's and the manual
 // service's execution admission. Neither used to matter here, because a
 // test-mode command was admitted by both with nothing armed. With one mode left
@@ -508,11 +489,11 @@ func newFixture(gateway Gateway) (*Service, *orders.Service, *portfolio.Projecti
 }
 
 func newUnadmittedFixture(gateway Gateway) (*Service, *orders.Service, *portfolio.Projection, *ledger.Service) {
-	commands := orders.NewService(orders.NewMemoryStore(), nil, func() time.Time { return fixtureTime })
+	commands := orders.NewService(orders.NewMemoryStore(), func() time.Time { return fixtureTime })
 	commands.SetLiveWritesEnabled(true)
 	projection := portfolio.NewProjection()
 	ledgerService := ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return fixtureTime })
-	return NewGatewayService(commands, projection, ledgerService, gateway, func() time.Time { return fixtureTime }), commands, projection, ledgerService
+	return NewService(Options{Commands: commands, Portfolio: projection, Ledger: ledgerService, Gateway: gateway, Now: func() time.Time { return fixtureTime }}), commands, projection, ledgerService
 }
 
 func createCommand(t *testing.T, commands *orders.Service, payload string) orders.Command {
@@ -522,7 +503,7 @@ func createCommand(t *testing.T, commands *orders.Service, payload string) order
 func createCommandWithKey(t *testing.T, commands *orders.Service, key, payload string) orders.Command {
 	t.Helper()
 	command, _, err := commands.Create(context.Background(), orders.CreateRequest{
-		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a", ReservationID: "reservation-a",
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
 		IdempotencyKey: key, Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: []byte(payload),
 	})
 	if err != nil {

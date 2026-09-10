@@ -38,7 +38,7 @@ make up
 | `trading-migrate` | 应用 trading 服务的 migration 后退出 |
 | `authedge-migrate` | 应用 auth edge 的 migration 后退出 |
 | `gateway` | 共享能力面 |
-| `trading` | 手动交易与资金费套利 |
+| `trading` | 手动交易、命令恢复与账务 |
 | `authedge` | 浏览器会话与转发 |
 | `web` | Caddy，托管前端并反向代理 `/api/*` |
 
@@ -70,7 +70,7 @@ make doctor
 ```
 
 它每项检查输出一行，且绝不提前退出——一次发现五个问题的运行会一次性全说完。
-检查按依赖顺序进行：`docker`、`.env.stack`、`credentials`、`credential store`、
+检查按依赖顺序进行：`docker`、`.env.stack`、`credentials`、
 `postgres`、`postgres roles`、`gateway`、`trading`、`auth edge`、`web`。每条失败
 行后面都跟着修复它的命令。
 
@@ -106,16 +106,14 @@ make down-hard
 
 ## 状态存在哪里
 
-- **PostgreSQL** 保存 gateway 的 account、catalog 与持久订单；trading 服务的命令
+- **PostgreSQL** 保存加密交易所凭证、gateway 的 account、catalog 与持久订单；trading 服务的命令
   账本与 projection；以及 auth edge 的会话。三个数据库，各有一个属主角色，任何服务都不读另一个的表。
 - **`.secrets/stack/`** 保存服务令牌、凭证库主密钥、gateway 的 DSN，以及 bootstrap
   密码与其哈希。目录 `0700`，每个文件 `0600`。
-- **`.secrets/store/`** 是 gateway 的加密 venue 凭证库。它是一个 bind mount，也是
-  整套栈里唯一一个被服务写入的路径。
 - **`.env.stack`** 只保存端口、uid 和那些密钥文件的路径，不含其他内容。它不是
   `.env`，栈也从不读 `.env`——见[前置条件](prerequisites.md)。
 
-四者都被 Git 忽略。
+三者都被 Git 忽略。
 
 ## 排障
 

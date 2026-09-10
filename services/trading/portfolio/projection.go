@@ -22,6 +22,7 @@ const (
 )
 
 type Fill struct {
+	InstrumentProduct, BaseAsset                                                  string
 	PrincipalID, FillID, CommandID, LineageID, ProductID, AccountID, InstrumentID string
 	Side                                                                          Side
 	Quantity, Price, Fee, FeeCurrency, SettlementCurrency                         string
@@ -38,9 +39,11 @@ var (
 	ErrFillConflict     = errors.New("fill identity conflict")
 	ErrMarkConflict     = errors.New("mark identity conflict")
 	ErrCurrencyMismatch = errors.New("portfolio settlement currency mismatch")
+	ErrAccountingReview = errors.New("historical fee accounting requires review")
 )
 
 type Position struct {
+	AccountingStatus   string    `json:"accountingStatus"`
 	PrincipalID        string    `json:"-"`
 	LineageID          string    `json:"lineageId"`
 	ProductID          string    `json:"productId"`
@@ -106,9 +109,9 @@ func (projection *Projection) ApplyFill(ctx context.Context, fill Fill) (Positio
 	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
-	fillKey := positionKey(fill.PrincipalID, fill.FillID)
+	fillKey := positionKey(fill.PrincipalID, fill.AccountID, fill.InstrumentID, fill.FillID)
 	if recorded, exists := projection.fills[fillKey]; exists {
-		if recorded.fingerprint != FillFingerprint(fill) {
+		if !ReplayCompatible(recorded.fingerprint, fill) {
 			return Position{}, FillResult{}, fmt.Errorf("%w: %s", ErrFillConflict, fill.FillID)
 		}
 		return projection.positions[positionKey(fill.PrincipalID, fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)].Position, recorded.result, nil
@@ -128,6 +131,14 @@ func (projection *Projection) ApplyFill(ctx context.Context, fill Fill) (Positio
 }
 
 func applyFill(state positionState, fill Fill, quantity, price, fee decimal.Decimal) (Position, FillResult, error) {
+	if state.AccountingStatus != "" && state.AccountingStatus != "ready" {
+		return Position{}, FillResult{}, ErrAccountingReview
+	}
+	delta, err := QuantityDelta(fill)
+	if err != nil {
+		return Position{}, FillResult{}, err
+	}
+	state.AccountingStatus = "ready"
 	if state.SettlementCurrency != "" && state.SettlementCurrency != fill.SettlementCurrency {
 		return Position{}, FillResult{}, ErrCurrencyMismatch
 	}
@@ -136,6 +147,24 @@ func applyFill(state positionState, fill Fill, quantity, price, fee decimal.Deci
 	signed := quantity
 	if fill.Side == SideSell {
 		signed = signed.Neg()
+	}
+	realized := applyQuantity(&state, signed, price)
+	// A base-asset fee is a separate inventory movement at the observed trade
+	// price. Its disposal gain is realized; the fee itself stays in its original
+	// currency in the ledger. Do not capitalize it and then deduct it again.
+	realized = realized.Add(applyQuantity(&state, delta.Sub(signed), price))
+	state.realized = state.realized.Add(realized)
+	if state.UpdatedAt.Before(fill.OccurredAt) {
+		state.UpdatedAt = fill.OccurredAt.UTC()
+	}
+	state.refresh()
+	result := FillResult{RealizedPnL: number(realized), Fee: number(fee), SettlementCurrency: fill.SettlementCurrency}
+	return state.Position, result, nil
+}
+
+func applyQuantity(state *positionState, signed, price decimal.Decimal) decimal.Decimal {
+	if signed.IsZero() {
+		return decimal.Zero
 	}
 	realized := decimal.Zero
 	if state.quantity.IsZero() || state.quantity.Sign() == signed.Sign() {
@@ -157,13 +186,7 @@ func applyFill(state positionState, fill Fill, quantity, price, fee decimal.Deci
 		}
 		state.quantity = remaining
 	}
-	state.realized = state.realized.Add(realized)
-	if state.UpdatedAt.Before(fill.OccurredAt) {
-		state.UpdatedAt = fill.OccurredAt.UTC()
-	}
-	state.refresh()
-	result := FillResult{RealizedPnL: number(realized), Fee: number(fee), SettlementCurrency: fill.SettlementCurrency}
-	return state.Position, result, nil
+	return realized
 }
 
 func stateFromPosition(position Position) (positionState, error) {
@@ -193,9 +216,12 @@ func FillFingerprint(fill Fill) string {
 		Side                                                                          Side
 		Quantity, Price, Fee, FeeCurrency, SettlementCurrency                         string
 		OccurredAt                                                                    time.Time
+		InstrumentProduct                                                             string `json:",omitempty"`
+		BaseAsset                                                                     string `json:",omitempty"`
 	}{
 		fill.PrincipalID, fill.FillID, fill.CommandID, fill.LineageID, fill.ProductID, fill.AccountID, fill.InstrumentID,
 		fill.Side, fill.Quantity, fill.Price, fill.Fee, fill.FeeCurrency, fill.SettlementCurrency, fill.OccurredAt.UTC(),
+		fill.InstrumentProduct, fill.BaseAsset,
 	})
 	hash := sha256.Sum256(payload)
 	return hex.EncodeToString(hash[:])
@@ -295,7 +321,7 @@ func (state *positionState) refresh() {
 }
 
 func validateFill(fill Fill) (decimal.Decimal, decimal.Decimal, decimal.Decimal, error) {
-	if fill.PrincipalID == "" || fill.FillID == "" || fill.CommandID == "" || fill.LineageID == "" || fill.ProductID == "" || fill.AccountID == "" || fill.InstrumentID == "" || fill.FeeCurrency == "" || fill.SettlementCurrency == "" || fill.OccurredAt.IsZero() {
+	if fill.PrincipalID == "" || fill.FillID == "" || fill.CommandID == "" || fill.LineageID == "" || fill.ProductID == "" || fill.AccountID == "" || fill.InstrumentID == "" || fill.SettlementCurrency == "" || fill.OccurredAt.IsZero() {
 		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("fill attribution is incomplete")
 	}
 	if fill.Side != SideBuy && fill.Side != SideSell {
@@ -304,8 +330,11 @@ func validateFill(fill Fill) (decimal.Decimal, decimal.Decimal, decimal.Decimal,
 	quantity, qErr := decimal.NewFromString(fill.Quantity)
 	price, pErr := decimal.NewFromString(fill.Price)
 	fee, fErr := decimal.NewFromString(fill.Fee)
-	if qErr != nil || pErr != nil || fErr != nil || !quantity.IsPositive() || !price.IsPositive() || fee.IsNegative() {
+	if qErr != nil || pErr != nil || fErr != nil || !quantity.IsPositive() || !price.IsPositive() {
 		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("invalid fill decimals")
+	}
+	if _, err := QuantityDelta(fill); err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, err
 	}
 	return quantity, price, fee, nil
 }

@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	realtimewire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
-	"github.com/QuantProcessing/boltertrader/gateway/realtimewire"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -36,11 +36,11 @@ func (handler *InternalHandler) accountEventStream(w http.ResponseWriter, r *htt
 	defer cancel()
 
 	outbound := make(chan realtimewire.Message, realtimewire.OutboundBuffer)
-	controls := make(chan internalControlResult, 1)
+	controls := make(chan realtimeControlResult, 1)
 	writeDone := make(chan error, 1)
 	topicDone := make(chan struct{}, 1)
 	lagged := make(chan struct{}, 1)
-	go readInternalControls(ctx, connection, controls)
+	go readRealtimeControls(ctx, connection, controls)
 	go func() {
 		for {
 			select {
@@ -82,7 +82,7 @@ func (handler *InternalHandler) accountEventStream(w http.ResponseWriter, r *htt
 		case <-writeDone:
 			return
 		case <-lagged:
-			_ = connection.Close(websocket.StatusTryAgainLater, "resync_required")
+			_ = connection.Close(websocket.StatusTryAgainLater, "consumer_lagged")
 			return
 		case <-topicDone:
 			if activeCancel != nil {
@@ -130,14 +130,16 @@ func (handler *InternalHandler) accountEventStream(w http.ResponseWriter, r *htt
 }
 
 func (handler *InternalHandler) runAccountEvents(ctx context.Context, subscriptionID string, emit func(realtimewire.Message) bool) {
-	subscription, err := handler.accountEvents.SubscribePrincipal(ctx, handler.accountEventOwner, realtimewire.OutboundBuffer)
+	subscription, connections, err := handler.accountEvents.SubscribePrincipalWithConnections(ctx, handler.accountEventOwner, realtimewire.OutboundBuffer)
 	if err != nil {
-		emit(realtimewire.Message{Type: realtimewire.MessageResyncRequired, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents, Code: "UPSTREAM_UNAVAILABLE", Reason: "account-event-stream-unavailable", ObservedAt: time.Now().UTC()})
+		emit(realtimewire.Message{Type: realtimewire.MessageError, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents, Code: "UPSTREAM_UNAVAILABLE", Reason: "account-event-stream-unavailable", ObservedAt: time.Now().UTC()})
 		return
 	}
 	defer subscription.Close()
-	if !emit(realtimewire.Message{Type: realtimewire.MessageCheckpoint, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents, ObservedAt: time.Now().UTC(), Data: realtimewire.EncodeData(map[string]any{})}) {
-		return
+	for _, event := range connections {
+		if !emitAccountEvent(subscriptionID, event, emit) {
+			return
+		}
 	}
 	for {
 		select {
@@ -153,27 +155,21 @@ func (handler *InternalHandler) runAccountEvents(ctx context.Context, subscripti
 					}
 				default:
 				}
-				emit(realtimewire.Message{Type: realtimewire.MessageResyncRequired, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents, Code: code, Reason: reason, ObservedAt: time.Now().UTC()})
+				emit(realtimewire.Message{Type: realtimewire.MessageError, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents, Code: code, Reason: reason, ObservedAt: time.Now().UTC()})
 				return
 			}
-			if event.Kind == gatewayevent.KindResyncRequired {
-				// The logical Gateway subscription survives an exchange reconnect.
-				// Tell the browser that upstream data is degraded, then keep the
-				// subscription alive so the subsequent account-health/event update
-				// also tells it when realtime has recovered.
-				if !emit(realtimewire.Message{Type: realtimewire.MessageResyncRequired, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents, Code: "UPSTREAM_GAP", Reason: "exchange-account-stream-gap", ObservedAt: event.OccurredAt, Data: realtimewire.EncodeData(map[string]any{"accountId": event.AccountID})}) {
-					return
-				}
-				continue
-			}
-			if !emit(realtimewire.Message{
-				Type: realtimewire.MessageDelta, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents,
-				ObservedAt: event.OccurredAt, Data: realtimewire.EncodeData(accountWireEvent(event)),
-			}) {
+			if !emitAccountEvent(subscriptionID, event, emit) {
 				return
 			}
 		}
 	}
+}
+
+func emitAccountEvent(subscriptionID string, event gatewayevent.Event, emit func(realtimewire.Message) bool) bool {
+	return emit(realtimewire.Message{
+		Type: realtimewire.MessageDelta, SubscriptionID: subscriptionID, Topic: realtimewire.TopicAccountEvents,
+		ObservedAt: event.OccurredAt, Data: realtimewire.EncodeData(accountWireEvent(event)),
+	})
 }
 
 type browserAccountEvent struct {

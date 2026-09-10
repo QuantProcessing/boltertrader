@@ -26,9 +26,9 @@ import (
 	"syscall"
 	"time"
 
+	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 	tradingapp "github.com/QuantProcessing/boltertrader/services/trading/app"
 	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
-	tradingobservability "github.com/QuantProcessing/boltertrader/services/trading/observability"
 	"github.com/QuantProcessing/boltertrader/services/trading/servicetoken"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -62,23 +62,11 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	marketTopics := gatewayClient.RealtimeMarket()
-	defer marketTopics.Close()
-	metrics := tradingobservability.New()
-	marketTopics.SetObserver(metrics)
-
 	service, err := tradingapp.New(tradingapp.Config{
 		LivePrivateWritesEnabled: cfg.LivePrivateWritesEnabled,
-		ManualPreviewSigningKey:  cfg.ManualPreviewSigningKey,
 	}, tradingapp.Dependencies{
 		Database:              database,
 		CatalogSource:         gatewayClient,
-		MarketDataSource:      gatewayClient.MarketData(),
-		FreshMarketData:       gatewayClient.FreshMarketData(),
-		FreshBBO:              gatewayClient.FreshBBO(),
-		FundingBoardStream:    marketTopics,
-		MarketTopics:          marketTopics,
-		RealtimeObserver:      metrics,
 		MarketDataProbe:       gatewayClient,
 		RuntimeProbe:          gatewayClient,
 		RuntimeProjection:     gatewayClient,
@@ -95,14 +83,14 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cfg.ManualPreviewSigningKey = nil
 
 	// The assembly does not report "database" — which database has to be up is a
 	// fact about the deployment. Here it is the one just opened and pinged.
-	service.Readiness().Update("database", readyComponent())
+	service.Readiness().SetEvaluator("database", func() platformsystem.Component {
+		return databaseReadiness(database.PingContext)
+	})
 
 	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", metrics.Handler())
 	if _, err := service.Register(mux); err != nil {
 		return err
 	}
@@ -112,6 +100,15 @@ func run(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return serve(ctx, server, service)
+}
+
+func databaseReadiness(ping func(context.Context) error) platformsystem.Component {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := ping(ctx); err != nil {
+		return platformsystem.Component{Ready: false, Reason: "database_unavailable", ObservedAt: time.Now().UTC()}
+	}
+	return platformsystem.Component{Ready: true, Reason: "ready", ObservedAt: time.Now().UTC()}
 }
 
 func serve(ctx context.Context, server *http.Server, service *tradingapp.Service) error {

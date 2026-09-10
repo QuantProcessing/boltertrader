@@ -184,7 +184,7 @@ func (c *Client) getOpenOrdersPage(ctx context.Context, category, symbol, limit,
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get open orders failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get open orders", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -278,7 +278,7 @@ func (c *Client) getOrderHistoryPage(ctx context.Context, req GetOrderHistoryReq
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get order history failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get order history", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -392,7 +392,7 @@ func (c *Client) getFillsPage(ctx context.Context, req GetFillsRequest) (*FillLi
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get fills failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get fills", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -416,7 +416,7 @@ func (c *Client) GetAccountInfo(ctx context.Context) (*AccountInfo, error) {
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get account info failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get account info", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -428,7 +428,7 @@ func (c *Client) GetAccountSettings(ctx context.Context) (*AccountSettings, erro
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get account settings failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get account settings", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -440,7 +440,7 @@ func (c *Client) GetFundingAssets(ctx context.Context, coin string) ([]FundingAs
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get funding assets failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get funding assets", out.Code, out.Msg)
 	}
 	return out.Data, nil
 }
@@ -460,7 +460,7 @@ func (c *Client) GetFinancialRecords(ctx context.Context, req FinancialRecordsRe
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get financial records failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get financial records", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -475,7 +475,7 @@ func (c *Client) GetAccountFeeRate(ctx context.Context, category, symbol string)
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get account fee rate failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get account fee rate", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -487,7 +487,7 @@ func (c *Client) GetSwitchStatus(ctx context.Context) (*SwitchStatus, error) {
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get switch status failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get switch status", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -499,7 +499,7 @@ func (c *Client) GetMaxTransferable(ctx context.Context, coin string) (*MaxTrans
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get max transferable failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get max transferable", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -514,7 +514,7 @@ func (c *Client) GetOpenInterestLimit(ctx context.Context, category, symbol stri
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get open interest limit failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get open interest limit", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -529,7 +529,7 @@ func (c *Client) GetCurrentPositions(ctx context.Context, category, symbol strin
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get positions failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get positions", out.Code, out.Msg)
 	}
 	return out.Data.List, nil
 }
@@ -541,7 +541,7 @@ func (c *Client) SetHoldMode(ctx context.Context, holdMode string) error {
 		return err
 	}
 	if out.Code != "00000" {
-		return fmt.Errorf("bitget sdk: set hold mode failed: %s %s", out.Code, out.Msg)
+		return newResponseError("set hold mode", out.Code, out.Msg)
 	}
 	return nil
 }
@@ -553,7 +553,7 @@ func (c *Client) SetLeverage(ctx context.Context, req *SetLeverageRequest) error
 		return err
 	}
 	if out.Code != "00000" {
-		return fmt.Errorf("bitget sdk: set leverage failed: %s %s", out.Code, out.Msg)
+		return newResponseError("set leverage", out.Code, out.Msg)
 	}
 	return nil
 }

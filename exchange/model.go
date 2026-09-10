@@ -555,10 +555,12 @@ type Fill struct {
 	Side          Side            `json:"side,omitempty"`
 	Price         decimal.Decimal `json:"price"`
 	Quantity      decimal.Decimal `json:"quantity"`
-	Fee           decimal.Decimal `json:"fee"`
-	FeeAsset      string          `json:"fee_asset,omitempty"`
-	Liquidity     Liquidity       `json:"liquidity,omitempty"`
-	Time          time.Time       `json:"time,omitempty"`
+	// Fee is a cost in FeeAsset: positive is charged, negative is a rebate.
+	// Adapters normalize venue signs; consumers must not take its absolute value.
+	Fee       decimal.Decimal `json:"fee"`
+	FeeAsset  string          `json:"fee_asset,omitempty"`
+	Liquidity Liquidity       `json:"liquidity,omitempty"`
+	Time      time.Time       `json:"time,omitempty"`
 }
 
 type SpotAccount struct {

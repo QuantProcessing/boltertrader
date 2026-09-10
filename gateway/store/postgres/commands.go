@@ -10,7 +10,6 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -144,142 +143,6 @@ func (postgresStore *Store) MarkDispatching(ctx context.Context, request store.M
 	return postgresStore.transition(ctx, request.CommandID, "", domain.StateDispatching, request.EventID, 0, false, nil)
 }
 
-func (postgresStore *Store) BeginOrderHandoff(ctx context.Context, request store.BeginOrderHandoffRequest) (store.OrderHandoff, error) {
-	if err := request.Validate(); err != nil {
-		return store.OrderHandoff{}, err
-	}
-	tx, err := postgresStore.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return store.OrderHandoff{}, redactErr("begin order handoff", err)
-	}
-	defer tx.Rollback(ctx)
-
-	existing, err := loadOrderHandoffWithQuerier(ctx, tx, request.HandoffID)
-	if err == nil {
-		if existing.BeginOrderHandoffRequest != request {
-			return store.OrderHandoff{}, store.ErrOperationConflict
-		}
-		if err := postgresStore.commit(ctx, tx); err != nil {
-			return store.OrderHandoff{}, err
-		}
-		return existing, nil
-	}
-	if !errors.Is(err, store.ErrNotFound) {
-		return store.OrderHandoff{}, err
-	}
-
-	var activeID *uuid.UUID
-	if err := tx.QueryRow(ctx, `
-		SELECT active_snapshot_id
-		FROM gateway_account_runtime_heads
-		WHERE account_id=$1
-		FOR KEY SHARE
-	`, request.AccountID).Scan(&activeID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return store.OrderHandoff{}, store.ErrPromotionFenceConflict
-		}
-		return store.OrderHandoff{}, redactErr("lock order handoff runtime head", err)
-	}
-	if activeID == nil {
-		return store.OrderHandoff{}, store.ErrPromotionFenceConflict
-	}
-	active, err := loadSnapshotByID(ctx, tx, *activeID)
-	if err != nil {
-		return store.OrderHandoff{}, err
-	}
-	if active.Fence != request.Fence {
-		return store.OrderHandoff{}, store.ErrPromotionFenceConflict
-	}
-	var routeActive bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM gateway_runtime_snapshot_routes
-			WHERE snapshot_id=$1 AND route_id=$2 AND requested_state='active'
-		)
-	`, *activeID, request.RouteID).Scan(&routeActive); err != nil {
-		return store.OrderHandoff{}, redactErr("check order handoff active route", err)
-	}
-	if !routeActive {
-		return store.OrderHandoff{}, store.ErrPromotionFenceConflict
-	}
-	var referenceRetired bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM gateway_retired_secret_refs WHERE secret_ref=$1
-		)
-	`, active.SecretRef.RawForTrustedBoundary()).Scan(&referenceRetired); err != nil {
-		return store.OrderHandoff{}, redactErr("check order handoff active reference", err)
-	}
-	if referenceRetired {
-		return store.OrderHandoff{}, store.ErrRetiredSecretReference
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO gateway_order_handoffs(
-			handoff_id, command_id, account_id, route_id, runtime_id, state
-		) VALUES ($1,$2,$3,$4,$5::uuid,'started')
-		ON CONFLICT (handoff_id) DO NOTHING
-	`, request.HandoffID, request.CommandID, request.AccountID, request.RouteID,
-		request.Fence.RuntimeID); err != nil {
-		return store.OrderHandoff{}, redactErr("begin order handoff", err)
-	}
-	handoff, err := loadOrderHandoffWithQuerier(ctx, tx, request.HandoffID)
-	if err != nil {
-		return store.OrderHandoff{}, err
-	}
-	if handoff.BeginOrderHandoffRequest != request {
-		return store.OrderHandoff{}, store.ErrOperationConflict
-	}
-	if err := postgresStore.commit(ctx, tx); err != nil {
-		return store.OrderHandoff{}, err
-	}
-	return handoff, nil
-}
-
-func (postgresStore *Store) ResolveOrderHandoff(ctx context.Context, request store.ResolveOrderHandoffRequest) (store.OrderHandoff, error) {
-	if err := request.Validate(); err != nil {
-		return store.OrderHandoff{}, err
-	}
-	command, err := postgresStore.pool.Exec(ctx, `
-		UPDATE gateway_order_handoffs
-		SET state=$2, resolved_at=COALESCE(resolved_at, now())
-		WHERE handoff_id=$1 AND (state='started' OR state=$2)
-	`, request.HandoffID, request.State)
-	if err != nil {
-		return store.OrderHandoff{}, redactErr("resolve order handoff", err)
-	}
-	if command.RowsAffected() == 0 {
-		return store.OrderHandoff{}, store.ErrNotFound
-	}
-	return postgresStore.loadOrderHandoff(ctx, request.HandoffID)
-}
-
-func (postgresStore *Store) loadOrderHandoff(ctx context.Context, handoffID domain.EventID) (store.OrderHandoff, error) {
-	return loadOrderHandoffWithQuerier(ctx, postgresStore.pool, handoffID)
-}
-
-func loadOrderHandoffWithQuerier(ctx context.Context, querier snapshotQuerier, handoffID domain.EventID) (store.OrderHandoff, error) {
-	var handoff store.OrderHandoff
-	var resolvedAt *time.Time
-	err := querier.QueryRow(ctx, `
-		SELECT handoff_id::text, command_id::text, account_id, route_id,
-		       runtime_id::text,
-		       state, started_at, resolved_at
-		FROM gateway_order_handoffs WHERE handoff_id=$1
-	`, handoffID).Scan(&handoff.HandoffID, &handoff.CommandID, &handoff.AccountID, &handoff.RouteID,
-		&handoff.Fence.RuntimeID,
-		&handoff.State, &handoff.StartedAt, &resolvedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return store.OrderHandoff{}, store.ErrNotFound
-	}
-	if err != nil {
-		return store.OrderHandoff{}, redactErr("load order handoff", err)
-	}
-	handoff.Fence.AccountID = handoff.AccountID
-	handoff.ResolvedAt = resolvedAt
-	return handoff, nil
-}
-
 func (postgresStore *Store) RecordVenueResult(ctx context.Context, request store.RecordVenueResultRequest) (store.StoredCommand, error) {
 	if err := request.CommandID.Validate(); err != nil {
 		return store.StoredCommand{}, err
@@ -315,11 +178,38 @@ func (postgresStore *Store) LoadOrder(ctx context.Context, request store.LoadOrd
 		       o.account_id, o.instrument_id, c.portable_client_order_id::text,
 		       o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
-		       c.request_payload
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled'))
 		FROM orders o
 		JOIN idempotency_commands c ON c.command_id = o.command_id
 		WHERE o.gateway_order_id = $1 AND c.principal_id = $2
 	`, request.GatewayOrderID, request.PrincipalID)
+	command, err := scanStoredCommandWithPrincipal(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.StoredCommand{}, ErrNotFound
+	}
+	return command, err
+}
+
+// LoadOrderByIdempotencyKey reads the original durable identity after a caller
+// loses the placement response. It never reserves or dispatches a command.
+func (postgresStore *Store) LoadOrderByIdempotencyKey(ctx context.Context, principal domain.PrincipalID, key domain.IdempotencyKey) (store.StoredCommand, error) {
+	if err := principal.Validate(); err != nil {
+		return store.StoredCommand{}, err
+	}
+	if err := key.Validate(); err != nil {
+		return store.StoredCommand{}, err
+	}
+	row := postgresStore.pool.QueryRow(ctx, `
+		SELECT c.command_id::text, o.gateway_order_id::text, c.principal_id,
+		       o.account_id, o.instrument_id, c.portable_client_order_id::text,
+		       o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
+		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled'))
+		FROM idempotency_commands c
+		JOIN orders o ON o.command_id=c.command_id
+		WHERE c.principal_id=$1 AND c.idempotency_key=$2`, principal, key)
 	command, err := scanStoredCommandWithPrincipal(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.StoredCommand{}, ErrNotFound
@@ -336,7 +226,8 @@ func (postgresStore *Store) LoadOrderByVenueIdentity(ctx context.Context, reques
 		       o.account_id, o.instrument_id, c.portable_client_order_id::text,
 		       o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
-		       c.request_payload
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled'))
 		FROM venue_correlations v
 		JOIN orders o ON o.gateway_order_id = v.gateway_order_id
 		JOIN idempotency_commands c ON c.command_id = o.command_id
@@ -363,7 +254,8 @@ func (postgresStore *Store) ListOrders(ctx context.Context, request store.ListOr
 		       o.account_id, o.instrument_id, c.portable_client_order_id::text,
 		       o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
-		       c.request_payload
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled'))
 		FROM orders o
 		JOIN idempotency_commands c ON c.command_id = o.command_id
 		WHERE c.principal_id = $1
@@ -404,7 +296,8 @@ func (postgresStore *Store) LoadRecoverableCommands(ctx context.Context, request
 		SELECT c.command_id::text, o.gateway_order_id::text, o.account_id, o.instrument_id,
 		       c.portable_client_order_id::text, o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
-		       c.request_payload
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled'))
 		FROM orders o
 		JOIN idempotency_commands c ON c.command_id = o.command_id
 		WHERE o.account_id = $1 AND o.state NOT IN ('filled', 'canceled', 'rejected')
@@ -472,23 +365,6 @@ func (postgresStore *Store) transition(ctx context.Context, commandID domain.Com
 	`, eventID, current.GatewayOrderID, nextVersion, nextState); err != nil {
 		return store.StoredCommand{}, redactErr("insert transition event", err)
 	}
-	handoffState := store.OrderHandoffState("")
-	switch nextState {
-	case domain.StateAccepted:
-		handoffState = store.OrderHandoffAccepted
-	case domain.StateRejected:
-		handoffState = store.OrderHandoffRejected
-	case domain.StateUncertain:
-		handoffState = store.OrderHandoffUncertain
-	}
-	if handoffState != "" {
-		if _, err := tx.Exec(ctx, `
-			UPDATE gateway_order_handoffs SET state=$2, resolved_at=now()
-			WHERE command_id=$1 AND state='started'
-		`, commandID, handoffState); err != nil {
-			return store.StoredCommand{}, redactErr("resolve durable order handoff", err)
-		}
-	}
 	if nextState == domain.StateUncertain {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO reconciliation_tasks(task_id, gateway_order_id, reason, evidence_summary, next_attempt_at, attempts)
@@ -510,6 +386,7 @@ func (postgresStore *Store) transition(ctx context.Context, commandID domain.Com
 	}
 
 	current.State = nextState
+	current.AcceptanceObserved = current.AcceptanceObserved || nextState.ConfirmsAcceptance()
 	current.ResourceVersion = nextVersion
 	current.EventID = eventID
 	if venueOrderID != "" {
@@ -534,7 +411,9 @@ func (postgresStore *Store) RescheduleReconciliation(ctx context.Context, reques
 		SELECT u.task_id, c.command_id::text, o.gateway_order_id::text, o.account_id, o.instrument_id,
 		       c.portable_client_order_id::text, o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
-		       c.request_payload, u.reason, u.next_attempt_at, u.attempts
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled')),
+		       u.reason, u.next_attempt_at, u.attempts
 		FROM updated u
 		JOIN orders o ON o.gateway_order_id = u.gateway_order_id
 		JOIN idempotency_commands c ON c.command_id = o.command_id
@@ -578,7 +457,9 @@ func (postgresStore *Store) ClaimDueReconciliationTasks(ctx context.Context, req
 		SELECT claimed.task_id, c.command_id::text, o.gateway_order_id::text, o.account_id, o.instrument_id,
 		       c.portable_client_order_id::text, o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
-		       c.request_payload, claimed.reason, claimed.next_attempt_at, claimed.attempts
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled')),
+		       claimed.reason, claimed.next_attempt_at, claimed.attempts
 		FROM claimed
 		JOIN orders o ON o.gateway_order_id = claimed.gateway_order_id
 		JOIN idempotency_commands c ON c.command_id = o.command_id
@@ -611,7 +492,7 @@ func scanReconciliationTask(row rowScanner) (store.ReconciliationTask, error) {
 		&task.TaskID,
 		&task.Command.CommandID, &task.Command.GatewayOrderID, &task.Command.AccountID, &task.Command.InstrumentID,
 		&task.Command.ClientOrderID, &task.Command.State, &task.Command.ResourceVersion, &task.Command.VenueOrderID,
-		&task.Command.EventID, &task.Command.Payload,
+		&task.Command.EventID, &task.Command.Payload, &task.Command.AcceptanceObserved,
 		&task.Reason, &task.NextAttemptAt, &task.Attempts,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -700,7 +581,8 @@ func loadCommandForUpdate(ctx context.Context, tx pgx.Tx, commandID domain.Comma
 		SELECT c.command_id::text, o.gateway_order_id::text, c.principal_id, o.account_id, o.instrument_id,
 		       c.portable_client_order_id::text, o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
-		       c.request_payload
+		       c.request_payload,
+		       EXISTS (SELECT 1 FROM order_events e WHERE e.gateway_order_id=o.gateway_order_id AND e.state IN ('accepted','open','partially_filled','filled','canceled'))
 		FROM orders o
 		JOIN idempotency_commands c ON c.command_id = o.command_id
 		WHERE c.command_id = $1
@@ -722,7 +604,7 @@ func scanStoredCommand(row rowScanner) (store.StoredCommand, error) {
 	if err := row.Scan(
 		&command.CommandID, &command.GatewayOrderID, &command.AccountID, &command.InstrumentID,
 		&command.ClientOrderID, &command.State, &command.ResourceVersion, &command.VenueOrderID,
-		&command.EventID, &command.Payload,
+		&command.EventID, &command.Payload, &command.AcceptanceObserved,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.StoredCommand{}, pgx.ErrNoRows
@@ -738,7 +620,7 @@ func scanStoredCommandWithPrincipal(row rowScanner) (store.StoredCommand, error)
 		&command.CommandID, &command.GatewayOrderID, &command.PrincipalID,
 		&command.AccountID, &command.InstrumentID, &command.ClientOrderID,
 		&command.State, &command.ResourceVersion, &command.VenueOrderID,
-		&command.EventID, &command.Payload,
+		&command.EventID, &command.Payload, &command.AcceptanceObserved,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.StoredCommand{}, pgx.ErrNoRows

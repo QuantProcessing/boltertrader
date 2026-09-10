@@ -23,7 +23,7 @@ server:
   internal_listen: 0.0.0.0:18082
   allow_non_loopback_internal_listen: true
   # A second token, not the one above. The planes have different audiences and
-  # different blast radii — the authority plane can rotate a venue credential —
+  # different blast radii — the authority plane can add or delete a venue credential —
   # so a service trusted with orders is not thereby trusted with accounts.
   internal_auth_token_ref: env://GATEWAY_INTERNAL_AUTH_TOKEN
 

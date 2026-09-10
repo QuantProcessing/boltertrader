@@ -139,6 +139,9 @@ services:
     build: &build
       context: .
       dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${BOLTER_DOCKER_HTTP_PROXY:-}
+        HTTPS_PROXY: ${BOLTER_DOCKER_HTTP_PROXY:-}
     entrypoint: ["/usr/local/bin/gateway-migrate"]
     # cmd/gateway-migrate hard-codes all three of these and exits with
     # CROSS_MODE_DATABASE_IDENTITY on any other combination, so they are restated
@@ -192,17 +195,12 @@ services:
     # rule on the parent directory.
     entrypoint: ["/usr/local/bin/exchange-gateway-docker-support"]
     command: ["run", "-config", "/etc/boltertrader/gateway.yaml"]
-    # Venue credentials are encrypted at rest under a master key the gateway
-    # never sees in its config. All five variables are required together:
-    # newGatewayCredentialResolver treats a partial set as a misconfiguration
-    # rather than as "no store", and refuses to start.
+    # Venue credentials live encrypted in PostgreSQL. Only Gateway loads the
+    # encryption key; service tokens remain separate from venue credentials.
     environment:
       BT_LIVE_PRIVATE_WRITES_ENABLED: ${BT_LIVE_PRIVATE_WRITES_ENABLED:-true}
       BT_SECRET_KEY_SOURCE: file
       BT_SECRET_MASTER_KEY_FILE: /etc/boltertrader/secrets/stack/secret_master_key
-      BT_SECRET_MASTER_KEY_VERSION: v1
-      BT_SECRET_STORE_DIR: /var/lib/boltertrader/secretstore
-      BT_SECRET_STORE_NAMESPACE: boltertrader
       # Venue traffic is direct unless the operator explicitly sets
       # GATEWAY_HTTP_PROXY. Bootstrap never inherits ambient host proxy variables;
       # when explicitly configured it rewrites loopback to host.docker.internal.
@@ -214,15 +212,10 @@ services:
       BT_VENUE_PROBE_TIMEOUT: ${BT_VENUE_PROBE_TIMEOUT:-30s}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Written out rather than composed from *secrets: YAML merge keys cannot
-    # append to a sequence. The store is the one writable path in the stack —
-    # read_only above governs the image layer, not a bind mount declared rw —
-    # and it is a host directory rather than a named volume because Docker
-    # creates those owned by root while every service here runs as the host uid.
+    # Configuration and encryption key are read-only host mounts.
     volumes:
       - "${GATEWAY_CONFIG_FILE:-./docker/gateway.docker.yaml}:/etc/boltertrader/gateway.yaml:ro"
       - "${BT_SECRET_DIR:-./.secrets}/stack:/etc/boltertrader/secrets/stack:ro"
-      - "${BT_SECRET_DIR:-./.secrets}/store:/var/lib/boltertrader/secretstore:rw"
     secrets:
       - GATEWAY_AUTH_TOKEN
       - GATEWAY_INTERNAL_AUTH_TOKEN
@@ -296,7 +289,6 @@ services:
       BT_TRADING_SERVICE_TOKEN_FILE: /etc/boltertrader/secrets/stack/trading_service_token
       BT_GATEWAY_TOKEN_FILE: /etc/boltertrader/secrets/stack/gateway_auth_token
       BT_GATEWAY_INTERNAL_TOKEN_FILE: /etc/boltertrader/secrets/stack/gateway_internal_auth_token
-      BT_MANUAL_PREVIEW_SIGNING_KEY_FILE: /etc/boltertrader/secrets/stack/manual_preview_signing_key
     volumes: *secrets
     ports:
       - "127.0.0.1:${TRADING_PORT:-18092}:18092"
@@ -388,6 +380,9 @@ services:
     build:
       context: .
       dockerfile: docker/web/Dockerfile
+      args:
+        HTTP_PROXY: ${BOLTER_DOCKER_HTTP_PROXY:-}
+        HTTPS_PROXY: ${BOLTER_DOCKER_HTTP_PROXY:-}
     volumes:
       # Read-only, like every other configuration mount here: the process that
       # faces the browser has no business rewriting its own routing table.

@@ -1,5 +1,5 @@
-// Package postgres is the trading service's durable store: reservations,
-// commands, the accounting ledger, positions and the audit trail.
+// Package postgres persists commands, recovery tasks, the accounting ledger,
+// positions and the audit trail.
 //
 // Every statement names its tables unqualified, so where they land is decided
 // by the connection rather than by the code: a database of trading's own the

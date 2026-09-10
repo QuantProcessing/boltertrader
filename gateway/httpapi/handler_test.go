@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
@@ -73,7 +74,7 @@ func TestHandlerRejectsMalformedBodiesAndUnsupportedOrForbiddenSurfacesBeforeBac
 		// forwarded: the coordinator validates the route before it resolves
 		// one, so an omitted route_id surfaces as an unclassified failure --
 		// a 500 -- instead of the caller error it is.
-		{"missing route", http.MethodPost, "/v1/orders", `{"account_id":"acct-a","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`, http.StatusBadRequest},
+		{"missing route", http.MethodPost, "/v1/orders", `{"account_id":"acct-a","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001","runtime_id":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11"}`, http.StatusBadRequest},
 		{"amend unsupported", http.MethodPatch, "/v1/orders/018f0000-0000-7000-8000-000000000002", `{}`, http.StatusNotImplemented},
 		{"order book requires scope", http.MethodGet, "/v1/order-book", "", http.StatusBadRequest},
 		{"transfer absent", http.MethodPost, "/v1/transfers", `{}`, http.StatusNotFound},
@@ -151,7 +152,7 @@ func TestHandlerAccountReadinessIncludesCoordinatorWriteGate(t *testing.T) {
 
 func TestHandlerRejectsHostileJSONAndPaginationWithoutBackendIO(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	valid := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
+	valid := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001","runtime_id":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11"}`
 	tests := []struct {
 		name        string
 		contentType string
@@ -198,7 +199,7 @@ func TestHandlerErrorEnvelopeNeverReflectsNativeErrorMaterial(t *testing.T) {
 	fixture.orders.placeErr = exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{
 		Operation: "PlaceOrder", Code: "51000", SafeMessage: canary,
 	})
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001","runtime_id":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -276,7 +277,7 @@ func TestHandlerIdempotencyConflictReturnsExistingCommandAndRequestCorrelation(t
 		ClientOrderID:  "1", State: domain.StatePrepared,
 	}
 	fixture.orders.placeErr = order.ErrIdempotencyConflict
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-conflict","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-conflict","side":"buy","type":"market","quantity":"0.001","runtime_id":"018f47a8-2578-7d3c-9d7d-5e4f4a445e11"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -496,12 +497,14 @@ func TestHandlerListFillsProjectsSettlementAssetFromResolvedInstrument(t *testin
 	var response struct {
 		Items []struct {
 			SettlementAsset string `json:"settlement_asset"`
+			Product         string `json:"product"`
+			BaseAsset       string `json:"base_asset"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Items) != 1 || response.Items[0].SettlementAsset != "USDT" {
+	if len(response.Items) != 1 || response.Items[0].SettlementAsset != "USDT" || response.Items[0].Product != "spot" || response.Items[0].BaseAsset != "BTC" {
 		t.Fatalf("response=%+v body=%s", response, recorder.Body.String())
 	}
 }
@@ -624,6 +627,7 @@ type fakeHTTPOrders struct {
 	getCalls          int
 	getPrincipal      domain.PrincipalID
 	getGatewayOrderID domain.GatewayOrderID
+	getIdempotencyKey domain.IdempotencyKey
 	getErr            error
 	getResult         order.Result
 	listCalls         int
@@ -645,6 +649,7 @@ func (orders *fakeHTTPOrders) Place(_ context.Context, request order.PlaceReques
 		CommandID:      "018f0000-0000-7000-8000-000000000001",
 		GatewayOrderID: "018f0000-0000-7000-8000-000000000002",
 		ClientOrderID:  "1", State: domain.StateOpen, ResourceVersion: 2,
+		AccountID: request.AccountID, InstrumentID: request.InstrumentID,
 	}, nil
 }
 
@@ -661,6 +666,11 @@ func (orders *fakeHTTPOrders) Get(_ context.Context, principalID domain.Principa
 	return orders.getResult, nil
 }
 
+func (orders *fakeHTTPOrders) GetByIdempotencyKey(ctx context.Context, principal domain.PrincipalID, key domain.IdempotencyKey) (order.Result, error) {
+	orders.getIdempotencyKey = key
+	return orders.Get(ctx, principal, "")
+}
+
 func (orders *fakeHTTPOrders) List(context.Context, order.ListRequest) ([]order.Result, error) {
 	orders.listCalls++
 	return []order.Result{}, nil
@@ -668,7 +678,10 @@ func (orders *fakeHTTPOrders) List(context.Context, order.ListRequest) ([]order.
 
 func (orders *fakeHTTPOrders) Cancel(context.Context, order.CancelRequest) (order.Result, error) {
 	orders.cancelCalls++
-	return order.Result{}, nil
+	result := orders.getResult
+	result.State = domain.StateCanceled
+	result.ResourceVersion++
+	return result, nil
 }
 
 type fakeHTTPAccounts struct {
@@ -837,4 +850,21 @@ func (references *fakeHTTPReferences) Rules(domain.AccountID) ([]reference.Instr
 }
 func (*fakeHTTPReferences) RiskLimits(domain.AccountID) reference.RiskLimitReference {
 	return reference.RiskLimitReference{Available: false, Reason: reference.ReasonRiskLimitsNotNormalized}
+}
+
+func TestRateLimitResponseKeepsRoundedRetryAfterWithoutNativeDetails(t *testing.T) {
+	handler := &Handler{}
+	for _, test := range []struct {
+		delay time.Duration
+		want  string
+	}{{1500 * time.Millisecond, "2"}, {time.Second, "1"}, {0, ""}, {time.Duration(1<<63 - 1), "9223372037"}} {
+		recorder := httptest.NewRecorder()
+		handler.failWithCorrelation(recorder, exchange.NewError(exchange.KindRateLimit, exchange.ErrorDetails{RetryAfter: test.delay, Code: "SECRET_NATIVE_CODE", HTTPStatus: 429}), "event")
+		if recorder.Code != 429 || recorder.Header().Get("Retry-After") != test.want {
+			t.Fatalf("response=%+v", recorder)
+		}
+		if strings.Contains(recorder.Body.String(), "SECRET") {
+			t.Fatal("native error leaked")
+		}
+	}
 }

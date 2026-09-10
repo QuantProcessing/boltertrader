@@ -49,7 +49,7 @@ const (
 // The window is required rather than optional. Several venues treat a missing
 // start as "since listing" and answer with a truncated tail of that, so an
 // unbounded request would return a series whose extent is decided by the venue
-// and differs between the two legs of the same arbitrage pair — two lines on
+// and differs between two venues in the same comparison — two lines on
 // one chart covering different periods, with nothing on screen to say so.
 func fundingHistoryWindow(request exchange.FundingHistoryRequest) (int64, int64, error) {
 	if fundingHistoryNative(request) == "" {

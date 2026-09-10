@@ -13,8 +13,8 @@ are in [Operations and recovery](../guides/operations-recovery.md).
 ## Identity exists before the venue does
 
 The gateway mints and durably records an order's identity *before* it contacts
-the venue, not after. A reservation writes three identifiers and the canonical
-request in one step:
+the venue, not after. Order creation writes three identifiers and the canonical
+request atomically. This records order identity; it does not reserve balance or margin:
 
 | Identifier | Shape | Purpose |
 | --- | --- | --- |
@@ -47,17 +47,16 @@ Two outcomes follow, and the difference matters:
   a second order.
 
 The hash covers the account, route, instrument, side, type, quantity, limit price
-and policy, reduce-only flag, and the three fence revisions. Everything the
+and policy, reduce-only flag, leverage, and runtime identity. Everything the
 request means is in the hash; nothing the request happens to be transported as
 is.
 
 ## The write fence refuses rather than reinterprets
 
-A caller states, in the request, which route it believes it is trading through
-and which revisions it decided against: account desired-state revision, runtime
-generation, and credential version. All three must be positive — a zero counter
-means "I did not look", and the gateway will not accept a write that never
-observed the state it depends on.
+A caller names the route and the `runtime_id` observed for the account. The
+runtime identifier must be present and belong to the active account runtime.
+The API no longer accepts desired-state, runtime-generation or credential-version
+counters as a substitute.
 
 The fence is checked twice on purpose: once when the route is resolved, and again
 after the order is marked as dispatching and before the driver is called. The

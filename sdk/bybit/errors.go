@@ -3,6 +3,8 @@ package sdk
 import (
 	"errors"
 	"fmt"
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
+	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
 // ResponseError is a decoded Bybit V5 application-level failure. It is
@@ -57,6 +59,10 @@ func validateOrderActionResult(operation string, result *OrderActionResponse, ex
 // only decoded command envelopes and excludes Bybit's known timeout,
 // throttling, backend, and service-restart classes.
 func IsDefinitiveCommandRejection(err error) bool {
+	var httpErr *venuehttp.HTTPError
+	if errors.As(err, &httpErr) && (httpErr.StatusCode >= 500 || httpErr.StatusCode == 408 || httpErr.StatusCode == 429 || httpErr.StatusCode == 418) {
+		return false
+	}
 	var responseErr *ResponseError
 	if !errors.As(err, &responseErr) || responseErr == nil || responseErr.Code == 0 {
 		return false
@@ -109,4 +115,8 @@ func IsDefinitiveCommandRejection(err error) bool {
 	default:
 		return false
 	}
+}
+
+func (e *ResponseError) Is(target error) bool {
+	return target == sdkcore.ErrRateLimited && (e.Code == 10006 || e.Code == 429 || e.Code == 10429)
 }

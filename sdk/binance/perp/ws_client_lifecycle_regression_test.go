@@ -17,7 +17,7 @@ func TestWSClientKeepAliveDoesNotWriteReplacementConnection(t *testing.T) {
 
 	var connectionID atomic.Int64
 	accepted := make(chan *websocket.Conn, 2)
-	pongs := make(chan int64, 16)
+	pings := make(chan int64, 16)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -26,9 +26,9 @@ func TestWSClientKeepAliveDoesNotWriteReplacementConnection(t *testing.T) {
 			return
 		}
 		id := connectionID.Add(1)
-		conn.SetPongHandler(func(string) error {
-			pongs <- id
-			return nil
+		conn.SetPingHandler(func(payload string) error {
+			pings <- id
+			return conn.WriteControl(websocket.PongMessage, []byte(payload), time.Now().Add(time.Second))
 		})
 		accepted <- conn
 		defer conn.Close()
@@ -43,7 +43,7 @@ func TestWSClientKeepAliveDoesNotWriteReplacementConnection(t *testing.T) {
 
 	parentCtx, cancel := context.WithCancel(context.Background())
 	client := NewWSClient(parentCtx, wsURL)
-	client.pongInterval = 5 * time.Millisecond
+	client.heartbeatInterval = 5 * time.Millisecond
 	if err := client.Connect(); err != nil {
 		cancel()
 		t.Fatalf("Connect: %v", err)
@@ -73,12 +73,12 @@ func TestWSClientKeepAliveDoesNotWriteReplacementConnection(t *testing.T) {
 	}()
 	firstServerConn = <-accepted
 	select {
-	case id := <-pongs:
+	case id := <-pings:
 		if id != 1 {
-			t.Fatalf("initial pong reached connection %d, want 1", id)
+			t.Fatalf("initial ping reached connection %d, want 1", id)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for initial keepalive pong")
+		t.Fatal("timed out waiting for initial keepalive ping")
 	}
 
 	replacementConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -92,17 +92,17 @@ func TestWSClientKeepAliveDoesNotWriteReplacementConnection(t *testing.T) {
 	client.Conn = replacementConn
 	client.Mu.Unlock()
 
-	firstConnectionPongs := 0
+	firstConnectionPings := 0
 	deadline := time.NewTimer(time.Second)
 	defer deadline.Stop()
-	for firstConnectionPongs < 3 {
+	for firstConnectionPings < 3 {
 		select {
-		case id := <-pongs:
+		case id := <-pings:
 			if id == 2 {
-				t.Fatal("keepalive goroutine from the original connection wrote the replacement connection")
+				t.Fatal("keepalive goroutine from the original connection pinged the replacement connection")
 			}
 			if id == 1 {
-				firstConnectionPongs++
+				firstConnectionPings++
 			}
 		case <-deadline.C:
 			t.Fatal("original keepalive stopped instead of remaining bound to its exact connection")
@@ -135,7 +135,7 @@ func TestWSClientKeepAliveStopsAfterExactConnectionWriteFails(t *testing.T) {
 
 	client := NewWSClient(context.Background(), wsURL)
 	defer client.cancel()
-	client.pongInterval = 5 * time.Millisecond
+	client.heartbeatInterval = 5 * time.Millisecond
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)

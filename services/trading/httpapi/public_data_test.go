@@ -36,7 +36,7 @@ func TestSystemEndpointEvaluatesReadinessOnlyOnce(t *testing.T) {
 
 func TestTradingPublicSurfaceDoesNotMountGatewayMarketReads(t *testing.T) {
 	readiness := &countingReadiness{}
-	api, err := NewPublicDataAPI(PublicDataDependencies{Readiness: readiness, Arbitrage: realtimeArbitrageStub{}})
+	api, err := NewPublicDataAPI(PublicDataDependencies{Readiness: readiness})
 	if err != nil {
 		t.Fatal(err)
 	}

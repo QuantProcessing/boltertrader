@@ -73,7 +73,7 @@ func (loader binanceInstrumentLoader) loadSpot(ctx context.Context) ([]exchange.
 		sdk.WithBaseURL(loader.settings.Endpoint)
 	}
 	if loader.settings.HTTPClient != nil {
-		sdk.HTTPClient = loader.settings.HTTPClient
+		sdk.WithHTTPClient(loader.settings.HTTPClient)
 	}
 	res, err := sdk.ExchangeInfo(ctx)
 	if err != nil {
@@ -89,7 +89,7 @@ func (loader binanceInstrumentLoader) loadPerp(ctx context.Context) ([]exchange.
 		sdk.WithBaseURL(loader.settings.Endpoint)
 	}
 	if loader.settings.HTTPClient != nil {
-		sdk.HTTPClient = loader.settings.HTTPClient
+		sdk.WithHTTPClient(loader.settings.HTTPClient)
 	}
 	info, err := sdk.ExchangeInfo(ctx)
 	if err != nil {

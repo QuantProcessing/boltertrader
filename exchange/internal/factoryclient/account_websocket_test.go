@@ -66,9 +66,8 @@ func TestAccountEventRouteSubscriptionCountDoesNotGrowWithCatalog(t *testing.T) 
 	if starts != 1 || indexed != 1000 {
 		t.Fatalf("route starts=%d indexed=%d, want 1 and 1000", starts, indexed)
 	}
-	first := receiveAccountEvent(t, subscription.Events())
-	if first.Kind != exchange.AccountEventStreamStatus {
-		t.Fatalf("initial account barrier = %+v", first)
+	if status := receiveAccountStatus(t, subscription.Status()); status.State != exchange.SubscriptionActive || status.Generation != 0 || status.Phase != "" {
+		t.Fatalf("initial account connection = %+v", status)
 	}
 	order := exchange.OrderEvent{Kind: exchange.EventDelta, Order: exchange.Order{NativeSymbol: "ASSET0999-USDC", OrderID: "order-1", UpdatedAt: time.Now().UTC()}}
 	callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &order})
@@ -77,10 +76,8 @@ func TestAccountEventRouteSubscriptionCountDoesNotGrowWithCatalog(t *testing.T) 
 		t.Fatalf("projected account order = %+v", got)
 	}
 	callbacks.Status(exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted, Generation: 1, Reason: "test-gap", Time: time.Now().UTC()})
-	gap := receiveAccountEvent(t, subscription.Events())
-	resync := receiveAccountEvent(t, subscription.Events())
-	if gap.Kind != exchange.AccountEventStreamStatus || resync.Kind != exchange.AccountEventResyncRequired {
-		t.Fatalf("gap=%+v resync=%+v", gap, resync)
+	if status := receiveAccountStatus(t, subscription.Status()); status.State != exchange.SubscriptionConnecting || status.Generation != 0 || status.Phase != "" {
+		t.Fatalf("disconnected account connection = %+v", status)
 	}
 	unknown := exchange.OrderEvent{Kind: exchange.EventDelta, Order: exchange.Order{NativeSymbol: "UNKNOWN-USDC", OrderID: "order-2", UpdatedAt: time.Now().UTC()}}
 	callbacks.Event(accountBackendEvent{Kind: exchange.AccountEventOrder, Order: &unknown})
@@ -91,9 +88,6 @@ func TestAccountEventRouteSubscriptionCountDoesNotGrowWithCatalog(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("unknown native identity was silently dropped")
-	}
-	if event := receiveAccountEvent(t, subscription.Events()); event.Kind != exchange.AccountEventResyncRequired {
-		t.Fatalf("unknown identity event = %+v", event)
 	}
 	if err := subscription.Close(); err != nil {
 		t.Fatal(err)
@@ -109,8 +103,8 @@ func TestAccountEventRouteSubscriptionCountDoesNotGrowWithCatalog(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if barrier := receiveAccountEvent(t, second.Events()); barrier.Kind != exchange.AccountEventStreamStatus {
-		t.Fatalf("reconnected account barrier = %+v", barrier)
+	if status := receiveAccountStatus(t, second.Status()); status.State != exchange.SubscriptionActive {
+		t.Fatalf("reconnected account connection = %+v", status)
 	}
 	_ = second.Close()
 }
@@ -140,5 +134,16 @@ func receiveAccountEvent(t *testing.T, events <-chan exchange.AccountEvent) exch
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for account event")
 		return exchange.AccountEvent{}
+	}
+}
+
+func receiveAccountStatus(t *testing.T, statuses <-chan exchange.StreamStatusEvent) exchange.StreamStatusEvent {
+	t.Helper()
+	select {
+	case status := <-statuses:
+		return status
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for account connection status")
+		return exchange.StreamStatusEvent{}
 	}
 }

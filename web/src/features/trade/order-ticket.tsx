@@ -2,38 +2,26 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, X } from "lucide-react";
 
 import { describeError } from "@/api/errors";
-import type { Account, AccountPosition, Command, Instrument, ManualPreviewCheck, OrderSide, OrderType } from "@/api/types";
-import { MANUAL_PREVIEW_TTL_MS } from "@/api/types";
+import type { Account, AccountPosition, Instrument, ManualOrderRequest, OrderSide, OrderType } from "@/api/types";
 import { preferencesStore, usePreferences } from "@/app/preferences";
 import { Button } from "@/components/ui/button";
 import { DialogClose, DialogContent, DialogRoot } from "@/components/ui/dialog";
 import { Field, Input, inputClass } from "@/components/ui/field";
 import { Segmented } from "@/components/ui/segmented";
-import { StateBadge } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
-import {
-  useAccountBalances,
-  usePlaceOrder,
-  usePreviewOrder,
-  type SealedPreview,
-} from "@/features/trade/queries";
+import { useAccountBalances, usePlaceOrder } from "@/features/trade/queries";
 import { describeCommandFailure } from "@/features/trade/order-status";
 import { decimalsOf } from "@/features/market/precision";
-import { compactIdentifier, formatDecimal, formatDuration, splitDecimal } from "@/lib/format";
+import { compactIdentifier, formatDecimal, splitDecimal } from "@/lib/format";
 import { useT, type Key } from "@/lib/i18n";
 
 /* ---------------------------------------------------------------------------
  * The order ticket.
  *
- * Two steps, because the server has two: a preview seals the priced intent and
- * a command acts on the seal. The seal expires after thirty seconds, and the
- * deadline is inside the token rather than in the response — so the countdown
- * here starts when the response landed, which makes it a lower bound. Being
- * early is the safe direction: the worst case is asking for a fresh preview
- * that was still technically valid.
- *
- * Blockers are the server's refusals and are absolute — the confirm button is
- * disabled while there is one. Warnings are advisory and confirm stays live.
+ * The confirmation is local: every value it shows already exists in the
+ * ticket, catalog or public market stream. Confirming sends one command, and
+ * Trading performs account, route, runtime-fence and venue-rule checks before
+ * Gateway can reach the exchange.
  * ------------------------------------------------------------------------- */
 
 /**
@@ -59,15 +47,15 @@ const CONFIRM: Record<OrderSide, Key> = { buy: "ticket.confirm.buy", sell: "tick
 const PLACE: Record<OrderSide, Key> = { buy: "ticket.place.buy", sell: "ticket.place.sell" };
 const PLACED: Record<OrderSide, Key> = { buy: "ticket.placed.buy", sell: "ticket.placed.sell" };
 
-type TicketSeal = SealedPreview & {
+export type OrderConfirmation = {
+  request: ManualOrderRequest;
   referencePrice?: string;
   venue: string;
   accountLabel: string;
 };
 
-/** A failed preview is always shown, even when successful confirmations are disabled. */
-export function orderConfirmationRequired(confirmOrders: boolean, blockers: readonly string[]): boolean {
-  return confirmOrders || blockers.length > 0;
+export function orderConfirmationRequired(confirmOrders: boolean): boolean {
+  return confirmOrders;
 }
 
 export function OrderTicket({
@@ -109,10 +97,9 @@ export function OrderTicket({
   const [timeInForce, setTimeInForce] = useState("GTC");
   const [reduceOnly, setReduceOnly] = useState(false);
   const [leverage, setLeverage] = useState<(typeof LEVERAGES)[number]>("1");
-  const [sealed, setSealed] = useState<TicketSeal | null>(null);
+  const [confirmation, setConfirmation] = useState<OrderConfirmation | null>(null);
   const seededLimitPriceForInstrument = useRef<string | null>(null);
 
-  const preview = usePreviewOrder();
   const place = usePlaceOrder();
   const balances = useAccountBalances(accountId);
 
@@ -196,14 +183,11 @@ export function OrderTicket({
     onLimitPriceChange(next);
   }, [instrument?.instrumentId, instrument?.rules.priceIncrement, limitPrice, markPrice, onLimitPriceChange, orderType]);
 
-  // Any edit invalidates the seal: it was priced against the previous values,
-  // and confirming it afterwards would send something the operator never saw.
+  // Any edit closes the confirmation so it can never submit values different
+  // from the ones the operator reviewed.
   useEffect(() => {
-    setSealed(null);
+    setConfirmation(null);
   }, [instrument?.instrumentId, accountId, side, orderType, amount, quantityUnit, limitPrice, timeInForce, reduceOnly, leverage]);
-
-  const remaining = useSealCountdown(sealed);
-  const expired = sealed !== null && remaining <= 0;
 
   const quantityError = amount !== "" && !isPositiveDecimal(amount)
     ? t("ticket.positive")
@@ -215,22 +199,29 @@ export function OrderTicket({
   const priceError =
     orderType === "limit" && limitPrice !== "" && !isPositiveDecimal(limitPrice) ? t("ticket.positive") : null;
 
+  const belowMinimum = notionalBelowMinimum(baseQuantity, sizingPrice, instrument?.rules.minNotional);
+  const minimumMessage = belowMinimum
+    ? t(orderType === "limit" ? "ticket.minimumNotional.limit" : "ticket.minimumNotional.market", {
+        minimum: instrument?.rules.minNotional ?? "", quote: instrument?.quoteAsset ?? "",
+      })
+    : null;
+
   const ready =
     instrument !== null &&
     accountId !== "" &&
     isPositiveDecimal(baseQuantity) &&
-    (orderType === "market" || isPositiveDecimal(limitPrice));
-  const interactionLocked = preview.isPending || place.isPending || sealed !== null;
+    (orderType === "market" || (isPositiveDecimal(limitPrice) && !belowMinimum));
+  const interactionLocked = place.isPending || confirmation !== null;
 
-  const submitSealed = (nextSeal: TicketSeal) => {
-    place.mutate(nextSeal.preview.previewId, {
+  const submitOrder = (next: OrderConfirmation) => {
+    place.mutate(next.request, {
       onSuccess: (command) => {
-        setSealed(null);
+        setConfirmation(null);
         if (command.state === "failed") {
           toast.push({
             tone: "danger",
             title: t("ticket.orderRejected"),
-            detail: describeCommandFailure(command, nextSeal.venue, t),
+            detail: describeCommandFailure(command, t),
           });
           return;
         }
@@ -240,15 +231,12 @@ export function OrderTicket({
           tone: command.state === "uncertain" ? "warn" : "ok",
           // `command.state` is the server's own word and is not translated: it is
           // what the blotter row and the audit log call the same thing.
-          title: t(PLACED[nextSeal.request.side], { state: command.state }),
+          title: t(PLACED[next.request.side], { state: command.state }),
           detail: compactIdentifier(command.commandId),
         });
       },
       onError: (error) => {
-        // The seal is spent either way — a rejected command does not hand it
-        // back — so clearing it forces a fresh price rather than a retry of a
-        // token the server has already seen.
-        setSealed(null);
+        setConfirmation(null);
         toast.push({ tone: "danger", title: t("ticket.orderRejected"), detail: describeError(error, t) });
       },
     });
@@ -256,43 +244,32 @@ export function OrderTicket({
 
   const onPrepareOrder = () => {
     if (!instrument || !ready) return;
-    preview.mutate(
-      {
+    const next: OrderConfirmation = {
+      request: {
         accountId,
         instrumentId: instrument.instrumentId,
         side,
         orderType,
         quantity: baseQuantity,
-        // A market order must carry no price at all; the server rejects one
-        // that does, rather than ignoring it.
         limitPrice: orderType === "limit" ? limitPrice : "",
         timeInForce,
         reduceOnly,
         leverage: instrument.product === "perp" ? Number(leverage) : 0,
       },
-      {
-        onSuccess: (next) => {
-          const nextSeal: TicketSeal = {
-            ...next,
-            referencePrice: orderType === "market" ? sizingPrice : undefined,
-            venue: instrument.venue,
-            accountLabel: selectedAccount ? `${selectedAccount.displayName} · ${selectedAccount.venue}` : accountId,
-          };
-          if (orderConfirmationRequired(preferences.confirmOrders, next.preview.blockers)) {
-            setSealed(nextSeal);
-          } else {
-            submitSealed(nextSeal);
-          }
-        },
-        onError: (error) =>
-          toast.push({ tone: "danger", title: t("ticket.previewRejected"), detail: describeError(error, t) }),
-      },
-    );
+      referencePrice: orderType === "market" ? sizingPrice : undefined,
+      venue: instrument.venue,
+      accountLabel: selectedAccount ? `${selectedAccount.displayName} · ${selectedAccount.venue}` : accountId,
+    };
+    if (orderConfirmationRequired(preferences.confirmOrders)) {
+      setConfirmation(next);
+    } else {
+      submitOrder(next);
+    }
   };
 
   const onConfirm = () => {
-    if (!sealed || expired) return;
-    submitSealed(sealed);
+    if (!confirmation) return;
+    submitOrder(confirmation);
   };
 
   const changeQuantityUnit = (next: QuantityUnit) => {
@@ -559,14 +536,16 @@ export function OrderTicket({
           </div>
         </details>
 
+        {minimumMessage ? <p role="status" className="text-meta text-warn">{minimumMessage}</p> : null}
+
         <Button
           variant={side}
           size="lg"
           onClick={onPrepareOrder}
-          disabled={!ready || preview.isPending || place.isPending || sealed !== null}
+          disabled={!ready || place.isPending || confirmation !== null}
           className="w-full"
         >
-          {place.isPending ? t("ticket.placing") : preview.isPending ? t("ticket.pricing") : t(PLACE[side])}
+          {place.isPending ? t("ticket.placing") : t(PLACE[side])}
         </Button>
 
         <div className="flex flex-col gap-1 border-t border-line pt-2" aria-label={t("ticket.preview.live")}>
@@ -598,6 +577,9 @@ export function OrderTicket({
                 : "—"
             }
           />
+          {isPositiveDecimal(instrument?.rules.minNotional ?? "") ? (
+            <TicketStat label={t("ticket.minimumNotional")} value={`${instrument?.rules.minNotional} ${instrument?.quoteAsset ?? ""}`} />
+          ) : null}
           <TicketStat
             label={t("ticket.estimatedLiquidation")}
             value={estimatedNotional && instrument?.product === "perp" ? t("ticket.preview.afterFill") : "—"}
@@ -617,18 +599,16 @@ export function OrderTicket({
 
       </div>
 
-      {sealed ? (
+      {confirmation ? (
           <OrderConfirmationDialog
-            sealed={sealed}
-            side={sealed.request.side}
-            remaining={remaining}
-            expired={expired}
+            confirmation={confirmation}
+            side={confirmation.request.side}
             placing={place.isPending}
             instrument={instrument}
-            referencePrice={sealed.referencePrice}
-            accountLabel={sealed.accountLabel}
+            referencePrice={confirmation.referencePrice}
+            accountLabel={confirmation.accountLabel}
             onConfirm={onConfirm}
-            onDiscard={() => setSealed(null)}
+            onDiscard={() => setConfirmation(null)}
           />
         ) : null}
     </section>
@@ -757,60 +737,60 @@ function quantityHint({
   return t("ticket.quantity.quoteHint", { quote: quoteAsset, base: baseAsset });
 }
 
-/* --- The sealed half ----------------------------------------------------- */
+/* --- Confirmation -------------------------------------------------------- */
 
-function OrderConfirmationDialog({
-  sealed,
+export function OrderConfirmationDialog({
+  confirmation,
   side,
-  remaining,
-  expired,
   placing,
   instrument,
   referencePrice,
   accountLabel,
+  titleKey,
+  confirmLabelKey,
+  orderLabelKey,
   onConfirm,
   onDiscard,
 }: {
-  sealed: SealedPreview;
+  confirmation: OrderConfirmation;
   side: OrderSide;
-  remaining: number;
-  expired: boolean;
   placing: boolean;
   instrument: Instrument | null;
   referencePrice?: string;
   accountLabel: string;
+  /** Lets another manual-order entry point keep the same confirmation UI. */
+  titleKey?: Key;
+  confirmLabelKey?: Key;
+  /** Replaces buy/long or sell/short when the intent is explicitly a close. */
+  orderLabelKey?: Key;
   onConfirm: () => void;
   onDiscard: () => void;
 }) {
   const t = useT();
   const preferences = usePreferences();
-  const checks = sealed.preview.checks ?? [];
-  const checkedCodes = new Set(checks.map((check) => check.code));
-  const blockers = sealed.preview.blockers.filter((blocker) => !checkedCodes.has(blocker));
-  const warnings = sealed.preview.warnings.filter((warning) => !checkedCodes.has(warning));
-  const request = sealed.request;
+  const request = confirmation.request;
   const quantityDecimals = decimalsOf(instrument?.rules.quantityIncrement);
   const priceDecimals = decimalsOf(instrument?.rules.priceIncrement);
   const quantityAsset = instrument?.baseAsset ?? "";
   const quoteAsset = instrument?.quoteAsset ?? "";
-  const marketNotional = request.orderType === "market" && referencePrice
-    ? multiplyPositiveDecimals(request.quantity, referencePrice)
+  const notionalPrice = request.orderType === "limit" ? request.limitPrice : referencePrice;
+  const notional = notionalPrice
+    ? multiplyPositiveDecimals(request.quantity, notionalPrice)
     : null;
   const orderParts = [
-    t(request.side === "buy" ? "ticket.side.buy" : "ticket.side.sell"),
+    t(orderLabelKey ?? (request.side === "buy" ? "ticket.side.buy" : "ticket.side.sell")),
     t(request.orderType === "limit" ? "ticket.type.limit" : "ticket.type.market"),
   ];
   if (request.leverage > 0) orderParts.push(`${request.leverage}×`);
   if (request.reduceOnly) orderParts.push(t("ticket.reduceOnly"));
-  const blocked = sealed.preview.blockers.length > 0;
 
   return (
     <DialogRoot open onOpenChange={(open) => {
       if (!open && !placing) onDiscard();
     }}>
       <DialogContent
-        title={t("ticket.preview.summary")}
-        description={t(blocked ? "ticket.confirm.blockedDescription" : "ticket.confirm.description")}
+        title={t(titleKey ?? "ticket.preview.summary")}
+        description={t("ticket.confirm.description")}
         className="max-w-lg"
         onEscapeKeyDown={(event) => {
           if (placing) event.preventDefault();
@@ -832,12 +812,9 @@ function OrderConfirmationDialog({
         </DialogClose>
 
         <div className="overflow-y-auto px-4 py-3">
-          <div className="mb-3 flex items-center justify-between gap-3 rounded-card bg-fill px-3 py-2">
+          <div className="mb-3 rounded-card bg-fill px-3 py-2">
             <span className={side === "buy" ? "font-medium text-buy" : "font-medium text-sell"}>
               {orderParts.join(" · ")}
-            </span>
-            <span className={expired ? "text-meta text-danger" : "text-meta text-dim"} role="timer" aria-live="off">
-              {expired ? t("ticket.expired") : t("ticket.left", { duration: formatDuration(remaining) })}
             </span>
           </div>
 
@@ -860,43 +837,12 @@ function OrderConfirmationDialog({
             />
             <PreviewStat
               label={t("ticket.notional")}
-              value={sealed.preview.notional
-                ? `${formatDecimal(sealed.preview.notional, { decimals: 2 })} ${quoteAsset}`
-                : marketNotional
-                  ? `≈ ${formatDecimal(marketNotional, { decimals: 2 })} ${quoteAsset}`
-                  : t("ticket.preview.marketPrice")}
-              numeric={Boolean(sealed.preview.notional || marketNotional)}
+              value={notional
+                ? `${request.orderType === "market" ? "≈ " : ""}${formatDecimal(notional, { decimals: 2 })} ${quoteAsset}`
+                : t("ticket.preview.marketPrice")}
+              numeric={Boolean(notional)}
             />
           </dl>
-
-          {checks.length > 0 ? (
-            <div className="mt-3 flex flex-col gap-1.5 border-t border-line pt-3">
-              <span className="th">{t("ticket.preview.rules")}</span>
-              <ul className="flex flex-col gap-1.5 text-meta">
-                {checks.map((check) => (
-                  <PreviewCheckRow key={check.code} check={check} instrument={instrument} />
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          {blockers.length > 0 ? (
-            <ul className="mt-3 flex flex-col gap-1 rounded-card bg-danger/10 p-2.5 text-meta text-danger">
-              {blockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          ) : null}
-
-          {warnings.length > 0 ? (
-            <ul className="mt-3 flex flex-col gap-1 rounded-card bg-warn/10 p-2.5 text-meta text-warn">
-              {warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          ) : null}
-
-          <p className="mt-3 text-meta leading-relaxed text-dim">{t("ticket.preview.scope")}</p>
         </div>
 
         <div className="border-t border-line bg-panel px-4 py-3">
@@ -919,10 +865,10 @@ function OrderConfirmationDialog({
               variant={side}
               size="lg"
               onClick={onConfirm}
-              disabled={blocked || expired || placing}
+              disabled={placing}
               className="flex-1"
             >
-              {placing ? t("ticket.placing") : expired ? t("ticket.expiredButton") : t(CONFIRM[side])}
+              {placing ? t("ticket.placing") : t(confirmLabelKey ?? CONFIRM[side])}
             </Button>
           </div>
         </div>
@@ -938,68 +884,6 @@ function PreviewStat({ label, value, numeric = false }: { label: string; value: 
       <dd className="max-w-52 text-right text-muted" data-numeric={numeric ? "" : undefined}>{value}</dd>
     </div>
   );
-}
-
-const PREVIEW_CHECK_LABELS: Record<string, Key> = {
-  quantity_minimum: "ticket.preview.check.quantityMinimum",
-  quantity_increment: "ticket.preview.check.quantityIncrement",
-  price_increment: "ticket.preview.check.priceIncrement",
-  minimum_notional: "ticket.preview.check.minimumNotional",
-  market_notional: "ticket.preview.check.marketNotional",
-};
-
-function PreviewCheckRow({ check, instrument }: { check: ManualPreviewCheck; instrument: Instrument | null }) {
-  const t = useT();
-  const statusKey: Record<ManualPreviewCheck["status"], Key> = {
-    passed: "ticket.preview.check.passed",
-    blocked: "ticket.preview.check.blocked",
-    unavailable: "ticket.preview.check.unavailable",
-  };
-  const tone = check.status === "passed" ? "ok" : check.status === "blocked" ? "danger" : "warn";
-  const unit = check.code.startsWith("quantity_")
-    ? instrument?.baseAsset
-    : instrument?.quoteAsset;
-  const required = check.required
-    ? t(check.code.endsWith("increment") ? "ticket.preview.check.increment" : "ticket.preview.check.minimum", {
-        value: `${formatDecimal(check.required)}${unit ? ` ${unit}` : ""}`,
-      })
-    : "";
-  const actual = check.status === "blocked" && check.actual
-    ? `${formatDecimal(check.actual)}${unit ? ` ${unit}` : ""} · `
-    : "";
-
-  return (
-    <li className="flex items-center justify-between gap-2">
-      <StateBadge tone={tone} label={t(PREVIEW_CHECK_LABELS[check.code] ?? "ticket.preview.rules")} />
-      <span className={check.status === "blocked" ? "text-danger" : check.status === "unavailable" ? "text-warn" : "text-dim"} data-numeric="">
-        {actual}{t(statusKey[check.status])}{required ? ` · ${required}` : ""}
-      </span>
-    </li>
-  );
-}
-
-/** Ticks the seal's remaining lifetime. Stops itself once it reaches zero. */
-function useSealCountdown(sealed: SealedPreview | null): number {
-  const [remaining, setRemaining] = useState(MANUAL_PREVIEW_TTL_MS);
-
-  useEffect(() => {
-    if (!sealed) {
-      setRemaining(MANUAL_PREVIEW_TTL_MS);
-      return;
-    }
-    const tick = () => {
-      const left = sealed.sealedAt + MANUAL_PREVIEW_TTL_MS - Date.now();
-      setRemaining(left);
-      return left;
-    };
-    if (tick() <= 0) return;
-    const timer = window.setInterval(() => {
-      if (tick() <= 0) window.clearInterval(timer);
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [sealed]);
-
-  return remaining;
 }
 
 /* --- Helpers ------------------------------------------------------------- */
@@ -1086,7 +970,7 @@ function positiveDecimalUnits(value: string): { units: bigint; scale: number } |
   };
 }
 
-function multiplyPositiveDecimals(left: string, right: string): string | null {
+export function multiplyPositiveDecimals(left: string, right: string): string | null {
   const a = positiveDecimalUnits(left);
   const b = positiveDecimalUnits(right);
   if (!a || !b) return null;
@@ -1126,4 +1010,14 @@ function TicketStat({ label, value }: { label: string; value: string }) {
       </span>
     </div>
   );
+}
+
+/** Exact comparison, including sub-cent values and values beyond Number precision. */
+export function notionalBelowMinimum(quantity: string, price: string, minimum: unknown): boolean {
+  const notional = multiplyPositiveDecimals(quantity, price);
+  const amount = notional ? positiveDecimalUnits(notional) : null;
+  const limit = typeof minimum === "string" ? positiveDecimalUnits(minimum) : null;
+  if (!amount || !limit) return false;
+  const scale = Math.max(amount.scale, limit.scale);
+  return amount.units * 10n ** BigInt(scale - amount.scale) < limit.units * 10n ** BigInt(scale - limit.scale);
 }

@@ -2,6 +2,7 @@ package markethub
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -90,6 +91,40 @@ func TestFactStoreMetricsDoNotClaimFieldsAbsentFromOwner(t *testing.T) {
 	}
 }
 
+func TestFactStoreMetricsUpdateIncrementallyAndRebuildOnMembershipChange(t *testing.T) {
+	store := NewFactStore(nil, nil)
+	base := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	btc := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	btc.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true}
+	btc.MarkObservedAt = base
+	eth := derivativeTestFact("binance:perp:ETH-USDT", "binance-perp-usdt")
+	eth.Instrument.Symbol, eth.Instrument.NativeSymbol, eth.Instrument.BaseAsset = "ETH-USDT", "ETHUSDT", "ETH"
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, base, btc, eth)); err != nil {
+		t.Fatal(err)
+	}
+	owner := OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"}
+	ownerID := factOwnerID(owner)
+	if got := store.metrics[ownerID][exchange.DatasetMark]; got.available != 1 || !got.newest.Equal(base) || len(store.ownerFacts[ownerID]) != 2 {
+		t.Fatalf("initial aggregate = %+v members=%d", got, len(store.ownerFacts[ownerID]))
+	}
+
+	eth.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(200), Valid: true}
+	eth.MarkObservedAt = base.Add(10 * time.Second)
+	if err := store.Apply(derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, eth.MarkObservedAt, eth)); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.metrics[ownerID][exchange.DatasetMark]; got.available != 2 || !got.newest.Equal(eth.MarkObservedAt) {
+		t.Fatalf("incremental aggregate = %+v", got)
+	}
+
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, base.Add(20*time.Second), btc)); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.metrics[ownerID][exchange.DatasetMark]; got.available != 1 || !got.newest.Equal(base) || len(store.ownerFacts[ownerID]) != 1 {
+		t.Fatalf("rebuilt aggregate = %+v members=%d", got, len(store.ownerFacts[ownerID]))
+	}
+}
+
 type observedFact struct {
 	dataset  string
 	age      time.Duration
@@ -100,7 +135,6 @@ type factObserver struct{ facts chan observedFact }
 
 func (*factObserver) ObserveMarketFeed(string, string, string, string, uint64) {}
 func (*factObserver) RecordMarketGap(string, string, string, bool)             {}
-func (*factObserver) SetMarketHot(string, string, string, int)                 {}
 func (observer *factObserver) SetMarketFact(_, _, dataset string, age time.Duration, coverage float64) {
 	observer.facts <- observedFact{dataset: dataset, age: age, coverage: coverage}
 }
@@ -133,6 +167,35 @@ func TestFactStoreRejectsLateFieldWithoutRefreshingOtherFields(t *testing.T) {
 	}
 	if !fact.FundingRate.Valid || !fact.FundingObservedAt.Equal(newer.Add(time.Second)) {
 		t.Fatalf("funding patch missing: %#v", fact)
+	}
+}
+
+func TestFactStoreFreshnessUsesLocalReceiptClock(t *testing.T) {
+	sourceAt := time.Date(2026, 8, 25, 11, 59, 0, 0, time.UTC)
+	receivedAt := sourceAt.Add(time.Minute)
+	clock := receivedAt
+	store := NewFactStore(nil, func() time.Time { return clock })
+	fact := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	fact.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(100), Valid: true}
+	fact.MarkObservedAt = sourceAt
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, sourceAt, fact)); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := store.FieldReceivedAt(fact.InstrumentID, exchange.DatasetMark)
+	if !ok || !got.Equal(receivedAt) {
+		t.Fatalf("mark receipt=%s ok=%v want=%s", got, ok, receivedAt)
+	}
+
+	clock = receivedAt.Add(10 * time.Second)
+	late := fact
+	late.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(90), Valid: true}
+	late.MarkObservedAt = sourceAt.Add(-time.Second)
+	if err := store.Apply(derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, clock, late)); err != nil {
+		t.Fatal(err)
+	}
+	got, ok = store.FieldReceivedAt(fact.InstrumentID, exchange.DatasetMark)
+	if !ok || !got.Equal(receivedAt) {
+		t.Fatalf("late source refreshed receipt=%s want=%s", got, receivedAt)
 	}
 }
 
@@ -252,6 +315,46 @@ func TestFactStoreInstrumentSubscriptionIgnoresUnrelatedChanges(t *testing.T) {
 	case <-updates:
 	case <-time.After(time.Second):
 		t.Fatal("matching instrument mark change was not delivered")
+	}
+}
+
+func TestFactStoreConcurrentApplyAndSubscriptionCancellation(t *testing.T) {
+	store := NewFactStore(nil, nil)
+	at := time.Now().UTC()
+	btc := derivativeTestFact("binance:perp:BTC-USDT", "binance-perp-usdt")
+	btc.MarkPrice, btc.MarkObservedAt = exchange.OptionalDecimal{Value: decimal.NewFromInt(1), Valid: true}, at
+	if err := store.Apply(derivativeTestPatch(exchange.EventSnapshot, exchange.DerivativeFieldIdentity|exchange.DerivativeFieldMark, at, btc)); err != nil {
+		t.Fatal(err)
+	}
+	owner := OwnerKey{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, NativeFamily: "perpetual"}
+	for iteration := 0; iteration < 100; iteration++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		updates, stop, err := store.SubscribeInstrument(ctx, owner, btc.InstrumentID, exchange.DerivativeFieldMark, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var group sync.WaitGroup
+		group.Add(2)
+		go func() {
+			defer group.Done()
+			for range updates {
+			}
+		}()
+		go func(offset int) {
+			defer group.Done()
+			for index := 0; index < 8; index++ {
+				observedAt := at.Add(time.Duration(offset*8+index+1) * time.Millisecond)
+				btc.MarkPrice = exchange.OptionalDecimal{Value: decimal.NewFromInt(int64(offset*8 + index + 2)), Valid: true}
+				btc.MarkObservedAt = observedAt
+				if err := store.Apply(derivativeTestPatch(exchange.EventDelta, exchange.DerivativeFieldMark, observedAt, btc)); err != nil {
+					t.Errorf("apply: %v", err)
+					return
+				}
+			}
+			cancel()
+			stop()
+		}(iteration)
+		group.Wait()
 	}
 }
 

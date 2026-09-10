@@ -2,11 +2,9 @@
 
 > Canonical language: English. [Chinese mirror](../zh-CN/guides/trading-service.md)
 
-The trading service hosts the products. There are two: **manual trading**, which
-places one order at a time, and **funding arbitrage**, which places two at once
-on different venues. Both stand on the same command ledger, the same
-reservations, the same reconciler, and the same projections — a product is a set
-of endpoints and an intent shape, not a second copy of the machinery.
+The trading service hosts **manual trading**, command recovery,
+portfolio accounting and browser projections. Every execution shares the
+same durable command ledger.
 
 The service holds no venue credential and opens no venue connection: every write
 goes through [the exchange gateway](exchange-gateway.md).
@@ -21,7 +19,7 @@ command is created in `accepted`, and moves through a fixed set of states:
 
 | State | Meaning |
 | --- | --- |
-| `accepted` | Recorded and reserved, not yet handed to the gateway |
+| `accepted` | Recorded with a recovery task, not yet handed to the gateway |
 | `submitted` | Handed off; the gateway owns it now |
 | `uncertain` | The handoff's outcome is unknown |
 | `filled` / `canceled` / `failed` | Terminal |
@@ -58,97 +56,30 @@ activity feed, quote the `commandId`.
 
 ## The order ticket
 
-Manual placement is a two-step flow, and the split is the point.
+Manual placement is one request. The browser may show a local confirmation from
+the account, position, catalog and public prices already on screen, then sends
+the order intent directly to `POST /api/v1/products/manual/commands`.
 
-`POST /api/v1/products/manual/execution-previews` returns a **sealed** preview.
-The service prices the intent, validates it against the instrument's rules,
-takes a reservation against the account, then signs the resulting object and
-gives it a short expiry.
+The HTTP handler authenticates, checks CSRF and decodes the request. The manual
+application service owns validation, account and route resolution, command
+creation and execution. A new submission resolves the current account runtime,
+validates catalog rules that need no executable quote, and saves the command
+with its initial recovery task in one transaction. Only the creation winner
+attempts execution, after claiming the command through `BeginExecution`.
+Gateway and the venue retain final authority over readiness and order admission.
+Market-order notional is not estimated from a second REST quote.
 
-`POST /api/v1/products/manual/commands` accepts that sealed preview. It cannot
-accept anything else — not a modified copy, not an expired one, and not an
-intent the preview never priced. The consequence is that "what the operator
-confirmed" and "what was sent to the venue" are the same object rather than two
-renderings of the same form.
+Retries first look up the stored command by principal, method, path and
+idempotency key. Matching user order parameters return that command even if the
+account or catalog is unavailable, the runtime has changed, or writes are now
+disabled. Resolved route/runtime values remain those of the original submission.
+A replay never executes, including an `accepted` command whose original sender
+has not started. Changed user parameters conflict; they do not place a new order.
 
-Reservations are their own resource (`/api/v1/reservations`), created,
-consumed, or released. A reservation that is never consumed is released rather
-than left holding capacity.
-
-## The arbitrage product
-
-The arbitrage product has two strategy families rather than treating every
-ticker alike. **Crypto Continuous** offers spot-perpetual basis and cross-venue
-perpetual funding. **TradFi Perpetual** offers perpetual funding and cross-venue
-same-asset perpetual price spread. Asset class comes from the normalized public
-catalog; a ticker name is never guessed into crypto, equity, or commodity.
-An exact canonical spot/perpetual pair may enter the basis workspace while
-retaining `assetClass=unknown`; the topology identifies the strategy without
-inventing an economic classification.
-
-Rates are not comparable as published. Venues settle funding on their own
-schedule — four hours here, eight there — so a raw rate says nothing until it is
-normalized. Every rate is converted to a daily figure (`rate × 24 ÷
-intervalHours`) before any two are compared, the spread is `shortDaily −
-longDaily`, and the headline APR is that spread times 365. A venue that will not
-say what its quoted period is remains visible on the funding board but is not
-emitted as an arbitrage opportunity; the service never assumes eight hours.
-
-`GET /api/v1/products/arbitrage/opportunities` is a public read and ranks purely
-from Trading's local catalog and derivative-fact projection. Anonymous callers
-see every public opportunity; only authenticated callers may add `accountId`
-parameters to calculate execution reachability. Each item carries blockers.
-Funding strategies require a fresh rate and published interval; basis and price
-spread require fresh prices; OI is display and ranking context and never blocks
-execution. Listing is determined by the public instrument directory, while
-account reachability is a separate execution fact; one can never be inferred
-from the other.
-
-Placement reuses the manual flow's shape exactly.
-`POST /api/v1/products/arbitrage/execution-previews` returns a sealed preview —
-the same seal, the same expiry — except that it reads a fresh BBO for both legs
-directly through Gateway and reserves against both accounts. The opportunity
-projection is deliberately not trusted for executable prices. Either BBO being
-unavailable or older than two seconds rejects the preview. It also carries
-`warnings`, which are not blockers and do not stop a confirm: `fees_excluded` says the quoted spread is gross,
-`negative_spread` says the ranking inverted between the read and the preview,
-`funding_rate_unavailable` and `board_stale` say a leg's number is older than it
-looks.
-
-`POST /api/v1/products/arbitrage/commands` takes that preview and carries all
-three verbs, distinguished by `action`:
-
-| Action | What it does |
-| --- | --- |
-| `open` | Places both legs from the sealed preview, in one request |
-| `close` | Flattens both legs reduce-only, in one request |
-| `cancel` | Withdraws one named resting leg |
-
-Every one of them requires a `lineageId` and an `Idempotency-Key` that matches
-the body. The **lineage** is the pair's identity: two orders on two venues in two
-command rows, tied together by one identifier. It is what makes "close the pair"
-a single operation rather than two cancels the operator has to sequence
-correctly, and it is what `GET /api/v1/products/arbitrage/positions` groups by.
-A pair whose leg payload cannot be read back reports `leg_payload_unreadable`
-and refuses to close, because a close it cannot describe is a close it cannot
-prove.
-
-Both legs still go through the ledger one command at a time. There is no atomic
-two-venue write and the service does not pretend otherwise: a pair can end up
-with one leg filled and one leg `uncertain`, which is exactly the state the
-ledger exists to hold. Reconciliation resolves each leg against its own venue,
-and the pair is whatever its legs turn out to be.
-
-All three actions sit behind the same live-write switch as every other private
-write: with it closed, `open`, `close`, and `cancel` return
-`403 LIVE_PRIVATE_WRITE_DISABLED` before anything reaches a venue.
-
-They used to be refused unconditionally, on the grounds that a pair could be
-exercised in the test tier until the product had evidence it did not yet have.
-That tier is gone, so the refusal has nowhere left to send anyone, and the
-switch is the only thing standing between an `open` and two real orders. The
-evidence gap it was standing in for has not closed — arbitrage has less behind
-it than the manual product does, and the switch does not know that.
+The generic command collection is read-only; `POST /api/v1/commands` and all
+`/api/v1/reservations` operations are removed. Trading does not reserve balance
+or margin. Historical reservation rows and command links remain readable for
+traceability, but no active service creates, consumes or checks them.
 
 ## Reconciliation
 
@@ -180,17 +111,9 @@ calls:
 - `/api/v1/activity` — the command chain, in order, with timestamps.
 - `/api/v1/accounts/{accountId}/runtimes` — the read and write readiness the
   interface shows on each account.
-- `/api/v1/products/arbitrage/opportunities`,
-  `/api/v1/products/arbitrage/positions` — the ranked spreads and the open pairs.
-- `/api/v1/realtime/ws` — Trading business projections such as ranked
-  arbitrage opportunities. Public market and private account sockets are owned
-  directly by Gateway.
 
-The funding board is maintained in Gateway; Trading consumes it to build the
-resident arbitrage opportunity projection. Trading does not proxy catalog,
-venue depth, candles, funding history, connectivity, or account events back to
-the browser. Browser subscribers receive business opportunity updates at most
-once per second and never create a second venue connection. See
+The funding board and market streams are owned by Gateway. Trading does not
+maintain a second market cache or relay browser market subscriptions. See
 [Market and reference data](market-reference-data.md).
 
 Collection responses are enveloped as `{"data":{"items":[…]}}`, with a `meta`
@@ -221,7 +144,7 @@ make test
 make test-browser
 ```
 
-The offline suite covers the ledger's state machine, the preview seal, and the
+The offline suite covers the ledger's state machine, manual execution, and the
 projections. No test places an order: the external write ladder was deleted
 along with the Demo and Testnet environments it ran against. What the offline
 suite does and does not prove is in

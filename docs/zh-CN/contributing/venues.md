@@ -93,24 +93,22 @@ ID 也不带环境段：`binance.spot.v1`、`nado.perp.usdt0.v1`。
 一份 instrument catalog，而这就是它关于「如何与该交易所对话」的全部知识。见
 [Exchange gateway](../guides/exchange-gateway.md)。
 
-## 7. Gateway 的 product 行
+## 7. 静态支持与运行健康
 
-`gateway/capability` 是一个 venue 变成产品可以交易的东西的地方。每一行携带一个三字母 product
-code、行身份、它所准入的操作，以及三个决定订单变得不明确时 gateway 如何行事的字段：
+`gateway/capability` 从 `routeprofile.DefaultProfiles()` 派生所有产品行，只补充 Gateway
+操作支持与精确查询策略。`trading_supported` 表示实现范围，不表示密钥权限、实盘测试
+通过或当前连接就绪。Lighter 现货仍只读；实际就绪由连接与订单恢复状态判断。
 
-- **精确查询策略**——这一行如何回答「这个标识符到底怎么了」。多数行按 client 或交易所 order
-  ID 回读。Lighter 的两行扫描活动列表加第一页非活动记录，并把一次缺席报成「未被证明」而不是
-  已证明。
-- **写入就绪默认值**——这一行到底接不接受下单。
-- **晋升所需证据**——在那个默认值可以改变之前，这一行必须拿出什么。除一行外都是
-  `fixture_and_live_exact_lookup`，Lighter 现货那一行还必须证明双边流动性。这份证据过去可以
-  在 demo 或 testnet 上取得；那些环境没有了之后，它只能对着 live 盘口取得——晋升的成本因此
-  变高，但晋升要求的内容没有变。
+公开行情的原生传输、频率、主题数量和快照语义归 `exchange.MarketCapabilities()`；
+`exchange.NativeMarketFamily` 只为已知路由返回连接族。Gateway 的 marketcapability
+保留新鲜度、选择策略与采集预算，不再维护另一份交易所原生能力表。
 
-有一个字段不容各 venue 商量：没有任何一行声称翻页可以证明缺席，已晋升的行也不行。一个新
-venue 不会因为它的历史接口看起来很完整就获得这个权利——为什么一个缺席只是有时候才算答案，见
-[状态与协调](../concepts/state-reconciliation.md)。今天哪些行写入就绪由
-[不支持的能力](../reference/unsupported.md)拥有。
+`credential.Registry.Schema` 与 Decode 共用 auth-kind 目录，Trading 直接读取字段，
+不再用假密钥探测类型。factory 在 `profiles.go` 中只保存构造器与路由 ID 的绑定；
+产品范围、venue/product/settlement 以 routeprofile 为准。
+
+测试结果通过真实测试运行和 manifest 记录，API 不再返回固定 `passed` 或 `promoted`。
+未知产品明确不支持；任何历史分页都不能证明订单不存在。
 
 ## 8. 两张矩阵由 manifest 驱动
 
@@ -155,3 +153,11 @@ manifest，跑测试，让它们告诉你页面该怎么写。
 - [不支持的能力](../reference/unsupported.md) —— 仅 SDK 家族与按行的限制
 - [测试](../reference/testing.md) —— 命令阶梯
 - [贡献文档](documentation.md) —— 镜像与策划规则
+
+## 已有交易所接入核对：Bybit
+
+Bybit 使用 SDK 的 API-key 客户端，三个 typed factory 构造器（现货、USDT 永续、USDC 永续），
+一个 `credential.AuthAPIKeySecret` 字段描述及三个路由。两条永续路由共用 linear 公开行情
+连接族，账户与订单身份仍分开。Trading 和浏览器无需 Bybit 分支。
+对应验证包括 factory 全路由绑定测试、Bybit REST/WS fixture 和 linear owner 共享测试；
+这些是离线实现证据，不代表所有实盘账户模式均已验收。

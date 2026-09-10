@@ -1,4 +1,4 @@
-import type { AccountPosition, AccountPositionSnapshot, Command, CommandState } from "@/api/types";
+import type { AccountBalance, AccountPosition, AccountPositionSnapshot, Command, CommandState } from "@/api/types";
 
 interface AccountWireEvent {
   eventId: string;
@@ -41,6 +41,20 @@ interface OrderPayloadWire {
   state?: unknown;
 }
 
+interface BalanceWire {
+  asset?: unknown;
+  available?: unknown;
+  locked?: unknown;
+  total?: unknown;
+}
+
+interface BalancePayloadWire {
+  account_id?: unknown;
+  product?: unknown;
+  settlement_asset?: unknown;
+  balance?: BalanceWire;
+}
+
 interface PositionOverlay {
   event: AccountWireEvent;
   payload: PositionPayloadWire;
@@ -49,6 +63,11 @@ interface PositionOverlay {
 interface OrderOverlay {
   event: AccountWireEvent;
   payload: OrderPayloadWire;
+}
+
+interface BalanceOverlay {
+  event: AccountWireEvent;
+  payload: BalancePayloadWire;
 }
 
 export interface PositionOverlayFilter {
@@ -60,13 +79,14 @@ export interface PositionOverlayFilter {
 
 const positionOverlays = new Map<string, PositionOverlay>();
 const orderOverlays = new Map<string, OrderOverlay>();
+const balanceOverlays = new Map<string, BalanceOverlay>();
 
 /**
  * Accept one Gateway account notification into the browser read model.
  * Identity plus the venue/entity timestamp decides precedence; socket arrival
  * order and a locally generated sequence deliberately do not.
  */
-export function recordAccountRealtimeEvent(value: unknown): "position" | "order" | "other" {
+export function recordAccountRealtimeEvent(value: unknown): "position" | "order" | "balance" | "other" {
   const event = parseAccountEvent(value);
   if (!event) return "other";
   if (event.kind === "account.position") {
@@ -84,6 +104,14 @@ export function recordAccountRealtimeEvent(value: unknown): "position" | "order"
     const current = orderOverlays.get(key);
     if (!current || newer(event, current.event)) orderOverlays.set(key, { event, payload });
     return "order";
+  }
+  if (event.kind === "account.balance") {
+    const payload = parseBalancePayload(event.payload);
+    if (!payload) return "other";
+    const key = balanceKey(event.accountId, payload);
+    const current = balanceOverlays.get(key);
+    if (!current || newer(event, current.event)) balanceOverlays.set(key, { event, payload });
+    return "balance";
   }
   return "other";
 }
@@ -148,6 +176,36 @@ export function applyOrderOverlays(commands: Command[]): Command[] {
   return changed ? next : commands;
 }
 
+/** Apply mutable balance entities by stable account/product/settlement/asset key. */
+export function applyBalanceOverlays(balances: AccountBalance[], accountId: string, restStartedAt?: string): AccountBalance[] {
+  let changed = false;
+  const next = [...balances];
+  const restStarted = epoch(restStartedAt);
+  for (const [key, overlay] of balanceOverlays) {
+    if (overlay.event.accountId !== accountId) continue;
+    // A REST read started after this event is the periodic reconciliation and
+    // wins. Events arriving while that request is in flight remain overlaid.
+    if (restStartedAt && epoch(overlay.event.observedAt) <= restStarted) {
+      balanceOverlays.delete(key);
+      continue;
+    }
+    const index = next.findIndex((item) => accountBalanceKey(item) === key);
+    const projected = projectBalance(overlay);
+    if (!projected) continue;
+    if ([projected.available, projected.locked, projected.total].every((value) => Number(value) === 0)) {
+      if (index >= 0) {
+        next.splice(index, 1);
+        changed = true;
+      }
+      continue;
+    }
+    if (index >= 0) next[index] = { ...next[index], ...projected };
+    else next.push(projected);
+    changed = true;
+  }
+  return changed ? next : balances;
+}
+
 function parseAccountEvent(value: unknown): AccountWireEvent | null {
   if (!isObject(value)) return null;
   const event = {
@@ -173,6 +231,31 @@ function parsePositionPayload(value: unknown): PositionPayloadWire | null {
 function parseOrderPayload(value: unknown): OrderPayloadWire | null {
   if (!isObject(value) || !stringValue(value.command_id) || !stringValue(value.state)) return null;
   return value as OrderPayloadWire;
+}
+
+function parseBalancePayload(value: unknown): BalancePayloadWire | null {
+  if (!isObject(value) || !isObject(value.balance)) return null;
+  const payload = value as BalancePayloadWire;
+  if (!stringValue(payload.product) || !stringValue(payload.balance?.asset)) return null;
+  return payload;
+}
+
+function projectBalance(overlay: BalanceOverlay): AccountBalance | null {
+  const balance = overlay.payload.balance;
+  if (!balance) return null;
+  const available = decimalString(balance.available);
+  const locked = decimalString(balance.locked);
+  const total = decimalString(balance.total);
+  if (available === "" || locked === "" || total === "") return null;
+  return {
+    accountId: overlay.event.accountId,
+    product: stringValue(overlay.payload.product),
+    settlementAsset: stringValue(overlay.payload.settlement_asset) || undefined,
+    asset: stringValue(balance.asset),
+    available,
+    locked,
+    total,
+  };
 }
 
 function projectPosition(snapshot: AccountPositionSnapshot, overlay: PositionOverlay, current?: AccountPosition): AccountPosition | null {
@@ -225,6 +308,14 @@ function positionKey(accountId: string, payload: PositionPayloadWire): string {
 
 function accountPositionKey(item: AccountPosition): string {
   return [item.accountId, item.routeId ?? "", item.instrumentId, item.positionSlot ?? "net"].join("\u0000");
+}
+
+function balanceKey(accountId: string, payload: BalancePayloadWire): string {
+  return [accountId, stringValue(payload.product), stringValue(payload.settlement_asset), stringValue(payload.balance?.asset)].join("\u0000");
+}
+
+function accountBalanceKey(item: AccountBalance): string {
+  return [item.accountId, item.product, item.settlementAsset ?? "", item.asset].join("\u0000");
 }
 
 function newer(left: AccountWireEvent, right: AccountWireEvent): boolean {

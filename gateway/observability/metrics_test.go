@@ -26,12 +26,9 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 	metrics.ObserveMarketFeed("binance", "perpetual", "derivative_facts", "live", 2)
 	metrics.RecordMarketGap("binance", "perpetual", "derivative_facts", true)
 	metrics.SetMarketFact("binance", "perpetual", "funding", 5*time.Second, 0.75)
-	metrics.SetMarketHot("binance", "perpetual", "mark", 3)
+	metrics.SetMarketHot("binance", "spot", 3)
 	metrics.RecordMarketREST("binance", "funding_rates", "success")
 	metrics.ObserveVenueProbe(connectivity.Snapshot{Venue: exchange.VenueBinance, State: connectivity.StateOnline, EWMALatency: 25 * time.Millisecond})
-	metrics.RecordStream(StreamGap)
-	metrics.RecordStream(StreamResync)
-	metrics.RecordStream(StreamReplayEviction)
 	metrics.ObservePostgres(PostgresMigrate, PostgresOK, 25*time.Millisecond)
 	metrics.RecordShutdown(ShutdownDrained)
 
@@ -48,7 +45,6 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 		"gateway_command_total",
 		"gateway_uncertain_command_count",
 		"gateway_oldest_reconciliation_age_seconds",
-		"gateway_stream_event_total",
 		"gateway_catalog_snapshot_age_seconds",
 		"gateway_catalog_snapshot_version",
 		"gateway_venue_probe_up",
@@ -60,7 +56,7 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 		"gateway_market_feed_resnapshots_total",
 		"gateway_market_fact_age_seconds",
 		"gateway_market_fact_coverage_ratio",
-		"gateway_market_hot_subscriptions",
+		"gateway_market_hot_instruments",
 		"gateway_market_rest_requests_total",
 		"gateway_postgres_operation_duration_seconds",
 		"gateway_in_flight_command_count",
@@ -69,6 +65,9 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 		if !strings.Contains(body, required) {
 			t.Errorf("metrics output missing %q", required)
 		}
+	}
+	if !strings.Contains(body, `gateway_market_hot_instruments{market_family="spot",venue="binance"} 3`) || strings.Contains(body, "gateway_market_hot_subscriptions") {
+		t.Fatal("hot instruments were mislabeled as dataset subscriptions")
 	}
 	if !strings.Contains(body, `gateway_account_read_ready{environment="live",product="spot",venue="binance"} 2`) {
 		t.Fatalf("aggregated read readiness missing:\n%s", body)
@@ -86,7 +85,6 @@ func TestMetricsCollapseUntrustedDimensionsAndNeverExposeIdentifiers(t *testing.
 	metrics := NewMetrics()
 	canary := `acct-secret-"雪"-BTCUSDT-idem-101`
 	metrics.RecordCommand(CommandOperation(canary), CommandOutcome(canary))
-	metrics.RecordStream(StreamEvent(canary))
 	metrics.ObservePostgres(PostgresOperation(canary), PostgresErrorClass(canary), time.Millisecond)
 	metrics.SetAccountSnapshot([]AccountState{{
 		Venue: canary, Product: canary, Environment: canary,
@@ -94,7 +92,7 @@ func TestMetricsCollapseUntrustedDimensionsAndNeverExposeIdentifiers(t *testing.
 	}})
 	metrics.ObserveMarketFeed(canary, canary, canary, canary, 100)
 	metrics.SetMarketFact(canary, canary, canary, time.Second, 1)
-	metrics.SetMarketHot(canary, canary, canary, 1)
+	metrics.SetMarketHot(canary, canary, 1)
 	metrics.RecordMarketREST(canary, canary, canary)
 
 	response := httptest.NewRecorder()
@@ -105,7 +103,6 @@ func TestMetricsCollapseUntrustedDimensionsAndNeverExposeIdentifiers(t *testing.
 	}
 	if !strings.Contains(body, `operation="unknown"`) ||
 		!strings.Contains(body, `outcome="unknown"`) ||
-		!strings.Contains(body, `event="unknown"`) ||
 		!strings.Contains(body, `venue="unknown"`) {
 		t.Fatalf("untrusted dimensions were not collapsed:\n%s", body)
 	}

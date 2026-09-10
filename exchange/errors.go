@@ -62,6 +62,9 @@ type ErrorDetails struct {
 	Code        string        `json:"code,omitempty"`
 	SafeMessage string        `json:"safe_message,omitempty"`
 	RetryAfter  time.Duration `json:"retry_after,omitempty"`
+	HTTPStatus  int           `json:"http_status,omitempty"`
+	// CommandNotSent is proof that the command request was blocked before transport.
+	CommandNotSent bool `json:"command_not_sent,omitempty"`
 }
 
 type Error struct {

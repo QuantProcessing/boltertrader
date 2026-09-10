@@ -102,7 +102,10 @@ func (base *nadoBase) err(operation string, kind exchange.ErrorKind, msg string)
 	return exchange.NewError(kind, exchange.ErrorDetails{Venue: exchange.VenueNado, Product: base.meta.product, Operation: operation, SafeMessage: msg})
 }
 
-func (base *nadoBase) normalize(operation string, err error) error {
+func (base *nadoBase) normalize(operation string, err error) (returnErr error) {
+	defer func() {
+		returnErr = normalizeHTTPError(returnErr, err, exchange.VenueNado, base.meta.product, operation)
+	}()
 	if err == nil {
 		return nil
 	}
@@ -122,7 +125,8 @@ func (base *nadoBase) contextError(ctx context.Context, operation string) error 
 	return base.normalize(operation, ctx.Err())
 }
 
-func (base *nadoBase) mutationError(operation string, err error, ack *exchange.OrderAcknowledgement) error {
+func (base *nadoBase) mutationError(operation string, err error, ack *exchange.OrderAcknowledgement) (returnErr error) {
+	defer func() { normalizeHTTPCommand(ack, &returnErr, err, exchange.VenueNado, base.meta.product, operation) }()
 	if err == nil {
 		return nil
 	}

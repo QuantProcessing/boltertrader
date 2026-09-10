@@ -8,16 +8,16 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange/internal/factoryclient"
 )
 
-// PublicMarketConnector is the credential-free REST surface used by Gateway
+// PublicMarketConnector is the credential-free market surface used by Gateway
 // before any account exists. The wrapper deliberately exposes no order or
 // account methods even though some venue adapters share an implementation with
 // their authenticated clients.
 type PublicMarketConnector struct {
 	catalog exchange.InstrumentCatalog
 	market  exchange.MarketREST
-	perp    exchange.PerpREST
+	perp    exchange.PerpMarketREST
 	mark    exchange.PerpMarkPriceREST
-	socket  exchange.SpotWebSocket
+	socket  exchange.MarketWebSocket
 	close   func() error
 	scope   exchange.CatalogScope
 	funding bool
@@ -124,11 +124,9 @@ func (connector *PublicMarketConnector) MarkPrice(ctx context.Context, instrumen
 	return mark, true, err
 }
 
-// WebSocket exposes only the credential-free public stream surface. The
-// returned interface includes write methods for historical compatibility, but
-// the connector itself still exposes no order method and every stream opened
-// here is constructed without credential material.
-func (connector *PublicMarketConnector) WebSocket() exchange.SpotWebSocket {
+// WebSocket exposes public streams only. Its concrete value has no account or
+// order methods; type assertions may reveal only additional public facets.
+func (connector *PublicMarketConnector) WebSocket() exchange.MarketWebSocket {
 	if connector == nil {
 		return nil
 	}
@@ -142,21 +140,21 @@ func (connector *PublicMarketConnector) Close() error {
 	return connector.close()
 }
 
-func publicMarketClientForConfig(configName string, settings settings) (exchange.MarketREST, exchange.PerpREST, exchange.PerpMarkPriceREST, exchange.SpotWebSocket, func() error) {
+func publicMarketClientForConfig(configName string, settings settings) (exchange.MarketREST, exchange.PerpMarketREST, exchange.PerpMarkPriceREST, exchange.MarketWebSocket, func() error) {
 	configured := factorySettingsForConfig(configName, settings)
 	// The constructors below receive empty credential fields intentionally.
 	// Their public REST methods do not sign, and the returned value is sealed
 	// behind PublicMarketConnector, whose method set contains no writes.
 	var market exchange.MarketREST
-	var perp exchange.PerpREST
+	var perp exchange.PerpMarketREST
 	var mark exchange.PerpMarkPriceREST
-	var socket exchange.SpotWebSocket
+	var socket exchange.MarketWebSocket
 	var closeClient func() error
 	setSpot := func(client exchange.SpotClient) {
-		market, socket, closeClient = client, client.WebSocket(), client.Close
+		market, socket, closeClient = client, publicMarketSocket(client.WebSocket()), client.Close
 	}
 	setPerp := func(client exchange.PerpClient) {
-		market, perp, socket, closeClient = client, client, client.WebSocket(), client.Close
+		market, perp, socket, closeClient = client, client, publicMarketSocket(client.WebSocket()), client.Close
 		mark, _ = client.(exchange.PerpMarkPriceREST)
 	}
 	switch configName {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Command } from "@/api/types";
 import {
   defaultLimitPrice,
+  notionalBelowMinimum,
   marginPercentQuantity,
   orderConfirmationRequired,
   positionPercentQuantity,
@@ -47,16 +48,12 @@ describe("order ticket position sizing", () => {
 });
 
 describe("order confirmation policy", () => {
-  it("opens the confirmation dialog for a successful preview by default", () => {
-    expect(orderConfirmationRequired(true, [])).toBe(true);
+  it("opens the confirmation dialog by default", () => {
+    expect(orderConfirmationRequired(true)).toBe(true);
   });
 
-  it("submits a successful preview directly after the operator opts out", () => {
-    expect(orderConfirmationRequired(false, [])).toBe(false);
-  });
-
-  it("always shows server blockers even after the operator opts out", () => {
-    expect(orderConfirmationRequired(false, ["minimum_notional"])).toBe(true);
+  it("submits directly after the operator opts out", () => {
+    expect(orderConfirmationRequired(false)).toBe(false);
   });
 });
 
@@ -78,21 +75,35 @@ describe("order ticket failure detail", () => {
   });
 
   const t: Translate = (key, values) => {
-    if (key === "ticket.failure.insufficientMargin") return `insufficient margin (${values?.code})`;
+    if (key === "ticket.failure.venue") return `${values?.message} (${values?.code})`;
     if (key === "ticket.failure.detail") return `${values?.reason} | ${values?.commandId}`;
     if (key === "ticket.failure.unknown") return "unknown rejection";
     return key;
   };
 
-  it("turns a failed Binance command into an actionable persistent reason", () => {
+  it("preserves the safe venue message without venue-specific product branches", () => {
     const failed = command({
-      executionEvidence: { state: "rejected", venueCode: "-2019", venueMessage: "venue rejected order command" },
+      executionEvidence: { state: "rejected", venueCode: "-2019", venueMessage: "insufficient margin" },
     });
-    expect(describeCommandFailure(failed, "binance", t)).toBe("insufficient margin (-2019) | command-1");
+    expect(describeCommandFailure(failed, t)).toBe("insufficient margin (-2019) | command-1");
   });
 
   it("keeps the command id when the venue supplies no detail", () => {
     const failed = command({ commandId: "command-2" });
-    expect(describeCommandFailure(failed, "binance", t)).toBe("unknown rejection | command-2");
+    expect(describeCommandFailure(failed, t)).toBe("unknown rejection | command-2");
+  });
+});
+
+describe("minimum order notional", () => {
+  it("compares exactly at the boundary and beyond Number precision", () => {
+    expect(notionalBelowMinimum("0.001", "4999.9999999999999999", "5")).toBe(true);
+    expect(notionalBelowMinimum("0.001", "5000", "5")).toBe(false);
+    expect(notionalBelowMinimum("9007199254740992", "1", "9007199254740993")).toBe(true);
+    expect(notionalBelowMinimum("0.00000001", "0.01", "0.000000001")).toBe(true);
+  });
+  it("does not invent a market estimate or minimum when unavailable", () => {
+    expect(notionalBelowMinimum("1", "", "5")).toBe(false);
+    expect(notionalBelowMinimum("1", "10", undefined)).toBe(false);
+    expect(notionalBelowMinimum("1", "10", "0")).toBe(false);
   });
 });

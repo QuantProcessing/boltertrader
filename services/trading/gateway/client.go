@@ -1,409 +1,103 @@
-// Package gateway is the trading service's client for the Gateway's HTTP
-// surface: the catalog it reads instruments from, the market data it quotes
-// against, the account authority it fences orders on, and the order plane it
-// hands executions to.
-//
-// It lives on trading's side of the wire rather than the Gateway's because
-// every type here is a decoding of what the Gateway said, judged against what
-// trading needs — a Gateway response that satisfies the Gateway's own contract
-// can still be unusable here, and this package is where that is decided.
+// Package gateway converts Gateway protocol facts into Trading application models.
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/QuantProcessing/boltertrader/secretstore"
+	wire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
+	gatewayclient "github.com/QuantProcessing/boltertrader/clients/gateway"
+	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
-	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
-	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 	"github.com/shopspring/decimal"
 )
 
-// Client is trading's handle on the Gateway. One instance serves every question
-// trading asks — catalog, market data, accounts, orders, fills — because they
-// all travel to the same Gateway, and splitting them per topic would mean four
-// places that can disagree about which Gateway is real.
-//
-// The Gateway does split, but along one seam only, and not by topic: it serves
-// a capability plane at /v1 and an authority plane at /internal/v1, separately
-// bound and separately authenticated. So the client holds two origins and two
-// tokens, chosen by the request path in one place (originFor) rather than at
-// each call site. When the two are configured identically — which is what every
-// single-process deployment and every test fixture does — the split costs
-// nothing and the behaviour is exactly what it was before.
 type Client struct {
-	baseURL         string
-	token           []byte
-	internalBaseURL string
-	internalToken   []byte
-	httpClient      *http.Client
-	liveWrites      bool
-	realtimeMu      sync.Mutex
-	realtime        *RealtimeMarketSource
+	protocol   *gatewayclient.Client
+	liveWrites bool
 }
+type ClientOption func(*gatewayclient.Config) error
 
-// authorityPathPrefix is the whole of the routing rule. It is a property of the
-// Gateway's URL space rather than of any caller, which is why the decision lives
-// here: a new /internal/v1 call added anywhere in this file reaches the right
-// listener with the right credential without its author having to know that two
-// listeners exist.
-const authorityPathPrefix = "/internal/"
-
-// ordersPath is named because two methods build a request against it and one of
-// them appends to it. Written out at each site, a later edit that moves orders
-// behind the authority plane would have to find both.
-const ordersPath = "/v1/orders"
-
-// originFor resolves a request path to the origin and credential that serve it.
-func (client *Client) originFor(path string) (string, []byte) {
-	if strings.HasPrefix(path, authorityPathPrefix) {
-		return client.internalBaseURL, client.internalToken
-	}
-	return client.baseURL, client.token
-}
-
-const (
-	authorityResponseLimit = 64 << 10
-	// catalogResponseLimit bounds the two catalog reads, which are the only
-	// bulk documents on this client. Everything else it reads is a control-plane
-	// envelope describing one account, one order or one fill page, and 64 KiB is
-	// a generous ceiling for those — but the instrument catalog is one row per
-	// tradable symbol, so its size tracks how many venues the Gateway has
-	// brought up rather than anything about the request. One venue's spot book
-	// already exceeds 64 KiB, and the truncation reads as a decode failure,
-	// which the projection then reports as invalid Gateway facts. Holding both
-	// kinds of response to one limit therefore turns a healthy Gateway into an
-	// unready service the moment its catalog is no longer empty.
-	catalogResponseLimit = 8 << 20
-	// fundingBoardResponseLimit bounds the whole cross-venue funding matrix,
-	// which is the second bulk document on this client and for the same reason
-	// as the catalog: its size tracks how many perpetuals the Gateway's ten
-	// funding-capable venues list, not anything about the request. Ten columns
-	// of several hundred rows, each row carrying a symbol, a rate and up to
-	// three price strings, is comfortably past 64 KiB — and past it exactly when
-	// the board is healthiest and most venues are answering. Truncation would
-	// surface as a decode failure and be reported as an unavailable board, so
-	// the ceiling matches the catalog's rather than the control plane's.
-	fundingBoardResponseLimit = 8 << 20
-	// balanceResponseLimit bounds the Gateway's advertised maximum of 500
-	// balance resources. Some venues return a long tail of legacy assets; even
-	// after the Gateway removes exact zeroes, a real multi-asset account can be
-	// larger than the 64 KiB control-plane envelope.
-	balanceResponseLimit = 1 << 20
-)
-
-type readEnvelope[T any] struct {
-	Data T `json:"data"`
-}
-
-// readStatusError carries the rejected status out of readLimit so one caller can
-// tell a permanent refusal from a transient one.
-//
-// Its message is the sentence readLimit used to build inline, and every caller
-// wraps it with %w, so nothing downstream reads differently for having it. Only
-// the funding-history read looks inside: the internal plane answers 404 there
-// when a venue has no history endpoint at all, which is a fact about the venue
-// rather than about the moment, and flattening it into the same string as a 503
-// would have the browser retry a chart that can never exist.
-//
-// The code is best-effort and may be empty. It exists because the internal
-// plane spends 404 on two different facts — a venue with no history surface and
-// an instrument the board is not carrying — and only the first is a statement
-// about the venue. Told apart here, they can be said apart to the operator.
-type readStatusError struct {
-	status int
-	code   string
-}
-
-func (err readStatusError) Error() string {
-	return fmt.Sprintf("Gateway read rejected with status %d", err.status)
-}
-
-// readErrorCode lifts the machine-readable code out of a rejected read's body,
-// draining the rest either way so the connection can be reused.
-//
-// Lenient on purpose, and silent when it fails: an error body is already the
-// unhappy path, and a caller that gets "" simply falls back to reasoning from
-// the status alone — which is what every caller but one does regardless. The
-// limit is the same 64 KiB the body used to be discarded under.
-func readErrorCode(body io.Reader) string {
-	limited := io.LimitReader(body, 64<<10)
-	var envelope struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.NewDecoder(limited).Decode(&envelope); err != nil {
-		_, _ = io.Copy(io.Discard, limited)
-		return ""
-	}
-	_, _ = io.Copy(io.Discard, limited)
-	return envelope.Error.Code
-}
-
-type runtimeProjectionView struct {
-	AccountID                       string                           `json:"accountId"`
-	RuntimeID                       string                           `json:"runtimeId,omitempty"`
-	Active                          *runtimeSnapshotView             `json:"active,omitempty"`
-	Pending                         *pendingSnapshotView             `json:"pending,omitempty"`
-	Retiring                        []runtimeSnapshotView            `json:"retiring"`
-	Tombstoned                      *bool                            `json:"tombstoned"`
-	Readiness                       *tradinghttp.ProjectionReadiness `json:"readiness"`
-	WriteReadiness                  *tradinghttp.ProjectionReadiness `json:"writeReadiness"`
-	BlockedReason                   *string                          `json:"blockedReason"`
-	Capabilities                    []runtimeCapabilityView          `json:"capabilities"`
-	ObservedAt                      *time.Time                       `json:"observedAt"`
-	DesiredStateRevision            *int64                           `json:"desiredStateRevision"`
-	RuntimeGeneration               *int64                           `json:"runtimeGeneration"`
-	CredentialVersion               *int64                           `json:"credentialVersion"`
-	RuntimeVersion                  *int64                           `json:"runtimeVersion"`
-	LastAppliedDesiredStateRevision *int64                           `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    *int64                           `json:"lastAppliedRuntimeGeneration"`
-}
-
-type runtimeCapabilityView struct {
-	RowID      string                   `json:"rowId"`
-	Venue      string                   `json:"venue"`
-	Product    string                   `json:"product"`
-	Settlement string                   `json:"settlement,omitempty"`
-	WriteReady bool                     `json:"writeReady"`
-	Operations capabilityOperationsView `json:"operations"`
-}
-
-type routeRuntimeView struct {
-	RouteID         string `json:"routeId"`
-	Product         string `json:"product"`
-	SettlementAsset string `json:"settlementAsset,omitempty"`
-	RouteProfileID  string `json:"routeProfileId"`
-	RequestedState  string `json:"requestedState"`
-	Ready           bool   `json:"ready"`
-	Reason          string `json:"reason,omitempty"`
-}
-
-type runtimeSnapshotView struct {
-	OperationID          string             `json:"operationId"`
-	RuntimeID            string             `json:"runtimeId"`
-	RequestedState       string             `json:"requestedState"`
-	Routes               []routeRuntimeView `json:"routes"`
-	DesiredStateRevision int64              `json:"desiredStateRevision"`
-	RuntimeGeneration    int64              `json:"runtimeGeneration"`
-	CredentialVersion    int64              `json:"credentialVersion"`
-}
-
-type pendingSnapshotView struct {
-	runtimeSnapshotView
-	State  string `json:"state"`
-	Reason string `json:"reason,omitempty"`
-}
-
-type capabilityOperationsView struct {
-	Place                  bool `json:"place"`
-	Amend                  bool `json:"amend"`
-	Cancel                 bool `json:"cancel"`
-	OpenOrders             bool `json:"open_orders"`
-	OrderHistory           bool `json:"order_history"`
-	Fills                  bool `json:"fills"`
-	Balances               bool `json:"balances"`
-	Account                bool `json:"account"`
-	Positions              bool `json:"positions"`
-	Funding                bool `json:"funding"`
-	AccountFundingPayments bool `json:"account_funding_payments"`
-	Leverage               bool `json:"leverage"`
-	PrivateStream          bool `json:"private_stream"`
-	MarginMode             bool `json:"margin_mode"`
-	PositionMode           bool `json:"position_mode"`
-	FundsTransfer          bool `json:"funds_transfer"`
-}
-
-// MarketDataSource adapts the client to marketdata.Source. It is a type of its
-// own rather than a method set on Client because Client already answers the
-// catalog's Fetch, and one type cannot hold two.
-type MarketDataSource struct{ client *Client }
-
-// MarketData views the client as a market-data source.
-func (client *Client) MarketData() MarketDataSource { return MarketDataSource{client: client} }
-
-// FreshMarketData bypasses Trading's five-second UI projection. Execution
-// previews use it so both legs are sealed against an immediate Gateway BBO.
-func (client *Client) FreshMarketData() FreshMarketDataSource {
-	return FreshMarketDataSource{client: client}
-}
-
-// FreshBBO is the execution-only quote surface. Unlike MarketData it never
-// requests depth, mark, funding, or history as a side effect of a preview.
-func (client *Client) FreshBBO() FreshBBOSource { return FreshBBOSource{client: client} }
-
-type FreshBBOSource struct{ client *Client }
-
-func (source FreshBBOSource) GetFreshBBO(ctx context.Context, instrumentID string) (marketdata.BBO, error) {
-	if source.client == nil || strings.TrimSpace(instrumentID) == "" {
-		return marketdata.BBO{}, marketdata.ErrQuoteUnavailable
-	}
-	var result readEnvelope[struct {
-		InstrumentID string `json:"instrumentId"`
-		Bid          struct {
-			Price    string `json:"price"`
-			Quantity string `json:"quantity"`
-		} `json:"bid"`
-		Ask struct {
-			Price    string `json:"price"`
-			Quantity string `json:"quantity"`
-		} `json:"ask"`
-		ObservedAt     time.Time `json:"observedAt"`
-		SourceSequence string    `json:"sourceSequence,omitempty"`
-	}]
-	err := source.client.read(ctx, "/internal/v1/fresh-bbo", url.Values{"instrumentId": {instrumentID}}, &result)
-	if err != nil {
-		var status readStatusError
-		if errors.As(err, &status) && status.code == "QUOTE_STALE" {
-			return marketdata.BBO{}, marketdata.ErrQuoteStale
+func WithAuthorityPlane(rawURL string, allowPlaintext bool, token []byte) ClientOption {
+	return func(config *gatewayclient.Config) error {
+		if len(token) < 32 {
+			return fmt.Errorf("Gateway authority token is invalid")
 		}
-		return marketdata.BBO{}, marketdata.ErrQuoteUnavailable
+		if _, err := gatewayclient.New(gatewayclient.Config{URL: rawURL, Token: string(token), AllowPlaintext: allowPlaintext}); err != nil {
+			return err
+		}
+		config.InternalURL, config.InternalToken = rawURL, string(token)
+		// Both origins have been checked with their own explicit plaintext policy.
+		config.AllowPlaintext = true
+		return nil
 	}
-	quote := marketdata.BBO{
-		InstrumentID: result.Data.InstrumentID,
-		BestBid:      result.Data.Bid.Price, BestBidSize: result.Data.Bid.Quantity,
-		BestAsk: result.Data.Ask.Price, BestAskSize: result.Data.Ask.Quantity,
-		ObservedAt: result.Data.ObservedAt.UTC(), SourceSequence: result.Data.SourceSequence,
+}
+func NewClient(rawURL string, allowPlaintext bool, token []byte, liveWrites bool, transport *http.Client, options ...ClientOption) (*Client, error) {
+	if len(token) < 32 {
+		return nil, fmt.Errorf("Gateway token is invalid")
 	}
-	if quote.InstrumentID != instrumentID || quote.ObservedAt.IsZero() || !positiveQuote(quote.BestBid, quote.BestBidSize) || !positiveQuote(quote.BestAsk, quote.BestAskSize) {
-		return marketdata.BBO{}, marketdata.ErrQuoteUnavailable
+	config := gatewayclient.Config{URL: rawURL, Token: string(token), AllowPlaintext: allowPlaintext, HTTPClient: transport}
+	protocol, err := gatewayclient.New(config)
+	if err != nil {
+		return nil, err
 	}
-	return quote, nil
+	for _, option := range options {
+		if err := option(&config); err != nil {
+			return nil, err
+		}
+	}
+	if len(options) > 0 {
+		protocol, err = gatewayclient.New(config)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &Client{protocol: protocol, liveWrites: liveWrites}, nil
 }
 
-func positiveQuote(price, quantity string) bool {
-	p, priceErr := decimal.NewFromString(price)
-	q, quantityErr := decimal.NewFromString(quantity)
-	return priceErr == nil && quantityErr == nil && p.IsPositive() && q.IsPositive()
-}
-
-type FreshMarketDataSource struct{ client *Client }
-
-func (source FreshMarketDataSource) Get(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
-	if source.client == nil {
-		return marketdata.Fact{}, fmt.Errorf("Gateway fresh market-data source is unavailable")
-	}
-	return source.client.fetchMarketData(ctx, query)
-}
-
-// ManualAccounts answers the manual product's account question from the
-// Gateway's internal account plane. The public /v1/accounts/{id} view cannot
-// serve here: it reports runtime readiness, not the account's lifecycle state,
-// environment, or the three fences a preview is sealed against.
 type ManualAccounts struct{ client *Client }
 
-// Accounts views the client as the manual product's account authority.
 func (client *Client) Accounts() ManualAccounts { return ManualAccounts{client: client} }
-
-// accountRecordView mirrors lifecycle.PublicAccount. Every field the Gateway
-// emits must be named because the read decoder refuses unknown fields, so a
-// field added there fails loudly here rather than being silently dropped.
-type accountRecordView struct {
-	ID                string             `json:"accountId"`
-	Venue             string             `json:"venue"`
-	NativeEnvironment string             `json:"nativeEnvironment"`
-	DisplayName       string             `json:"displayName"`
-	ProductPolicy     []string           `json:"productPolicy"`
-	Routes            []accountRouteView `json:"routes,omitempty"`
-	Status            string             `json:"status"`
-	LastValidatedAt   *time.Time         `json:"lastValidatedAt"`
-	UpdatedAt         time.Time          `json:"updatedAt"`
-}
-
-// accountRouteView mirrors lifecycle.AccountRoute. It is the account record's
-// declared routing, which is a different thing from routeRuntimeView above:
-// that one reports whether a route is currently usable, this one is what the
-// account was configured with. An order names the latter.
-type accountRouteView struct {
-	RouteID         string `json:"routeId"`
-	Product         string `json:"product"`
-	SettlementAsset string `json:"settlementAsset,omitempty"`
-	RouteProfileID  string `json:"routeProfileId"`
-	RequestedState  string `json:"requestedState"`
-}
-
-func (source ManualAccounts) Get(ctx context.Context, principal, accountID string) (tradinghttp.ManualAccount, error) {
+func (source ManualAccounts) Get(ctx context.Context, principal, accountID string) (manual.Account, error) {
 	if source.client == nil {
-		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account authority is unavailable")
+		return manual.Account{}, fmt.Errorf("Gateway account authority is unavailable")
 	}
 	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" {
-		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account read scope is invalid")
+		return manual.Account{}, fmt.Errorf("Gateway account read scope is invalid")
 	}
-	var envelope readEnvelope[struct {
-		Account accountRecordView `json:"account"`
-	}]
-	path := "/internal/v1/accounts/" + url.PathEscape(accountID)
-	if err := source.client.readLimit(ctx, principal, path, nil, &envelope, authorityResponseLimit); err != nil {
-		return tradinghttp.ManualAccount{}, fmt.Errorf("read Gateway account: %w", err)
-	}
-	account := envelope.Data.Account
-	if account.ID != accountID {
-		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account response is invalid")
+	account, err := source.client.protocol.Account(ctx, accountID)
+	if err != nil {
+		return manual.Account{}, fmt.Errorf("read Gateway account: %w", err)
 	}
 	// NativeEnvironment is the venue environment. The Gateway derives both from
 	// the same route profile, and the public record carries only this one.
-	routes := make([]tradinghttp.ManualAccountRoute, 0, len(account.Routes))
+	routes := make([]manual.AccountRoute, 0, len(account.Routes))
 	for _, route := range account.Routes {
-		routes = append(routes, tradinghttp.ManualAccountRoute{
+		routes = append(routes, manual.AccountRoute{
 			RouteID: route.RouteID, Product: route.Product,
 			SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID,
-			RequestedState: route.RequestedState,
 		})
 	}
 	runtimes, err := source.client.ListAccountRuntimes(ctx, principal, accountID)
 	if err != nil {
-		return tradinghttp.ManualAccount{}, fmt.Errorf("read Gateway account runtime: %w", err)
+		return manual.Account{}, fmt.Errorf("read Gateway account runtime: %w", err)
 	}
-	if len(runtimes) != 1 || runtimes[0].Active == nil || strings.TrimSpace(runtimes[0].RuntimeID) == "" {
-		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account runtime response is invalid")
+	if len(runtimes) != 1 || !runtimes[0].Connected || strings.TrimSpace(runtimes[0].RuntimeID) == "" {
+		return manual.Account{}, fmt.Errorf("Gateway account runtime response is invalid")
 	}
-	return tradinghttp.ManualAccount{
+	return manual.Account{
 		ID: account.ID, RuntimeID: runtimes[0].RuntimeID,
 		Venue: account.Venue, VenueEnvironment: account.NativeEnvironment,
-		State: account.Status, ProductIDs: account.ProductPolicy, Routes: routes,
+		State: account.Status, Routes: routes,
 	}, nil
-}
-
-func (source MarketDataSource) Fetch(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
-	if source.client == nil {
-		return marketdata.Fact{}, fmt.Errorf("Gateway market-data source is unavailable")
-	}
-	return source.client.fetchMarketData(ctx, query)
-}
-
-// FundingBoardSource is a compatibility view over the unified Gateway market
-// connection for hosts that still request a BoardStream from Client.
-type FundingBoardSource struct{ realtime *RealtimeMarketSource }
-
-// FundingBoard views the client as a funding-board source.
-func (client *Client) FundingBoard() FundingBoardSource {
-	return FundingBoardSource{realtime: client.RealtimeMarket()}
-}
-
-// RunFundingBoard maintains Trading's single internal subscription. Each
-// reconnect begins with a complete snapshot, so the local projection is never
-// repaired by guessing across a gap.
-func (source FundingBoardSource) RunFundingBoard(ctx context.Context, replace func(marketdata.BoardSnapshot) error) error {
-	if source.realtime == nil || ctx == nil || replace == nil {
-		return fmt.Errorf("Gateway funding-board stream is unavailable")
-	}
-	return source.realtime.RunFundingBoard(ctx, replace)
 }
 
 type orderIntent struct {
@@ -421,173 +115,12 @@ type orderIntent struct {
 	RuntimeID    string `json:"runtimeId"`
 }
 
-type placeRequest struct {
-	AccountID      string `json:"account_id"`
-	RouteID        string `json:"route_id"`
-	InstrumentID   string `json:"instrument_id"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Side           string `json:"side"`
-	Type           string `json:"type"`
-	Quantity       string `json:"quantity"`
-	LimitPrice     string `json:"limit_price,omitempty"`
-	LimitPolicy    string `json:"limit_policy,omitempty"`
-	ReduceOnly     bool   `json:"reduce_only,omitempty"`
-	Leverage       int    `json:"leverage,omitempty"`
-	RuntimeID      string `json:"runtime_id"`
-}
-
-type placeResponse struct {
-	CommandID       string `json:"command_id"`
-	GatewayOrderID  string `json:"gateway_order_id"`
-	ClientOrderID   string `json:"client_order_id"`
-	State           string `json:"state"`
-	ResourceVersion int64  `json:"resource_version"`
-	VenueCode       string `json:"venue_code,omitempty"`
-	VenueMessage    string `json:"venue_message,omitempty"`
-}
-
-// fillCollection decodes strictly, like every read on this client, so it has to
-// name every field the Gateway can put on a fill — not only the ones trading
-// keeps. A fill off a real venue also carries the venue's own identifiers, and a
-// decoder that left them out would reject the entire page instead of ignoring
-// them, which is how a filled order stalls in reconciliation forever.
-type fillCollection struct {
-	Items []struct {
-		AccountID       string `json:"account_id"`
-		InstrumentID    string `json:"instrument_id"`
-		GatewayOrderID  string `json:"gateway_order_id"`
-		SettlementAsset string `json:"settlement_asset"`
-		Fill            struct {
-			// Named so the page decodes, then dropped: trading books a fill
-			// against the Gateway's canonical identity, and a venue-native
-			// symbol or order id means nothing on this side of the wire.
-			NativeSymbol  string `json:"native_symbol"`
-			NativeID      string `json:"native_id"`
-			OrderID       string `json:"order_id"`
-			ClientOrderID string `json:"client_order_id"`
-			Liquidity     string `json:"liquidity"`
-
-			FillID   string    `json:"fill_id"`
-			Side     string    `json:"side"`
-			Price    string    `json:"price"`
-			Quantity string    `json:"quantity"`
-			Fee      string    `json:"fee"`
-			FeeAsset string    `json:"fee_asset"`
-			Time     time.Time `json:"time"`
-		} `json:"fill"`
-	} `json:"items"`
-	NextCursor string `json:"next_cursor,omitempty"`
-}
-
-// NewClient builds the client trading talks to the Gateway through. It refuses
-// at construction rather than at first call: a token too short to be a service
-// token, or a plaintext origin that is not loopback, are configuration mistakes,
-// and the useful moment to say so is startup.
-//
-// It used to take the mode this process runs in as well, and rejected live
-// writes claimed under a test mode. Both went with the mode axis.
-//
-// allowNonLoopbackPlaintext sits next to the URL it governs because it governs
-// only that URL. It is checked here as well as in the process's own
-// configuration, deliberately: this constructor is reachable from any caller,
-// and a gate that only runs when cmd/trading happens to have run first is not a
-// gate. What the flag buys is a container stack, where the Gateway is a DNS name
-// on an operator-created bridge; what it costs is that it equally permits a
-// genuinely routable origin, which is why it is the caller's assertion to make
-// and never a default.
-func NewClient(rawURL string, allowNonLoopbackPlaintext bool, token []byte, liveWrites bool, httpClient *http.Client, options ...ClientOption) (*Client, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || len(token) < 32 {
-		return nil, fmt.Errorf("Gateway client configuration is invalid")
-	}
-	if err := checkPlaintextOrigin(parsed, allowNonLoopbackPlaintext); err != nil {
-		return nil, err
-	}
-	if httpClient == nil {
-		// A cold catalog read may wait for the Gateway to refresh several public
-		// venue columns. Keep this above the Gateway's per-venue deadline so a
-		// healthy cold start is not mistaken for an invalid catalog.
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
-	origin := strings.TrimRight(parsed.String(), "/")
-	// Both planes default to the capability plane's origin and credential. That
-	// is not a placeholder: one process serving both paths behind one token is a
-	// real topology — it is what every test fixture here is, and what a
-	// single-binary deployment would be — so the default is a configuration, not
-	// an absence. The compose stack overrides it because there the planes are on
-	// two listeners with two tokens.
-	client := &Client{
-		baseURL:         origin,
-		token:           bytes.Clone(token),
-		internalBaseURL: origin,
-		internalToken:   bytes.Clone(token),
-		httpClient:      httpClient,
-		liveWrites:      liveWrites,
-	}
-	for _, option := range options {
-		if err := option(client); err != nil {
-			return nil, err
-		}
-	}
-	return client, nil
-}
-
-// ClientOption adjusts a client at construction. It is variadic rather than a
-// seventh positional parameter because the thing it configures is absent in
-// every caller that does not have a split Gateway, and six positional arguments
-// is already the point past which one more reads as noise.
-type ClientOption func(*Client) error
-
-// WithAuthorityPlane points the /internal/v1 routes at their own origin and
-// credential. Both are required together: an origin without its token would
-// authenticate the authority plane with the capability plane's secret, which is
-// the exact confusion the Gateway's two listeners exist to prevent.
-func WithAuthorityPlane(rawURL string, allowNonLoopbackPlaintext bool, token []byte) ClientOption {
-	return func(client *Client) error {
-		parsed, err := url.Parse(rawURL)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" || len(token) < 32 {
-			return fmt.Errorf("Gateway authority plane configuration is invalid")
-		}
-		if err := checkPlaintextOrigin(parsed, allowNonLoopbackPlaintext); err != nil {
-			return err
-		}
-		client.internalBaseURL = strings.TrimRight(parsed.String(), "/")
-		client.internalToken = bytes.Clone(token)
-		return nil
-	}
-}
-
-// checkPlaintextOrigin is shared by both planes deliberately. A token travelling
-// in cleartext to a routable host is readable on the path whichever plane it
-// opens, and the authority plane's token is the more valuable of the two.
-func checkPlaintextOrigin(parsed *url.URL, allowNonLoopbackPlaintext bool) error {
-	if parsed.Scheme != "http" || allowNonLoopbackPlaintext {
-		return nil
-	}
-	address := net.ParseIP(parsed.Hostname())
-	if address == nil || !address.IsLoopback() {
-		return fmt.Errorf("Gateway client plaintext origin is invalid")
-	}
-	return nil
-}
-
-func validRequestedState(state string) bool {
-	switch state {
-	case "creating", "active", "rotating", "draining", "drained", "disabled", "removing", "removed":
-		return true
-	default:
-		return false
-	}
-}
-
 func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
 	if !client.liveWrites {
-		return manual.GatewayResult{}, orders.ErrLiveWriteDisabled
+		return manual.GatewayResult{Handoff: orders.HandoffResult{Outcome: orders.HandoffNotAttempted}}, orders.ErrLiveWriteDisabled
 	}
 	runtimeID := strings.TrimSpace(request.RuntimeID)
-	if runtimeID == "" && request.DesiredStateRevision > 0 && request.RuntimeGeneration > 0 && request.CredentialVersion > 0 {
-		runtimeID = "legacy-runtime"
-	}
+
 	intent := orderIntent{
 		AccountID: request.AccountID, InstrumentID: request.InstrumentID, Side: request.Side, Quantity: request.Quantity,
 		OrderType: request.OrderType, LimitPrice: request.LimitPrice, TimeInForce: request.TimeInForce, ReduceOnly: request.ReduceOnly, Leverage: request.Leverage,
@@ -596,7 +129,7 @@ func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest
 	handoff, err := client.place(ctx, request.CommandID, intent)
 	result := manual.GatewayResult{CommandID: request.CommandID, AccountID: request.AccountID, State: manualState(handoff.Evidence.State), Handoff: handoff}
 	for _, fill := range handoff.Evidence.Fills {
-		result.Fills = append(result.Fills, manual.FillFact{FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID, InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side), Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt})
+		result.Fills = append(result.Fills, manual.FillFact{InstrumentProduct: fill.InstrumentProduct, BaseAsset: fill.BaseAsset, FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID, InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side), Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt})
 	}
 	if result.State == manual.GatewayStateDenied {
 		result.DenialCode = "gateway_rejected"
@@ -621,7 +154,7 @@ func (client *Client) Cancel(ctx context.Context, request manual.GatewayCancelRe
 	}
 	for _, fill := range handoff.Evidence.Fills {
 		result.Fills = append(result.Fills, manual.FillFact{
-			FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID,
+			InstrumentProduct: fill.InstrumentProduct, BaseAsset: fill.BaseAsset, FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID,
 			InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side),
 			Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency,
 			SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt,
@@ -648,498 +181,184 @@ func manualState(state string) manual.GatewayState {
 	}
 }
 
-func (client *Client) Handoff(ctx context.Context, command orders.Command) (orders.HandoffResult, error) {
-	if !client.liveWrites {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, orders.ErrLiveWriteDisabled
-	}
-	var intent orderIntent
-	decoder := json.NewDecoder(bytes.NewReader(command.Payload))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&intent); err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway command intent is invalid")
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway command intent is invalid")
-	}
-	if intent.AccountID == "" {
-		intent.AccountID = command.AccountID
-	}
-	return client.place(ctx, command.CommandID, intent)
-}
-
+// Reconcile reads the same durable identity; it never resubmits an order.
 func (client *Client) Reconcile(ctx context.Context, command orders.Command) (orders.HandoffResult, error) {
 	current := command.ExecutionEvidence
-	if current.GatewayOrderID == "" {
-		if command.State == orders.StateUncertain {
-			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, fmt.Errorf("Gateway reconciliation identity is unavailable")
-		}
-		return client.Handoff(ctx, command)
-	}
-	var result placeResponse
-	if err := client.read(ctx, "/v1/orders/"+url.PathEscape(current.GatewayOrderID), nil, &result); err != nil {
+	unknown := func(err error) (orders.HandoffResult, error) {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, err
 	}
-	if result.CommandID != current.CommandID || result.GatewayOrderID != current.GatewayOrderID || result.ClientOrderID != current.ClientOrderID || result.ResourceVersion < current.ResourceVersion || result.State == "" {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, fmt.Errorf("Gateway reconciliation identity is invalid")
+	var intent struct {
+		InstrumentID string `json:"instrumentId"`
 	}
-	evidence := orders.ExecutionEvidence{CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID, State: result.State, ResourceVersion: result.ResourceVersion,
-		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}}}
-	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
-		fills, err := client.fetchFills(ctx, result.GatewayOrderID, command.AccountID, "")
-		if err != nil {
-			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, err
-		}
-		evidence.Fills = fills
+	if command.AccountID == "" || json.Unmarshal(command.Payload, &intent) != nil || intent.InstrumentID == "" {
+		return unknown(fmt.Errorf("Gateway reconciliation scope is unavailable"))
 	}
-	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
+	var result wire.Order
+	var err error
+	if current.GatewayOrderID == "" {
+		result, err = client.protocol.OrderByKey(ctx, command.CommandID, command.AccountID, intent.InstrumentID)
+	} else {
+		result, err = client.protocol.Order(ctx, gatewayclient.OrderScope{AccountID: command.AccountID, InstrumentID: intent.InstrumentID, GatewayOrderID: current.GatewayOrderID})
+	}
+	if err != nil {
+		return unknown(err)
+	}
+	if current.GatewayOrderID != "" && (result.CommandID != current.CommandID || result.ClientOrderID != current.ClientOrderID || result.ResourceVersion < current.ResourceVersion) {
+		return unknown(fmt.Errorf("Gateway reconciliation identity regressed"))
+	}
+	return client.handoffEvidence(ctx, result)
 }
 
 func (client *Client) Fetch(ctx context.Context) (catalog.Snapshot, error) {
-	var venues readEnvelope[[]catalog.Venue]
-	if err := client.readLimit(ctx, "", "/internal/v1/catalog/venues", nil, &venues, catalogResponseLimit); err != nil {
-		return catalog.Snapshot{}, fmt.Errorf("read Gateway venues: %w", err)
+	venues, err := client.protocol.CatalogVenues(ctx)
+	if err != nil {
+		return catalog.Snapshot{}, err
 	}
-	var instruments readEnvelope[struct {
-		Revision    string               `json:"revision"`
-		ObservedAt  time.Time            `json:"observedAt"`
-		Instruments []catalog.Instrument `json:"instruments"`
-	}]
-	if err := client.readLimit(ctx, "", "/internal/v1/catalog/instruments", nil, &instruments, catalogResponseLimit); err != nil {
-		return catalog.Snapshot{}, fmt.Errorf("read Gateway instruments: %w", err)
+	instruments, err := client.protocol.CatalogInstruments(ctx)
+	if err != nil {
+		return catalog.Snapshot{}, err
 	}
-	if strings.TrimSpace(instruments.Data.Revision) == "" || instruments.Data.ObservedAt.IsZero() {
-		return catalog.Snapshot{}, fmt.Errorf("Gateway catalog authority is invalid")
+	result := catalog.Snapshot{Revision: instruments.Revision, ObservedAt: instruments.ObservedAt, Venues: make([]catalog.Venue, 0, len(venues)), Instruments: make([]catalog.Instrument, 0, len(instruments.Instruments))}
+	for _, v := range venues {
+		result.Venues = append(result.Venues, catalog.Venue{Venue: v.Venue, Environment: v.Environment, Ready: v.Ready})
 	}
-	return catalog.Snapshot{
-		Revision: instruments.Data.Revision, ObservedAt: instruments.Data.ObservedAt.UTC(),
-		Venues: venues.Data, Instruments: instruments.Data.Instruments,
-	}, nil
-}
-
-func (client *Client) ListAccountRuntimes(ctx context.Context, principal, accountID string) ([]tradinghttp.AccountRuntimeProjection, error) {
-	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" {
-		return nil, fmt.Errorf("Gateway runtime projection scope is invalid")
-	}
-	var runtime readEnvelope[runtimeProjectionView]
-	if err := client.read(ctx, "/internal/v1/accounts/runtime/"+url.PathEscape(accountID), nil, &runtime); err != nil {
-		return nil, fmt.Errorf("read Gateway runtime account: %w", err)
-	}
-	projection := runtime.Data
-	if projection.RuntimeID == "" && projection.Active != nil && projection.Active.DesiredStateRevision > 0 && projection.Active.RuntimeGeneration > 0 && projection.Active.CredentialVersion > 0 {
-		projection.RuntimeID = "legacy-runtime"
-	}
-	if projection.AccountID != accountID || projection.Tombstoned == nil || projection.Readiness == nil || projection.WriteReadiness == nil || projection.Retiring == nil || projection.Capabilities == nil {
-		return nil, fmt.Errorf("Gateway runtime account response is invalid")
-	}
-	if *projection.Tombstoned && (projection.Active != nil || projection.Pending != nil) {
-		return nil, fmt.Errorf("Gateway runtime account response is invalid")
-	}
-	if projection.Active != nil {
-		if *projection.Tombstoned || strings.TrimSpace(projection.RuntimeID) == "" || projection.ObservedAt == nil || projection.ObservedAt.IsZero() || len(projection.Capabilities) == 0 {
-			return nil, fmt.Errorf("Gateway runtime account response is invalid")
-		}
-	} else if !*projection.Tombstoned && projection.Pending == nil {
-		return nil, fmt.Errorf("Gateway runtime account response is invalid")
-	}
-	projectedCapabilities := make([]tradinghttp.AccountCapabilityProjection, 0, len(projection.Capabilities))
-	for _, row := range projection.Capabilities {
-		if row.RowID == "" || row.Venue == "" || row.Product == "" {
-			return nil, fmt.Errorf("Gateway account capability response is invalid")
-		}
-		operations := row.Operations
-		projectedCapabilities = append(projectedCapabilities, tradinghttp.AccountCapabilityProjection{
-			RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement, WriteReady: row.WriteReady,
-			Operations: tradinghttp.CapabilityOperations{Place: operations.Place, Amend: operations.Amend, Cancel: operations.Cancel, OpenOrders: operations.OpenOrders, OrderHistory: operations.OrderHistory, Fills: operations.Fills, Balances: operations.Balances, Account: operations.Account, Positions: operations.Positions, Leverage: operations.Leverage, PrivateStream: operations.PrivateStream, MarginMode: operations.MarginMode, PositionMode: operations.PositionMode, FundsTransfer: operations.FundsTransfer},
+	for _, v := range instruments.Instruments {
+		result.Instruments = append(result.Instruments, catalog.Instrument{
+			InstrumentID: v.InstrumentID, Venue: v.Venue, Environment: v.Environment, Product: v.Product, Settlement: v.Settlement, Symbol: v.Symbol, BaseAsset: v.BaseAsset, QuoteAsset: v.QuoteAsset, MarketFamily: v.MarketFamily, AssetClass: v.AssetClass, ClassificationSource: v.ClassificationSource, RawAssetType: v.RawAssetType, RawCategories: v.RawCategories, Rules: catalog.TradeRules(v.Rules), Ready: v.Ready,
 		})
 	}
-	active, err := projectRuntimeSnapshot(projection.Active)
+	return result, nil
+}
+
+func (client *Client) ListAccountRuntimes(ctx context.Context, principal, accountID string) ([]accountpositions.AccountRuntimeProjection, error) {
+	if strings.TrimSpace(principal) == "" {
+		return nil, fmt.Errorf("account scope is required")
+	}
+	item, err := client.protocol.AccountConnection(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	var pending *tradinghttp.PendingRuntimeSnapshotProjection
-	if projection.Pending != nil {
-		projected, projectErr := projectRuntimeSnapshot(&projection.Pending.runtimeSnapshotView)
-		if projectErr != nil || !validPendingRuntimeState(projection.Pending.State) {
-			return nil, fmt.Errorf("Gateway pending runtime response is invalid")
-		}
-		pending = &tradinghttp.PendingRuntimeSnapshotProjection{RuntimeSnapshotProjection: *projected, State: projection.Pending.State, Reason: projection.Pending.Reason}
-	}
-	retiring := make([]tradinghttp.RuntimeSnapshotProjection, 0, len(projection.Retiring))
-	for index := range projection.Retiring {
-		projected, projectErr := projectRuntimeSnapshot(&projection.Retiring[index])
-		if projectErr != nil {
-			return nil, projectErr
-		}
-		retiring = append(retiring, *projected)
-	}
-	return []tradinghttp.AccountRuntimeProjection{{
-		AccountID: accountID, RuntimeID: projection.RuntimeID, Active: active, Pending: pending, Retiring: retiring,
-		Readiness: *projection.Readiness, WriteReadiness: *projection.WriteReadiness,
-		BlockedReason: projection.BlockedReason, Capabilities: projectedCapabilities, ObservedAt: timeValue(projection.ObservedAt),
-		DesiredStateRevision: int64Value(projection.DesiredStateRevision), RuntimeGeneration: int64Value(projection.RuntimeGeneration),
-		CredentialVersion: int64Value(projection.CredentialVersion), RuntimeVersion: int64Value(projection.RuntimeVersion),
-		LastAppliedDesiredStateRevision: int64Value(projection.LastAppliedDesiredStateRevision), LastAppliedRuntimeGeneration: int64Value(projection.LastAppliedRuntimeGeneration),
-	}}, nil
+	return []accountpositions.AccountRuntimeProjection{{AccountID: item.AccountID, RuntimeID: item.RuntimeID, Connected: item.Connected, ObservedAt: item.ObservedAt}}, nil
 }
 
-// ListAccountBalances projects one owned account's venue balances into the
-// browser-facing trading service. The account lookup is intentionally first:
-// the capability endpoint is service-authenticated, so it must never become a
-// way for a browser principal to probe an arbitrary account id.
-func (client *Client) ListAccountBalances(ctx context.Context, principal, accountID string) ([]tradinghttp.AccountBalanceProjection, error) {
-	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" {
-		return nil, fmt.Errorf("Gateway balance projection scope is invalid")
+func (client *Client) ListAccountBalances(ctx context.Context, principal, accountID string) ([]accountpositions.AccountBalanceProjection, error) {
+	if strings.TrimSpace(principal) == "" {
+		return nil, fmt.Errorf("account scope is required")
 	}
-	if _, err := client.Accounts().Get(ctx, principal, accountID); err != nil {
-		return nil, fmt.Errorf("authorize Gateway balance read: %w", err)
+	if _, err := client.protocol.Account(ctx, accountID); err != nil {
+		return nil, err
 	}
-	var page struct {
-		Items []struct {
-			AccountID       string `json:"account_id"`
-			Product         string `json:"product"`
-			SettlementAsset string `json:"settlement_asset"`
-			AvailableMargin string `json:"available_margin"`
-			Balance         struct {
-				Asset     string `json:"asset"`
-				Available string `json:"available"`
-				Locked    string `json:"locked"`
-				Total     string `json:"total"`
-			} `json:"balance"`
-		} `json:"items"`
+	balances, err := client.protocol.Balances(ctx, accountID)
+	if err != nil {
+		return nil, err
 	}
-	query := url.Values{"account_id": {accountID}, "pagination.limit": {"500"}}
-	if err := client.readLimit(ctx, principal, "/v1/balances", query, &page, balanceResponseLimit); err != nil {
-		return nil, fmt.Errorf("read Gateway balances: %w", err)
-	}
-	items := make([]tradinghttp.AccountBalanceProjection, 0, len(page.Items))
-	for _, item := range page.Items {
-		if item.AccountID != accountID || strings.TrimSpace(item.Product) == "" || strings.TrimSpace(item.Balance.Asset) == "" {
-			return nil, fmt.Errorf("Gateway balance response is invalid")
-		}
-		items = append(items, tradinghttp.AccountBalanceProjection{
-			AccountID: item.AccountID, Product: item.Product, SettlementAsset: item.SettlementAsset,
-			Asset: item.Balance.Asset, Available: item.Balance.Available,
-			AvailableMargin: item.AvailableMargin, Locked: item.Balance.Locked, Total: item.Balance.Total,
-		})
+	items := make([]accountpositions.AccountBalanceProjection, 0, len(balances))
+	for _, item := range balances {
+		items = append(items, accountpositions.AccountBalanceProjection{AccountID: item.AccountID, Product: item.Product, SettlementAsset: item.SettlementAsset, Asset: item.Balance.Asset, Available: item.Balance.Available, Locked: item.Balance.Locked, Total: item.Balance.Total, AvailableMargin: item.AvailableMargin})
 	}
 	return items, nil
 }
 
-// ListAccountPositions projects current venue positions instead of trading's
-// fill-derived portfolio. The account authority check comes first so the
-// service-authenticated capability route cannot be used to probe another
-// principal's account.
-func (client *Client) ListAccountPositions(ctx context.Context, principal, accountID, instrumentID string) ([]tradinghttp.AccountPositionProjection, error) {
-	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || strings.TrimSpace(instrumentID) == "" {
-		return nil, fmt.Errorf("Gateway position projection scope is invalid")
+func (client *Client) ListAccountPositions(ctx context.Context, principal, accountID, instrumentID string) ([]accountpositions.AccountPositionProjection, error) {
+	if strings.TrimSpace(instrumentID) == "" {
+		return nil, fmt.Errorf("instrument scope is required")
 	}
-	if _, err := client.Accounts().Get(ctx, principal, accountID); err != nil {
-		return nil, fmt.Errorf("authorize Gateway position read: %w", err)
+	snapshot, err := client.PositionSnapshot(ctx, principal, accountID)
+	if err != nil {
+		return nil, err
 	}
-	var page struct {
-		Items []struct {
-			AccountID    string          `json:"account_id"`
-			InstrumentID string          `json:"instrument_id"`
-			Position     json.RawMessage `json:"position"`
-		} `json:"items"`
-		NextCursor string `json:"next_cursor,omitempty"`
+	if snapshot.Freshness != accountpositions.FreshnessLive {
+		return nil, fmt.Errorf("Gateway positions are not current")
 	}
-	query := url.Values{"account_id": {accountID}, "instrument_id": {instrumentID}, "pagination.limit": {"100"}}
-	if err := client.readLimit(ctx, principal, "/v1/positions", query, &page, authorityResponseLimit); err != nil {
-		return nil, fmt.Errorf("read Gateway positions: %w", err)
-	}
-	items := make([]tradinghttp.AccountPositionProjection, 0, len(page.Items))
-	for _, item := range page.Items {
-		var position struct {
-			Side          string `json:"side"`
-			Quantity      string `json:"quantity"`
-			EntryPrice    string `json:"entry_price"`
-			MarkPrice     string `json:"mark_price"`
-			UnrealizedPnL string `json:"unrealized_pnl"`
+	items := make([]accountpositions.AccountPositionProjection, 0)
+	for _, item := range snapshot.Items {
+		if item.InstrumentID != instrumentID {
+			continue
 		}
-		if item.AccountID != accountID || item.InstrumentID != instrumentID || json.Unmarshal(item.Position, &position) != nil {
-			return nil, fmt.Errorf("Gateway position response is invalid")
-		}
-		quantity, err := decimal.NewFromString(position.Quantity)
-		if err != nil || (position.Side != "" && position.Side != "buy" && position.Side != "sell") {
-			return nil, fmt.Errorf("Gateway position response is invalid")
-		}
-		if position.Side == "buy" {
+		p := item.Position
+		quantity, _ := decimal.NewFromString(p.Quantity)
+		if p.Side == "buy" {
 			quantity = quantity.Abs()
-		} else if position.Side == "sell" {
+		} else if p.Side == "sell" {
 			quantity = quantity.Abs().Neg()
 		}
-		items = append(items, tradinghttp.AccountPositionProjection{
-			AccountID: item.AccountID, InstrumentID: item.InstrumentID, Side: position.Side,
-			Quantity: quantity.String(), EntryPrice: position.EntryPrice, MarkPrice: position.MarkPrice,
-			UnrealizedPnL: position.UnrealizedPnL,
-		})
+		items = append(items, accountpositions.AccountPositionProjection{AccountID: item.AccountID, InstrumentID: item.InstrumentID, Side: p.Side, Quantity: quantity.String(), EntryPrice: p.EntryPrice, MarkPrice: p.MarkPrice, UnrealizedPnL: p.UnrealizedPnL})
 	}
 	return items, nil
 }
 
-func int64Value(value *int64) int64 {
-	if value == nil {
-		return 0
-	}
-	return *value
-}
-
-func timeValue(value *time.Time) time.Time {
-	if value == nil {
-		return time.Time{}
-	}
-	return value.UTC()
-}
-
-func projectRuntimeSnapshot(snapshot *runtimeSnapshotView) (*tradinghttp.RuntimeSnapshotProjection, error) {
-	if snapshot == nil {
-		return nil, nil
-	}
-	if snapshot.RuntimeID == "" && snapshot.DesiredStateRevision > 0 && snapshot.RuntimeGeneration > 0 && snapshot.CredentialVersion > 0 {
-		snapshot.RuntimeID = "legacy-runtime"
-	}
-	if _, err := secretstore.ParseOperationID(snapshot.OperationID); err != nil || strings.TrimSpace(snapshot.RuntimeID) == "" || !validRequestedState(snapshot.RequestedState) {
-		return nil, fmt.Errorf("Gateway runtime snapshot response is invalid")
-	}
-	routes := make([]tradinghttp.RouteRuntimeProjection, 0, len(snapshot.Routes))
-	for _, route := range snapshot.Routes {
-		if strings.TrimSpace(route.RouteID) == "" || strings.TrimSpace(route.Product) == "" || strings.TrimSpace(route.RouteProfileID) == "" || (route.RequestedState != "active" && route.RequestedState != "disabled") {
-			return nil, fmt.Errorf("Gateway runtime route response is invalid")
-		}
-		routes = append(routes, tradinghttp.RouteRuntimeProjection{RouteID: route.RouteID, Product: route.Product, SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID, RequestedState: route.RequestedState, Ready: route.Ready, Reason: route.Reason})
-	}
-	return &tradinghttp.RuntimeSnapshotProjection{
-		RuntimeID: snapshot.RuntimeID, RequestedState: snapshot.RequestedState, Routes: routes,
-		DesiredStateRevision: snapshot.DesiredStateRevision, RuntimeGeneration: snapshot.RuntimeGeneration, CredentialVersion: snapshot.CredentialVersion,
-	}, nil
-}
-
-func validPendingRuntimeState(state string) bool {
-	switch state {
-	case "prepared", "candidate_ready", "candidate_failed", "applied":
-		return true
-	default:
-		return false
-	}
-}
-
-func (client *Client) fetchMarketData(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
-	values := url.Values{"venue": {query.Venue}, "environment": {query.Environment}, "product": {query.Product}, "instrumentId": {query.InstrumentID}}
-	var result readEnvelope[marketdata.Fact]
-	if err := client.read(ctx, "/internal/v1/market-data", values, &result); err != nil {
-		return marketdata.Fact{}, fmt.Errorf("read Gateway market data: %w", err)
-	}
-	if result.Data.Venue != query.Venue || result.Data.Environment != query.Environment || result.Data.Product != query.Product || result.Data.InstrumentID != query.InstrumentID || result.Data.ObservedAt.IsZero() {
-		return marketdata.Fact{}, fmt.Errorf("Gateway market-data response is invalid")
-	}
-	result.Data.ObservedAt = result.Data.ObservedAt.UTC()
-	return result.Data, nil
-}
-
-func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
-	var result readEnvelope[[]catalog.Venue]
-	if err := client.readLimit(ctx, "", "/internal/v1/catalog/venues", nil, &result, catalogResponseLimit); err != nil {
-		return fmt.Errorf("probe Gateway public market authority: %w", err)
-	}
-	readyVenue := false
-	for _, venue := range result.Data {
-		if strings.TrimSpace(venue.Venue) != "" && venue.Ready {
-			readyVenue = true
-			break
+func handoffError(err error) (orders.HandoffResult, error) {
+	outcome := orders.HandoffOutcomeUnknown
+	var failure *gatewayclient.Error
+	if errors.As(err, &failure) {
+		switch failure.Outcome {
+		case gatewayclient.NotAttempted:
+			outcome = orders.HandoffNotAttempted
+		case gatewayclient.Rejected:
+			outcome = orders.HandoffRejected
 		}
 	}
-	if len(result.Data) == 0 || !readyVenue {
-		return fmt.Errorf("Gateway market-data route is unavailable")
-	}
-	return nil
+	return orders.HandoffResult{Outcome: outcome}, err
 }
-
-func (client *Client) read(ctx context.Context, path string, query url.Values, target any) error {
-	return client.readLimit(ctx, "", path, query, target, authorityResponseLimit)
-}
-
-// readLimit carries an optional principal because part of the Gateway's private
-// plane refuses a read that cannot say who is asking: the service token proves
-// which service called, not which user it called for. An empty principal sends
-// no header, which is what the routes that answer for the service itself want.
-func (client *Client) readLimit(ctx context.Context, principal, path string, query url.Values, target any, limit int64) error {
-	origin, token := client.originFor(path)
-	requestURL := origin + path
-	if len(query) > 0 {
-		requestURL += "?" + query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return fmt.Errorf("construct Gateway request")
-	}
-	request.Header.Set("Authorization", "Bearer "+string(token))
-	if principal != "" {
-		request.Header.Set("X-Bolter-Principal", principal)
-	}
-	response, err := client.httpClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("Gateway read failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return readStatusError{status: response.StatusCode, code: readErrorCode(response.Body)}
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, limit))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("Gateway read response is invalid")
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return fmt.Errorf("Gateway read response is invalid")
-	}
-	return nil
-}
-
 func (client *Client) place(ctx context.Context, idempotencyID string, intent orderIntent) (orders.HandoffResult, error) {
-	orderType := strings.ToLower(intent.OrderType)
 	policy := strings.ToLower(intent.LimitPolicy)
-	if policy == "" && orderType == "limit" {
+	if policy == "" && strings.EqualFold(intent.OrderType, "limit") {
 		policy = strings.ToLower(intent.TimeInForce)
 		if policy == "gtc" {
 			policy = "resting"
 		}
 	}
-	if idempotencyID == "" || intent.AccountID == "" || intent.RouteID == "" || intent.InstrumentID == "" || intent.Side == "" || intent.Quantity == "" || (orderType != "market" && orderType != "limit") {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway order intent is incomplete")
-	}
-	if strings.TrimSpace(intent.RuntimeID) == "" {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway order fence is incomplete")
-	}
-	payload, err := json.Marshal(placeRequest{
-		AccountID: intent.AccountID, RouteID: intent.RouteID, InstrumentID: intent.InstrumentID, IdempotencyKey: idempotencyID,
-		Side: intent.Side, Type: orderType, Quantity: intent.Quantity, LimitPrice: intent.LimitPrice, LimitPolicy: policy, ReduceOnly: intent.ReduceOnly, Leverage: intent.Leverage,
-		RuntimeID: intent.RuntimeID,
-	})
+	result, err := client.protocol.PlaceOrder(ctx, wire.PlaceOrderRequest{AccountID: intent.AccountID, RouteID: intent.RouteID, InstrumentID: intent.InstrumentID, IdempotencyKey: idempotencyID, Side: intent.Side, Type: strings.ToLower(intent.OrderType), Quantity: intent.Quantity, LimitPrice: intent.LimitPrice, LimitPolicy: policy, ReduceOnly: intent.ReduceOnly, Leverage: intent.Leverage, RuntimeID: intent.RuntimeID})
 	if err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("encode Gateway order")
+		return handoffError(err)
 	}
-	origin, token := client.originFor(ordersPath)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, origin+ordersPath, bytes.NewReader(payload))
-	if err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway request")
-	}
-	request.Header.Set("Authorization", "Bearer "+string(token))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", idempotencyID)
-	response, err := client.httpClient.Do(request)
-	if err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway order handoff failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusAccepted {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		outcome := orders.HandoffOutcomeUnknown
-		if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusRequestTimeout {
-			outcome = orders.HandoffRejected
-		}
-		return orders.HandoffResult{Outcome: outcome}, fmt.Errorf("Gateway order handoff rejected with status %d", response.StatusCode)
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
-	decoder.DisallowUnknownFields()
-	var result placeResponse
-	if err := decoder.Decode(&result); err != nil || result.CommandID == "" || result.GatewayOrderID == "" || result.ClientOrderID == "" || result.State == "" || result.ResourceVersion < 1 {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway order response is invalid")
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway order response is invalid")
-	}
-	evidence := orders.ExecutionEvidence{
-		CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID,
-		State: result.State, ResourceVersion: result.ResourceVersion, VenueCode: result.VenueCode, VenueMessage: result.VenueMessage,
-		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}},
-	}
-	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
-		fills, fillErr := client.fetchFills(ctx, result.GatewayOrderID, intent.AccountID, intent.InstrumentID)
-		if fillErr != nil {
-			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, fmt.Errorf("read Gateway fill evidence: %w", fillErr)
-		}
-		evidence.Fills = fills
-	}
-	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
+	return client.handoffEvidence(ctx, result)
 }
-
 func (client *Client) cancel(ctx context.Context, request manual.GatewayCancelRequest) (orders.HandoffResult, error) {
-	path := ordersPath + "/" + url.PathEscape(request.GatewayOrderID)
-	origin, token := client.originFor(path)
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodDelete, origin+path, nil)
+	result, err := client.protocol.CancelOrder(ctx, gatewayclient.OrderScope{AccountID: request.AccountID, InstrumentID: request.InstrumentID, GatewayOrderID: request.GatewayOrderID})
 	if err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway cancel request")
+		return handoffError(err)
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+string(token))
-	response, err := client.httpClient.Do(httpRequest)
-	if err != nil {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel handoff failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusAccepted {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		outcome := orders.HandoffOutcomeUnknown
-		if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusRequestTimeout {
-			outcome = orders.HandoffRejected
-		}
-		return orders.HandoffResult{Outcome: outcome}, fmt.Errorf("Gateway cancel handoff rejected with status %d", response.StatusCode)
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
-	decoder.DisallowUnknownFields()
-	var result placeResponse
-	// command_id and gateway_order_id live in different namespaces. The cancel
-	// is addressed by gateway order id, so the Gateway echoing it back is a
-	// real correlation check. Its command_id is one the Gateway minted for the
-	// cancel; the request carries our trading command id and the Gateway never
-	// even sees it — a DELETE has no body. Demanding the two be equal made
-	// every cancel fail, so assert only that the Gateway named a command.
-	if err := decoder.Decode(&result); err != nil || result.CommandID == "" || result.GatewayOrderID != request.GatewayOrderID || result.ClientOrderID == "" || result.State == "" || result.ResourceVersion < 1 {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel response is invalid")
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel response is invalid")
-	}
-	evidence := orders.ExecutionEvidence{
-		CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID,
-		State: result.State, ResourceVersion: result.ResourceVersion,
-		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}},
+	return client.handoffEvidence(ctx, result)
+}
+func (client *Client) handoffEvidence(ctx context.Context, result wire.Order) (orders.HandoffResult, error) {
+	evidence := orders.ExecutionEvidence{CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID, State: result.State, ResourceVersion: result.ResourceVersion, VenueCode: result.VenueCode, VenueMessage: result.VenueMessage,
+		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}}}
+	switch result.State {
+	case "accepted", "open", "partially_filled", "filled", "canceled", "cancelled", "rejected":
+	default:
+		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, nil
 	}
 	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
-		fills, fillErr := client.fetchFills(ctx, result.GatewayOrderID, request.AccountID, request.InstrumentID)
-		if fillErr != nil {
-			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, fmt.Errorf("read Gateway fill evidence: %w", fillErr)
+		fills, err := client.fetchFills(ctx, result.GatewayOrderID, result.AccountID, result.InstrumentID)
+		if err != nil {
+			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, err
 		}
 		evidence.Fills = fills
 	}
 	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
 }
-
-const maxFillPages = 100
-
-func (client *Client) fetchFills(ctx context.Context, gatewayOrderID, accountID, instrumentID string) ([]orders.FillEvidence, error) {
-	query := url.Values{"gateway_order_id": {gatewayOrderID}, "account_id": {accountID}, "instrument_id": {instrumentID}, "pagination.limit": {"100"}}
-	fills := make([]orders.FillEvidence, 0)
-	seenCursors := map[string]struct{}{"": {}}
-	for page := 0; page < maxFillPages; page++ {
-		var result fillCollection
-		if err := client.read(ctx, "/v1/fills", query, &result); err != nil {
-			return nil, fmt.Errorf("read Gateway fills: %w", err)
-		}
-		for _, item := range result.Items {
-			if item.SettlementAsset == "" {
-				return nil, fmt.Errorf("Gateway fill response is missing settlement currency")
-			}
-			fills = append(fills, orders.FillEvidence{FillID: item.Fill.FillID, AccountID: item.AccountID, InstrumentID: item.InstrumentID, Side: item.Fill.Side, Quantity: item.Fill.Quantity, Price: item.Fill.Price, Fee: item.Fill.Fee, FeeCurrency: item.Fill.FeeAsset, SettlementCurrency: item.SettlementAsset, OccurredAt: item.Fill.Time})
-		}
-		if result.NextCursor == "" {
-			return fills, nil
-		}
-		if _, seen := seenCursors[result.NextCursor]; seen {
-			return nil, fmt.Errorf("Gateway fill pagination cursor cycled")
-		}
-		seenCursors[result.NextCursor] = struct{}{}
-		query.Set("pagination.cursor", result.NextCursor)
+func (client *Client) fetchFills(ctx context.Context, orderID, accountID, instrumentID string) ([]orders.FillEvidence, error) {
+	items, err := client.protocol.Fills(ctx, gatewayclient.OrderScope{AccountID: accountID, InstrumentID: instrumentID, GatewayOrderID: orderID})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("Gateway fill pagination exceeded %d pages", maxFillPages)
+	fills := make([]orders.FillEvidence, 0, len(items))
+	for _, item := range items {
+		f := item.Fill
+		fills = append(fills, orders.FillEvidence{InstrumentProduct: item.Product, BaseAsset: item.BaseAsset, FillID: f.FillID, AccountID: item.AccountID, InstrumentID: item.InstrumentID, Side: f.Side, Quantity: f.Quantity, Price: f.Price, Fee: f.Fee, FeeCurrency: f.FeeAsset, SettlementCurrency: item.SettlementAsset, OccurredAt: f.Time})
+	}
+	return fills, nil
+}
+func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
+	venues, err := client.protocol.CatalogVenues(ctx)
+	if err != nil {
+		return err
+	}
+	for _, venue := range venues {
+		if venue.Ready {
+			return nil
+		}
+	}
+	return fmt.Errorf("Gateway market-data route is unavailable")
 }

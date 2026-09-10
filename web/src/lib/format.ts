@@ -185,6 +185,15 @@ export function formatTimestamp(iso: string | null | undefined, now: Date = new 
   return sameDay ? TIME.format(at) : DATE_TIME.format(at);
 }
 
+/** Full local timestamp for operational records whose date must never vanish. */
+export function formatFullTimestamp(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const part = (value: number) => String(value).padStart(2, "0");
+  return `${at.getFullYear()}-${part(at.getMonth() + 1)}-${part(at.getDate())} ${part(at.getHours())}:${part(at.getMinutes())}:${part(at.getSeconds())}`;
+}
+
 /** "4s", "1m 20s" — for countdowns the operator is racing. */
 export function formatDuration(milliseconds: number): string {
   const total = Math.max(0, Math.round(milliseconds / 1000));

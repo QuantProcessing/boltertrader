@@ -206,7 +206,7 @@
    * one is a height, and the day the blotter grows the book should not. */
   --spacing-side: 340px; /* order book, spread list */
   --spacing-ticket: 340px; /* the ticket, which holds a form rather than a list */
-  --spacing-deck: 190px; /* blotter, ledger, open pairs */
+  --spacing-deck: 190px; /* blotter, ledger */
   --spacing-content: 1600px; /* centered reading width outside the trade terminal */
 
   --shadow-overlay: var(--bt-shadow-overlay);

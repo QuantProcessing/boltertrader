@@ -11,165 +11,60 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	wire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
-	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
-	"github.com/QuantProcessing/boltertrader/gateway/secret"
-	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
-	"github.com/QuantProcessing/boltertrader/secretstore"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 type gatewayAuthority struct {
-	mu          sync.Mutex
-	store       store.DesiredStateStore
-	snapshots   store.RuntimeSnapshotStore
-	manager     *account.Manager
-	routeStatus func(domain.AccountID, string, string) (account.Status, error)
-	reads       authorityReadSource
-	now         func() time.Time
+	manager *account.Manager
+	reads   authorityReadSource
 }
 
-type validationSnapshotAuthority struct {
-	snapshots store.RuntimeSnapshotStore
-}
+type validationSnapshotAuthority struct{}
 
-func (authority validationSnapshotAuthority) Execute(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	views := func(states []store.RuntimeState) []httpapi.RuntimeView {
-		projector := gatewayAuthority{snapshots: authority.snapshots}
-		result := make([]httpapi.RuntimeView, 0, len(states))
-		for _, state := range states {
-			result = append(result, projector.runtimeView(state))
-		}
-		return result
+func (validationSnapshotAuthority) Execute(_ context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
+	if request.Operation == httpapi.AuthorityRuntimeReadiness {
+		return httpapi.AuthorityResponse{Body: httpapi.RuntimeReadiness{Ready: false}}, nil
 	}
 	switch request.Operation {
-	case httpapi.AuthorityRuntimeStatus, httpapi.AuthorityListRuntimeAccounts, httpapi.AuthorityListDesired:
-		states, err := authority.snapshots.ListRuntimeStateForRecovery(ctx)
-		if err != nil {
-			return httpapi.AuthorityResponse{}, authorityError(err)
-		}
-		return httpapi.AuthorityResponse{Body: map[string]any{"accounts": views(states)}}, nil
-	case httpapi.AuthorityGetRuntimeAccount, httpapi.AuthorityGetDesired:
-		state, err := authority.snapshots.LoadRuntimeState(ctx, domain.AccountID(request.AccountID))
-		if err != nil {
-			return httpapi.AuthorityResponse{}, authorityError(err)
-		}
-		return httpapi.AuthorityResponse{Body: views([]store.RuntimeState{state})[0]}, nil
-	case httpapi.AuthorityRuntimeReadiness:
-		return httpapi.AuthorityResponse{Body: httpapi.RuntimeReadiness{Ready: true}}, nil
 	case httpapi.AuthorityCatalogVenues:
 		return httpapi.AuthorityResponse{Body: profileAuthorityVenues(nil)}, nil
 	case httpapi.AuthorityCatalogInstruments:
 		revision := sha256.Sum256([]byte("[]"))
-		return httpapi.AuthorityResponse{Body: authorityCatalogInstruments{
-			Revision: fmt.Sprintf("gateway-%x", revision[:16]), ObservedAt: time.Now().UTC(), Instruments: []authorityInstrument{},
-		}}, nil
-	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions, httpapi.AuthorityRuntimeUncertain,
-		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityMarketData,
-		httpapi.AuthorityCandles, httpapi.AuthorityFundingBoard, httpapi.AuthorityFundingHistory:
-		return httpapi.AuthorityResponse{Body: []any{}}, nil
-	default:
-		return httpapi.AuthorityResponse{}, httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "GATEWAY_WRITES_NOT_READY", Retryable: true}
+		return httpapi.AuthorityResponse{Body: authorityCatalogInstruments{Revision: fmt.Sprintf("gateway-%x", revision[:16]), ObservedAt: time.Now().UTC(), Instruments: []authorityInstrument{}}}, nil
 	}
+	return httpapi.AuthorityResponse{Body: []any{}}, nil
 }
 
-type authorityVenue struct {
-	Venue       string `json:"venue"`
-	Environment string `json:"environment"`
-	Ready       bool   `json:"ready"`
-}
+type authorityVenue = wire.CatalogVenue
 
-type authorityInstrument struct {
-	InstrumentID         string              `json:"instrumentId"`
-	Venue                string              `json:"venue"`
-	Environment          string              `json:"environment"`
-	Product              string              `json:"product"`
-	Settlement           string              `json:"settlement,omitempty"`
-	Symbol               string              `json:"symbol"`
-	BaseAsset            string              `json:"baseAsset"`
-	QuoteAsset           string              `json:"quoteAsset"`
-	MarketFamily         string              `json:"marketFamily"`
-	AssetClass           string              `json:"assetClass"`
-	ClassificationSource string              `json:"classificationSource,omitempty"`
-	RawAssetType         string              `json:"rawAssetType,omitempty"`
-	RawCategories        []string            `json:"rawCategories,omitempty"`
-	Rules                authorityTradeRules `json:"rules"`
-	Ready                bool                `json:"ready"`
-}
+type authorityInstrument = wire.CatalogInstrument
 
-type authorityCatalogInstruments struct {
-	Revision    string                `json:"revision"`
-	ObservedAt  time.Time             `json:"observedAt"`
-	Instruments []authorityInstrument `json:"instruments"`
-}
+type authorityCatalogInstruments = wire.CatalogInstruments
 
 type authorityRuntimeStatus struct {
 	Accounts []authorityPublicRuntimeAccount `json:"accounts"`
 }
 
-type authorityPublicDesiredRuntime struct {
-	AccountID        domain.AccountID     `json:"accountId"`
-	Venue            string               `json:"venue"`
-	VenueEnvironment string               `json:"venueEnvironment"`
-	RequestedState   account.RuntimeState `json:"requestedState"`
-}
-
 type authorityPublicRuntimeAccount struct {
-	Desired    authorityPublicDesiredRuntime `json:"desired"`
-	State      account.RuntimeState          `json:"state"`
-	Ready      bool                          `json:"ready"`
-	Reason     string                        `json:"reason,omitempty"`
-	ObservedAt time.Time                     `json:"observedAt"`
+	AccountID        domain.AccountID `json:"accountId"`
+	Venue            string           `json:"venue"`
+	VenueEnvironment string           `json:"venueEnvironment"`
+	Ready            bool             `json:"ready"`
+	Reason           string           `json:"reason,omitempty"`
+	ObservedAt       time.Time        `json:"observedAt"`
 }
 
-type authorityProjectionReadiness struct {
-	Ready  bool   `json:"ready"`
-	Reason string `json:"reason,omitempty"`
-}
-
-type authorityRuntimeCapability struct {
-	RowID      string                `json:"rowId"`
-	Venue      string                `json:"venue"`
-	Product    string                `json:"product"`
-	Settlement string                `json:"settlement,omitempty"`
-	WriteReady bool                  `json:"writeReady"`
-	Operations capability.Operations `json:"operations"`
-}
-
-type authorityRuntimeProjection struct {
-	AccountID      string                       `json:"accountId"`
-	Readiness      authorityProjectionReadiness `json:"readiness"`
-	WriteReadiness authorityProjectionReadiness `json:"writeReadiness"`
-	BlockedReason  *string                      `json:"blockedReason"`
-	Capabilities   []authorityRuntimeCapability `json:"capabilities"`
-	ObservedAt     time.Time                    `json:"observedAt"`
-	// Deprecated source-compatibility fields. They are not serialized or
-	// persisted by the simplified account model.
-	DesiredStateRevision            uint64 `json:"-"`
-	RuntimeGeneration               uint64 `json:"-"`
-	CredentialVersion               uint64 `json:"-"`
-	RuntimeVersion                  uint64 `json:"-"`
-	LastAppliedDesiredStateRevision uint64 `json:"-"`
-	LastAppliedRuntimeGeneration    uint64 `json:"-"`
-}
-
-type authorityTradeRules struct {
-	PriceIncrement    string `json:"priceIncrement"`
-	QuantityIncrement string `json:"quantityIncrement"`
-	MinQuantity       string `json:"minQuantity"`
-	MinNotional       string `json:"minNotional,omitempty"`
-}
+type authorityTradeRules = wire.TradeRules
 
 type authorityMarketData struct {
 	Venue             string                  `json:"venue"`
@@ -362,12 +257,8 @@ func authorityPublicRuntimes(runtimes []account.RuntimeAccount) []authorityPubli
 	result := make([]authorityPublicRuntimeAccount, 0, len(runtimes))
 	for _, runtime := range runtimes {
 		result = append(result, authorityPublicRuntimeAccount{
-			Desired: authorityPublicDesiredRuntime{
-				AccountID: runtime.Desired.AccountID, Venue: runtime.Desired.Venue,
-				VenueEnvironment: runtime.Desired.VenueEnvironment,
-				RequestedState:   runtime.Desired.RequestedState,
-			},
-			State: runtime.State, Ready: runtime.Ready, Reason: runtime.Reason,
+			AccountID: runtime.AccountID, Venue: runtime.Venue, VenueEnvironment: runtime.VenueEnvironment,
+			Ready: runtime.Ready, Reason: runtime.Reason,
 			ObservedAt: runtime.ObservedAt,
 		})
 	}
@@ -375,8 +266,7 @@ func authorityPublicRuntimes(runtimes []account.RuntimeAccount) []authorityPubli
 }
 
 const (
-	authorityDepthLimit          = 20
-	authorityFundingHistoryLimit = 20
+	authorityDepthLimit = 20
 	// Matches the public plane's maxListLimit. It is a screenful of 1m bars with
 	// room to scroll, and every supported venue serves 500 in one call.
 	authorityCandleLimitMax = 500
@@ -389,7 +279,6 @@ type authorityReadSource interface {
 	Candles(context.Context, authorityCandlesQuery) (authorityCandles, error)
 	FundingBoard(context.Context) (authorityFundingBoard, error)
 	FundingHistory(context.Context, authorityFundingHistoryQuery) (authorityFundingSeries, error)
-	Runtime(string) (authorityRuntimeProjection, error)
 }
 
 type authorityAccountSource interface {
@@ -405,13 +294,6 @@ type authorityAccountSource interface {
 	// an account running two routes of the same product.
 	SpotRoute(domain.AccountID, string) (exchange.SpotClient, error)
 	PerpRoute(domain.AccountID, string) (exchange.PerpClient, error)
-	Capability(domain.AccountID) (capability.Row, error)
-	Runtime(domain.AccountID) (account.RuntimeAccount, error)
-	RouteStatus(domain.AccountID, string, string) (account.Status, error)
-}
-
-type authorityMultiCapabilitySource interface {
-	Capabilities(domain.AccountID) ([]capability.Row, error)
 }
 
 type managerAuthorityReads struct {
@@ -419,7 +301,7 @@ type managerAuthorityReads struct {
 	profiles *routeprofile.Registry
 	// markets owns the credential-free catalog, order-book and candle plane.
 	// It is deliberately independent of manager: public facts exist before an
-	// account is configured and remain readable when all accounts are disabled.
+	// account is configured and remain readable after all accounts are deleted.
 	markets authorityPublicMarketSource
 	// board serves the bulk funding matrix from its own public endpoint loaders.
 	// It stays separate from markets because it refreshes every venue as one
@@ -431,7 +313,7 @@ type managerAuthorityReads struct {
 type authorityPublicMarketSource interface {
 	Venues() []string
 	Snapshot(context.Context) (publicmarket.Snapshot, error)
-	MarketData(context.Context, publicmarket.Query, int, int) (publicmarket.Fact, error)
+	MarketData(context.Context, publicmarket.Query, int) (publicmarket.Fact, error)
 	Candles(context.Context, publicmarket.Query, string, int) (publicmarket.CandleResult, error)
 }
 
@@ -444,136 +326,7 @@ func (reads managerAuthorityReads) clock() time.Time {
 	return reads.now().UTC()
 }
 
-type opaqueRuntimeLifecycle struct {
-	resolve    func(context.Context, secret.OpaqueRef) (string, error)
-	activate   func(context.Context, account.DesiredRuntime, string) error
-	deactivate func(context.Context, domain.AccountID) error
-	blockers   func(context.Context, domain.AccountID) (account.RuntimeBlockers, error)
-}
-
-type runtimeBlockerQuerier interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}
-
-type runtimePositionBlockerSource interface {
-	RuntimePositionBlockers(context.Context, domain.AccountID) (int, error)
-}
-
-// productionRuntimeLifecycle keeps legacy activation closed while snapshot
-// route groups own connector construction and teardown.
-type productionRuntimeLifecycle struct {
-	mu        sync.RWMutex
-	querier   runtimeBlockerQuerier
-	positions runtimePositionBlockerSource
-}
-
-func (lifecycle *productionRuntimeLifecycle) attach(querier runtimeBlockerQuerier, positions runtimePositionBlockerSource) error {
-	if lifecycle == nil || querier == nil || positions == nil {
-		return errors.New("runtime lifecycle database is unavailable")
-	}
-	lifecycle.mu.Lock()
-	lifecycle.querier = querier
-	lifecycle.positions = positions
-	lifecycle.mu.Unlock()
-	return nil
-}
-
-func (*productionRuntimeLifecycle) Validate(context.Context, account.DesiredRuntime) error {
-	return errors.New("legacy runtime activation is unavailable")
-}
-
-func (*productionRuntimeLifecycle) Activate(context.Context, account.DesiredRuntime) error {
-	return errors.New("legacy runtime activation is unavailable")
-}
-
-func (*productionRuntimeLifecycle) Deactivate(context.Context, domain.AccountID) error { return nil }
-
-func (lifecycle *productionRuntimeLifecycle) Blockers(ctx context.Context, accountID domain.AccountID) (account.RuntimeBlockers, error) {
-	if ctx == nil || accountID.Validate() != nil {
-		return account.RuntimeBlockers{}, errors.New("runtime blocker lookup failed")
-	}
-	lifecycle.mu.RLock()
-	querier := lifecycle.querier
-	positions := lifecycle.positions
-	lifecycle.mu.RUnlock()
-	if querier == nil || positions == nil {
-		return account.RuntimeBlockers{}, errors.New("runtime blocker lookup failed")
-	}
-	var openOrders, uncertainCommands int
-	if err := querier.QueryRow(ctx, `
-		SELECT
-			count(*) FILTER (WHERE state IN ('accepted','open','partially_filled')),
-			count(*) FILTER (WHERE state IN ('prepared','dispatching','uncertain'))
-		FROM orders
-		WHERE account_id=$1
-	`, accountID).Scan(&openOrders, &uncertainCommands); err != nil {
-		return account.RuntimeBlockers{}, errors.New("runtime blocker lookup failed")
-	}
-	openPositions, err := positions.RuntimePositionBlockers(ctx, accountID)
-	if errors.Is(err, account.ErrUnknownAccount) {
-		return account.RuntimeBlockers{}, account.ErrUnknownAccount
-	}
-	if err != nil || openPositions < 0 {
-		return account.RuntimeBlockers{}, errors.New("runtime blocker lookup failed")
-	}
-	return account.RuntimeBlockers{OpenOrders: openOrders, Positions: openPositions, UncertainCommands: uncertainCommands}, nil
-}
-
-func newOpaqueRuntimeLifecycle(
-	resolve func(context.Context, secret.OpaqueRef) (string, error),
-	activate func(context.Context, account.DesiredRuntime, string) error,
-	deactivate func(context.Context, domain.AccountID) error,
-	blockers func(context.Context, domain.AccountID) (account.RuntimeBlockers, error),
-) (*opaqueRuntimeLifecycle, error) {
-	if resolve == nil || activate == nil || deactivate == nil || blockers == nil {
-		return nil, errors.New("runtime lifecycle dependencies are incomplete")
-	}
-	return &opaqueRuntimeLifecycle{resolve: resolve, activate: activate, deactivate: deactivate, blockers: blockers}, nil
-}
-
-func (lifecycle *opaqueRuntimeLifecycle) Validate(ctx context.Context, desired account.DesiredRuntime) error {
-	material, err := lifecycle.resolve(ctx, desired.SecretRef)
-	if err != nil || material == "" {
-		return errors.New("runtime secret resolution failed")
-	}
-	material = ""
-	return nil
-}
-
-func (lifecycle *opaqueRuntimeLifecycle) Activate(ctx context.Context, desired account.DesiredRuntime) error {
-	material, err := lifecycle.resolve(ctx, desired.SecretRef)
-	if err != nil || material == "" {
-		return errors.New("runtime secret resolution failed")
-	}
-	defer func() { material = "" }()
-	if err := lifecycle.activate(ctx, desired, material); err != nil {
-		return errors.New("runtime activation failed")
-	}
-	return nil
-}
-
-func (lifecycle *opaqueRuntimeLifecycle) Deactivate(ctx context.Context, accountID domain.AccountID) error {
-	if err := lifecycle.deactivate(ctx, accountID); err != nil {
-		return errors.New("runtime deactivation failed")
-	}
-	return nil
-}
-
-func (lifecycle *opaqueRuntimeLifecycle) Blockers(ctx context.Context, accountID domain.AccountID) (account.RuntimeBlockers, error) {
-	blockers, err := lifecycle.blockers(ctx, accountID)
-	if err != nil {
-		return account.RuntimeBlockers{}, errors.New("runtime blocker lookup failed")
-	}
-	return blockers, nil
-}
-
-// authorityOption adjusts the reads assembled by newGatewayAuthority.
-//
-// It is variadic rather than a fourth parameter because the constructor has
-// nineteen call sites, eighteen of them tests that care about desired state and
-// nothing else. It is also an option rather than a setter on the returned value
-// because reads is read under no lock by every request: fixing it before the
-// authority is reachable keeps it immutable afterwards.
+// authorityOption configures immutable read dependencies before requests begin.
 type authorityOption func(*managerAuthorityReads)
 
 // withFundingBoard supplies the credential-free source behind the funding
@@ -588,8 +341,8 @@ func withPublicMarkets(markets authorityPublicMarketSource) authorityOption {
 	return func(reads *managerAuthorityReads) { reads.markets = markets }
 }
 
-func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateStore, manager *account.Manager, options ...authorityOption) (*gatewayAuthority, error) {
-	if ctx == nil || desiredStore == nil || manager == nil {
+func newGatewayAuthority(ctx context.Context, manager *account.Manager, options ...authorityOption) (*gatewayAuthority, error) {
+	if ctx == nil || manager == nil {
 		return nil, errors.New("gateway authority dependencies are incomplete")
 	}
 	reads := managerAuthorityReads{manager: manager, profiles: routeprofile.DefaultRegistry(), now: time.Now}
@@ -599,131 +352,23 @@ func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateSto
 		}
 	}
 	authority := &gatewayAuthority{
-		store: desiredStore, manager: manager, routeStatus: manager.RouteStatus,
-		reads: reads,
-		now:   time.Now,
-	}
-	if snapshots, ok := desiredStore.(store.RuntimeSnapshotStore); ok {
-		authority.snapshots = snapshots
-		if err := manager.SetRuntimeStateStore(snapshots); err != nil {
-			return nil, errors.New("configure runtime snapshot store failed")
-		}
-	}
-	if err := authority.restore(ctx); err != nil {
-		return nil, errors.New("restore gateway authority failed")
+		manager: manager,
+		reads:   reads,
 	}
 	return authority, nil
-}
-
-func (authority *gatewayAuthority) ApplySnapshot(ctx context.Context, desired store.DesiredSnapshot) (store.PromotionResult, error) {
-	if ctx == nil || authority.snapshots == nil {
-		return store.PromotionResult{}, errors.New("runtime snapshot authority is unavailable")
-	}
-	retired, err := authority.snapshots.IsSecretReferenceRetired(ctx, authoritySecretScope(), desired.SecretRef)
-	if err != nil {
-		return store.PromotionResult{}, err
-	}
-	if retired {
-		return store.PromotionResult{}, store.ErrRetiredSecretReference
-	}
-	current, err := authority.snapshots.LoadRuntimeState(ctx, desired.AccountID)
-	if err == nil && current.Active != nil && current.Active.OperationID == desired.OperationID {
-		currentDigest, digestErr := current.Active.CanonicalDigest()
-		desiredDigest, desiredErr := desired.CanonicalDigest()
-		if digestErr != nil || desiredErr != nil || currentDigest != desiredDigest {
-			return store.PromotionResult{}, store.ErrOperationConflict
-		}
-		if err := authority.manager.RestoreActiveRuntime(ctx, *current.Active); err != nil {
-			return store.PromotionResult{}, err
-		}
-		return store.PromotionResult{Active: *current.Active}, nil
-	}
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return store.PromotionResult{}, err
-	}
-	pending, err := authority.snapshots.PreparePending(ctx, desired)
-	if err != nil {
-		return store.PromotionResult{}, err
-	}
-	group, err := authority.manager.BuildCandidate(ctx, pending)
-	if err != nil {
-		reasonCode := account.CandidateFailureReason(err)
-		observedAt := authority.now().UTC()
-		for _, route := range pending.Routes {
-			if route.RequestedState != store.RouteActive {
-				continue
-			}
-			if observationErr := authority.snapshots.RecordCandidateObservation(ctx, store.CandidateObservation{
-				OperationID: pending.OperationID, ObservationRevision: 1, RouteID: route.RouteID,
-				State: store.CandidateFailed, ReasonCode: reasonCode, ObservedAt: observedAt,
-			}); observationErr != nil {
-				return store.PromotionResult{}, observationErr
-			}
-		}
-		if failedErr := authority.snapshots.MarkCandidateFailed(ctx, pending.OperationID); failedErr != nil {
-			return store.PromotionResult{}, failedErr
-		}
-		return store.PromotionResult{}, err
-	}
-	observedAt := authority.now().UTC()
-	for _, route := range pending.Routes {
-		if route.RequestedState != store.RouteActive {
-			continue
-		}
-		if err := authority.snapshots.RecordCandidateObservation(ctx, store.CandidateObservation{
-			OperationID: pending.OperationID, ObservationRevision: 1, RouteID: route.RouteID,
-			State: store.CandidateReady, ObservedAt: observedAt,
-		}); err != nil {
-			return store.PromotionResult{}, err
-		}
-	}
-	if err := authority.snapshots.MarkCandidateReady(ctx, pending.OperationID); err != nil {
-		return store.PromotionResult{}, err
-	}
-	return authority.manager.PromoteCandidate(ctx, group)
 }
 
 func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
 	if ctx == nil {
 		return httpapi.AuthorityResponse{}, authorityError(errors.New("context is required"))
 	}
-	// Public market reads own no account lifecycle state and may wait on venue
-	// I/O. Serializing them behind the account-control mutex lets one slow
-	// catalog refresh block account readiness and every other public read.
-	// Account mutations and projections remain serialized below; independent
-	// public facts and the lock-free runtime readiness observation do not.
-	if authorityOperationSerialized(request.Operation) {
-		authority.mu.Lock()
-		defer authority.mu.Unlock()
-	}
-
 	var response httpapi.AuthorityResponse
 	var err error
 	switch request.Operation {
-	case httpapi.AuthorityApplyDesired:
-		response, err = authority.applyDesired(ctx, request)
-	case httpapi.AuthorityRetireDesired:
-		response, err = authority.retireDesired(ctx, request)
-	case httpapi.AuthorityFinalizeRotation:
-		response, err = authority.finalizeRotation(ctx, request)
-	case httpapi.AuthorityListDesired:
-		response, err = authority.listDesired(ctx)
-	case httpapi.AuthorityGetDesired:
-		if authority.snapshots != nil {
-			response, err = authority.getRuntimeView(ctx, request.AccountID)
-		} else {
-			response, err = authority.getDesired(ctx, request.AccountID)
-		}
 	case httpapi.AuthorityListRuntimeAccounts:
 		response.Body = authorityPublicRuntimes(authority.manager.Runtimes())
 	case httpapi.AuthorityGetRuntimeAccount:
-		if len(request.Query) != 0 {
-			err = errors.New("runtime account query is not allowed")
-		} else if authority.snapshots != nil {
-			response, err = authority.getRuntimeView(ctx, request.AccountID)
-		} else {
-			response.Body, err = authority.reads.Runtime(request.AccountID)
-		}
+		response.Body, err = authority.connectionView(request.AccountID)
 	case httpapi.AuthorityRuntimeStatus:
 		response.Body = authorityRuntimeStatus{Accounts: authorityPublicRuntimes(authority.manager.Runtimes())}
 	case httpapi.AuthorityRuntimeReadiness:
@@ -826,408 +471,10 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		// operation and account, because request bodies on this plane do.
 		slog.Error("gateway internal authority operation failed",
 			"operation", request.Operation, "accountId", request.AccountID,
-			"operationId", request.OperationID, "cause", err)
+			"cause", err)
 		return httpapi.AuthorityResponse{}, authorityError(err)
 	}
 	return response, nil
-}
-
-func authorityOperationSerialized(operation httpapi.AuthorityOperation) bool {
-	switch operation {
-	case httpapi.AuthorityRuntimeReadiness,
-		httpapi.AuthorityCatalogVenues,
-		httpapi.AuthorityCatalogInstruments,
-		httpapi.AuthorityMarketData,
-		httpapi.AuthorityCandles,
-		httpapi.AuthorityFundingBoard,
-		httpapi.AuthorityFundingHistory:
-		return false
-	default:
-		return true
-	}
-}
-
-func authorityQueryExactly(query map[string][]string, fields ...string) bool {
-	if len(query) != len(fields) {
-		return false
-	}
-	for _, field := range fields {
-		if values, ok := query[field]; !ok || len(values) != 1 {
-			return false
-		}
-	}
-	return true
-}
-
-func (authority *gatewayAuthority) retireDesired(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	if request.Retirement == nil || request.AccountID != request.Retirement.AccountID || request.OperationID != request.Retirement.OperationID || strings.TrimSpace(request.Retirement.RuntimeID) == "" {
-		return httpapi.AuthorityResponse{}, errors.New("runtime retirement request is invalid")
-	}
-	operationID, err := secretstore.ParseOperationID(request.OperationID)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	accountID := domain.AccountID(request.AccountID)
-	retirement := store.RetirementRequest{
-		OperationID: operationID, AccountID: accountID,
-		ExpectedActiveFence: domain.AccountFence{
-			AccountID: accountID, RuntimeID: request.Retirement.RuntimeID,
-		},
-		Scope: authoritySecretScope(),
-	}
-	_, err = authority.manager.RetireRuntime(ctx, retirement)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	state, err := authority.snapshots.LoadRuntimeState(ctx, accountID)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if !state.Tombstoned || state.Active != nil || state.Pending != nil || len(state.Retiring) != 0 {
-		return httpapi.AuthorityResponse{}, store.ErrOperationConflict
-	}
-	return httpapi.AuthorityResponse{Body: authority.runtimeView(state), Status: http.StatusOK}, nil
-}
-
-func (authority *gatewayAuthority) finalizeRotation(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	if request.RotationFinalization == nil ||
-		request.AccountID != request.RotationFinalization.AccountID || request.OperationID != request.RotationFinalization.OperationID {
-		return httpapi.AuthorityResponse{}, errors.New("rotation finalization request is invalid")
-	}
-	operationID, err := secretstore.ParseOperationID(request.OperationID)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	accountID := domain.AccountID(request.AccountID)
-	activeFence, err := accountFenceFromHTTP(request.RotationFinalization.ExpectedActiveFence, accountID)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	retiringFence, err := accountFenceFromHTTP(request.RotationFinalization.ExpectedRetiringFence, accountID)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	finalization := store.RotationFinalizationRequest{
-		OperationID: operationID, AccountID: accountID,
-		ExpectedActiveFence: activeFence, ExpectedRetiringFence: retiringFence,
-		Scope: authoritySecretScope(),
-	}
-	if err := finalization.Validate(); err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	result, err := authority.manager.FinalizeRotation(ctx, finalization)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if !rotationFinalizationResultMatches(finalization, result) {
-		return httpapi.AuthorityResponse{}, store.ErrOperationConflict
-	}
-	return httpapi.AuthorityResponse{Status: http.StatusOK, Body: httpapi.RotationFinalizationProof{
-		OperationID: string(result.OperationID), AccountID: string(result.AccountID),
-		ActiveFence:          accountFenceToHTTP(result.ActiveFence),
-		RetiringFence:        accountFenceToHTTP(result.RetiringFence),
-		TombstoneRevision:    int64(result.TombstoneRevision),
-		RetiringState:        result.RetiringState,
-		SecretReferenceState: result.SecretReferenceState,
-		CompletedAt:          result.CompletedAt.UTC(),
-	}}, nil
-}
-
-func accountFenceFromHTTP(fence httpapi.AccountFence, accountID domain.AccountID) (domain.AccountFence, error) {
-	if fence.AccountID != string(accountID) || strings.TrimSpace(fence.RuntimeID) == "" {
-		return domain.AccountFence{}, store.ErrPromotionFenceConflict
-	}
-	result := domain.AccountFence{
-		AccountID: accountID, RuntimeID: fence.RuntimeID,
-	}
-	if err := result.Validate(); err != nil {
-		return domain.AccountFence{}, store.ErrPromotionFenceConflict
-	}
-	return result, nil
-}
-
-func accountFenceToHTTP(fence domain.AccountFence) httpapi.AccountFence {
-	return httpapi.AccountFence{
-		AccountID: string(fence.AccountID), RuntimeID: fence.RuntimeID,
-	}
-}
-
-func rotationFinalizationResultMatches(request store.RotationFinalizationRequest, result store.RotationFinalizationResult) bool {
-	return result.OperationID == request.OperationID && result.AccountID == request.AccountID &&
-		result.ActiveFence == request.ExpectedActiveFence && result.RetiringFence == request.ExpectedRetiringFence &&
-		result.TombstoneRevision == request.ExpectedActiveFence.DesiredStateRevision &&
-		result.RetiringState == "retired" && result.SecretReferenceState == "tombstoned" && !result.CompletedAt.IsZero()
-}
-
-// authoritySecretScope is the single scope this gateway addresses. It used to
-// take the runtime mode, which picked one of two namespaces; there is one
-// namespace now, so the scope is a constant and no caller can name material the
-// provider would then refuse to serve.
-func authoritySecretScope() secretstore.Scope {
-	return secretstore.Scope{Namespace: secretstore.Namespace, KeyVersion: "v1"}
-}
-
-func (authority *gatewayAuthority) applyDesired(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	if request.DesiredApply == nil || request.AccountID != request.DesiredApply.AccountID || request.OperationID != request.DesiredApply.OperationID {
-		return httpapi.AuthorityResponse{}, errors.New("desired runtime request is invalid")
-	}
-	desired, err := desiredSnapshot(*request.DesiredApply)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if _, err := authority.ApplySnapshot(ctx, desired); err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return authority.getRuntimeView(ctx, request.AccountID)
-}
-
-func desiredSnapshot(request httpapi.DesiredApplyRequest) (store.DesiredSnapshot, error) {
-	operationID, err := secretstore.ParseOperationID(request.OperationID)
-	if err != nil {
-		return store.DesiredSnapshot{}, errors.New("desired operation id is invalid")
-	}
-	secretRef, err := secretstore.ParseOpaqueRef(request.SecretRef)
-	if err != nil {
-		return store.DesiredSnapshot{}, errors.New("desired secret reference is invalid")
-	}
-	if strings.TrimSpace(request.RuntimeID) == "" {
-		return store.DesiredSnapshot{}, errors.New("desired runtime fence is invalid")
-	}
-	// A route profile no longer carries an environment of its own — live is the
-	// only one the factory can build — but the request still names one, because
-	// it is written into the snapshot and stored beside the account. A request
-	// naming anything else describes endpoints nothing can reach, and applying it
-	// would leave a row asking for demo behind a runtime that is live.
-	if request.NativeEnvironment != string(exchange.EnvironmentLive) {
-		return store.DesiredSnapshot{}, errors.New("desired native environment is invalid")
-	}
-	routes := make([]store.RouteDefinition, 0, len(request.Routes))
-	for _, requestedRoute := range request.Routes {
-		profile, err := routeprofile.DefaultRegistry().Resolve(request.Venue, requestedRoute.RouteProfileID)
-		if err != nil || string(profile.Product) != requestedRoute.Product || profile.SettlementAsset != requestedRoute.SettlementAsset {
-			return store.DesiredSnapshot{}, errors.New("desired route profile is invalid")
-		}
-		routes = append(routes, store.RouteDefinition{
-			RouteID: domain.RouteID(requestedRoute.RouteID), Product: requestedRoute.Product,
-			SettlementAsset: requestedRoute.SettlementAsset, RouteProfileID: requestedRoute.RouteProfileID,
-			RequestedState: store.RouteState(requestedRoute.RequestedState),
-		})
-	}
-	accountID := domain.AccountID(request.AccountID)
-	snapshot := store.DesiredSnapshot{
-		SnapshotID: uuid.New(), OperationID: operationID, AccountID: accountID,
-		Venue: request.Venue, NativeEnvironment: request.NativeEnvironment, SecretRef: secretRef,
-		Fence: domain.AccountFence{
-			AccountID: accountID, RuntimeID: request.RuntimeID,
-		},
-		RequestedState: store.DesiredAccountState(request.RequestedState), Routes: routes,
-	}
-	digest, err := snapshot.CanonicalDigest()
-	if err != nil {
-		return store.DesiredSnapshot{}, err
-	}
-	snapshot.RequestDigest = digest
-	return snapshot, nil
-}
-
-func (authority *gatewayAuthority) getRuntimeView(ctx context.Context, accountID string) (httpapi.AuthorityResponse, error) {
-	if authority.snapshots == nil {
-		return httpapi.AuthorityResponse{}, errors.New("runtime snapshot authority is unavailable")
-	}
-	state, err := authority.snapshots.LoadRuntimeState(ctx, domain.AccountID(accountID))
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return httpapi.AuthorityResponse{Body: authority.runtimeView(state), Status: http.StatusOK}, nil
-}
-
-func (authority *gatewayAuthority) runtimeView(state store.RuntimeState) httpapi.RuntimeView {
-	view := httpapi.RuntimeView{
-		AccountID: string(state.AccountID), Retiring: []httpapi.RuntimeSnapshotView{}, Tombstoned: state.Tombstoned,
-		Capabilities: []httpapi.RuntimeCapabilityView{},
-	}
-	if view.AccountID == "" {
-		if state.Active != nil {
-			view.AccountID = string(state.Active.AccountID)
-		} else if state.Pending != nil {
-			view.AccountID = string(state.Pending.AccountID)
-		}
-	}
-	if state.Active != nil {
-		active := authority.snapshotView(state.Active.DesiredSnapshot, nil)
-		view.Active = &active
-		authority.enrichRuntimeView(&view, *state.Active)
-	}
-	if state.Pending != nil {
-		pendingSnapshot := authority.snapshotView(state.Pending.DesiredSnapshot, state.Pending.Observations)
-		pendingReason := ""
-		for _, route := range pendingSnapshot.Routes {
-			if route.Reason != "" {
-				pendingReason = route.Reason
-				break
-			}
-		}
-		pending := httpapi.PendingSnapshotView{RuntimeSnapshotView: pendingSnapshot, State: string(state.Pending.OperationState), Reason: pendingReason}
-		view.Pending = &pending
-	}
-	for _, retiring := range state.Retiring {
-		view.Retiring = append(view.Retiring, authority.snapshotView(retiring.DesiredSnapshot, nil))
-	}
-	return view
-}
-
-func (authority *gatewayAuthority) enrichRuntimeView(view *httpapi.RuntimeView, active store.ActiveSnapshot) {
-	fence := active.Fence
-	view.RuntimeID = fence.RuntimeID
-	view.ObservedAt = active.PromotedAt.UTC()
-	if authority.manager == nil {
-		view.Readiness = httpapi.RuntimeProjectionReadiness{Ready: true}
-		view.WriteReadiness = httpapi.RuntimeProjectionReadiness{Ready: false, Reason: "canonical_writes_not_ready"}
-		blocked := "canonical_writes_not_ready"
-		view.BlockedReason = &blocked
-		for _, route := range active.Routes {
-			for _, row := range capability.StaticMatrix().Rows {
-				if row.Venue == active.Venue && row.Product == route.Product && row.Settlement == route.SettlementAsset {
-					view.Capabilities = append(view.Capabilities, httpapi.RuntimeCapabilityView{RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement, WriteReady: false, Operations: row.Operations})
-					break
-				}
-			}
-		}
-		return
-	}
-
-	routing := authority.manager.ActiveSnapshot(active.AccountID)
-	readReady := routing != nil && routing.Fence == active.Fence
-	readReason := ""
-	if !readReady {
-		readReason = "runtime_not_promoted"
-		if runtime, runtimeErr := authority.manager.Runtime(active.AccountID); runtimeErr == nil && !runtime.Ready && runtime.Reason != "" {
-			readReason = runtime.Reason
-		}
-	}
-	writeReady := readReady
-	writeReason := readReason
-	rows := capability.StaticMatrix().Rows
-	for _, route := range active.Routes {
-		if route.RequestedState != store.RouteActive {
-			continue
-		}
-		routeStatus, statusErr := authority.routeStatus(active.AccountID, route.Product, route.SettlementAsset)
-		routeReadReady := statusErr == nil && routeStatus.ReadReady
-		routeWriteReady := statusErr == nil && routeStatus.WriteReady
-		readReady = readReady && routeReadReady
-		writeReady = writeReady && routeWriteReady
-		if statusErr != nil {
-			if readReason == "" {
-				readReason = "runtime_status_unavailable"
-			}
-			if writeReason == "" {
-				writeReason = "runtime_status_unavailable"
-			}
-		} else {
-			if !routeReadReady && readReason == "" {
-				readReason = routeStatus.Reason
-			}
-			if !routeWriteReady && writeReason == "" {
-				writeReason = routeStatus.Reason
-			}
-		}
-		matched := false
-		for _, row := range rows {
-			if row.Venue != active.Venue || row.Product != route.Product || row.Settlement != route.SettlementAsset {
-				continue
-			}
-			view.Capabilities = append(view.Capabilities, httpapi.RuntimeCapabilityView{
-				RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement,
-				WriteReady: routeWriteReady && row.WriteReadyDefault, Operations: row.Operations,
-			})
-			matched = true
-			if !row.WriteReadyDefault {
-				writeReady = false
-				if writeReason == "" {
-					writeReason = "capability_write_disabled"
-				}
-			}
-			break
-		}
-		if !matched {
-			readReady = false
-			writeReady = false
-			if readReason == "" {
-				readReason = "capability_unavailable"
-			}
-		}
-	}
-	if len(view.Capabilities) == 0 {
-		readReady = false
-		writeReady = false
-		if readReason == "" {
-			readReason = "capability_unavailable"
-		}
-	}
-	if !writeReady && writeReason == "" {
-		writeReason = readReason
-	}
-	view.Readiness = httpapi.RuntimeProjectionReadiness{Ready: readReady, Reason: readReason}
-	view.WriteReadiness = httpapi.RuntimeProjectionReadiness{Ready: writeReady, Reason: writeReason}
-	blockedReason := writeReason
-	if blockedReason == "" {
-		blockedReason = readReason
-	}
-	if blockedReason != "" {
-		view.BlockedReason = &blockedReason
-	}
-}
-
-func (authority *gatewayAuthority) snapshotView(snapshot store.DesiredSnapshot, observations []store.CandidateObservation) httpapi.RuntimeSnapshotView {
-	latest := make(map[domain.RouteID]store.CandidateObservation, len(observations))
-	for _, observation := range observations {
-		if current, ok := latest[observation.RouteID]; !ok || observation.ObservationRevision >= current.ObservationRevision {
-			latest[observation.RouteID] = observation
-		}
-	}
-	active := authority.manager.ActiveSnapshot(snapshot.AccountID)
-	view := httpapi.RuntimeSnapshotView{
-		OperationID: string(snapshot.OperationID),
-		RuntimeID:   snapshot.Fence.RuntimeID, RequestedState: string(snapshot.RequestedState),
-		Routes: make([]httpapi.RuntimeRouteView, 0, len(snapshot.Routes)),
-	}
-	for _, route := range snapshot.Routes {
-		routeView := httpapi.RuntimeRouteView{
-			RouteID: string(route.RouteID), Product: route.Product, SettlementAsset: route.SettlementAsset,
-			RouteProfileID: route.RouteProfileID, RequestedState: string(route.RequestedState),
-		}
-		if observation, ok := latest[route.RouteID]; ok {
-			routeView.Ready = observation.State == store.CandidateReady
-			routeView.Reason = observation.ReasonCode
-		} else if route.RequestedState == store.RouteActive && active != nil && active.Fence == snapshot.Fence {
-			routeView.Ready, routeView.Reason = authority.activeRouteLifecycleState(snapshot.AccountID, route)
-		}
-		view.Routes = append(view.Routes, routeView)
-	}
-	return view
-}
-
-func (authority *gatewayAuthority) activeRouteLifecycleState(accountID domain.AccountID, route store.RouteDefinition) (bool, string) {
-	status, err := authority.routeStatus(accountID, route.Product, route.SettlementAsset)
-	if err != nil {
-		return false, "runtime_status_unavailable"
-	}
-	ready := status.ReadReady && status.WriteReady
-	// A route whose only complaint is the live-write switch is still active: the
-	// operator turned writes off, the venue did not turn us away. This used to
-	// also require the runtime to be in live mode, back when a test runtime
-	// could report the same reason for an entirely different cause.
-	if status.ReadReady && status.Reason == account.ErrLiveWriteDisabled.Error() {
-		ready = true
-	}
-	if ready {
-		return true, ""
-	}
-	if status.Reason != "" {
-		return false, status.Reason
-	}
-	return false, "runtime_route_not_ready"
 }
 
 func (reads managerAuthorityReads) Venues() []authorityVenue {
@@ -1281,80 +528,6 @@ func profileAuthorityVenues(registry *routeprofile.Registry) []authorityVenue {
 	}
 	sort.Slice(venues, func(i, j int) bool { return venues[i].Venue < venues[j].Venue })
 	return venues
-}
-
-func (reads managerAuthorityReads) Runtime(accountID string) (authorityRuntimeProjection, error) {
-	id := domain.AccountID(accountID)
-	runtime, err := reads.manager.Runtime(id)
-	if err != nil {
-		return authorityRuntimeProjection{}, fmt.Errorf("read runtime account: %w", err)
-	}
-	rows := make([]capability.Row, 0, 1)
-	if source, ok := reads.manager.(authorityMultiCapabilitySource); ok {
-		rows, err = source.Capabilities(id)
-	} else {
-		var row capability.Row
-		row, err = reads.manager.Capability(id)
-		rows = []capability.Row{row}
-	}
-	if err != nil {
-		return authorityRuntimeProjection{}, fmt.Errorf("read runtime capability: %w", err)
-	}
-	if runtime.Desired.AccountID != id || strings.TrimSpace(runtime.Desired.RuntimeID) == "" || runtime.ObservedAt.IsZero() || len(rows) == 0 {
-		return authorityRuntimeProjection{}, errors.New("runtime projection authority is incomplete")
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].RowID < rows[j].RowID })
-	capabilities := make([]authorityRuntimeCapability, 0, len(rows))
-	runtimeReady := runtime.State == account.RuntimeStateActive && runtime.Ready
-	readReady := runtimeReady
-	writeReady := runtimeReady
-	readReason := runtime.Reason
-	writeReason := ""
-	for _, row := range rows {
-		if row.RowID == "" || row.Venue == "" || row.Product == "" {
-			return authorityRuntimeProjection{}, errors.New("runtime projection authority is incomplete")
-		}
-		routeStatus, err := reads.manager.RouteStatus(id, row.Product, row.Settlement)
-		if err != nil {
-			return authorityRuntimeProjection{}, fmt.Errorf("read runtime route status: %w", err)
-		}
-		routeReadReady := runtimeReady && routeStatus.ReadReady
-		routeWriteReady := routeReadReady && routeStatus.WriteReady
-		capabilities = append(capabilities, authorityRuntimeCapability{
-			RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement,
-			WriteReady: routeWriteReady, Operations: row.Operations,
-		})
-		readReady = readReady && routeReadReady
-		writeReady = writeReady && routeWriteReady
-		if !routeReadReady && readReason == "" {
-			readReason = routeStatus.Reason
-		}
-		if !routeWriteReady && writeReason == "" {
-			writeReason = routeStatus.Reason
-		}
-	}
-	if !readReady && readReason == "" {
-		readReason = "runtime_" + string(runtime.State)
-	}
-	if !writeReady {
-		if writeReason == "" {
-			writeReason = readReason
-		}
-	}
-	blockedReason := writeReason
-	if blockedReason == "" {
-		blockedReason = readReason
-	}
-	var blocked *string
-	if blockedReason != "" {
-		blocked = &blockedReason
-	}
-	return authorityRuntimeProjection{
-		AccountID: accountID,
-		Readiness: authorityProjectionReadiness{Ready: readReady, Reason: readReason}, WriteReadiness: authorityProjectionReadiness{Ready: writeReady, Reason: writeReason},
-		BlockedReason: blocked, Capabilities: capabilities,
-		ObservedAt: runtime.ObservedAt.UTC(),
-	}, nil
 }
 
 func (reads managerAuthorityReads) Instruments(ctx context.Context) (authorityCatalogInstruments, error) {
@@ -1585,137 +758,16 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 	if venue == "" || environment == "" || instrumentID == "" || (product != string(exchange.ProductSpot) && product != string(exchange.ProductPerp)) {
 		return authorityMarketData{}, errors.New("market-data venue, environment, product, and instrumentId are required")
 	}
-	if reads.markets != nil {
-		return reads.publicMarketData(ctx, publicmarket.Query{
-			Venue: venue, Environment: environment, Product: product, InstrumentID: instrumentID,
-		})
+	if reads.markets == nil {
+		return authorityMarketData{}, errors.New("public market-data source is unavailable")
 	}
-	for _, resource := range reads.manager.Accounts() {
-		if string(resource.Venue) != venue || string(resource.Environment) != environment || string(resource.Product) != product || !resource.ReadReady {
-			continue
-		}
-		instrument, err := reads.manager.Resolve(ctx, resource.AccountID, domain.InstrumentID(instrumentID))
-		if err != nil {
-			continue
-		}
-		if !routeSettlesInstrument(resource, instrument) {
-			continue
-		}
-		result := authorityMarketData{Venue: venue, Environment: environment, Product: product, InstrumentID: instrumentID}
-		var market exchange.MarketREST
-		switch resource.Product {
-		case exchange.ProductSpot:
-			market, err = reads.manager.SpotRoute(resource.AccountID, resource.Settlement)
-		case exchange.ProductPerp:
-			var client exchange.PerpClient
-			client, err = reads.manager.PerpRoute(resource.AccountID, resource.Settlement)
-			market = client
-			if err == nil {
-				row, capabilityErr := routeCapabilityForMarketData(reads.manager, resource)
-				if capabilityErr != nil {
-					return authorityMarketData{}, fmt.Errorf("read market-data capability: %w", capabilityErr)
-				}
-				if marks, ok := any(client).(exchange.PerpMarkPriceREST); ok {
-					mark, markErr := marks.MarkPrice(ctx, instrument)
-					if markErr != nil {
-						return authorityMarketData{}, fmt.Errorf("read mark price: %w", markErr)
-					}
-					result.MarkPrice = mark.Price.String()
-					result.ObservedAt = mark.Time.UTC()
-				}
-				if !row.Operations.Funding {
-					return authorityMarketData{}, errors.New("configured perp funding capability is unavailable")
-				}
-				if row.Operations.Funding {
-					funding, fundingErr := client.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument})
-					if fundingErr != nil {
-						return authorityMarketData{}, fmt.Errorf("read funding rate: %w", fundingErr)
-					}
-					result.FundingRate = funding.Rate.String()
-					result.FundingObservedAt = funding.ObservedAt.UTC()
-					result.FundingTime = funding.FundingTime.UTC()
-					result.NextFundingTime = funding.NextFundingTime.UTC()
-					// Only the observation instant is required. The two schedule
-					// timestamps are omitempty in exchange.FundingRate because a
-					// venue is allowed not to send them, and most do not: of the
-					// nine perp venues only OKX returns a last-funding time at
-					// all, and Hyperliquid and Lighter return neither. Demanding
-					// all three made this read fail permanently for eight of the
-					// nine — a fact about those endpoints' response shapes, not
-					// about the market. Same reasoning as the order book's
-					// optional venue clock below; a missing schedule stays zero
-					// and travels as "unknown".
-					if result.FundingObservedAt.IsZero() {
-						return authorityMarketData{}, errors.New("current funding observation time is unavailable")
-					}
-					if funding.ObservedAt.After(result.ObservedAt) {
-						result.ObservedAt = funding.ObservedAt.UTC()
-					}
-					history, historyErr := client.FundingRateHistory(ctx, exchange.FundingRateHistoryRequest{Instrument: instrument, Limit: authorityFundingHistoryLimit})
-					if historyErr != nil {
-						return authorityMarketData{}, fmt.Errorf("read funding history: %w", historyErr)
-					}
-					if len(history.Rates) > authorityFundingHistoryLimit {
-						return authorityMarketData{}, errors.New("funding history exceeds requested bound")
-					}
-					result.FundingHistory = make([]authorityFundingPoint, len(history.Rates))
-					for index, rate := range history.Rates {
-						if rate.FundingTime.IsZero() {
-							return authorityMarketData{}, errors.New("funding history timestamp is unavailable")
-						}
-						result.FundingHistory[index] = authorityFundingPoint{Rate: rate.Rate.String(), ObservedAt: rate.ObservedAt.UTC(), FundingTime: rate.FundingTime.UTC()}
-					}
-				}
-			}
-		default:
-			continue
-		}
-		if err != nil || market == nil {
-			continue
-		}
-		book, err := market.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: authorityDepthLimit})
-		if err != nil {
-			return authorityMarketData{}, fmt.Errorf("read order book: %w", err)
-		}
-		if len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
-			return authorityMarketData{}, errors.New("bounded two-sided order book is unavailable")
-		}
-		result.Bids, err = projectAuthorityLevels(book.Bids)
-		if err != nil {
-			return authorityMarketData{}, err
-		}
-		result.Asks, err = projectAuthorityLevels(book.Asks)
-		if err != nil {
-			return authorityMarketData{}, err
-		}
-		result.BestBid, result.BestBidSize = result.Bids[0].Price, result.Bids[0].Quantity
-		result.BestAsk, result.BestAskSize = result.Asks[0].Price, result.Asks[0].Quantity
-		// A venue that timestamps its own book is believed over our clock, and the
-		// latest observation gathered so far wins. But exchange.OrderBook declares
-		// Time omitempty because a venue is allowed not to send one — Binance
-		// spot's depth endpoint returns lastUpdateId, bids and asks and nothing
-		// else — and a REST snapshot is still observed at a definite instant: the
-		// moment we read it. Requiring a venue timestamp rejected every Binance
-		// spot book outright, which is a fact about that endpoint's response
-		// shape, not about the market. Our clock is only the fallback, never an
-		// override, so every path that already had a real venue time is unchanged.
-		if book.Time.IsZero() {
-			if result.ObservedAt.IsZero() {
-				result.ObservedAt = reads.clock()
-			}
-		} else if result.ObservedAt.IsZero() || book.Time.After(result.ObservedAt) {
-			result.ObservedAt = book.Time.UTC()
-		}
-		if result.ObservedAt.IsZero() {
-			return authorityMarketData{}, errors.New("market-data observation time is unavailable")
-		}
-		return result, nil
-	}
-	return authorityMarketData{}, errors.New("configured market-data capability is unavailable")
+	return reads.publicMarketData(ctx, publicmarket.Query{
+		Venue: venue, Environment: environment, Product: product, InstrumentID: instrumentID,
+	})
 }
 
 func (reads managerAuthorityReads) publicMarketData(ctx context.Context, query publicmarket.Query) (authorityMarketData, error) {
-	fact, err := reads.markets.MarketData(ctx, query, authorityDepthLimit, authorityFundingHistoryLimit)
+	fact, err := reads.markets.MarketData(ctx, query, authorityDepthLimit)
 	if err != nil {
 		return authorityMarketData{}, fmt.Errorf("read public market-data capability: %w", err)
 	}
@@ -1726,34 +778,10 @@ func (reads managerAuthorityReads) publicMarketData(ctx context.Context, query p
 		result.MarkPrice = fact.Mark.Price.String()
 		result.ObservedAt = fact.Mark.Time.UTC()
 	}
-	if fact.HasFunding {
-		result.FundingRate = fact.Funding.Rate.String()
-		result.FundingObservedAt = fact.Funding.ObservedAt.UTC()
-		result.FundingTime = fact.Funding.FundingTime.UTC()
-		result.NextFundingTime = fact.Funding.NextFundingTime.UTC()
-		if result.FundingObservedAt.IsZero() {
-			return authorityMarketData{}, errors.New("current funding observation time is unavailable")
-		}
-		if fact.Funding.ObservedAt.After(result.ObservedAt) {
-			result.ObservedAt = fact.Funding.ObservedAt.UTC()
-		}
-		if len(fact.FundingHistory.Rates) > authorityFundingHistoryLimit {
-			return authorityMarketData{}, errors.New("funding history exceeds requested bound")
-		}
-		result.FundingHistory = make([]authorityFundingPoint, len(fact.FundingHistory.Rates))
-		for index, rate := range fact.FundingHistory.Rates {
-			if rate.FundingTime.IsZero() {
-				return authorityMarketData{}, errors.New("funding history timestamp is unavailable")
-			}
-			result.FundingHistory[index] = authorityFundingPoint{
-				Rate: rate.Rate.String(), ObservedAt: rate.ObservedAt.UTC(), FundingTime: rate.FundingTime.UTC(),
-			}
-		}
-	}
 	// Production MarketData reads depth and mark from Market Hub. Funding and
 	// OI are independent resident derivative facts; joining their current
 	// values here is memory-only and deliberately excludes settled history.
-	if query.Product == string(exchange.ProductPerp) && (!fact.HasFunding || result.OpenInterest == "") {
+	if query.Product == string(exchange.ProductPerp) {
 		if board, boardErr := reads.FundingBoard(ctx); boardErr == nil {
 			for _, venue := range board.Venues {
 				if venue.Venue != query.Venue || venue.Product != query.Product {
@@ -1818,9 +846,9 @@ func containsField(fields []string, target string) bool {
 	return false
 }
 
-// Candles answers the chart's credential-free public read. Production resolves
-// the instrument through markets; the account-backed branch below is retained
-// only for focused legacy authority fixtures that do not assemble that source.
+// Candles answers the chart's credential-free public read. It always resolves
+// through the public market source; account routes are private execution state
+// and must never become a hidden market-data fallback.
 func (reads managerAuthorityReads) Candles(ctx context.Context, query authorityCandlesQuery) (authorityCandles, error) {
 	query.Venue = strings.TrimSpace(query.Venue)
 	query.Environment = strings.TrimSpace(query.Environment)
@@ -1834,70 +862,10 @@ func (reads managerAuthorityReads) Candles(ctx context.Context, query authorityC
 	if query.Limit <= 0 || query.Limit > authorityCandleLimitMax {
 		query.Limit = authorityCandleLimitMax
 	}
-	if reads.markets != nil {
-		return reads.publicCandles(ctx, query)
+	if reads.markets == nil {
+		return authorityCandles{}, errors.New("public candle source is unavailable")
 	}
-	for _, resource := range reads.manager.Accounts() {
-		if string(resource.Venue) != query.Venue || string(resource.Environment) != query.Environment ||
-			string(resource.Product) != query.Product || !resource.ReadReady {
-			continue
-		}
-		instrument, err := reads.manager.Resolve(ctx, resource.AccountID, domain.InstrumentID(query.InstrumentID))
-		if err != nil {
-			continue
-		}
-		if !routeSettlesInstrument(resource, instrument) {
-			continue
-		}
-		var market exchange.MarketREST
-		switch resource.Product {
-		case exchange.ProductSpot:
-			market, err = reads.manager.SpotRoute(resource.AccountID, resource.Settlement)
-		case exchange.ProductPerp:
-			var client exchange.PerpClient
-			client, err = reads.manager.PerpRoute(resource.AccountID, resource.Settlement)
-			market = client
-		default:
-			continue
-		}
-		if err != nil || market == nil {
-			continue
-		}
-		page, err := market.Candles(ctx, exchange.CandlesRequest{
-			Instrument: instrument, Interval: query.Interval, Limit: query.Limit,
-		})
-		if err != nil {
-			return authorityCandles{}, fmt.Errorf("read candles: %w", err)
-		}
-		result := authorityCandles{
-			Venue: query.Venue, Environment: query.Environment, Product: query.Product,
-			InstrumentID: query.InstrumentID, Interval: query.Interval,
-			Candles: make([]authorityCandle, len(page.Candles)),
-		}
-		for index, candle := range page.Candles {
-			if err := httpapi.ValidCandle(candle); err != nil {
-				return authorityCandles{}, fmt.Errorf("read candles: %w", err)
-			}
-			// Bars arrive in ascending open-time order and the last one is the
-			// live, still-open interval, so its open time is the freshest thing
-			// the venue told us. It is not a venue clock — no venue timestamps a
-			// candle page — but it bounds staleness the same way, and the trading
-			// service refuses a projection whose observation time is missing.
-			if candle.OpenTime.After(result.ObservedAt) {
-				result.ObservedAt = candle.OpenTime.UTC()
-			}
-			result.Candles[index] = authorityCandle{
-				OpenTime: candle.OpenTime.UTC(), CloseTime: candle.CloseTime.UTC(),
-				Open: candle.Open.String(), High: candle.High.String(), Low: candle.Low.String(),
-				Close: candle.Close.String(), Volume: candle.Volume.String(), Complete: candle.Complete,
-			}
-		}
-		if result.ObservedAt.IsZero() {
-			result.ObservedAt = reads.clock()
-		}
-		return result, nil
-	}
-	return authorityCandles{}, errors.New("configured candles capability is unavailable")
+	return reads.publicCandles(ctx, query)
 }
 
 func (reads managerAuthorityReads) publicCandles(ctx context.Context, query authorityCandlesQuery) (authorityCandles, error) {
@@ -1962,45 +930,6 @@ func authorityHistoryBound(raw string) (time.Time, error) {
 	return bound.UTC(), nil
 }
 
-// routeSettlesInstrument reports whether a route can trade an instrument at
-// all. Accounts() emits one Resource per route and the catalog resolves an
-// instrument for the whole account, so a venue that settles one product in
-// several assets — bybit lists both USDT and USDC perpetuals — hands every
-// route every instrument. Pairing them blindly asks a USDC route for a USDT
-// contract, which the exchange layer rejects outright ("instrument quote must
-// match USDC settlement"), and because that rejection is fatal rather than
-// skipped it took the whole venue down instead of the one wrong route.
-//
-// Registration already guarantees the two agree when both are known: the
-// catalog only files an instrument under a scope whose settlement equals the
-// instrument's settle asset. An unknown settlement on either side is left
-// alone — it carries no information to disqualify the route with, so the read
-// tries it exactly as it always has.
-func routeSettlesInstrument(resource account.Resource, instrument exchange.Instrument) bool {
-	settleAsset := instrument.Identity.SettleAsset
-	if resource.Settlement == "" || settleAsset == "" {
-		return true
-	}
-	return resource.Settlement == settleAsset
-}
-
-func routeCapabilityForMarketData(manager authorityAccountSource, resource account.Resource) (capability.Row, error) {
-	source, ok := manager.(authorityMultiCapabilitySource)
-	if !ok {
-		return capability.Row{}, errors.New("multi-route capability authority is unavailable")
-	}
-	rows, err := source.Capabilities(resource.AccountID)
-	if err != nil {
-		return capability.Row{}, err
-	}
-	for _, row := range rows {
-		if row.Product == string(resource.Product) && row.Settlement == resource.Settlement {
-			return row, nil
-		}
-	}
-	return capability.Row{}, errors.New("route capability is unavailable")
-}
-
 func projectAuthorityLevels(levels []exchange.BookLevel) ([]authorityLevel, error) {
 	result := make([]authorityLevel, len(levels))
 	for index, level := range levels {
@@ -2012,133 +941,16 @@ func projectAuthorityLevels(levels []exchange.BookLevel) ([]authorityLevel, erro
 	return result, nil
 }
 
-func (authority *gatewayAuthority) listDesired(ctx context.Context) (httpapi.AuthorityResponse, error) {
-	items, err := authority.store.ListDesiredAccounts(ctx)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].AccountID < items[j].AccountID })
-	result := make([]httpapi.DesiredAccount, len(items))
-	for index := range items {
-		result[index] = desiredToHTTP(items[index])
-	}
-	return httpapi.AuthorityResponse{Body: result}, nil
-}
-
-func (authority *gatewayAuthority) getDesired(ctx context.Context, accountID string) (httpapi.AuthorityResponse, error) {
-	desired, err := authority.store.LoadDesiredAccount(ctx, domain.AccountID(accountID))
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return desiredResponse(desired), nil
-}
-
-func (authority *gatewayAuthority) restore(ctx context.Context) error {
-	if authority.snapshots != nil {
-		return authority.manager.RestoreRuntimeState(ctx)
-	}
-	items, err := authority.store.ListRecoverableDesiredAccounts(ctx)
-	if err != nil {
-		return err
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].AccountID < items[j].AccountID })
-	runtimes := make([]account.DesiredRuntime, 0, len(items))
-	for _, desired := range items {
-		if desired.RequestedState == store.DesiredCreating {
-			continue
-		}
-		secretRef := desired.SecretRef
-		state := account.RuntimeState(desired.RequestedState)
-		if desired.RequestedState == store.DesiredRotating {
-			secretRef = desired.PreviousSecretRef
-			state = account.RuntimeStateActive
-		}
-		runtimeDesired, convertErr := authority.runtimeDesired(desired, secretRef, state)
-		if convertErr != nil {
-			return convertErr
-		}
-		runtimes = append(runtimes, runtimeDesired)
-	}
-	return authority.manager.RestoreRuntimes(ctx, runtimes)
-}
-
-func (authority *gatewayAuthority) runtimeDesired(desired store.DesiredAccount, refValue string, state account.RuntimeState) (account.DesiredRuntime, error) {
-	ref, err := secret.ParseOpaqueRef(refValue)
-	if err != nil {
-		return account.DesiredRuntime{}, err
-	}
-	rotationFence := ""
-	if desired.RotationFence != nil {
-		rotationFence = desired.RotationFence.ID
-	}
-	return account.DesiredRuntime{
-		AccountID: desired.AccountID, Venue: desired.Venue, VenueEnvironment: desired.VenueEnvironment,
-		SecretRef: ref, RuntimeID: desired.RuntimeID,
-		DesiredStateRevision: uint64(desired.DesiredStateRevision),
-		RuntimeGeneration:    uint64(desired.RuntimeGeneration),
-		CredentialVersion:    uint64(desired.CredentialVersion),
-		RequestedState:       state, RotationFence: rotationFence,
-	}, nil
-}
-
-func desiredResponse(desired store.DesiredAccount) httpapi.AuthorityResponse {
-	return httpapi.AuthorityResponse{Body: desiredToHTTP(desired)}
-}
-
-func desiredToHTTP(desired store.DesiredAccount) httpapi.DesiredAccount {
-	result := httpapi.DesiredAccount{
-		AccountID: string(desired.AccountID), Venue: desired.Venue, VenueEnvironment: desired.VenueEnvironment,
-		SecretRef: "redacted", RuntimeID: desired.RuntimeID,
-		RequestedState: string(desired.RequestedState),
-	}
-	if desired.RotationFence != nil {
-		result.RotationFence = &httpapi.RotationFence{
-			RotationFenceID: desired.RotationFence.ID, State: string(desired.RotationFence.State),
-			FromCredentialVersion: desired.RotationFence.FromCredentialVersion,
-			ToCredentialVersion:   desired.RotationFence.ToCredentialVersion,
-			FromRuntimeGeneration: desired.RotationFence.FromRuntimeGeneration,
-			ToRuntimeGeneration:   desired.RotationFence.ToRuntimeGeneration,
-		}
-	}
-	return result
-}
-
 func authorityError(err error) error {
 	switch {
-	case errors.Is(err, store.ErrNotFound), errors.Is(err, account.ErrUnknownAccount):
-		return httpapi.AuthorityError{Status: http.StatusNotFound, Code: "DESIRED_ACCOUNT_NOT_FOUND"}
-	case errors.Is(err, store.ErrDesiredStateRevisionConflict), errors.Is(err, account.ErrRuntimeRevision):
-		return httpapi.AuthorityError{Status: http.StatusPreconditionFailed, Code: "DESIRED_STATE_REVISION_CONFLICT", Retryable: true}
-	case errors.Is(err, store.ErrInvalidAccountTransition):
-		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "INVALID_ACCOUNT_TRANSITION"}
-	case errors.Is(err, store.ErrStaleRuntimeGeneration), errors.Is(err, account.ErrStaleWriteFence):
+	case errors.Is(err, account.ErrUnknownAccount):
+		return httpapi.AuthorityError{Status: http.StatusNotFound, Code: "ACCOUNT_NOT_FOUND"}
+	case errors.Is(err, account.ErrStaleWriteFence):
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "STALE_RUNTIME_FENCE", Retryable: true}
-	case errors.Is(err, store.ErrOperationConflict):
-		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "OPERATION_ID_CONFLICT"}
-	case errors.Is(err, store.ErrPromotionFenceConflict):
-		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "PROMOTION_FENCE_CONFLICT", Retryable: true}
-	case errors.Is(err, store.ErrCandidateNotReady):
-		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "CANDIDATE_NOT_READY", Retryable: true}
-	case errors.Is(err, store.ErrHandoffDrainBlocked):
-		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "HANDOFF_DRAIN_BLOCKED", Retryable: true}
-	case errors.Is(err, store.ErrRetiredSecretReference):
-		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "RETIRED_SECRET_REFERENCE"}
 	case errors.Is(err, account.ErrRuntimeBlocked):
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "ACCOUNT_RUNTIME_BLOCKED"}
 	case errors.Is(err, account.ErrLiveWriteDisabled):
 		return httpapi.AuthorityError{Status: http.StatusForbidden, Code: "LIVE_PRIVATE_WRITE_DISABLED"}
-	case account.CandidateFailureReason(err) == "CREDENTIAL_EXPIRED":
-		return httpapi.AuthorityError{Status: http.StatusUnprocessableEntity, Code: "CREDENTIAL_EXPIRED"}
-	case account.CandidateFailureReason(err) == "CREDENTIAL_INVALID":
-		return httpapi.AuthorityError{Status: http.StatusUnprocessableEntity, Code: "CREDENTIAL_INVALID"}
-	case account.CandidateFailureReason(err) == "CREDENTIAL_PERMISSION_DENIED":
-		return httpapi.AuthorityError{Status: http.StatusUnprocessableEntity, Code: "CREDENTIAL_PERMISSION_DENIED"}
-	case account.CandidateFailureReason(err) == "VENUE_RATE_LIMITED":
-		return httpapi.AuthorityError{Status: http.StatusTooManyRequests, Code: "VENUE_RATE_LIMITED", Retryable: true}
-	case account.CandidateFailureReason(err) == "VENUE_UNAVAILABLE":
-		return httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "VENUE_UNAVAILABLE", Retryable: true}
-	case account.CandidateFailureReason(err) == "VENUE_RESPONSE_INVALID":
-		return httpapi.AuthorityError{Status: http.StatusBadGateway, Code: "VENUE_RESPONSE_INVALID", Retryable: true}
 	case errors.Is(err, fundingboard.ErrBoardUnavailable):
 		// A table where every venue failed is a snapshot, not an error, so
 		// reaching here means the source itself could not be built or has been
@@ -2158,4 +970,30 @@ func authorityError(err error) error {
 	default:
 		return httpapi.AuthorityError{Status: http.StatusInternalServerError, Code: "INTERNAL_ERROR", Retryable: true}
 	}
+}
+
+// connectionView deliberately does not predict the permissions of the API key.
+func (authority *gatewayAuthority) connectionView(id string) (any, error) {
+	runtime, err := authority.manager.Runtime(domain.AccountID(id))
+	if err != nil {
+		return nil, err
+	}
+	return struct {
+		AccountID  string    `json:"accountId"`
+		RuntimeID  string    `json:"runtimeId"`
+		Connected  bool      `json:"connected"`
+		ObservedAt time.Time `json:"observedAt"`
+	}{id, runtime.RuntimeID, runtime.Ready, runtime.ObservedAt}, nil
+}
+
+func authorityQueryExactly(query map[string][]string, fields ...string) bool {
+	if len(query) != len(fields) {
+		return false
+	}
+	for _, field := range fields {
+		if values, ok := query[field]; !ok || len(values) != 1 {
+			return false
+		}
+	}
+	return true
 }

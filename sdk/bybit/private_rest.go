@@ -2,8 +2,11 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
 func (c *Client) GetWalletBalance(ctx context.Context, accountType, coin string) (*WalletBalanceResult, error) {
@@ -117,6 +120,10 @@ func (c *Client) SetLeverage(ctx context.Context, req SetLeverageRequest) error 
 func (c *Client) SwitchPositionMode(ctx context.Context, req SwitchPositionModeRequest) error {
 	var resp responseEnvelope[map[string]any]
 	err := c.postPrivate(ctx, "/v5/position/switch-mode", req, &resp)
+	var httpErr *venuehttp.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == 200 && resp.RetCode == 110025 {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -124,7 +131,7 @@ func (c *Client) SwitchPositionMode(ctx context.Context, req SwitchPositionModeR
 		return nil
 	}
 	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit sdk: switch position mode failed: %d %s", resp.RetCode, resp.RetMsg)
+		return newResponseError("switch position mode", resp.RetCode, resp.RetMsg)
 	}
 	return nil
 }
@@ -136,7 +143,7 @@ func (c *Client) BorrowSpot(ctx context.Context, req BorrowSpotRequest) (*Borrow
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: borrow spot failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("borrow spot", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }
@@ -148,7 +155,7 @@ func (c *Client) RepaySpotBorrow(ctx context.Context, req RepaySpotBorrowRequest
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: repay spot borrow failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("repay spot borrow", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }
@@ -178,6 +185,10 @@ func (c *Client) GetSpotBorrowAmount(ctx context.Context, coin string) (string, 
 func (c *Client) SetMarginMode(ctx context.Context, req SetMarginModeRequest) (*SetMarginModeResult, error) {
 	var resp responseEnvelope[SetMarginModeResult]
 	err := c.postPrivate(ctx, "/v5/account/set-margin-mode", req, &resp)
+	var httpErr *venuehttp.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == 200 && (strings.Contains(strings.ToLower(resp.RetMsg), "not been modified") || strings.Contains(strings.ToLower(resp.RetMsg), "needs to be equal to or greater than")) {
+		return &resp.Result, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +197,7 @@ func (c *Client) SetMarginMode(ctx context.Context, req SetMarginModeRequest) (*
 		return &resp.Result, nil
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: set margin mode failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("set margin mode", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }

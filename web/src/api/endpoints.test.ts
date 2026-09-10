@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { currentCsrfToken, setCsrfToken } from "./client";
-import { accountData, accounts, auth, catalog, manual, market, trading } from "./endpoints";
+import { accountData, accounts, auth, catalog, funding, manual, market, trading } from "./endpoints";
 import type { CredentialBundle } from "./types";
 
 /* ---------------------------------------------------------------------------
@@ -40,7 +40,6 @@ const account = (over: Record<string, unknown> = {}) => ({
   venue: "binance",
   nativeEnvironment: "live",
   displayName: "Binance",
-  productPolicy: ["manual"],
   status: "active",
   lastValidatedAt: null,
   updatedAt: "2026-08-13T00:00:00Z",
@@ -61,34 +60,24 @@ afterEach(() => {
 });
 
 describe("the account lifecycle", () => {
-  it("disables an account without exposing revision management", async () => {
-    const calls = record({ data: { account: account() } });
-
-    await accounts.disable("acct-1");
-
-    expect(calls[0]!.init.body).toBeUndefined();
-    expect(calls[0]!.init.method).toBe("POST");
-    expect(headersOf(calls[0]!.init)["If-Match"]).toBeUndefined();
-  });
-
   it("carries an idempotency key when credentials are created or destroyed", async () => {
     const calls = record({ data: { account: account() } });
 
     await accounts.create(
-      { venue: "binance", displayName: "n", productPolicy: ["manual"], routes: [], credentialBundle: bundle },
+      { venue: "binance", displayName: "n", credentialBundle: bundle },
       "key-create",
     );
-    await accounts.remove("acct-1", "key-remove");
+    await accounts.remove("acct-1");
 
     expect(headersOf(calls[0]!.init)["Idempotency-Key"]).toBe("key-create");
-    expect(headersOf(calls[1]!.init)["Idempotency-Key"]).toBe("key-remove");
+    expect(calls[1]!.init.method).toBe("DELETE");
   });
 
   it("omits If-Match on create alone, because there is no revision to match yet", async () => {
     const calls = record({ data: { account: account() } });
 
     await accounts.create(
-      { venue: "binance", displayName: "n", productPolicy: ["manual"], routes: [], credentialBundle: bundle },
+      { venue: "binance", displayName: "n", credentialBundle: bundle },
       "key-create",
     );
 
@@ -148,13 +137,28 @@ describe("trading envelopes", () => {
     expect(calls[0]!.url).toBe("/api/v1/portfolio/positions?venue=okx&status=stale");
   });
 
-  it("keeps the catalog's bare array and its projection metadata together", async () => {
-    record({ meta: {}, data: [{ venue: "binance" }], projection: { revision: "3", staleness: "fresh" } });
+  it("uses the same instrument catalog envelope as the Go client", async () => {
+    record({ data: { instruments: [{ instrumentId: "btc" }], revision: "3", observedAt: "2026-09-10T00:00:00Z" } });
+    const result = await catalog.instruments();
+    expect(result.items).toHaveLength(1);
+    expect(result.projection).toEqual({ revision: "3", observedAt: "2026-09-10T00:00:00Z" });
+  });
 
-    const venues = await catalog.venues();
+  it.each([null, {}, { instruments: null, revision: "3", observedAt: "2026-09-10T00:00:00Z" }])("rejects an incomplete catalog rather than returning an empty list", async (data) => {
+    record({ data });
+    await expect(catalog.instruments()).rejects.toThrow("Invalid Gateway instrument catalog");
+  });
 
-    expect(venues.items).toHaveLength(1);
-    expect(venues.projection).toEqual({ revision: "3", staleness: "fresh" });
+  it("translates a UI funding window into the canonical range once", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-10T12:00:00.123Z"));
+    const calls = record({ data: { points: [] } });
+    await funding.history({ instrumentId: "binance:live:perp:USDT:BTC-USDT", window: "7d" });
+    const query = new URL(calls[0]!.url, "http://localhost").searchParams;
+    expect(query.get("instrumentId")).toBe("binance:live:perp:USDT:BTC-USDT");
+    expect(query.get("since")).toBe("2026-09-03T12:00:00.000Z");
+    expect(query.get("until")).toBe("2026-09-10T12:00:00.000Z");
+    expect(query.has("window")).toBe(false);
+    vi.restoreAllMocks();
   });
 
   it("returns the venue budget alongside a metered read", async () => {
@@ -173,7 +177,7 @@ describe("the manual product", () => {
   it("sends the idempotency key in the header and the body from one value", async () => {
     const calls = record({ meta: {}, data: { commandId: "cmd-1", state: "accepted" } });
 
-    await manual.command({ idempotencyKey: "key-7", previewId: "prev-1" } as never);
+    await manual.command({ idempotencyKey: "key-7" } as never);
 
     // Trading compares the two byte-for-byte and rejects a mismatch with 400.
     expect(headersOf(calls[0]!.init)["Idempotency-Key"]).toBe("key-7");

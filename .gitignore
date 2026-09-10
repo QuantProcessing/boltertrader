@@ -10,3 +10,9 @@ web/.env.local
 .local/
 # Local agent tooling (browser preview launch config); not part of the product.
 .claude/
+
+# Local review and browser acceptance artifacts
+/output/
+/.playwright-cli/
+
+__pycache__/

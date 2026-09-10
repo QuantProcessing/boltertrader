@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -100,39 +99,6 @@ func NewPositionProjection(hub *Hub, now func() time.Time) (*PositionProjection,
 		hub: hub, now: now, accounts: make(map[domain.AccountID]*positionAccount),
 		versions: make(map[positionKey]domain.ResourceVersion),
 	}, nil
-}
-
-func (projection *PositionProjection) MarkSyncing(principal domain.PrincipalID, accountID domain.AccountID) error {
-	return projection.mark(principal, accountID, PositionSyncing, "")
-}
-
-func (projection *PositionProjection) MarkLive(principal domain.PrincipalID, accountID domain.AccountID) error {
-	return projection.mark(principal, accountID, PositionLive, "")
-}
-
-func (projection *PositionProjection) MarkStale(principal domain.PrincipalID, accountID domain.AccountID, reason string) error {
-	return projection.mark(principal, accountID, PositionStale, reason)
-}
-
-func (projection *PositionProjection) mark(principal domain.PrincipalID, accountID domain.AccountID, freshness PositionFreshness, reason string) error {
-	if err := principal.Validate(); err != nil {
-		return err
-	}
-	if err := accountID.Validate(); err != nil {
-		return err
-	}
-	projection.mu.Lock()
-	defer projection.mu.Unlock()
-	account, err := projection.accountLocked(principal, accountID)
-	if err != nil {
-		return err
-	}
-	account.freshness = freshness
-	account.reason = strings.TrimSpace(reason)
-	if freshness == PositionLive {
-		account.verifiedAt = projection.now().UTC()
-	}
-	return nil
 }
 
 func (projection *PositionProjection) RemoveAccount(accountID domain.AccountID) {

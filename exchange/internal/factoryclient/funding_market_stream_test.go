@@ -87,6 +87,27 @@ func TestGateSubscriptionFactsAreStableAndTrackMembership(t *testing.T) {
 	}
 }
 
+func TestNativeDerivativeBatchesEmitOncePerFieldShape(t *testing.T) {
+	scope := exchange.CatalogScope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"}
+	at := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	batches := make(map[nativeDerivativeField]*nativeDerivativeBatch)
+	appendNativeDerivativeBatch(batches, at, nativeDerivativeFieldMarkPrice, nativeDerivativeFact{Instrument: exchange.InstrumentIdentity{NativeSymbol: "BTCUSDT"}})
+	appendNativeDerivativeBatch(batches, at.Add(time.Second), nativeDerivativeFieldMarkPrice, nativeDerivativeFact{Instrument: exchange.InstrumentIdentity{NativeSymbol: "ETHUSDT"}})
+	appendNativeDerivativeBatch(batches, at, nativeDerivativeFieldFunding|nativeDerivativeFieldMarkPrice, nativeDerivativeFact{Instrument: exchange.InstrumentIdentity{NativeSymbol: "SOLUSDT"}})
+
+	var patches []nativeDerivativePatch
+	emitNativeDerivativeBatches(scope, batches, func(patch nativeDerivativePatch) { patches = append(patches, patch) })
+	if len(patches) != 2 {
+		t.Fatalf("patch count = %d, want one patch per field shape", len(patches))
+	}
+	if patches[0].Fields != nativeDerivativeFieldMarkPrice || len(patches[0].Facts) != 2 || !patches[0].ObservedAt.Equal(at.Add(time.Second)) {
+		t.Fatalf("mark batch = %+v", patches[0])
+	}
+	if patches[1].Fields != nativeDerivativeFieldFunding|nativeDerivativeFieldMarkPrice || len(patches[1].Facts) != 1 {
+		t.Fatalf("funding batch = %+v", patches[1])
+	}
+}
+
 func fundingTestIdentity() exchange.InstrumentIdentity {
 	return exchange.InstrumentIdentity{
 		Venue: exchange.VenueBinance, Product: exchange.ProductPerp,

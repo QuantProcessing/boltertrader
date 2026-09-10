@@ -2,8 +2,9 @@
 
 > 英文为规范版本。[English](../../reference/testing.md)
 
-本页是一份清单：你能跑什么，以及跑绿了能证明什么。每个 target 都是离线的、不需要凭证的、
-确定性的。没有任何 target 会碰到交易所，也没有任何 target 会下单。
+本页说明能运行哪些检查，以及通过能证明什么。默认 Go 套件使用本地夹具，无需交易所凭证。
+浏览器 mock 模式会读取实时公共行情，价格与网络可用性可能变化。测试目标均不启用带凭证的
+交易所写入。
 
 ## 默认路径
 
@@ -11,8 +12,8 @@
 make test
 ```
 
-对整个仓库跑 `go test -short ./...`。它不需要凭证、不需要 Docker、不需要网络。这是每次提交
-之前该跑的那道门。
+对整个仓库跑 `go test -short ./...`。它不需要凭证、Docker、外部网络或数据库；协议测试可能
+监听本地端口。数据库测试在 short 模式先跳过，再考虑环境配置。这是每次提交前的默认检查。
 
 | Target | 范围 |
 | --- | --- |
@@ -23,6 +24,8 @@ make test
 | `make test-exchange-redaction` | 那六个「凭证绝不会进入错误字符串」的测试 |
 | `make test-exchange-quality` | 先 offline，再 redaction，再 race |
 | `make test-gateway-offline` | `./gateway/...` 与 `./cmd/exchange-gateway` |
+| `make test-gateway-client` | 共享协议、独立客户端/示例、真实 Gateway HTTP/WS handler 契约 |
+| `make test-monitor` | 独立监控回放、持久化、本机 Gateway 断流与命令行测试 |
 | `make test-gateway-contract` | `contracts`、`domain`、`capability`、`store` |
 | `make test-gateway-security` | 引用边界、OpenAPI、配置脱敏、验收对照表 |
 | `make test-gateway-race` | gateway 各包跑在 `-race` 下 |
@@ -34,7 +37,9 @@ make test
 
 有两个 gateway target 需要一个真实的 PostgreSQL，并从环境里读 `GATEWAY_TEST_POSTGRES_DSN`；
 变量没设时它们直接失败，而不是跳过。`make test-gateway-postgres` 覆盖迁移、命令存储、审计存储
-与账户归属。`make test-gateway-restart` 覆盖协调器的进程崩溃窗口。`make test-compose-postgres`
+与账户归属、加密账户记录，以及 Auth Edge → Gateway → Trading 的真实 HTTP 账户流程。
+交易所使用假客户端，覆盖登录/CSRF、零余额添加、交易所错误、当前持仓、数据库重连和
+不触发交易的账户删除。`make test-gateway-restart` 覆盖协调器的进程崩溃窗口。`make test-compose-postgres`
 会替你起一个用完即弃的集群并把这两者都跑掉，那条路更省事。
 
 ## 容器门禁
@@ -49,7 +54,7 @@ make test-compose
 | --- | --- |
 | `test-compose-config` | Compose 文件能渲染，各二进制能加载自己的配置 |
 | `test-compose-build` | 两个镜像都能构建 |
-| `test-compose-security` | 非 root 用户、固定入口点、镜像里没有源码与密钥、七个二进制齐全 |
+| `test-compose-security` | 非 root 用户、固定入口点、镜像里没有源码与密钥、九个二进制齐全 |
 | `test-compose-smoke` | 迁移跑完、服务起来、gateway 能答自己的 live 与 ready 探针，且每个服务在收到 `SIGTERM` 后 15 秒内以 `0` 退出 |
 | `test-compose-persistence` | 数据能挺过一次容器重建 |
 | `test-compose-postgres` | 真实 PostgreSQL 的那两套，跑在用完即弃的集群上 |
@@ -105,8 +110,12 @@ zero-skip 这一半不是跑绿了就能知道的：一个 test 被跳过和它�
 go run ./internal/testenv/cmd/noskipgotest -- -short ./exchange/... -count=1
 ```
 
-这条命令就是 `make test-exchange-offline`。这个 wrapper 过去用来跑外部验收 target，那时一次
-skip 意味着某份凭证不在；现在它服务于离线断言，一次 skip 意味着证据比 target 名字看上去的更窄。
+`make test-exchange-offline` 执行普通短测试。只有要声明 zero-skip 时，才另外运行上面的
+wrapper；普通测试通过不能作为没有跳过项的证据。skip 表示实际验证范围比 target 名字更窄。
 
 发布这份摘要，别的都不发。不含凭证、不含原始日志、不含账户残留、不含本地路径。「已实现」「有
 能力」「有外部证据」始终是三条彼此独立的断言。
+
+`make test-compose-postgres` 同时验证 Trading 存储与六个真实进程崩溃窗口。
+`make test-compose-recovery` 创建一次性栈，验证重启、数据库中断和备份恢复。
+公开行情持续检查通过 `python3 scripts/acceptance/stack_recovery.py --public-seconds 180` 显式启用。

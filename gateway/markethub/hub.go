@@ -62,7 +62,6 @@ const (
 	MessageSnapshot       MessageKind = "snapshot"
 	MessageDelta          MessageKind = "delta"
 	MessageFull           MessageKind = "full"
-	MessageCheckpoint     MessageKind = "checkpoint"
 	MessageResyncRequired MessageKind = "resync_required"
 )
 
@@ -112,7 +111,6 @@ type Observer interface {
 	ObserveMarketFeed(venue, family, feed, state string, reconnects uint64)
 	RecordMarketGap(venue, family, feed string, resnapshot bool)
 	SetMarketFact(venue, family, dataset string, age time.Duration, coverage float64)
-	SetMarketHot(venue, family, dataset string, hot int)
 }
 
 type feedState struct {

@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
-func (c *Client) getJSON(ctx context.Context, path string, params url.Values, auth bool, out any) error {
+func (c *Client) getJSON(ctx context.Context, path string, params url.Values, auth bool, out any) (returnErr error) {
 	if params != nil {
 		if encoded := params.Encode(); encoded != "" {
 			path = fmt.Sprintf("%s?%s", path, encoded)
@@ -29,11 +31,18 @@ func (c *Client) getJSON(ctx context.Context, path string, params url.Values, au
 		req.Header.Set("Authorization", token)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -52,7 +61,7 @@ func (c *Client) getJSON(ctx context.Context, path string, params url.Values, au
 }
 
 // GetAssetDetails fetches asset details
-func (c *Client) GetAssetDetails(ctx context.Context, assetIndex *int16) (*AssetDetailsResponse, error) {
+func (c *Client) GetAssetDetails(ctx context.Context, assetIndex *int16) (_ *AssetDetailsResponse, returnErr error) {
 	path := "/api/v1/assetDetails"
 	if assetIndex != nil {
 		path = fmt.Sprintf("%s?asset_index=%d", path, *assetIndex)
@@ -62,11 +71,18 @@ func (c *Client) GetAssetDetails(ctx context.Context, assetIndex *int16) (*Asset
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -84,7 +100,7 @@ func (c *Client) GetAssetDetails(ctx context.Context, assetIndex *int16) (*Asset
 }
 
 // GetOrderBookDetails fetches order book details
-func (c *Client) GetOrderBookDetails(ctx context.Context, marketId *int, filter *string) (*OrderBookDetailsResponse, error) {
+func (c *Client) GetOrderBookDetails(ctx context.Context, marketId *int, filter *string) (_ *OrderBookDetailsResponse, returnErr error) {
 	params := url.Values{}
 	if marketId != nil {
 		params.Add("market_id", fmt.Sprintf("%d", *marketId))
@@ -102,11 +118,18 @@ func (c *Client) GetOrderBookDetails(ctx context.Context, marketId *int, filter 
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -138,7 +161,7 @@ func (c *Client) GetListedTokens(ctx context.Context) (*ListedTokenResponse, err
 }
 
 // GetOrderBooks fetches order books
-func (c *Client) GetOrderBooks(ctx context.Context, marketId *int) (*OrderBooksResponse, error) {
+func (c *Client) GetOrderBooks(ctx context.Context, marketId *int) (_ *OrderBooksResponse, returnErr error) {
 	path := "/api/v1/orderBooks"
 	if marketId != nil {
 		path = fmt.Sprintf("%s?market_id=%d", path, *marketId)
@@ -148,11 +171,18 @@ func (c *Client) GetOrderBooks(ctx context.Context, marketId *int) (*OrderBooksR
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -170,18 +200,25 @@ func (c *Client) GetOrderBooks(ctx context.Context, marketId *int) (*OrderBooksR
 }
 
 // GetRecentTrades fetches recent trades
-func (c *Client) GetRecentTrades(ctx context.Context, marketId int, limit int64) (*RecentTradesResponse, error) {
+func (c *Client) GetRecentTrades(ctx context.Context, marketId int, limit int64) (_ *RecentTradesResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/recentTrades?market_id=%d&limit=%d", marketId, limit)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -199,18 +236,25 @@ func (c *Client) GetRecentTrades(ctx context.Context, marketId int, limit int64)
 }
 
 // GetOrderBookOrders fetches detailed order book orders
-func (c *Client) GetOrderBookOrders(ctx context.Context, marketId int, limit int64) (*OrderBookOrdersResponse, error) {
+func (c *Client) GetOrderBookOrders(ctx context.Context, marketId int, limit int64) (_ *OrderBookOrdersResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/orderBookOrders?market_id=%d&limit=%d", marketId, limit)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -228,18 +272,25 @@ func (c *Client) GetOrderBookOrders(ctx context.Context, marketId int, limit int
 }
 
 // GetFundingRates fetches current funding rates
-func (c *Client) GetFundingRates(ctx context.Context) (*FundingRatesResponse, error) {
+func (c *Client) GetFundingRates(ctx context.Context) (_ *FundingRatesResponse, returnErr error) {
 	path := "/api/v1/funding-rates"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -298,18 +349,25 @@ func (c *Client) GetAllFundingRates(ctx context.Context) ([]*FundingRate, error)
 }
 
 // GetExchangeStats fetches exchange statistics
-func (c *Client) GetExchangeStats(ctx context.Context) (*ExchangeStatsResponse, error) {
+func (c *Client) GetExchangeStats(ctx context.Context) (_ *ExchangeStatsResponse, returnErr error) {
 	path := "/api/v1/exchangeStats"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -387,18 +445,25 @@ func (c *Client) GetWithdrawalDelay(ctx context.Context) (*WithdrawalDelayRespon
 }
 
 // GetAnnouncements fetches announcements
-func (c *Client) GetAnnouncements(ctx context.Context) (*AnnouncementResponse, error) {
+func (c *Client) GetAnnouncements(ctx context.Context) (_ *AnnouncementResponse, returnErr error) {
 	path := "/api/v1/announcement"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

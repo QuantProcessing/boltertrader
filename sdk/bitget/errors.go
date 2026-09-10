@@ -3,6 +3,8 @@ package sdk
 import (
 	"errors"
 	"fmt"
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
+	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 	"strings"
 )
 
@@ -59,6 +61,10 @@ func validateOrderActionResult(operation, orderID, clientOID, expectedOrderID, e
 // and internal-service response classes. All classification uses structured
 // response codes; message text is diagnostic only.
 func IsDefinitiveCommandRejection(err error) bool {
+	var httpErr *venuehttp.HTTPError
+	if errors.As(err, &httpErr) && (httpErr.StatusCode >= 500 || httpErr.StatusCode == 408 || httpErr.StatusCode == 429 || httpErr.StatusCode == 418) {
+		return false
+	}
 	var responseErr *ResponseError
 	if !errors.As(err, &responseErr) || responseErr == nil {
 		return false
@@ -105,4 +111,8 @@ func IsDefinitiveCommandRejection(err error) bool {
 	default:
 		return false
 	}
+}
+
+func (e *ResponseError) Is(target error) bool {
+	return target == sdkcore.ErrRateLimited && e.Code == "42900"
 }

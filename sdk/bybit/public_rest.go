@@ -33,7 +33,7 @@ func (c *Client) GetOpenInterest(ctx context.Context, category, symbol, interval
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get open interest failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get open interest", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }
@@ -61,7 +61,7 @@ func (c *Client) GetFundingHistory(ctx context.Context, category, symbol string,
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get funding history failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get funding history", resp.RetCode, resp.RetMsg)
 	}
 	return resp.Result.List, nil
 }
@@ -91,7 +91,7 @@ func (c *Client) GetInstrumentsForBase(ctx context.Context, category, baseCoin s
 			return nil, err
 		}
 		if resp.RetCode != 0 {
-			return nil, fmt.Errorf("bybit sdk: get instruments failed: %d %s", resp.RetCode, resp.RetMsg)
+			return nil, newResponseError("get instruments", resp.RetCode, resp.RetMsg)
 		}
 
 		out = append(out, resp.Result.List...)
@@ -116,7 +116,7 @@ func (c *Client) GetTicker(ctx context.Context, category, symbol string) (*Ticke
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get ticker failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get ticker", resp.RetCode, resp.RetMsg)
 	}
 	if len(resp.Result.List) == 0 {
 		return nil, fmt.Errorf("bybit sdk: ticker not found for %s %s", category, symbol)
@@ -136,7 +136,7 @@ func (c *Client) GetTickers(ctx context.Context, category string) ([]Ticker, err
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get tickers failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get tickers", resp.RetCode, resp.RetMsg)
 	}
 	if resp.Time > 0 {
 		ts := strconv.FormatInt(resp.Time, 10)
@@ -164,7 +164,7 @@ func (c *Client) GetOrderBook(ctx context.Context, category, symbol string, limi
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get orderbook failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get orderbook", resp.RetCode, resp.RetMsg)
 	}
 	return &resp.Result, nil
 }
@@ -184,7 +184,7 @@ func (c *Client) GetRecentTrades(ctx context.Context, category, symbol string, l
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get recent trades failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get recent trades", resp.RetCode, resp.RetMsg)
 	}
 	return resp.Result.List, nil
 }
@@ -211,7 +211,7 @@ func (c *Client) GetKlines(ctx context.Context, category, symbol, interval strin
 		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get klines failed: %d %s", resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("get klines", resp.RetCode, resp.RetMsg)
 	}
 	return resp.Result.List, nil
 }

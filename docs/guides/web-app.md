@@ -44,18 +44,13 @@ bidirectionally.
 | `/login` | The only route reachable without a session |
 | `/trade` | Ticker strip, chart, order book, order ticket, blotter |
 | `/funding` | The cross-venue funding matrix, one column per venue |
-| `/funding/arbitrage` | Ranked spreads, the funding-history chart, the hedge ticket, open pairs |
 | `/portfolio` | Positions, balances, PnL |
 | `/activity` | The command chain with timestamps |
 | `/settings` | Accounts, credentials, runtime readiness |
 
-The top navigation carries all six; everything the operator does is one click
-from anywhere. Without a session, every route redirects to `/login`.
-
-`/funding` is the one page that renders before any account exists — the board is
-public data and needs no credential — so it is readable on a fresh install.
-`/funding/arbitrage` is not: it ranks pairs across the accounts the operator
-selects, and with none selected it has nothing to rank.
+The top navigation carries these five pages. `/trade` and `/funding` display
+public market data without an account; private account reads and writes require
+a session.
 
 There is one command palette over the whole shell for jumping between
 instruments and routes.
@@ -65,8 +60,7 @@ instruments and routes.
 Reads go through `react-query` against the endpoints in `src/api/endpoints.ts`.
 Live updates use one shared socket per ownership boundary rather than one socket
 per component: Gateway market data at `/api/v1/market/realtime/ws`, Gateway
-account notifications at `/api/v1/account/realtime/ws`, and Trading business
-projections at `/api/v1/realtime/ws`. Duplicate component subscriptions still
+account notifications at `/api/v1/account/realtime/ws`. Duplicate component subscriptions still
 share one logical topic. Depth starts from a WebSocket-derived snapshot and is
 rebuilt from native deltas or self-contained full replacements; Gateway never
 stores a full book or joins a venue REST book to the stream.
@@ -80,9 +74,10 @@ reconnecting only when the browser socket itself is unavailable. Account
 degradation is tracked per account and clears only on that account's health
 recovery event.
 
-Placement is the two-step ticket: **Review order** requests a sealed preview and
-starts its expiry countdown, **Confirm** submits that sealed object. The button
-says so when a seal expires. The rationale is in
+The ticket computes its review from the account, catalog and public prices
+already on screen. **Confirm** sends one command request; there is no preview
+request, server-side preview state or expiry countdown. Trading still performs
+the authoritative account, route and rule checks in that command request. See
 [the trading service](trading-service.md).
 
 Credential values are write-only in the interface. They are submitted once and

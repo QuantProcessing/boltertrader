@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
@@ -77,7 +78,7 @@ func (c *Client) getPrivate(ctx context.Context, path string, query map[string]s
 	return c.getInternal(ctx, path, query, true, out)
 }
 
-func (c *Client) getInternal(ctx context.Context, path string, query map[string]string, signed bool, out any) error {
+func (c *Client) getInternal(ctx context.Context, path string, query map[string]string, signed bool, out any) (returnErr error) {
 	u, err := url.Parse(c.baseURL + path)
 	if err != nil {
 		return err
@@ -99,7 +100,11 @@ func (c *Client) getInternal(ctx context.Context, path string, query map[string]
 		c.signHeaders(req, u.RawQuery, "")
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.httpClient, req, "bitget")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return newTransportError(http.MethodGet, u.Path, err)
 	}
@@ -107,13 +112,13 @@ func (c *Client) getInternal(ctx context.Context, path string, query map[string]
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return newHTTPStatusErrorWithBody(http.MethodGet, u.EscapedPath(), resp.StatusCode, bodyBytes)
+		return venuehttp.WithHTTPResponse(newHTTPStatusErrorWithBody(http.MethodGet, u.EscapedPath(), resp.StatusCode, bodyBytes), resp)
 	}
 
-	return json.NewDecoder(resp.Body).Decode(out)
+	return decodeHTTPResponse(resp, out)
 }
 
-func (c *Client) postPrivate(ctx context.Context, path string, body any, out any) error {
+func (c *Client) postPrivate(ctx context.Context, path string, body any, out any) (returnErr error) {
 	if !c.HasCredentials() {
 		return fmt.Errorf("bitget sdk: credentials required")
 	}
@@ -129,7 +134,11 @@ func (c *Client) postPrivate(ctx context.Context, path string, body any, out any
 	}
 	c.signHeaders(req, "", string(payload))
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.httpClient, req, "bitget")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return newTransportError(http.MethodPost, req.URL.Path, err)
 	}
@@ -137,10 +146,10 @@ func (c *Client) postPrivate(ctx context.Context, path string, body any, out any
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return newHTTPStatusErrorWithBody(http.MethodPost, req.URL.EscapedPath(), resp.StatusCode, bodyBytes)
+		return venuehttp.WithHTTPResponse(newHTTPStatusErrorWithBody(http.MethodPost, req.URL.EscapedPath(), resp.StatusCode, bodyBytes), resp)
 	}
 
-	return json.NewDecoder(resp.Body).Decode(out)
+	return decodeHTTPResponse(resp, out)
 }
 
 // GetPrivateRaw executes an authenticated GET request for official Bitget
@@ -208,4 +217,35 @@ func applySDKRequestOptsString(params map[string]string, opts sdkcore.RequestOpt
 	if opts.ClientRequestID != "" {
 		params["clientOid"] = opts.ClientRequestID
 	}
+}
+
+func decodeHTTPResponse(response *http.Response, out any) (returnErr error) {
+	defer func() {
+		var failure *venuehttp.HTTPError
+		var native *ResponseError
+		if errors.As(returnErr, &failure) && errors.As(returnErr, &native) {
+			failure.Code = native.Code
+		}
+	}()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	if err != nil {
+		return venuehttp.WithHTTPResponse(err, response)
+	}
+	var envelope struct {
+		Code    string `json:"code"`
+		Message string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return venuehttp.WithHTTPResponse(fmt.Errorf("%w: invalid JSON", venuehttp.ErrMalformedResponse), response)
+	}
+	if envelope.Code == "" {
+		return venuehttp.WithHTTPResponse(venuehttp.ErrMalformedResponse, response)
+	}
+	if envelope.Code != "00000" {
+		return venuehttp.WithHTTPResponse(newResponseError("HTTP response", envelope.Code, envelope.Message), response)
+	}
+	if response.StatusCode >= 300 {
+		return venuehttp.WithHTTPResponse(fmt.Errorf("venue HTTP request failed"), response)
+	}
+	return json.Unmarshal(body, out)
 }

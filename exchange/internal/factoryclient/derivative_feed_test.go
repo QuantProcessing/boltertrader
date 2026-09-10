@@ -94,6 +94,23 @@ func TestDerivativeFeedCachesCanonicalResolutionForRealtimeDeltas(t *testing.T) 
 	}
 }
 
+func TestDerivativeWatcherNeverSilentlyDowngradesWebSocketToPolling(t *testing.T) {
+	capability := exchange.MarketCapability{
+		Venue: exchange.VenueBybit, NativeMarketFamily: "linear", Dataset: exchange.DatasetMark,
+		Transport: exchange.TransportWebSocket, Granularity: exchange.GranularityAllMarket,
+	}
+	watcher := derivativeWatcherFor(
+		exchange.CatalogScope{Venue: exchange.VenueBybit, Product: exchange.ProductPerp, Environment: exchange.EnvironmentLive},
+		staticDerivativeLoader{}, Settings{MarketCapabilities: []exchange.MarketCapability{capability}},
+	)
+	if _, polling := watcher.(*pollingDerivativeWatcher); polling {
+		t.Fatal("missing WebSocket implementation silently selected REST polling")
+	}
+	if _, unsupported := watcher.(*unsupportedDerivativeWatcher); !unsupported {
+		t.Fatalf("watcher=%T want explicit unsupported strategy", watcher)
+	}
+}
+
 type staticDerivativeLoader struct{ snapshot DerivativeSnapshot }
 
 func (loader staticDerivativeLoader) LoadDerivativeSnapshot(context.Context, exchange.CatalogScope) (DerivativeSnapshot, error) {

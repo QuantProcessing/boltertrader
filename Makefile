@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-browser
+.PHONY: test test-sdk test-browser test-gateway-client test-monitor
 .PHONY: test-exchange-offline test-exchange-race test-exchange-redaction test-exchange-quality
 .PHONY: test-gateway-contract test-gateway-offline test-gateway-race test-gateway-postgres test-gateway-restart test-gateway-security test-gateway
 .PHONY: up down down-hard logs doctor
@@ -28,6 +28,12 @@ test-exchange-redaction:
 
 test-exchange-quality: test-exchange-offline test-exchange-redaction test-exchange-race
 
+test-gateway-client:
+	go test -short ./api/exchange-gateway/v1 ./clients/gateway ./cmd/gateway-market ./gateway/httpapi -count=1
+
+test-monitor:
+	go test -short ./services/monitor ./cmd/gateway-monitor -count=1
+
 test-gateway-contract:
 	go test -short ./gateway/contracts ./gateway/domain ./gateway/capability ./gateway/store -count=1
 
@@ -39,7 +45,8 @@ test-gateway-race:
 
 test-gateway-postgres:
 	@test -n "$$GATEWAY_TEST_POSTGRES_DSN" || (echo "GATEWAY_TEST_POSTGRES_DSN is required" >&2; exit 1)
-	go test ./gateway/store/postgres/... -run 'Test(Migrate|CommandStore|AuditStore|AccountOwnership|RegisterAccount).*RealPostgres' -count=1
+	go test ./gateway/store/postgres/... -run 'Test(Migrate|CommandStore|AuditStore|AccountOwnership|Registration).*RealPostgres' -count=1
+	go test ./gateway/integration -run '^TestAccountStackRealPostgres' -count=1
 
 test-gateway-restart:
 	@test -n "$$GATEWAY_TEST_POSTGRES_DSN" || (echo "GATEWAY_TEST_POSTGRES_DSN is required" >&2; exit 1)
@@ -64,7 +71,7 @@ test-gateway: test-gateway-offline test-gateway-race test-gateway-security
 # repository's ./.env, which holds live venue API credentials that would then be
 # interpolated into the stack's environment.
 # -----------------------------------------------------------------------------
-COMPOSE = docker compose --env-file .env.stack -f compose.yaml
+COMPOSE = env -u GATEWAY_HTTP_PROXY docker compose --env-file .env.stack -f compose.yaml
 
 up:
 	go run ./internal/devsetup/cmd/bootstrap
@@ -131,10 +138,10 @@ test-compose-config:
 	go test ./gateway/config ./cmd/exchange-gateway-docker-support -run 'Test(NonLoopback|RunLoads|RunRejects|Health)' -count=1
 
 test-compose-build:
-	docker build --build-arg GOPROXY="$${BOLTER_DOCKER_GOPROXY:-https://proxy.golang.org,direct}" -f Dockerfile -t "$${BOLTER_IMAGE:-boltertrader:local}" .
-	docker build -f docker/web/Dockerfile -t "$${BOLTER_WEB_IMAGE:-boltertrader-web:local}" .
+	docker build --build-arg HTTP_PROXY="$${BOLTER_DOCKER_HTTP_PROXY:-}" --build-arg HTTPS_PROXY="$${BOLTER_DOCKER_HTTP_PROXY:-}" --build-arg GOPROXY="$${BOLTER_DOCKER_GOPROXY:-https://proxy.golang.org,direct}" -f Dockerfile -t "$${BOLTER_IMAGE:-boltertrader:local}" .
+	docker build --build-arg HTTP_PROXY="$${BOLTER_DOCKER_HTTP_PROXY:-}" --build-arg HTTPS_PROXY="$${BOLTER_DOCKER_HTTP_PROXY:-}" -f docker/web/Dockerfile -t "$${BOLTER_WEB_IMAGE:-boltertrader-web:local}" .
 
-# What must not be in the image: the repository. A distroless image holding seven
+# What must not be in the image: the repository. A distroless image holding nine
 # static binaries has no reason to carry source, and this grep exists because the
 # way source gets in is a widened COPY that nobody notices until the image ships
 # with .env inside it.
@@ -149,9 +156,9 @@ test-compose-security:
 	trap 'if test -n "$$cid"; then docker rm -f "$$cid" >/dev/null 2>&1 || true; fi; rm -rf "$$tmp"' EXIT INT TERM; \
 	cid=$$(docker create "$$image"); \
 	docker export "$$cid" -o "$$tmp/rootfs.tar"; \
-	if tar tf "$$tmp/rootfs.tar" | grep -E '(^|/)(\.env|\.git|\.omx|\.secrets)(/|$$)|(^|/)(cmd|gateway|exchange|sdk|services|internal|api|credential|secretstore|routeprofile|backfills|docs|web)(/|$$)|(^|/)go\.(mod|sum)$$|\.go$$|_test\.go$$' >/dev/null; then echo "forbidden path found in runtime image" >&2; exit 1; fi; \
+	if tar tf "$$tmp/rootfs.tar" | grep -E '(^|/)\.env([./]|$$)|(^|/)(\.git|\.omx|\.secrets)(/|$$)|(^|/)(cmd|gateway|exchange|sdk|services|internal|api|credential|secretstore|routeprofile|backfills|docs|web)/|(^|/)go\.(mod|sum)$$|\.go$$|_test\.go$$' >/dev/null; then echo "forbidden path found in runtime image" >&2; exit 1; fi; \
 	tar tf "$$tmp/rootfs.tar" | grep -q '^etc/ssl/certs/ca-certificates\.crt$$'; \
-	for binary in exchange-gateway exchange-gateway-docker-support gateway-migrate trading trading-migrate authedge authedge-migrate; do \
+	for binary in exchange-gateway exchange-gateway-docker-support gateway-migrate gateway-market gateway-monitor trading trading-migrate authedge authedge-migrate; do \
 		tar tf "$$tmp/rootfs.tar" | grep -q "^usr/local/bin/$$binary$$" || (echo "runtime image is missing $$binary" >&2; exit 1); \
 	done; \
 	docker rm "$$cid" >/dev/null; cid=""; \
@@ -213,14 +220,22 @@ test-compose-postgres:
 	go run ./internal/devsetup/cmd/bootstrap -root "$$tmp" -quiet >/dev/null; \
 	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0 WEB_PORT=0; \
 	compose="docker compose --env-file $$tmp/.env.stack -f compose.yaml -p $$project"; \
-	$$compose up -d --no-build --wait --wait-timeout 120 postgres gateway-migrate; \
+	$$compose up -d --no-build --wait --wait-timeout 120 postgres; \
+	$$compose run --rm --no-deps gateway-migrate; \
 	endpoint=$$($$compose port postgres 5432); \
 	case "$$endpoint" in 127.0.0.1:*) ;; *) echo "ephemeral project did not publish PostgreSQL on loopback" >&2; exit 1;; esac; \
 	dsn="postgres://bolter_gateway_migrator@127.0.0.1:$${endpoint##*:}/bolter_gateway?sslmode=disable"; \
-	GATEWAY_TEST_POSTGRES_DSN="$$dsn" go test ./gateway/store/postgres/... -run 'Test(Migrate|CommandStore|AuditStore|AccountOwnership|RegisterAccount).*RealPostgres' -count=1; \
+	GATEWAY_TEST_POSTGRES_DSN="$$dsn" go test ./gateway/store/postgres/... -run 'Test(Migrate|CommandStore|AuditStore|AccountOwnership|Registration).*RealPostgres' -count=1; \
+	GATEWAY_TEST_POSTGRES_DSN="$$dsn" go test ./gateway/integration -run '^TestAccountStackRealPostgres' -count=1; \
 	GATEWAY_TEST_POSTGRES_DSN="$$dsn" go test ./gateway/order/... -run '^TestCoordinatorRealPostgresProcessCrashWindows$$$$' -count=1; \
+	BT_TEST_POSTGRES_DSN="postgres://bolter_trading@127.0.0.1:$${endpoint##*:}/bolter_trading?sslmode=disable" go test ./services/trading/store/postgres -count=1; \
 	$$compose down --volumes --remove-orphans >/dev/null; \
 	rm -rf "$$tmp"; \
 	trap - EXIT INT TERM
 
 test-compose: test-compose-config test-compose-build test-compose-security test-compose-smoke test-compose-persistence test-compose-postgres
+
+# Separate from the short suite: temporary Compose project, no venue keys.
+.PHONY: test-compose-recovery
+test-compose-recovery:
+	python3 scripts/acceptance/stack_recovery.py

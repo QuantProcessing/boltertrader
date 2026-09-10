@@ -1,19 +1,22 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import type { AccountPositionSnapshot, Command } from "@/api/types";
+import type { AccountBalance, AccountPositionSnapshot, Command } from "@/api/types";
 import { realtimeTopics } from "@/features/realtime/topic-manager";
 
-import { applyOrderOverlays, applyPositionOverlays, recordAccountRealtimeEvent } from "./account-realtime-overlay";
+import { applyBalanceOverlays, applyOrderOverlays, applyPositionOverlays, recordAccountRealtimeEvent } from "./account-realtime-overlay";
 import { tradeKeys } from "./queries";
 
 export const TRADE_REALTIME_EVENTS = [
   "account.order",
-  "account.fill",
   "account.balance",
   "account.position",
-  "account.account_health",
 ] as const;
+
+// account.fill is a raw venue fill. It does not carry Trading's product,
+// lineage or command identity, so merging it into the product fill ledger
+// would invent ownership. That immutable ledger remains on its 60s REST
+// reconciliation until Gateway publishes a canonical Trading fill entity.
 
 /**
  * Gateway account events overlay newer entity facts onto the current REST
@@ -33,6 +36,13 @@ export function useTradeRealtime(enabled: boolean): void {
       const resource = recordAccountRealtimeEvent(message.data);
       if (resource === "order") {
         queryClient.setQueryData<Command[]>(tradeKeys.orders(), (current) => current ? applyOrderOverlays(current) : current);
+      }
+      if (resource === "balance") {
+        for (const query of queryClient.getQueryCache().findAll({ queryKey: ["trading", "balances"] })) {
+          const accountId = query.queryKey[2];
+          if (typeof accountId !== "string") continue;
+          queryClient.setQueryData<AccountBalance[]>(query.queryKey, (current) => current ? applyBalanceOverlays(current, accountId) : current);
+        }
       }
       if (resource === "position") {
         for (const query of queryClient.getQueryCache().findAll({ queryKey: ["trading", "account-positions"] })) {

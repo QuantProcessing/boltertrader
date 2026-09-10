@@ -3,9 +3,6 @@ package manual
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/services/trading/accounting"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
@@ -30,29 +28,21 @@ const (
 )
 
 type GatewayRequest struct {
-	CommandID, IdempotencyKey, ReservationID string
-	AccountID, InstrumentID, Side            string
-	Quantity, OrderType, LimitPrice          string
-	TimeInForce                              string
-	RouteID                                  string
-	ReduceOnly                               bool
-	Leverage                                 int
-	RuntimeID                                string
-	// Deprecated source-compatibility fields. New requests use RuntimeID.
-	DesiredStateRevision, RuntimeGeneration int64
-	CredentialVersion                       int64
+	CommandID, IdempotencyKey       string
+	AccountID, InstrumentID, Side   string
+	Quantity, OrderType, LimitPrice string
+	TimeInForce                     string
+	RouteID                         string
+	ReduceOnly                      bool
+	Leverage                        int
+	RuntimeID                       string
 }
 
 type GatewayCancelRequest struct {
 	CommandID, AccountID, InstrumentID, GatewayOrderID string
 }
 
-type FillFact struct {
-	FillID, CommandID, AccountID, InstrumentID            string
-	Side                                                  portfolio.Side
-	Quantity, Price, Fee, FeeCurrency, SettlementCurrency string
-	OccurredAt                                            time.Time
-}
+type FillFact = accounting.FillFact
 
 type GatewayResult struct {
 	CommandID, AccountID string
@@ -75,9 +65,10 @@ type Service struct {
 	portfolio  *portfolio.Projection
 	ledger     *ledger.Service
 	gateway    Gateway
-	previewKey []byte
 	now        func() time.Time
 	liveWrites bool
+	accounts   AccountAuthority
+	catalog    CatalogReader
 }
 
 type placeIntent struct {
@@ -93,21 +84,21 @@ type placeIntent struct {
 	RuntimeID    string `json:"runtimeId,omitempty"`
 }
 
-// NewService remains as a compile-compatible transition point until app wiring
-// supplies the required Gateway adapter through NewGatewayService.
-func NewService(commands *orders.Service, portfolioProjection *portfolio.Projection, ledgerService *ledger.Service, now func() time.Time) *Service {
-	return NewGatewayService(commands, portfolioProjection, ledgerService, nil, now)
+type Options struct {
+	Commands  *orders.Service
+	Portfolio *portfolio.Projection
+	Ledger    *ledger.Service
+	Gateway   Gateway
+	Accounts  AccountAuthority
+	Catalog   CatalogReader
+	Now       func() time.Time
 }
 
-func NewGatewayService(commands *orders.Service, portfolioProjection *portfolio.Projection, ledgerService *ledger.Service, gateway Gateway, now func() time.Time) *Service {
-	return NewGatewayServiceWithPreviewKey(commands, portfolioProjection, ledgerService, gateway, now, nil)
-}
-
-func NewGatewayServiceWithPreviewKey(commands *orders.Service, portfolioProjection *portfolio.Projection, ledgerService *ledger.Service, gateway Gateway, now func() time.Time, previewKey []byte) *Service {
-	if now == nil {
-		now = time.Now
+func NewService(options Options) *Service {
+	if options.Now == nil {
+		options.Now = time.Now
 	}
-	return &Service{commands: commands, portfolio: portfolioProjection, ledger: ledgerService, gateway: gateway, previewKey: bytes.Clone(previewKey), now: now}
+	return &Service{commands: options.Commands, portfolio: options.Portfolio, ledger: options.Ledger, gateway: options.Gateway, accounts: options.Accounts, catalog: options.Catalog, now: options.Now}
 }
 
 // SetExecutionAdmission used to take the service's mode alongside this switch,
@@ -123,57 +114,6 @@ func (service *Service) SetExecutionAdmission(liveWrites bool) error {
 
 func (service *Service) Ready() bool {
 	return service != nil && service.commands != nil && service.portfolio != nil && service.ledger != nil && service.gateway != nil
-}
-
-func (service *Service) PreviewNow() time.Time {
-	if service == nil || service.now == nil {
-		return time.Time{}
-	}
-	return service.now().UTC()
-}
-
-func (service *Service) SealPreview(principal string, payload []byte) (string, error) {
-	if service == nil || len(service.previewKey) < sha256.Size || principal == "" || len(payload) == 0 {
-		return "", fmt.Errorf("manual preview signing dependencies are required")
-	}
-	encoded := base64.RawURLEncoding.EncodeToString(payload)
-	signature := service.previewSignature(principal, encoded)
-	return "manual_preview_" + encoded + "." + base64.RawURLEncoding.EncodeToString(signature), nil
-}
-
-func (service *Service) OpenPreview(principal string, token string) ([]byte, error) {
-	if service == nil || len(service.previewKey) < sha256.Size || principal == "" {
-		return nil, fmt.Errorf("manual preview signing dependencies are required")
-	}
-	value := strings.TrimPrefix(token, "manual_preview_")
-	if value == token {
-		return nil, fmt.Errorf("invalid manual preview token")
-	}
-	encoded, signatureText, found := strings.Cut(value, ".")
-	if !found || encoded == "" || signatureText == "" {
-		return nil, fmt.Errorf("invalid manual preview token")
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(signatureText)
-	if err != nil || !hmac.Equal(signature, service.previewSignature(principal, encoded)) {
-		return nil, fmt.Errorf("invalid manual preview token")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(payload) == 0 {
-		return nil, fmt.Errorf("invalid manual preview token")
-	}
-	return payload, nil
-}
-
-// previewSignature binds a token to the principal that minted it. The mode used
-// to be a third field in this MAC, between the principal and the payload, so
-// that a token sealed under test could not be opened under live. Every token is
-// live now, so only the principal separates one caller's token from another's.
-func (service *Service) previewSignature(principal string, encoded string) []byte {
-	mac := hmac.New(sha256.New, service.previewKey)
-	_, _ = mac.Write([]byte(principal))
-	_, _ = mac.Write([]byte{0})
-	_, _ = mac.Write([]byte(encoded))
-	return mac.Sum(nil)
 }
 
 func (service *Service) Execute(ctx context.Context, command orders.Command) (orders.Command, error) {
@@ -195,7 +135,7 @@ func (service *Service) Execute(ctx context.Context, command orders.Command) (or
 	if err != nil {
 		return command, err
 	}
-	if current.State == orders.StateFilled || current.State == orders.StateCanceled || current.State == orders.StateFailed {
+	if current.State != orders.StateAccepted {
 		return current, nil
 	}
 
@@ -208,6 +148,10 @@ func (service *Service) Execute(ctx context.Context, command orders.Command) (or
 		return failed, fmt.Errorf("manual intent is invalid: %w", err)
 	}
 	request := gatewayRequest(current, intent)
+	current, started, err := service.commands.BeginExecution(ctx, current.CommandID)
+	if err != nil || !started {
+		return current, err
+	}
 	result, err := service.gateway.Execute(ctx, request)
 	if err != nil {
 		switch result.Handoff.Outcome {
@@ -299,15 +243,18 @@ func (service *Service) Cancel(ctx context.Context, command orders.Command) (ord
 }
 
 func (service *Service) RecordReconciliation(ctx context.Context, command orders.Command, handoff orders.HandoffResult) (orders.Command, error) {
-	if handoff.Outcome == orders.HandoffRejected {
-		return service.commands.Transition(ctx, orders.TransitionRequest{CommandID: command.CommandID, State: orders.StateFailed, Evidence: handoff.Evidence})
-	}
-	if handoff.Outcome != orders.HandoffAccepted {
-		return command, fmt.Errorf("Gateway reconciliation outcome is not authoritative")
-	}
 	current, err := service.commands.Get(ctx, command.CommandID)
 	if err != nil {
 		return command, err
+	}
+	if current.ProductID != "manual" || current.CommandKind != "manual.place" {
+		return current, fmt.Errorf("command is not owned by manual trading")
+	}
+	if handoff.Outcome == orders.HandoffRejected {
+		return service.commands.Transition(ctx, orders.TransitionRequest{CommandID: current.CommandID, State: orders.StateFailed, Evidence: handoff.Evidence})
+	}
+	if handoff.Outcome != orders.HandoffAccepted {
+		return current, fmt.Errorf("Gateway reconciliation outcome is not authoritative")
 	}
 	intent, err := decodePlaceIntent(current.Payload)
 	if err != nil {
@@ -320,7 +267,7 @@ func (service *Service) RecordReconciliation(ctx context.Context, command orders
 		if accountID == "" {
 			accountID = current.AccountID
 		}
-		result.Fills = append(result.Fills, FillFact{FillID: fill.FillID, CommandID: current.CommandID, AccountID: accountID, InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side), Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt})
+		result.Fills = append(result.Fills, FillFact{InstrumentProduct: fill.InstrumentProduct, BaseAsset: fill.BaseAsset, FillID: fill.FillID, CommandID: current.CommandID, AccountID: accountID, InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side), Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt})
 	}
 	if result.State == GatewayStateDenied {
 		result.DenialCode = "gateway_rejected"
@@ -420,9 +367,6 @@ func gatewayRequest(command orders.Command, intent placeIntent) GatewayRequest {
 		Leverage:  intent.Leverage,
 		RuntimeID: intent.RuntimeID,
 	}
-	if command.ReservationID != nil {
-		request.ReservationID = *command.ReservationID
-	}
 	return request
 }
 
@@ -474,44 +418,10 @@ func validateGatewayResult(request GatewayRequest, result GatewayResult) error {
 	return nil
 }
 
-func validateFillFact(fill FillFact) error {
-	quantity, quantityErr := decimal.NewFromString(fill.Quantity)
-	price, priceErr := decimal.NewFromString(fill.Price)
-	fee, feeErr := decimal.NewFromString(fill.Fee)
-	if fill.FillID == "" || fill.FeeCurrency == "" || fill.SettlementCurrency == "" || fill.OccurredAt.IsZero() || quantityErr != nil || priceErr != nil || feeErr != nil || !quantity.IsPositive() || !price.IsPositive() || fee.IsNegative() {
-		return fmt.Errorf("fill facts are incomplete or invalid")
-	}
-	return nil
-}
+func validateFillFact(fill FillFact) error { return accounting.ValidateFill(fill) }
 
 func (service *Service) applyFills(ctx context.Context, command orders.Command, fills []FillFact) error {
-	for _, fact := range fills {
-		_, result, err := service.portfolio.ApplyFill(ctx, portfolio.Fill{
-			PrincipalID: command.PrincipalID, FillID: fact.FillID, CommandID: fact.CommandID, LineageID: command.LineageID, ProductID: command.ProductID,
-			AccountID: fact.AccountID, InstrumentID: fact.InstrumentID, Side: fact.Side,
-			Quantity: fact.Quantity, Price: fact.Price, Fee: fact.Fee, FeeCurrency: fact.FeeCurrency, SettlementCurrency: fact.SettlementCurrency, OccurredAt: fact.OccurredAt,
-		})
-		if err != nil {
-			return fmt.Errorf("apply authoritative fill %q: %w", fact.FillID, err)
-		}
-		if err := service.ledger.Record(ctx, ledger.Entry{
-			PrincipalID: command.PrincipalID, EntryID: fact.FillID + ":fee", LineageID: command.LineageID, ProductID: command.ProductID,
-			AccountID: fact.AccountID, InstrumentID: fact.InstrumentID, Kind: ledger.KindFee, Amount: result.Fee,
-			Currency: fact.FeeCurrency, OccurredAt: fact.OccurredAt,
-		}); err != nil {
-			return fmt.Errorf("record authoritative fill fee %q: %w", fact.FillID, err)
-		}
-		if result.RealizedPnL != "0" {
-			if err := service.ledger.Record(ctx, ledger.Entry{
-				PrincipalID: command.PrincipalID, EntryID: fact.FillID + ":realized_pnl", LineageID: command.LineageID, ProductID: command.ProductID,
-				AccountID: fact.AccountID, InstrumentID: fact.InstrumentID, Kind: ledger.KindRealizedPnL, Amount: result.RealizedPnL,
-				Currency: fact.SettlementCurrency, OccurredAt: fact.OccurredAt,
-			}); err != nil {
-				return fmt.Errorf("record authoritative fill PnL %q: %w", fact.FillID, err)
-			}
-		}
-	}
-	return nil
+	return accounting.RecordFills(ctx, service.portfolio, service.ledger, command, fills)
 }
 
 func (service *Service) markUncertain(ctx context.Context, command orders.Command, reason orders.ReconciliationReason, evidence orders.ExecutionEvidence) (orders.Command, error) {

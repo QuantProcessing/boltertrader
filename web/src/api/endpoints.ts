@@ -7,19 +7,15 @@
  * edge no matter how correct it looks, so `paths` below mirrors it and the
  * functions are written against that mirror.
  *
- * `paths` is the full table; the functions are the subset the UI calls. Two
- * routes are deliberately listed without a wrapper — `POST /api/v1/reservations`
- * and `GET /api/v1/audit`. Trading opens reservations itself as part of placing
- * an order, and the audit route is being retired, so neither has a caller worth
- * inventing a request type for.
+ * `paths` lists browser routes; the functions cover their current callers.
  *
  * Two consequences of that table are worth stating outright, because both look
  * like bugs from the frontend:
  *
- *   - Historical market reads arrive through trading. The credential-free
+ *   - Market reads are owned by Gateway. The credential-free
  *     public WebSocket is the one narrow Gateway exception.
  *   - `/api/v1/accounts/{id}/runtimes` is a trading projection while every
- *     other `/api/v1/accounts` path is the gateway's account lifecycle. They
+ *     other `/api/v1/accounts` path is Gateway account registration. They
  *     differ by suffix alone. That is why the table is explicit and why these
  *     functions are grouped by owning service rather than by URL prefix.
  *
@@ -33,15 +29,8 @@ import type {
   Account,
   AccountBalance,
   AccountPositionSnapshot,
-  AccountRoute,
   AccountRuntime,
   ActivityEvent,
-  ArbitrageCommandRequest,
-  ArbitrageExecution,
-  ArbitrageOpportunity,
-  ArbitragePair,
-  ArbitragePreview,
-  ArbitragePreviewRequest,
   CandlePage,
   CandleQuery,
   Command,
@@ -54,14 +43,11 @@ import type {
   Instrument,
   LedgerEntry,
   ManualCommandRequest,
-  ManualPreview,
-  ManualPreviewRequest,
   MarketDataQuery,
   MarketFact,
   PnLSnapshot,
   Position,
   RateLimitStatus,
-  Reservation,
   SessionState,
   SystemSnapshot,
   Venue,
@@ -80,13 +66,6 @@ interface DataEnvelope<T> {
 interface ItemsEnvelope<T> {
   meta: ResponseMeta;
   data: { items: T[] };
-}
-
-/** `{data: [...], projection}` — Gateway catalog, where `data` is a bare array. */
-interface ProjectionEnvelope<T> {
-  meta?: ResponseMeta;
-  data: T[];
-  projection: CatalogProjectionMeta;
 }
 
 /** Public market reads. Gateway may expose a venue budget when one is meaningful. */
@@ -113,18 +92,6 @@ interface RevisionedItemsEnvelope<T> {
   data: { revision: string; items: T[] };
 }
 
-/**
- * `{meta, data: {items, observedAt}}` — the arbitrage opportunity scan alone.
- *
- * The timestamp is the board snapshot every row was ranked against, not the
- * time of the response. Two rows in one payload are therefore comparable with
- * each other, and a stale scan is visible as one number rather than having to
- * be inferred per row.
- */
-interface ObservedItemsEnvelope<T> {
-  meta: ResponseMeta;
-  data: { items: T[]; observedAt: string };
-}
 
 /** What a catalog read carries besides its rows. */
 export interface Projected<T> {
@@ -156,20 +123,14 @@ export const paths = {
   systemReadiness: "/api/v1/system/readiness",
   venueConnectivity: "/api/v1/venues/connectivity",
 
-  catalogVenues: "/api/v1/catalog/venues",
   catalogInstruments: "/api/v1/catalog/instruments",
   marketData: "/api/v1/market-data",
   candles: "/api/v1/candles",
   marketRealtimeSocket: "/api/v1/market/realtime/ws",
   accountRealtimeSocket: "/api/v1/account/realtime/ws",
-  // Trading retains this socket only for business projections such as
-  // arbitrage opportunities. Venue market/account streams terminate at Gateway.
-  realtimeSocket: "/api/v1/realtime/ws",
   fundingBoard: "/api/v1/funding-board",
   fundingHistory: "/api/v1/funding-history",
 
-  reservations: "/api/v1/reservations",
-  reservation: (reservationId: string) => `/api/v1/reservations/${encodeURIComponent(reservationId)}`,
   commands: "/api/v1/commands",
   command: (commandId: string) => `/api/v1/commands/${encodeURIComponent(commandId)}`,
 
@@ -186,19 +147,13 @@ export const paths = {
   accountRuntimes: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/runtimes`,
 
   manualVenues: "/api/v1/products/manual/venues",
-  manualPreviews: "/api/v1/products/manual/execution-previews",
   manualCommands: "/api/v1/products/manual/commands",
   manualOrders: "/api/v1/products/manual/orders",
   manualOrder: (orderId: string) => `/api/v1/products/manual/orders/${encodeURIComponent(orderId)}`,
 
-  arbitrageOpportunities: "/api/v1/products/arbitrage/opportunities",
-  arbitragePreviews: "/api/v1/products/arbitrage/execution-previews",
-  arbitrageCommands: "/api/v1/products/arbitrage/commands",
-  arbitragePositions: "/api/v1/products/arbitrage/positions",
 
   accounts: "/api/v1/accounts",
   account: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}`,
-  accountDisable: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/disable`,
 } as const;
 
 /* --- Auth ---------------------------------------------------------------- */
@@ -281,14 +236,13 @@ export interface VenueConnectivity {
 /* --- Catalog and market data --------------------------------------------- */
 
 export const catalog = {
-  async venues(signal?: AbortSignal): Promise<Projected<Venue>> {
-    const body = await apiRequest<ProjectionEnvelope<Venue>>(paths.catalogVenues, { signal });
-    return { items: body.data, projection: body.projection };
-  },
-
   async instruments(signal?: AbortSignal): Promise<Projected<Instrument>> {
-    const body = await apiRequest<ProjectionEnvelope<Instrument>>(paths.catalogInstruments, { signal });
-    return { items: body.data, projection: body.projection };
+    const body = await apiRequest<DataEnvelope<{ revision: string; observedAt: string; instruments: Instrument[] }>>(paths.catalogInstruments, { signal });
+    const snapshot = body.data;
+    if (!snapshot || !Array.isArray(snapshot.instruments) || !snapshot.revision || !Number.isFinite(Date.parse(snapshot.observedAt))) {
+      throw new Error("Invalid Gateway instrument catalog");
+    }
+    return { items: snapshot.instruments, projection: { revision: snapshot.revision, observedAt: snapshot.observedAt } };
   },
 };
 
@@ -352,7 +306,7 @@ export const funding = {
    * instrument id rather than the whole matrix. The server resolves its venue
    * and native address because no venue offers a bulk history call.
    *
-   * `window` is one of two literals. The server will not take a range: every
+   * `window` is one of two literals. The UI offers two windows; the API receives their exact date range. Each
    * venue's endpoint is paginated, and these are the two spans that come back
    * whole in a single page from all of them.
    *
@@ -361,8 +315,10 @@ export const funding = {
    * the caller is expected to say so rather than retry.
    */
   async history(query: FundingHistoryQuery, signal?: AbortSignal): Promise<Metered<FundingHistorySeries>> {
+    const until = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const since = new Date(until.getTime() - (query.window === "7d" ? 7 : 30) * 86_400_000);
     const body = await apiRequest<RateLimitedEnvelope<FundingHistorySeries>>(paths.fundingHistory, {
-      query: { ...query },
+      query: { instrumentId: query.instrumentId, since: since.toISOString(), until: until.toISOString() },
       signal,
     });
     return { value: body.data, rateLimit: body.rateLimit };
@@ -396,12 +352,6 @@ export const trading = {
 
   command: async (commandId: string, signal?: AbortSignal): Promise<CommandProjection> =>
     (await apiRequest<DataEnvelope<CommandProjection>>(paths.command(commandId), { signal })).data,
-
-  reservations: async (signal?: AbortSignal): Promise<Reservation[]> =>
-    items(await apiRequest<ItemsEnvelope<Reservation>>(paths.reservations, { signal })),
-
-  releaseReservation: async (reservationId: string, signal?: AbortSignal): Promise<Reservation> =>
-    (await apiRequest<DataEnvelope<Reservation>>(paths.reservation(reservationId), { method: "DELETE", signal })).data,
 
   /** Trading's own view of an account's runtime — NOT the gateway's account record. */
   accountRuntimes: async (accountId: string, signal?: AbortSignal): Promise<AccountRuntime[]> =>
@@ -483,9 +433,8 @@ export interface CommandQuery {
 /**
  * The order path, and the only one the browser may use to trade.
  *
- * `POST /api/v1/commands` exists and looks general, but trading rejects any
- * body with `productId: "manual"` on it — manual orders must carry a sealed
- * preview, and that route has no way to check one. Do not route orders there.
+ * The generic command collection is read-only. Manual orders pass through
+ * the account, catalog, route and runtime checks in the manual application.
  */
 export const manual = {
   /** `{meta, data: {revision, items}}` — this route's shape and no other's. */
@@ -495,20 +444,8 @@ export const manual = {
   },
 
   /**
-   * Step one of two: price and validate the intent, and get back a sealed
-   * `previewId`.
-   *
-   * 201, and the seal expires 30 seconds later — `MANUAL_PREVIEW_TTL_MS`. The
-   * deadline is inside the token and is not returned, so the countdown starts
-   * when this resolves.
-   */
-  preview: async (request: ManualPreviewRequest, signal?: AbortSignal): Promise<ManualPreview> =>
-    (await apiRequest<DataEnvelope<ManualPreview>>(paths.manualPreviews, { method: "POST", body: request, signal })).data,
-
-  /**
-   * Step two: act on the sealed preview.
-   *
-   * One route, three actions, told apart by which identifiers are set — see
+   * Submit a manual order or act on an existing command. One route, two
+   * actions, told apart by which fields are set, see
    * `ManualCommandRequest`. The returned status varies (202 for a new place,
    * 200 for a replay) but the body is always the full `Command`, so the caller
    * reads `state` rather than the status code.
@@ -534,125 +471,6 @@ export const manual = {
     (await apiRequest<DataEnvelope<Command>>(paths.manualOrder(orderId), { signal })).data,
 };
 
-/* --- The arbitrage product ----------------------------------------------- */
-
-/** `action: "open"` — spend a sealed preview and place both legs. */
-export interface ArbitrageOpenRequest {
-  previewId: string;
-  lineageId: string;
-  idempotencyKey: string;
-}
-
-/** `action: "close"` — reduce-only market orders against whatever the pair holds. */
-export interface ArbitrageCloseRequest {
-  lineageId: string;
-  idempotencyKey: string;
-}
-
-/** `action: "cancel"` — dispose of one leg, which is what a half-open hedge needs. */
-export interface ArbitrageCancelRequest {
-  lineageId: string;
-  orderId: string;
-  idempotencyKey: string;
-}
-
-/**
- * The cross-venue hedge: one underlying, two venues, one long and one short.
- *
- * `POST .../commands` is one route with three actions, and the server validates
- * which identifiers may be set for each — `open` needs a `previewId` and no
- * `orderId`, `close` needs neither, `cancel` needs an `orderId` and no
- * `previewId`. Sending the wrong combination is a 400, not a lenient
- * best-effort, so the three are separate functions here and the exclusive
- * fields are not reachable from the wrong one.
- *
- * They also differ in what comes back: `open` and `close` answer with the pair's
- * `ArbitrageExecution`, `cancel` answers with the single leg's `Command`. That
- * is why `cancelLeg` is not folded into `execute` despite sharing a URL.
- */
-export const arbitrage = {
-  /**
-   * The ranked cross-venue spreads, largest first.
-   *
-   * Reachability is opt-in: pass the account ids the operator holds and each
-   * leg comes back carrying the account that can trade it and `executable`
-   * true. Pass none and the scan is still complete — every venue pair is
-   * ranked, just not executable — which is what makes this readable before any
-   * account exists. Naming an account the session does not own does not reveal
-   * anything: the lookup is principal-scoped, so it simply leaves that venue
-   * unreachable.
-   *
-   * The server caps the list at 32 ids and rejects a longer one.
-   */
-  async opportunities(
-    accountIds: string[] = [],
-    signal?: AbortSignal,
-  ): Promise<{ items: ArbitrageOpportunity[]; observedAt: string }> {
-    const body = await apiRequest<ObservedItemsEnvelope<ArbitrageOpportunity>>(paths.arbitrageOpportunities, {
-      query: { accountId: accountIds },
-      signal,
-    });
-    return body.data;
-  },
-
-  /**
-   * Step one: price both legs against the funding board and seal the result.
-   *
-   * 201, and the seal expires 30 seconds later — `ARBITRAGE_PREVIEW_TTL_MS`.
-   * A preview with `blockers` is still returned rather than refused, because
-   * the reasons are what the operator needs to see; it just cannot be spent.
-   */
-  preview: async (request: ArbitragePreviewRequest, signal?: AbortSignal): Promise<ArbitragePreview> =>
-    (await apiRequest<DataEnvelope<ArbitragePreview>>(paths.arbitragePreviews, { method: "POST", body: request, signal }))
-      .data,
-
-  /**
-   * Step two: place both legs.
-   *
-   * 202 when the legs were submitted now, 200 when this is a replay of a
-   * submission that already happened — the body is identical either way, so
-   * read `state` rather than the status. A `partially_open` result is a
-   * success at the HTTP level and a problem at the trading level: one leg
-   * stood up and the other did not, and nothing will unwind it automatically.
-   */
-  open: async (request: ArbitrageOpenRequest, signal?: AbortSignal): Promise<ArbitrageExecution> =>
-    submitArbitrageCommand<ArbitrageExecution>({ ...request, action: "open" }, signal),
-
-  /** Closes both legs of a pair with reduce-only market orders. */
-  close: async (request: ArbitrageCloseRequest, signal?: AbortSignal): Promise<ArbitrageExecution> =>
-    submitArbitrageCommand<ArbitrageExecution>({ ...request, action: "close" }, signal),
-
-  /**
-   * Cancels one leg by command id — the way out of `partially_open`.
-   *
-   * Answers with that leg's `Command`, not the pair, because the other leg is
-   * untouched and reporting the pair would suggest otherwise.
-   */
-  cancelLeg: async (request: ArbitrageCancelRequest, signal?: AbortSignal): Promise<Command> =>
-    submitArbitrageCommand<Command>({ ...request, action: "cancel" }, signal),
-
-  /** One row per lineage: both legs, what they still hold, and accrued funding. */
-  positions: async (signal?: AbortSignal): Promise<ArbitragePair[]> =>
-    items(await apiRequest<ItemsEnvelope<ArbitragePair>>(paths.arbitragePositions, { signal })),
-};
-
-/**
- * The one request the three command actions share.
- *
- * `idempotencyKey` goes in the body and the header both; the server compares
- * them and rejects a mismatch, so they are set from one value here — the same
- * rule as the manual product.
- */
-async function submitArbitrageCommand<T>(request: ArbitrageCommandRequest, signal?: AbortSignal): Promise<T> {
-  const body = await apiRequest<DataEnvelope<T>>(paths.arbitrageCommands, {
-    method: "POST",
-    body: request,
-    idempotencyKey: request.idempotencyKey,
-    signal,
-  });
-  return body.data;
-}
-
 /* --- Accounts (the gateway plane) ---------------------------------------- */
 
 /**
@@ -665,27 +483,12 @@ async function submitArbitrageCommand<T>(request: ArbitrageCommandRequest, signa
 export interface CreateAccountRequest {
   venue: string;
   displayName: string;
-  productPolicy: string[];
-  routes: AccountRoute[];
   credentialBundle: CredentialBundle;
 }
 
-/**
- * The account lifecycle, forwarded to the gateway's INTERNAL plane because it
- * accepts credential material.
- *
- * Nothing here ever returns a secret: the gateway's `PublicAccount` has no
- * field for one. A credential is written once and cannot be read or replaced;
- * replacement is modeled as removing the account and adding a new one.
- *
- * Three protocol facts every mutation below is written around:
- *
- * Credentials are immutable. Create writes them once; changing them means
- * deleting the account and adding it again. Create and remove carry an
- * `Idempotency-Key`; disable is a bodyless state change. Accounts expose no
- * revisions and clients never participate in runtime fencing.
- *
- * Note the envelope: `{data: ...}` with no `meta`.
+/** Account credentials are accepted only on creation and never returned.
+ * Add validates synchronously and uses an idempotency key; DELETE is bodyless.
+ * Replacing credentials means deleting the local account and adding a new one.
  */
 export const accounts = {
   list: async (signal?: AbortSignal): Promise<Account[]> =>
@@ -694,7 +497,7 @@ export const accounts = {
   get: async (accountId: string, signal?: AbortSignal): Promise<Account> =>
     (await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.account(accountId), { signal })).data.account,
 
-  /** 201. The only mutation with no revision to match — the account does not exist yet. */
+  /** 201. A saved account whose balance query succeeded. */
   create: async (request: CreateAccountRequest, idempotencyKey: string, signal?: AbortSignal): Promise<Account> =>
     (
       await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accounts, {
@@ -705,30 +508,8 @@ export const accounts = {
       })
     ).data.account,
 
-  /**
-   * 202, not 204: removal is accepted rather than done. The credential is only
-   * deleted once the runtime confirms the account is tombstoned, so the account
-   * comes back in state `removing` and the caller keeps watching it.
-   */
-  remove: async (
-    accountId: string,
-    idempotencyKey: string,
-    signal?: AbortSignal,
-  ): Promise<Account> =>
-    (
-      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.account(accountId), {
-        method: "DELETE",
-        idempotencyKey,
-        signal,
-      })
-    ).data.account,
-
-  disable: async (accountId: string, signal?: AbortSignal): Promise<Account> =>
-    (
-      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountDisable(accountId), {
-        method: "POST",
-        signal,
-      })
-    ).data.account,
-
+  /** Delete local credentials and disconnect; exchange orders and positions remain. */
+  remove: async (accountId: string, signal?: AbortSignal): Promise<void> => {
+    await apiRequest<void>(paths.account(accountId), { method: "DELETE", signal });
+  },
 };

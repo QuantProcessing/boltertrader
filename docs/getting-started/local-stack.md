@@ -41,7 +41,7 @@ Eight containers, of which three exit as soon as they finish:
 | `trading-migrate` | Applies the trading service's migrations, then exits |
 | `authedge-migrate` | Applies the auth edge's migrations, then exits |
 | `gateway` | The shared capability plane |
-| `trading` | Manual trading and funding arbitrage |
+| `trading` | Manual trading, recovery and accounting |
 | `authedge` | Browser sessions and forwarding |
 | `web` | Caddy, serving the frontend and reverse-proxying `/api/*` |
 
@@ -75,7 +75,7 @@ make doctor
 
 It reports one line per check and never stops early, so a run that finds five
 problems says so once. Checks run in dependency order: `docker`, `.env.stack`,
-`credentials`, `credential store`, `postgres`, `postgres roles`, `gateway`,
+`credentials`, `postgres`, `postgres roles`, `gateway`,
 `trading`, `auth edge`, `web`. Each failing line is followed by the command that
 fixes it.
 
@@ -115,20 +115,18 @@ files in `.secrets/` are not touched, so the bootstrap password stays valid.
 
 ## Where the state lives
 
-- **PostgreSQL** holds the gateway's accounts, catalog, and durable orders; the
+- **PostgreSQL** holds encrypted venue credentials, gateway accounts, catalog, and durable orders; the
   trading service's command ledger and projections; and the auth edge's
   sessions. Three databases, one owning role each, and no service reads
   another's tables.
 - **`.secrets/stack/`** holds the service tokens, the credential-store master
   key, the gateway's DSN, and the bootstrap password and its hash. Mode `0700`
   on the directory, `0600` on each file.
-- **`.secrets/store/`** is the gateway's encrypted venue-credential store. It is
-  a bind mount, and it is the only path in the stack a service writes to.
 - **`.env.stack`** holds ports, uids, and the paths to those secret files.
   Nothing else. It is not `.env`, and the stack never reads `.env` — see
   [Prerequisites](prerequisites.md).
 
-All four are ignored by Git.
+All three are ignored by Git.
 
 ## Troubleshooting
 

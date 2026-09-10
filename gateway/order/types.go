@@ -88,8 +88,8 @@ type Result struct {
 	// details. They are present only when the venue gave a definitive refusal.
 	VenueCode    string              `json:"venue_code,omitempty"`
 	VenueMessage string              `json:"venue_message,omitempty"`
-	AccountID    domain.AccountID    `json:"-"`
-	InstrumentID domain.InstrumentID `json:"-"`
+	AccountID    domain.AccountID    `json:"account_id"`
+	InstrumentID domain.InstrumentID `json:"instrument_id"`
 	VenueOrderID string              `json:"-"`
 	Replayed     bool                `json:"-"`
 }

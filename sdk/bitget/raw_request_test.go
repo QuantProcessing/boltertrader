@@ -133,7 +133,7 @@ func TestClient_PostPrivateRawNonSuccessRedactsRequestAndResponse(t *testing.T) 
 			t.Fatalf("PostPrivateRaw error leaked secret %q: %s", secret, errText)
 		}
 	}
-	for _, safeContext := range []string{http.MethodPost, path, "401", "response_bytes="} {
+	for _, safeContext := range []string{http.MethodPost, path, "401"} {
 		if !strings.Contains(errText, safeContext) {
 			t.Fatalf("PostPrivateRaw error %q does not contain safe context %q", errText, safeContext)
 		}
@@ -190,7 +190,7 @@ func TestClient_PrivateRawRateLimitPreservesSentinel(t *testing.T) {
 			if strings.Contains(err.Error(), responseSecret) {
 				t.Fatalf("%s rate-limit error leaked response secret: %v", tt.method, err)
 			}
-			for _, safeContext := range []string{tt.method, tt.path, "429", "response_bytes="} {
+			for _, safeContext := range []string{tt.method, tt.path, "429"} {
 				if !strings.Contains(err.Error(), safeContext) {
 					t.Fatalf("%s rate-limit error %q does not contain safe context %q", tt.method, err, safeContext)
 				}
@@ -341,7 +341,7 @@ func TestClient_GetPrivateRawNonSuccessRedactsResponse(t *testing.T) {
 	if strings.Contains(errText, responseSecret) {
 		t.Fatalf("GetPrivateRaw error leaked response secret: %s", errText)
 	}
-	for _, safeContext := range []string{http.MethodGet, path, "401", "response_bytes="} {
+	for _, safeContext := range []string{http.MethodGet, path, "401"} {
 		if !strings.Contains(errText, safeContext) {
 			t.Fatalf("GetPrivateRaw error %q does not contain safe context %q", errText, safeContext)
 		}

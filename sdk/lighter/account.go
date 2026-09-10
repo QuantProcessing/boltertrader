@@ -11,12 +11,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	p2 "github.com/elliottech/poseidon_crypto/hash/poseidon2_goldilocks"
 	ethCommon "github.com/ethereum/go-ethereum/common"
 )
 
 // GetAccountActiveOrders fetches active orders for the account
-func (c *Client) GetAccountActiveOrders(ctx context.Context, marketId int) (*AccountActiveOrdersResponse, error) {
+func (c *Client) GetAccountActiveOrders(ctx context.Context, marketId int) (_ *AccountActiveOrdersResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/accountActiveOrders?account_index=%d&market_id=%d", c.AccountIndex, marketId)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -30,11 +31,18 @@ func (c *Client) GetAccountActiveOrders(ctx context.Context, marketId int) (*Acc
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -52,7 +60,7 @@ func (c *Client) GetAccountActiveOrders(ctx context.Context, marketId int) (*Acc
 }
 
 // GetNextNonce fetches the next nonce for the account, using a local cache to handle high concurrency
-func (c *Client) GetNextNonce(ctx context.Context) (int64, error) {
+func (c *Client) GetNextNonce(ctx context.Context) (_ int64, returnErr error) {
 	c.nonceMu.Lock()
 	defer c.nonceMu.Unlock()
 
@@ -72,11 +80,18 @@ func (c *Client) GetNextNonce(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return 0, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -105,7 +120,7 @@ func (c *Client) GetNextNonce(ctx context.Context) (int64, error) {
 }
 
 // GetAccount fetches account information
-func (c *Client) GetAccount(ctx context.Context) (*AccountResponse, error) {
+func (c *Client) GetAccount(ctx context.Context) (_ *AccountResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/account?by=index&value=%d", c.AccountIndex)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -119,11 +134,18 @@ func (c *Client) GetAccount(ctx context.Context) (*AccountResponse, error) {
 	// }
 	// req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -141,7 +163,7 @@ func (c *Client) GetAccount(ctx context.Context) (*AccountResponse, error) {
 }
 
 // GetInactiveOrders fetches inactive orders
-func (c *Client) GetInactiveOrders(ctx context.Context, marketId *int, limit int64) (*AccountInactiveOrdersResponse, error) {
+func (c *Client) GetInactiveOrders(ctx context.Context, marketId *int, limit int64) (_ *AccountInactiveOrdersResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/accountInactiveOrders?account_index=%d", c.AccountIndex)
 	if marketId != nil {
 		path = fmt.Sprintf("%s&market_id=%d", path, *marketId)
@@ -162,11 +184,18 @@ func (c *Client) GetInactiveOrders(ctx context.Context, marketId *int, limit int
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -256,7 +285,7 @@ func (c *Client) GetTrades(ctx context.Context, req TradesRequest) (*TradesRespo
 }
 
 // GetAccountTxs fetches account transactions
-func (c *Client) GetAccountTxs(ctx context.Context, limit int64) (*AccountTxsResponse, error) {
+func (c *Client) GetAccountTxs(ctx context.Context, limit int64) (_ *AccountTxsResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/accountTxs?by=account_index&value=%d&limit=%d", c.AccountIndex, limit)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -270,11 +299,18 @@ func (c *Client) GetAccountTxs(ctx context.Context, limit int64) (*AccountTxsRes
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -292,7 +328,7 @@ func (c *Client) GetAccountTxs(ctx context.Context, limit int64) (*AccountTxsRes
 }
 
 // GetPnL fetches account PnL
-func (c *Client) GetPnL(ctx context.Context, startTimestamp, endTimestamp int64) (*PnlResponse, error) {
+func (c *Client) GetPnL(ctx context.Context, startTimestamp, endTimestamp int64) (_ *PnlResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/pnl?by=index&value=%d&resolution=1d&start_timestamp=%d&end_timestamp=%d", c.AccountIndex, startTimestamp, endTimestamp)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -306,11 +342,18 @@ func (c *Client) GetPnL(ctx context.Context, startTimestamp, endTimestamp int64)
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -328,7 +371,7 @@ func (c *Client) GetPnL(ctx context.Context, startTimestamp, endTimestamp int64)
 }
 
 // GetAccountLimits fetches account limits
-func (c *Client) GetAccountLimits(ctx context.Context) (*AccountLimitsResponse, error) {
+func (c *Client) GetAccountLimits(ctx context.Context) (_ *AccountLimitsResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/accountLimits?account_index=%d", c.AccountIndex)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -342,11 +385,18 @@ func (c *Client) GetAccountLimits(ctx context.Context) (*AccountLimitsResponse, 
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -364,7 +414,7 @@ func (c *Client) GetAccountLimits(ctx context.Context) (*AccountLimitsResponse, 
 }
 
 // GetAccountMetadata fetches account metadata
-func (c *Client) GetAccountMetadata(ctx context.Context) (*AccountMetadataResponse, error) {
+func (c *Client) GetAccountMetadata(ctx context.Context) (_ *AccountMetadataResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/accountMetadata?by=index&value=%d", c.AccountIndex)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -378,11 +428,18 @@ func (c *Client) GetAccountMetadata(ctx context.Context) (*AccountMetadataRespon
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -439,7 +496,7 @@ func (c *Client) GetPositionFunding(ctx context.Context, marketId *int, limit in
 	return c.GetPositionFundingPage(ctx, request)
 }
 
-func (c *Client) GetPositionFundingPage(ctx context.Context, request PositionFundingRequest) (*PositionFundingResponse, error) {
+func (c *Client) GetPositionFundingPage(ctx context.Context, request PositionFundingRequest) (_ *PositionFundingResponse, returnErr error) {
 	if request.Limit < 1 || request.Limit > 100 {
 		return nil, fmt.Errorf("position funding limit must be between 1 and 100")
 	}
@@ -490,11 +547,18 @@ func (c *Client) GetPositionFundingPage(ctx context.Context, request PositionFun
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -512,7 +576,7 @@ func (c *Client) GetPositionFundingPage(ctx context.Context, request PositionFun
 }
 
 // GetApiKeys fetches API keys
-func (c *Client) GetApiKeys(ctx context.Context) (*ApiKeysResponse, error) {
+func (c *Client) GetApiKeys(ctx context.Context) (_ *ApiKeysResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/apikeys?account_index=%d", c.AccountIndex)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -526,11 +590,18 @@ func (c *Client) GetApiKeys(ctx context.Context) (*ApiKeysResponse, error) {
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -548,7 +619,7 @@ func (c *Client) GetApiKeys(ctx context.Context) (*ApiKeysResponse, error) {
 }
 
 // GetReferralPoints fetches referral points
-func (c *Client) GetReferralPoints(ctx context.Context) (*ReferralPointsResponse, error) {
+func (c *Client) GetReferralPoints(ctx context.Context) (_ *ReferralPointsResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/referral_points?account_index=%d", c.AccountIndex)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -562,11 +633,18 @@ func (c *Client) GetReferralPoints(ctx context.Context) (*ReferralPointsResponse
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -584,18 +662,25 @@ func (c *Client) GetReferralPoints(ctx context.Context) (*ReferralPointsResponse
 }
 
 // GetAccountsByL1Address fetches accounts by L1 address
-func (c *Client) GetAccountsByL1Address(ctx context.Context, l1Address string) (*AccountsByL1AddressResponse, error) {
+func (c *Client) GetAccountsByL1Address(ctx context.Context, l1Address string) (_ *AccountsByL1AddressResponse, returnErr error) {
 	path := fmt.Sprintf("/api/v1/accountsByL1Address?l1_address=%s", l1Address)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "lighter")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := venuehttp.CheckHTTPStatus(resp); err != nil {
+		return nil, err
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

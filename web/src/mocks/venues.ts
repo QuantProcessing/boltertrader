@@ -6,7 +6,6 @@ import type {
   FundingBoardVenue,
   FundingHistoryPoint,
   FundingHistorySeries,
-  FundingWindow,
   Instrument,
   MarketFact,
 } from "../api/types";
@@ -684,11 +683,6 @@ export async function fetchFundingBoard(): Promise<FundingBoardSnapshot> {
 
 /* --- Funding: the history ------------------------------------------------- */
 
-const WINDOW_MS: Record<FundingWindow, number> = {
-  "7d": 7 * 86_400_000,
-  "30d": 30 * 86_400_000,
-};
-
 /** What each venue will return in one call. Thirty days hourly is 721 rows. */
 const HISTORY_LIMIT: Record<string, number> = {
   binance: 1000,
@@ -835,48 +829,41 @@ function settle(points: FundingHistoryPoint[], since: number, until: number): Fu
  */
 export async function fetchFundingHistory(
   instrument: Instrument,
-  window: FundingWindow,
+  since: Date,
+  until: Date,
 ): Promise<FundingHistorySeries | null> {
   const { venue, symbol } = instrument;
-  return await cached(`funding-history:${venue}:${symbol}:${window}`, async () => {
-    // The server truncates `until` to the second and the response must carry the
-    // window back exactly, so the bound is computed once and reused.
-    const until = new Date(Math.floor(Date.now() / 1000) * 1000);
-    const since = new Date(until.getTime() - WINDOW_MS[window]);
-
-    const points = await (async (): Promise<FundingHistoryPoint[]> => {
-      switch (venue) {
-        case "binance":
-          return await binanceHistory(symbol.replace("-", ""), since.getTime(), until.getTime());
-        case "bybit":
-          return await bybitHistory(symbol.replace("-", ""), since.getTime(), until.getTime());
-        case "okx":
-          // The board files okx rows under their raw instId, so the symbol
-          // arriving here already carries `-SWAP` and needs no suffix added.
-          return await okxHistory(symbol, since.getTime(), until.getTime());
-        default: {
-          // lighter is the one venue addressed by a numeric market id; a symbol
-          // sent where an integer is expected comes back as a parameter error,
-          // which reads as "the venue is down" rather than "unknown instrument".
-          const markets = await lighterMarketId(symbol.split("-")[0]!);
-          return await lighterHistory(markets, since.getTime(), until.getTime());
-        }
+  const points = await (async (): Promise<FundingHistoryPoint[]> => {
+    switch (venue) {
+      case "binance":
+        return await binanceHistory(symbol.replace("-", ""), since.getTime(), until.getTime());
+      case "bybit":
+        return await bybitHistory(symbol.replace("-", ""), since.getTime(), until.getTime());
+      case "okx":
+        // The board files okx rows under their raw instId, so the symbol
+        // arriving here already carries `-SWAP` and needs no suffix added.
+        return await okxHistory(symbol, since.getTime(), until.getTime());
+      default: {
+        // lighter is the one venue addressed by a numeric market id; a symbol
+        // sent where an integer is expected comes back as a parameter error,
+        // which reads as "the venue is down" rather than "unknown instrument".
+        const markets = await lighterMarketId(symbol.split("-")[0]!);
+        return await lighterHistory(markets, since.getTime(), until.getTime());
       }
-    })();
-
-    if (points.length === 0) {
-      return null;
     }
-    return {
-      instrumentId: instrument.instrumentId,
-      venue,
-      environment: "live",
-      since: since.toISOString(),
-      until: until.toISOString(),
-      observedAt: new Date().toISOString(),
-      points: settle(points, since.getTime(), until.getTime()),
-    };
-  });
+  })();
+
+  if (points.length === 0) {
+    return null;
+  }
+  return {
+    instrumentId: instrument.instrumentId,
+    venue,
+    since: since.toISOString(),
+    until: until.toISOString(),
+    observedAt: new Date().toISOString(),
+    points: settle(points, since.getTime(), until.getTime()),
+  };
 }
 
 /* --- The reads the handlers make ------------------------------------------ */

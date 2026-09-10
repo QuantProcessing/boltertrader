@@ -51,25 +51,25 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 	id := fmt.Sprintf("%s:%s:account:%s:%d", spot.meta.venue, spot.meta.product, request.Route.RouteID, websocketSubscriptionSequence.Add(1))
 	subscription = newTypedSubscription[exchange.AccountEvent](id, spot.meta, buffer, closeChildren)
 	emitEvent := func(event exchange.AccountEvent) {
-		if event.Phase == "" {
-			event.Phase = exchange.AccountEventPhaseLive
-		}
 		subscription.emit(event)
 	}
 	emitStatus := func(status exchange.StreamStatusEvent) {
 		if status.Time.IsZero() {
 			status.Time = time.Now().UTC()
 		}
-		subscription.emitStatus(backendStatus{State: status.State, Phase: status.Phase, Generation: status.Generation, Reason: status.Reason, Time: status.Time})
-		event := exchange.AccountEvent{Kind: exchange.AccountEventStreamStatus, Route: request.Route, ObservedAt: status.Time, Status: &status, Phase: exchange.AccountEventPhaseLive}
-		emitEvent(event)
-		if status.State == exchange.SubscriptionGap {
-			emitEvent(exchange.AccountEvent{Kind: exchange.AccountEventResyncRequired, Route: request.Route, ObservedAt: status.Time, Phase: exchange.AccountEventPhaseLive, Reason: firstNonEmpty(status.Reason, "private-stream-gap")})
+		state := exchange.SubscriptionConnecting
+		if status.State == exchange.SubscriptionActive {
+			state = exchange.SubscriptionActive
+		} else if status.State == exchange.SubscriptionClosed {
+			state = exchange.SubscriptionClosed
 		}
+		// Account streams expose connection liveness only. Sequence continuity,
+		// generations and resync phases belong to incremental public books; the
+		// fixed REST reconciliation pass repairs any private-event blind period.
+		subscription.emitStatus(backendStatus{State: state, Reason: status.Reason, Time: status.Time})
 	}
 	emitError := func(err error) {
 		subscription.emitError(err)
-		emitEvent(exchange.AccountEvent{Kind: exchange.AccountEventResyncRequired, Route: request.Route, ObservedAt: time.Now().UTC(), Phase: exchange.AccountEventPhaseLive, Reason: "private-stream-error"})
 	}
 
 	stop, err := backend.StartAccountEvents(watchCtx, index, accountEventCallbacks{
@@ -83,7 +83,6 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 				return
 			}
 			for _, projected := range projectedEvents {
-				projected.SourceSequence = event.SourceSequence
 				emitEvent(projected)
 			}
 		},
@@ -103,13 +102,6 @@ func watchAccountEvents(ctx context.Context, spot *spotWebSocket, perp *perpWebS
 	}
 	emitStatus(exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Time: time.Now().UTC()})
 	return subscription, nil
-}
-
-func accountPhase(kind exchange.EventKind) exchange.AccountEventPhase {
-	if kind == exchange.EventSnapshot {
-		return exchange.AccountEventPhaseSnapshot
-	}
-	return exchange.AccountEventPhaseLive
 }
 
 func observedAccountTime(value time.Time) time.Time {

@@ -55,27 +55,20 @@ func TestHubIsLiveOnly(t *testing.T) {
 	assertNoEvent(t, subscription)
 }
 
-func TestHubPrincipalSubscriptionSurvivesAccountResync(t *testing.T) {
-	observer := &recordingResyncObserver{}
-	hub := newTestHubWithObserver(t, 4, observer)
-	subscription, err := hub.SubscribePrincipal(t.Context(), "principal-a", 4)
+func TestHubPrincipalSubscriptionStartsWithAtomicAccountConnectionSnapshot(t *testing.T) {
+	hub := newTestHub(t, 4)
+	publishTest(t, hub, "principal-a", "acct-a", KindAccountConnection, 1, `{"account_id":"acct-a","route_id":"perp-usdt","state":"disconnected"}`)
+	subscription, connections, err := hub.SubscribePrincipalWithConnections(t.Context(), "principal-a", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(subscription.Close)
-
-	if _, err := hub.PublishResync("principal-a", "acct-a", "venue_stream_gap"); err != nil {
-		t.Fatal(err)
-	}
-	if got := receiveEvent(t, subscription); got.Kind != KindResyncRequired || got.AccountID != "acct-a" {
-		t.Fatalf("resync event=%+v", got)
+	if len(connections) != 1 || connections[0].Kind != KindAccountConnection || connections[0].AccountID != "acct-a" {
+		t.Fatalf("connection snapshot=%+v", connections)
 	}
 	publishTest(t, hub, "principal-a", "acct-b", KindPosition, 1, `{"symbol":"BTC-USDT"}`)
 	if got := receiveEvent(t, subscription); got.Kind != KindPosition || got.AccountID != "acct-b" {
-		t.Fatalf("event after resync=%+v", got)
-	}
-	if len(observer.reasons) != 1 || observer.reasons[0] != "venue_stream_gap" {
-		t.Fatalf("observer reasons=%v", observer.reasons)
+		t.Fatalf("event after connection snapshot=%+v", got)
 	}
 }
 
@@ -128,24 +121,14 @@ func TestHubPublishesCommittedOrderWithDurableIdentityAndVersion(t *testing.T) {
 	}
 }
 
-type recordingResyncObserver struct{ reasons []string }
-
-func (observer *recordingResyncObserver) ObserveResync(reason string) {
-	observer.reasons = append(observer.reasons, reason)
-}
-
 func newTestHub(t *testing.T, sizes ...int) *Hub {
 	subscriberBuffer := 4
 	if len(sizes) > 0 {
 		subscriberBuffer = sizes[len(sizes)-1]
 	}
-	return newTestHubWithObserver(t, subscriberBuffer, nil)
-}
-
-func newTestHubWithObserver(t *testing.T, subscriberBuffer int, observer ResyncObserver) *Hub {
 	t.Helper()
 	hub, err := NewHub(Options{
-		SubscriberBuffer: subscriberBuffer, Observer: observer,
+		SubscriberBuffer: subscriberBuffer,
 		Identity: domain.NewIdentityGenerator(domain.IdentityGeneratorOptions{
 			Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }, Random: strings.NewReader(strings.Repeat("a", 4096)),
 		}),

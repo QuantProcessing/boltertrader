@@ -22,8 +22,9 @@ BolterTrader exposes two peer paths over the venues:
 
 Gateway is built above `exchange` and does not replace it. Product services sit
 above Gateway rather than beside it: the trading service holds its own command
-ledger and calls these resources, and it is the only kind of caller Gateway is
-designed for. See [the trading service](trading-service.md).
+ledger and calls these resources. Personal scripts, monitoring and alerting apps
+can use the [independent Gateway Go client](gateway-client.md). Migration of the
+remaining internal market paths is ongoing. See [the trading service](trading-service.md).
 
 ## Service shape
 
@@ -46,17 +47,31 @@ The process exposes:
 - authenticated Prometheus metrics at `/metrics`;
 - health at `/v1/health/live` and readiness at `/v1/health/ready`.
 
-TLS should terminate at the deployment ingress. The bearer token and every
-venue credential are resolved from explicit secret references; secret values
-must not appear in the YAML file.
+TLS should terminate at the deployment ingress. Service tokens are resolved from explicit secret references. Exchange
+credentials are entered after login and encrypted in PostgreSQL; neither belongs
+in the YAML file.
 
 ## Configuration
 
 The YAML file configures the process only: listeners, the bearer token
 reference, and the PostgreSQL DSN reference. Accounts are durable state rather
-than file state. They are declared through the authenticated internal listener
-at `PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}` and
-stored in PostgreSQL, so a restart reloads them without editing any file.
+than file state. Add them after login through Settings. The authenticated internal listener
+accepts `POST /internal/v1/accounts` with venue, displayName and credentialBundle.
+One successful balance query validates the connection; it then saves encrypted
+credentials and returns 201. GET lists or views saved accounts; DELETE removes
+only local credentials and connections, leaving venue orders and positions intact.
+There are no disable, rotation, permission-update or desired-state APIs.
+
+The exchange decides API permissions and its safe error message is returned
+when an operation is rejected. Restart restores saved connections; current
+positions come from the exchange, without importing historical orders.
+Existing installations must add their credentials again: legacy account records
+are not imported. Migration 012 creates the new registration table.
+
+Set `BT_SECRET_MASTER_KEY_FILE` to an absolute path containing the existing
+32-byte master key encoded as 64 hexadecimal characters (mode 0600). The file must remain private and persistent. This key encrypts
+account records; it is not a second user authorization step. See
+[simple accounts](../design/simple-accounts-2026-09-10.md) for the exact boundary.
 
 ```yaml
 server:
@@ -93,7 +108,9 @@ curl -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
   "http://127.0.0.1:8080/v1/instruments?account_id=binance-spot"
 ```
 
-Place an order with an account, gateway instrument ID, and idempotency key:
+Place an order with an account, route, gateway instrument ID, idempotency key
+and the current account `runtime_id`. Replace the runtime placeholder below
+with the value returned by `/v1/accounts/{account_id}`:
 
 ```sh
 curl -X POST \
@@ -103,6 +120,8 @@ curl -X POST \
   http://127.0.0.1:8080/v1/orders \
   -d '{
     "account_id":"binance-spot",
+    "route_id":"spot",
+    "runtime_id":"REPLACE_WITH_CURRENT_ACCOUNT_RUNTIME_ID",
     "instrument_id":"binance:live:spot:BTC-USDT",
     "idempotency_key":"manual-10001",
     "side":"buy",
@@ -117,6 +136,15 @@ The gateway commits command intent before the first venue write. Reusing the
 same idempotency key with the same canonical payload replays the same command;
 reusing it with a different payload returns a conflict. A post-handoff timeout
 becomes `uncertain`. The gateway never blindly resends it.
+
+`runtime_id` is the placement ownership fence; the old three revision counters
+are no longer accepted. Cancellation uses `DELETE /v1/orders/{gateway_order_id}`
+without a body, routing from the stored order. Amendment still returns `501`.
+Once acceptance has been confirmed, repeated lookup misses leave the order
+awaiting reconciliation; absence alone cannot turn that order into a rejection.
+
+The venue-native `fill.fill_id` is scoped by `account_id` and `instrument_id`.
+Consumers must include all three fields when deduplicating fills.
 
 Queries include `/v1/orders`, `/v1/open-orders`, `/v1/fills`, `/v1/balances`,
 `/v1/positions`, `/v1/funding-rates`, `/v1/funding-rates/history`,
@@ -139,11 +167,24 @@ driver users.
 
 ## Public market data
 
-Public market reads still require the Gateway bearer token plus an
-`account_id` and canonical `instrument_id`. The account selects the
-Gateway-owned venue client and binds the request to its configured
-product/environment; callers never provide or receive venue credentials,
-native symbols, native IDs, instrument encodings, or raw venue errors.
+Account-independent application APIs are available under `/v1/market`:
+
+- `GET /v1/market/instruments` returns the public catalog and explicit coverage.
+- `GET /v1/market/candles` reads bounded history by `instrument_id` and `interval`.
+- `GET /v1/market/snapshot` reads one complete shared topic snapshot.
+- `GET /v1/market/ws` subscribes to order book, BBO, candles and mark price.
+
+They require the existing Gateway Bearer token, but no exchange account or venue
+credentials. The token remains a full Gateway credential; this batch does not
+introduce a read-only token. Unknown or unavailable market scopes remain explicit.
+`complete=false` is a catalog coverage/freshness signal, not a statement about
+whether live quotes are arriving. Known instruments remain readable from a stale
+directory. See the [application market API guide](../design/market-api-2026-09-10.md)
+for requests, stream recovery, supported scope and examples.
+
+The older `/v1/order-book`, `/v1/bbo`, `/v1/mark-price`, `/v1/candles` and funding-rate
+routes retain their account-scoped contracts for existing callers. New market-only
+applications should use `/v1/market`.
 
 `/internal/v1/market/ws` is Gateway's multiplexed service-to-service market
 protocol. Its public topics include order book, BBO, candles, mark, funding
@@ -170,14 +211,14 @@ Binance/Aster OI.
 
 Hot order-book, BBO, candle, and mark topics share one pooled native socket per
 feed owner. A reference-counted hotset ranks position, open-order, execution,
-browser, arbitrage-top, and funding-history reasons in that order. Position,
+browser and funding-history reasons in that order. Position,
 open-order, and execution topics cannot be evicted by venue topic limits; the
-last reason retains its topic for a 30-second grace period. Broad polling,
-catalog refresh, and FreshBBO fallback share one rate-limit coordinator and
-singleflight key per venue operation.
+last reason retains its topic for a 30-second grace period. Broad polling and
+catalog refresh share one rate-limit coordinator and singleflight key per
+venue operation. FreshBBO joins the same retained BBO WebSocket in Market Hub;
+it never depends on a browser subscription or a REST quote fallback.
 
-The public market operations on the internal listener are the exception to the
-account rule: `/internal/v1/market/ws`, `/internal/v1/market-facts`,
+The internal listener also retains public market operations for existing service consumers: `/internal/v1/market/ws`, `/internal/v1/market-facts`,
 `/internal/v1/funding-board`, `/internal/v1/funding-history`, and
 `/internal/v1/venues/connectivity`. They take no `account_id`, because Gateway
 answers them with credential-free venue clients. They remain authenticated by
@@ -217,7 +258,7 @@ starts with a new complete snapshot. Every column reports `live`, `degraded`, or
 `unavailable`, its last success time, and reconnect count. Funding older than 60
 seconds and prices older than 15 seconds are marked delayed; a field older than
 two minutes is omitted rather than rendered as current. OI may be absent without
-making the board or an arbitrage strategy unavailable.
+making the funding board unavailable.
 
 The history read remains request-driven. It takes a venue, an environment, a symbol, and an explicit
 `since`/`until` pair, and returns one series of funding points with the
@@ -243,20 +284,18 @@ Authorization: Bearer <token>
 ```
 
 Each account route owns one product/account-level native stream regardless of
-catalog size. Orders, fills, balances, positions, account health, and
-`resync_required` are normalized with a stable entity ID, resource version and
-the source event time. Consumers merge by entity identity and source time; they
-do not depend on a Gateway-generated stream sequence or a snapshot barrier.
+catalog size. Orders, fills, balances, and positions are normalized with a
+stable entity ID, resource version, and source event time. Consumers merge by
+entity identity and source time; private events have no sequence, generation,
+gap phase, or snapshot barrier.
 
 The internal `/v1/ws` endpoint is retained for server projections. The browser
 uses Gateway's live-only `/internal/v1/account/ws` through Auth Edge, so a
-reconnect never replays an unbounded browser backlog. A stream fault marks
-account realtime unavailable and reconnects with exponential backoff and
-jitter. It does not suspend order submission and does not trigger REST. The
-periodic reconciliation loop repairs missed state every 60 seconds. A fault on
-one account emits an account-scoped `UPSTREAM_GAP` but does not close the
-principal-wide browser subscription or degrade unrelated accounts. The later
-account-health event clears only that account's degraded state.
+reconnect never replays an unbounded browser backlog. A route publishes only
+`connected` or `disconnected` connection facts and reconnects with exponential
+backoff and jitter. Connection state is presentation-only: it does not suspend
+order submission, change position freshness, or trigger REST. The periodic
+reconciliation loop repairs missed state every 60 seconds.
 
 ## Recovery and reconciliation
 

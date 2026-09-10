@@ -101,8 +101,8 @@ func TestClient_GetAPIKeyInfoReturnsRetCodeError(t *testing.T) {
 	if !errors.As(err, &responseErr) || responseErr.Code != 10003 {
 		t.Fatalf("typed response error = %#v, %v", responseErr, err)
 	}
-	if !strings.Contains(err.Error(), "query api key failed: 10003 API key is invalid") {
-		t.Fatalf("unexpected error: %v", err)
+	if strings.Contains(err.Error(), "API key is invalid") {
+		t.Fatalf("HTTP error rendered native response text: %v", err)
 	}
 }
 
@@ -206,13 +206,14 @@ func TestClient_GetPositionsDoesNotReturnPartialResultsAfterPageError(t *testing
 	t.Parallel()
 
 	requests := 0
+	pageFailure := errors.New("second page unavailable")
 	client := NewClient().
 		WithCredentials("test-key", "test-secret").
 		WithBaseURL("https://example.test").
 		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			requests++
 			if requests == 2 {
-				return nil, errors.New("second page unavailable")
+				return nil, pageFailure
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -222,7 +223,7 @@ func TestClient_GetPositionsDoesNotReturnPartialResultsAfterPageError(t *testing
 		})})
 
 	got, err := client.GetPositions(context.Background(), "linear", "", "USDT")
-	if err == nil || !strings.Contains(err.Error(), "second page unavailable") {
+	if !errors.Is(err, pageFailure) {
 		t.Fatalf("expected second-page error, got positions=%+v err=%v", got, err)
 	}
 	if got != nil {

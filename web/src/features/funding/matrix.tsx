@@ -1,5 +1,4 @@
 import * as Popover from "@radix-ui/react-popover";
-import { Link } from "@tanstack/react-router";
 import type { ColumnDef, SortingState } from "@tanstack/react-table";
 import { ChevronDown, SearchX } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -69,9 +68,7 @@ const UNIT_DECIMALS: Record<FundingUnit, number> = {
  *
  * Same licence the instrument strip and the chart adapter carry, and for the
  * same reason: a rate rendered as "10.95%" is a pixel, not a value. Nothing
- * computed here is sent back to the server or typed into an order — the
- * arbitrage page is handed venue and symbol identifiers, and re-reads the rates
- * itself before anything is signed.
+ * computed here is sent back to the server or typed into an order.
  *
  * Returns null rather than a zero when the conversion cannot be made honestly:
  * every unit except `period` needs the venue's funding interval, and two of the
@@ -148,9 +145,9 @@ export interface MatrixRow {
 
 interface Spread {
   value: number;
-  /** The higher-rate venue: longs pay there, so the hedge sells it. */
+  /** The higher-rate venue in a funding comparison. */
   short: BoardColumn;
-  /** The lower-rate venue: the hedge buys it. */
+  /** The lower-rate venue in a funding comparison. */
   long: BoardColumn;
 }
 
@@ -225,9 +222,7 @@ function venueState(column: BoardColumn, t: Translate) {
  * absent from all 654 cross-venue rows while binance, bybit and lighter were
  * present; keyed on the pair, it lands in the column beside them.
  *
- * This is the server's own notion of identity, not a new one: the arbitrage
- * endpoint groups the same board on `{base, quote}` before it pairs anything.
- * And it keeps lighter apart on purpose — its book settles in USDC, so
+ * Grouping by both assets keeps lighter apart on purpose — its book settles in USDC, so
  * `BTC-USDC` is a different instrument from `BTC-USDT` and gets its own row.
  *
  * Falls back to the symbol when a venue publishes no assets, which is the only
@@ -842,7 +837,6 @@ function buildColumns(
       return (
         // The legs are the whole content of this cell, not decoration: a spread
         // without the two venues that make it is a number nobody can act on.
-        // The arbitrage page reads them back from here once it exists.
         <div className="flex flex-col items-end leading-tight">
           <Num value={best.value.toFixed(decimals)} decimals={decimals} className="text-text" suffix="%" />
           <span className="text-micro text-dim">
@@ -854,35 +848,5 @@ function buildColumns(
     meta: { numeric: true, width: "176px" },
   };
 
-  const hedge: ColumnDef<MatrixEntry, unknown> = {
-    id: "hedge",
-    header: "",
-    enableSorting: false,
-    cell: (context) => {
-      const { row, spread: best } = context.row.original;
-      // Nothing to hand over when one venue is the only one quoting this
-      // underlying: the arbitrage page would open on a pair that does not exist.
-      if (best === null) return null;
-      const assetClass = Object.values(row.cells)[0]?.assetClass;
-      const target = assetClass && assetClass !== "crypto" && assetClass !== "unknown"
-        ? "/arbitrage/tradfi/funding"
-        : "/arbitrage/crypto/funding";
-      return (
-        // A link rather than a click handler, so the row's destination is a real
-        // address: it can be opened in a new tab, and it carries the operator's
-        // orientation instead of leaving the next screen to guess it.
-        <Button asChild size="sm" variant="outline">
-          <Link
-            to={target}
-            search={{ symbol: row.key, long: best.long.key, short: best.short.key }}
-          >
-            {t("funding.hedge")}
-          </Link>
-        </Button>
-      );
-    },
-    meta: { width: "88px" },
-  };
-
-  return [instrument, extremeRate, spread, openInterest, settles, ...venues, hedge];
+  return [instrument, extremeRate, spread, openInterest, settles, ...venues];
 }

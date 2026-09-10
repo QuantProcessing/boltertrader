@@ -51,7 +51,7 @@ func TestReconcilerAppliesAuthoritativeRejectionButRetainsNotAttempted(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
-			commands := newLiveService(NewMemoryStore(), nil, func() time.Time { return now })
+			commands := newLiveService(NewMemoryStore(), func() time.Time { return now })
 			command, _, _ := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Payload: []byte(`{}`)})
 			_, _ = commands.Transition(context.Background(), TransitionRequest{CommandID: command.CommandID, State: StateUncertain, Reason: ReconciliationAmbiguousHandoff, NextAttemptAt: now.Add(time.Second)})
 			now = now.Add(time.Second)
@@ -68,7 +68,7 @@ func TestReconcilerAppliesAuthoritativeRejectionButRetainsNotAttempted(t *testin
 
 func TestReconcilerSurvivesRestartAndAdvancesPartialToTerminalEvidence(t *testing.T) {
 	now := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
-	commands := newLiveService(NewMemoryStore(), nil, func() time.Time { return now })
+	commands := newLiveService(NewMemoryStore(), func() time.Time { return now })
 	command, _, err := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestReconcilerSurvivesRestartAndAdvancesPartialToTerminalEvidence(t *testin
 
 func TestReconcilerRetainsLookupErrorsWithBoundedBackoff(t *testing.T) {
 	now := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
-	commands := newLiveService(NewMemoryStore(), nil, func() time.Time { return now })
+	commands := newLiveService(NewMemoryStore(), func() time.Time { return now })
 	command, _, _ := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "i", Method: "POST", Path: "/commands", CommandKind: "manual.place", Payload: []byte(`{}`)})
 	base := ExecutionEvidence{CommandID: "gateway-command", GatewayOrderID: "gateway-order", ClientOrderID: "client-order", State: "submitted", ResourceVersion: 1}
 	_, _ = commands.Transition(context.Background(), TransitionRequest{CommandID: command.CommandID, State: StateSubmitted, Evidence: base})
@@ -129,5 +129,28 @@ func TestReconcilerRetainsLookupErrorsWithBoundedBackoff(t *testing.T) {
 	}
 	if due, _ := commands.ClaimDueReconciliation(context.Background(), now.Add(5*time.Second), time.Minute, 10); len(due) != 1 || due[0].Reason != ReconciliationLookupFailed {
 		t.Fatalf("lookup retry=%+v", due)
+	}
+}
+
+func TestLookupFailureProjectsDiagnosticsWithoutErasingConfirmedFills(t *testing.T) {
+	now := time.Now().UTC()
+	commands := newLiveService(NewMemoryStore(), func() time.Time { return now })
+	command, _, err := commands.Create(context.Background(), CreateRequest{PrincipalID: "p", AccountID: "a", ProductID: "manual", LineageID: "l", IdempotencyKey: "k", Method: "POST", Path: "/commands", CommandKind: "manual.place", Payload: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := ExecutionEvidence{CommandID: "gc", ClientOrderID: "client", GatewayOrderID: "g", State: "partially_filled", ResourceVersion: 2, Fills: []FillEvidence{{FillID: "f", AccountID: "a", InstrumentID: "btc", Quantity: "0.1", Price: "100", Fee: "0", FeeCurrency: "USDT", OccurredAt: now}}}
+	if _, err := commands.Transition(context.Background(), TransitionRequest{CommandID: command.CommandID, State: StateSubmitted, Evidence: evidence}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	gateway := &reconciliationGatewayFixture{errors: []error{errors.New("temporary lookup failure")}}
+	runner, _ := NewReconciler(commands, gateway, reconciliationDispatcherFixture{commands}, func() time.Time { return now })
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current, err := commands.Get(context.Background(), command.CommandID)
+	if err != nil || current.State != StateUncertain || current.Reconciliation == nil || current.Reconciliation.Reason != ReconciliationLookupFailed || current.Reconciliation.AttemptCount != 1 || len(current.ExecutionEvidence.Fills) != 1 || current.ExecutionEvidence.ResourceVersion != 2 {
+		t.Fatalf("diagnostics lost evidence: %+v %v", current, err)
 	}
 }

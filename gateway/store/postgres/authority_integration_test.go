@@ -11,6 +11,9 @@ import (
 )
 
 func TestGatewayRuntimeAuthorityRealPostgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("authority verification requires explicit non-short PostgreSQL tests")
+	}
 	if os.Getenv("BT_G010_POSTGRES_ACCEPT") != "1" {
 		t.Skip("BT_G010_POSTGRES_ACCEPT=1 is required for local PostgreSQL authority verification")
 	}
@@ -24,7 +27,7 @@ func TestGatewayRuntimeAuthorityRealPostgres(t *testing.T) {
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatal("ping gateway_runtime_test service")
 	}
-	matrix := authority.GatewayV11()
+	matrix := authority.GatewayV12()
 	result, err := VerifyRuntimeAuthority(ctx, pool, matrix)
 	if err != nil {
 		t.Fatalf("verify real Gateway runtime authority: %v", err)

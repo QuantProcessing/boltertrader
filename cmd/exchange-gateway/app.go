@@ -18,8 +18,6 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
-	"github.com/QuantProcessing/boltertrader/gateway/account/authorityclient"
-	"github.com/QuantProcessing/boltertrader/gateway/account/lifecycle"
 	"github.com/QuantProcessing/boltertrader/gateway/auth"
 	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
@@ -65,12 +63,6 @@ type runtimeDeps struct {
 	listenInternal           func(network, address string) (net.Listener, error)
 	wait                     func(context.Context, *process.Service) error
 	metrics                  *observability.Metrics
-	runtimeLifecycle         account.RuntimeLifecycle
-	resolveRuntimeSecret     func(context.Context, secret.OpaqueRef) (string, error)
-	activateRuntime          func(context.Context, account.DesiredRuntime, string) error
-	deactivateRuntime        func(context.Context, domain.AccountID) error
-	runtimeBlockers          func(context.Context, domain.AccountID) (account.RuntimeBlockers, error)
-	credentialResolver       account.ScopedCredentialResolver
 }
 
 const venueProbeTimeoutEnv = "BT_VENUE_PROBE_TIMEOUT"
@@ -110,41 +102,35 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	if err != nil {
 		return fmt.Errorf("configure auth failed")
 	}
+	var internalAuth auth.BearerMiddleware
+	if !file.Server.InternalAuthTokenRef.IsZero() {
+		internalAuth, err = auth.NewBearerMiddleware(ctx, provider, file.Server.InternalAuthTokenRef)
+		if err != nil {
+			return fmt.Errorf("configure internal auth failed")
+		}
+	}
 	metrics := deps.metrics
 	if metrics == nil {
 		metrics = observability.NewMetrics()
 	}
 	connectPostgres := defaultConnectPostgres(deps.connectPostgres)
 	validateDatabaseIdentity := defaultValidateDatabaseIdentity(deps.validateDatabaseIdentity)
-	credentialResolver := deps.credentialResolver
-	var credentialProvider *secretstore.FilesystemProvider
+
+	var accountCipher *secretstore.Cipher
 	validationProfile := file.Server.StartupProfile == config.StartupProfileMigrationValidation
-	if !validationProfile && credentialResolver == nil && deps.buildAccountManager == nil {
-		credentialProvider, credentialResolver, err = newGatewayCredentialResolver()
+	if !validationProfile && deps.buildAccountManager == nil {
+		accountCipher, err = newAccountCipher(ctx)
 		if err != nil {
 			return err
 		}
-		defer credentialProvider.Close()
 	}
 	checkCredentialResolver := deps.checkCredentialResolver
-	if checkCredentialResolver == nil && credentialResolver != nil {
-		checkCredentialResolver = credentialResolver.Check
+
+	sharedTransport, err := ratelimit.NewTransport(ratelimit.NewCoordinator(time.Now), http.DefaultTransport)
+	if err != nil {
+		return fmt.Errorf("HTTP request budget setup failed: %w", err)
 	}
-	runtimeLifecycle := deps.runtimeLifecycle
-	var productionLifecycle *productionRuntimeLifecycle
-	if !validationProfile && runtimeLifecycle == nil && (deps.resolveRuntimeSecret != nil || deps.activateRuntime != nil || deps.deactivateRuntime != nil || deps.runtimeBlockers != nil) {
-		runtimeLifecycle, err = newOpaqueRuntimeLifecycle(
-			deps.resolveRuntimeSecret, deps.activateRuntime, deps.deactivateRuntime, deps.runtimeBlockers,
-		)
-		if err != nil {
-			return fmt.Errorf("configure internal runtime lifecycle failed")
-		}
-	}
-	if !validationProfile && runtimeLifecycle == nil {
-		productionLifecycle = &productionRuntimeLifecycle{}
-		runtimeLifecycle = productionLifecycle
-	}
-	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
+	sharedHTTPClient := &http.Client{Transport: sharedTransport, Timeout: 30 * time.Second}
 	var venueConnectivity *connectivity.Manager
 	if !validationProfile {
 		probeTimeout, timeoutErr := venueProbeTimeout()
@@ -152,7 +138,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("venue connectivity setup failed: %w", timeoutErr)
 		}
 		venueConnectivity, err = connectivity.New(connectivity.Options{
-			Checkers: connectivity.DefaultHTTPCheckers(&http.Client{Timeout: probeTimeout}),
+			Checkers: connectivity.DefaultHTTPCheckers(&http.Client{Transport: sharedTransport, Timeout: probeTimeout}),
 			Interval: 10 * time.Second, Timeout: probeTimeout, Observer: metrics,
 		})
 		if err != nil {
@@ -177,7 +163,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		if err != nil {
 			return fmt.Errorf("market capability setup failed: %w", err)
 		}
-		marketFactory, marketErr := publicmarket.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
+		marketFactory, marketErr := publicmarket.NewExchangeFactory(sharedHTTPClient)
 		if marketErr != nil {
 			return fmt.Errorf("public market factory setup failed")
 		}
@@ -190,12 +176,6 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		}
 		publicMarkets.SetRequestCoordinator(marketRequests)
 		go func() { _ = publicMarkets.Run(ctx) }()
-		freshBBO, marketErr = markethub.NewBBOCache(publicMarkets, time.Now)
-		if marketErr != nil {
-			return fmt.Errorf("fresh BBO cache setup failed")
-		}
-		freshBBO.SetObserver(metrics)
-		freshBBO.SetRequestCoordinator(marketRequests)
 		defer publicMarkets.Close()
 	}
 	// fundingBoard is the resident DerivativeFact projection consumed by the
@@ -208,12 +188,12 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	// has no reason to live behind the manager anyway.
 	//
 	// Construction failure is fatal because this is now the shared market fact
-	// authority for Trader marks, portfolio PnL and arbitrage as well as the
+	// authority for Trader marks and portfolio PnL as well as the
 	// board. Runtime venue failures still degrade independently after startup.
 	var fundingBoard *fundingboard.Projection
 	var derivativeOwners *marketowner.DerivativeOwners
 	if !validationProfile {
-		boardFactory, boardErr := fundingboard.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
+		boardFactory, boardErr := fundingboard.NewExchangeFactory(sharedHTTPClient)
 		if boardErr == nil {
 			boardFactory.SetMarketRequestCoordinator(marketRequests)
 			marketFacts = markethub.NewFactStore(metrics, time.Now)
@@ -255,6 +235,10 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("market Hub setup failed")
 		}
 		publicMarkets.SetMarketHub(marketHub)
+		freshBBO, err = markethub.NewBBOCache(marketHub, publicMarkets, time.Now)
+		if err != nil {
+			return fmt.Errorf("fresh BBO cache setup failed: %w", err)
+		}
 		hotActivator = marketowner.NewHotActivator(boardMarks, derivativeOwners, metrics)
 		hotsets, err = hotset.New(hotset.Options{
 			Activator: hotActivator,
@@ -270,29 +254,27 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		defer hotActivator.Close()
 		defer marketHub.Close()
 	}
+	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, metrics, httpapi.MarketOptions{Source: publicMarkets, Hub: marketHub, Hotset: hotsets})
 	var internalHandler http.Handler
 	var restoredAuthority *gatewayAuthority
 	var gatewayMonitor *health.Monitor
-	var internalAuth auth.BearerMiddleware
 	var internalHandlerFactory func(context.Context, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
 	if file.Server.InternalListen != "" {
-		var authErr error
-		internalAuth, authErr = auth.NewBearerMiddleware(ctx, provider, file.Server.InternalAuthTokenRef)
-		if authErr != nil {
-			return fmt.Errorf("configure internal auth failed")
-		}
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
 		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
-			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle}, publicMarkets, fundingBoard, marketFacts, venueConnectivity, freshBBO, marketHub, hotsets, authMiddleware.PrincipalID())
+			accountRegistrationDeps{cipher: accountCipher}, publicMarkets, fundingBoard, marketFacts, venueConnectivity, freshBBO, marketHub, hotsets, authMiddleware.PrincipalID())
 	}
 	processDeps := process.Dependencies{
+		WrapHTTP: func(handler http.Handler) http.Handler {
+			return authMiddleware.Wrap(handler)
+		},
 		CheckCredentialResolver:  checkCredentialResolver,
 		ResolveSecret:            provider.Resolve,
 		ConnectPostgres:          observedConnectPostgres(metrics, connectPostgres),
 		ValidateDatabaseIdentity: validateDatabaseIdentity,
 		VerifyDatabaseAuthority:  defaultVerifyDatabaseAuthority(deps.verifyDatabaseAuthority),
-		BuildAccountManager:      defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver),
+		BuildAccountManager:      defaultBuildAccountManager(deps.buildAccountManager, sharedHTTPClient),
 		RestoreAccountManager: func(restoreCtx context.Context, pool process.PostgresPool, manager process.AccountManager) error {
 			if deps.restoreAccountManager != nil {
 				return deps.restoreAccountManager(restoreCtx, pool, manager)
@@ -309,19 +291,26 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 				}
 				publicMarkets.SetRevisionStore(revisions)
 			}
-			if productionLifecycle != nil {
-				if attachErr := productionLifecycle.attach(realPool, realManager); attachErr != nil {
-					return attachErr
-				}
-			}
-			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, withPublicMarkets(publicMarkets), withFundingBoard(fundingBoard))
+			authority, restoreErr := newGatewayAuthority(restoreCtx, realManager, withPublicMarkets(publicMarkets), withFundingBoard(fundingBoard))
 			if restoreErr != nil {
 				return restoreErr
+			}
+			if accountCipher != nil {
+				accounts, err := account.NewRegistrations(postgres.NewRegistrationStore(realPool, accountCipher), realManager)
+				if err != nil {
+					return err
+				}
+				failures := accounts.Restore(restoreCtx)
+				if err := failures[""]; err != nil {
+					return fmt.Errorf("restore accounts: %w", err)
+				}
+				// Individual venue failures are shown per account and must not hold
+				// the entire personal gateway in an unavailable state.
 			}
 			restoredAuthority = authority
 			return nil
 		},
-		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics, hotsets),
+		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), hotsets),
 		Listen:                defaultListen(deps.listen),
 		HandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
 			gatewayMonitor = monitor
@@ -347,13 +336,13 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 						return nil, handlerErr
 					}
 				} else {
-					realPool, ok := pool.(*pgxpool.Pool)
+					_, ok := pool.(*pgxpool.Pool)
 					if !ok {
 						return nil, fmt.Errorf("postgres pool type")
 					}
 					var handlerErr error
 					internalHandler, handlerErr = httpapi.NewInternalHandler(httpapi.InternalOptions{
-						Authority: validationSnapshotAuthority{snapshots: postgres.NewStore(realPool)},
+						Authority: validationSnapshotAuthority{},
 						Authenticate: func(request *http.Request) error {
 							if _, ok := auth.Principal(request.Context()); !ok {
 								return errors.New("internal authentication required")
@@ -371,7 +360,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			if deps.buildValidationHandler != nil {
 				return deps.buildValidationHandler(monitor, pool)
 			}
-			return authMiddleware.Wrap(httpapi.NewMigrationValidationHandler(monitor)), nil
+			return httpapi.NewMigrationValidationHandler(monitor), nil
 		},
 	}
 	service, err := process.Start(ctx, file, processDeps)
@@ -440,14 +429,14 @@ func defaultInternalHandlerFactory(
 	authMiddleware auth.BearerMiddleware,
 	authorityProvider func() *gatewayAuthority,
 	writeReady func() bool,
-	accountDeps accountLifecycleDeps,
-	publicMarkets httpapi.InternalPublicMarketStreams,
+	accountDeps accountRegistrationDeps,
+	publicMarkets *publicmarket.Source,
 	fundingBoardChanges httpapi.InternalFundingBoardChanges,
 	marketFacts httpapi.InternalMarketFacts,
 	venueConnectivity httpapi.InternalVenueConnectivity,
 	freshBBO httpapi.InternalFreshBBO,
-	marketHub httpapi.InternalMarketHub,
-	hotsets httpapi.InternalHotset,
+	marketHub httpapi.MarketHub,
+	hotsets httpapi.MarketHotset,
 	accountEventOwner domain.PrincipalID,
 ) func(context.Context, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
@@ -462,7 +451,7 @@ func defaultInternalHandlerFactory(
 			}
 			var settlements httpapi.InternalFundingSettlements
 			boardSource, _ := fundingBoardChanges.(fundingboard.Board)
-			marketSource, _ := publicMarkets.(*publicmarket.Source)
+			marketSource := publicMarkets
 			if realPool, ok := pool.(*pgxpool.Pool); ok {
 				if boardSource != nil && marketSource != nil {
 					history := fundingsettlement.VenueHistory{Board: boardSource, Markets: marketSource}
@@ -482,7 +471,6 @@ func defaultInternalHandlerFactory(
 			options := httpapi.InternalOptions{
 				Authority:           authority,
 				WriteReady:          writeReady,
-				PublicMarkets:       publicMarkets,
 				FundingBoardChanges: fundingBoardChanges,
 				MarketFacts:         marketFacts,
 				VenueConnectivity:   venueConnectivity,
@@ -501,21 +489,23 @@ func defaultInternalHandlerFactory(
 			if coordinator, ok := orders.(processOrderCoordinator); ok {
 				options.AccountEvents = coordinator.Events
 			}
-			if marketKeys, ok := publicMarkets.(httpapi.InternalMarketKeys); ok {
-				options.MarketKeys = marketKeys
+			if publicMarkets != nil {
+				options.MarketKeys = publicMarkets
 			}
 			if accountDeps.available() {
 				realPool, ok := pool.(*pgxpool.Pool)
 				if !ok {
 					return nil, fmt.Errorf("postgres pool type")
 				}
-				service, reconciler, lifecycleErr := accountDeps.newService(realPool, authority)
-				if lifecycleErr != nil {
-					return nil, lifecycleErr
+				realManager, ok := accounts.(*account.Manager)
+				if !ok {
+					return nil, fmt.Errorf("account manager type")
 				}
-				options.Lifecycle = service
-				options.Blockers = accountDeps.blockers()
-				go runCredentialReconciler(ctx, reconciler)
+				service, err := account.NewRegistrations(postgres.NewRegistrationStore(realPool, accountDeps.cipher), realManager)
+				if err != nil {
+					return nil, err
+				}
+				options.Accounts = service
 			}
 			handler, err = httpapi.NewInternalHandler(options)
 		}
@@ -630,122 +620,9 @@ func (tracking settlementHistoryTracker) TrackActive(ctx context.Context, instru
 	return tracking.history.TrackActive(ctx, tracking.tracker, instrumentID, reason)
 }
 
-// accountLifecycleDeps carries what the durable account lifecycle needs but the
-// internal handler factory has no other way to reach: somewhere to write
-// credentials, and something that can say what still holds an account open. A
-// gateway started without a credential provider — the migration-validation
-// profile, or a test that supplies its own resolver — leaves this empty and the
-// lifecycle routes are simply not mounted.
-type accountLifecycleDeps struct {
-	credentials *secretstore.FilesystemProvider
-	runtime     account.RuntimeLifecycle
-}
+type accountRegistrationDeps struct{ cipher *secretstore.Cipher }
 
-func (deps accountLifecycleDeps) available() bool {
-	return deps.credentials != nil && deps.runtime != nil
-}
-
-// newService builds the durable account lifecycle and the reconciler that
-// finishes what it starts.
-//
-// The two are returned together because neither is complete alone. A durable
-// create applies the desired state to the runtime after one private balance
-// read proves the credential. Promotion of that snapshot is the account-level
-// proof; route private streams and write permissions continue warming as
-// separate readiness signals and do not hold the account in "creating".
-//
-// The reconciler is the designed answer: it rescans operations parked in a
-// recoverable state, re-reads the runtime's truth, and performs the same
-// promotion after an interrupted response or process restart. Creation is
-// eventually consistent by construction, so nothing else has to be.
-func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpapi.InternalAuthority) (*lifecycle.Service, *lifecycle.Reconciler, error) {
-	// The namespace and key version are the ones newGatewayCredentialResolver
-	// already refused to start without, so the lifecycle writes into the same
-	// scope the runtime reads from.
-	credentials, err := secret.NewStore(secret.Config{
-		Namespace: secret.Namespace, KeyVersion: "v1",
-	}, deps.credentials.Writer())
-	if err != nil {
-		return nil, nil, fmt.Errorf("account lifecycle credential store")
-	}
-	desired, err := authorityclient.New(authority)
-	if err != nil {
-		return nil, nil, fmt.Errorf("account lifecycle authority client")
-	}
-	store := postgres.NewAccountLifecycleStore(pool)
-	secrets := lifecycle.SecretStoreAdapter{Store: credentials}
-	service, err := lifecycle.New(lifecycle.Options{
-		Store:   store,
-		Secrets: secrets,
-		Audit:   postgres.NewAccountLifecycleAuditStore(pool),
-		Gateway: desired,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("account lifecycle setup")
-	}
-	reconciler, err := lifecycle.NewReconciler(store, secrets, desired, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("account lifecycle reconciler setup")
-	}
-	return service, reconciler, nil
-}
-
-// credentialReconcileInterval is how often parked credential operations are
-// retried, and credentialReconcileBatch how many are taken per pass.
-//
-// The interval is set by what it is waiting for. The common case is an
-// interrupted create response or service restart; a slower sweep would leave a
-// verified account untradeable for no reason other than the timer. It is not a
-// poll of anything remote — a pass with nothing parked is one indexed query.
-const (
-	credentialReconcileInterval = 5 * time.Second
-	credentialReconcileBatch    = 32
-)
-
-// runCredentialReconciler drives the reconciler until ctx ends.
-//
-// A failed pass is not reported here. The reconciler already writes its reason
-// onto the operation row as a stable error code, which outlives any log line
-// and is what an operator inspecting a stuck account actually reads. Repeating
-// it here would emit one line every interval for as long as a venue takes to
-// come up, which on a cold stack is every start.
-func runCredentialReconciler(ctx context.Context, reconciler *lifecycle.Reconciler) {
-	if reconciler == nil {
-		return
-	}
-	ticker := time.NewTicker(credentialReconcileInterval)
-	defer ticker.Stop()
-	for {
-		_ = reconciler.RunOnce(ctx, credentialReconcileBatch)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-// blockers translates the runtime's inventory count into the lifecycle's. The
-// gateway owns orders and positions; reservations belong to trading-svc, which
-// does not exist yet, so that count stays zero rather than being guessed.
-func (deps accountLifecycleDeps) blockers() httpapi.AccountBlockers {
-	runtime := deps.runtime
-	return func(ctx context.Context, accountID string) (lifecycle.Blockers, error) {
-		id := domain.AccountID(accountID)
-		if id.Validate() != nil {
-			return lifecycle.Blockers{}, fmt.Errorf("account identifier is invalid")
-		}
-		blockers, err := runtime.Blockers(ctx, id)
-		if err != nil {
-			return lifecycle.Blockers{}, err
-		}
-		return lifecycle.Blockers{
-			OpenOrders:        blockers.OpenOrders,
-			UncertainCommands: blockers.UncertainCommands,
-			OwnedPositions:    blockers.Positions,
-		}, nil
-	}
-}
+func (deps accountRegistrationDeps) available() bool { return deps.cipher != nil }
 
 type authorityHTTPServer struct {
 	server   *http.Server
@@ -782,8 +659,8 @@ func (service *authorityHTTPServer) Shutdown(ctx context.Context) error {
 
 func defaultHandlerFactory(
 	override func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error),
-	authMiddleware auth.BearerMiddleware,
 	metrics *observability.Metrics,
+	markets httpapi.MarketOptions,
 ) func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error) {
 	if override != nil {
 		return override
@@ -808,7 +685,7 @@ func defaultHandlerFactory(
 			return nil, fmt.Errorf("reference service setup")
 		}
 		handler, err := httpapi.NewHandler(httpapi.Options{
-			Monitor: monitor, Accounts: manager, References: references,
+			Monitor: monitor, Accounts: manager, References: references, Markets: markets,
 			Orders:    coordinator.Coordinator,
 			Events:    coordinator.Events,
 			Positions: coordinator.Streams.Positions(),
@@ -818,7 +695,7 @@ func defaultHandlerFactory(
 		if err != nil {
 			return nil, fmt.Errorf("HTTP API setup")
 		}
-		return authMiddleware.Wrap(withOperationalHTTP(handler, metrics)), nil
+		return withOperationalHTTP(handler, metrics), nil
 	}
 }
 
@@ -862,7 +739,6 @@ func accountMetricSnapshot(manager accountMetricSource) observability.SnapshotPr
 func defaultBuildOrderCoordinator(
 	override func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error),
 	principalID domain.PrincipalID,
-	metrics *observability.Metrics,
 	hotsets *hotset.Manager,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error) {
 	if override != nil {
@@ -882,7 +758,7 @@ func defaultBuildOrderCoordinator(
 			return nil, fmt.Errorf("order router setup")
 		}
 		identity := domain.NewIdentityGenerator(domain.IdentityGeneratorOptions{})
-		events, err := gatewayevent.NewHub(gatewayevent.Options{Identity: identity, Observer: metrics})
+		events, err := gatewayevent.NewHub(gatewayevent.Options{Identity: identity})
 		if err != nil {
 			return nil, fmt.Errorf("event hub setup")
 		}
@@ -994,8 +870,8 @@ func (coordinator processOrderCoordinator) Close(ctx context.Context) error {
 
 func defaultBuildAccountManager(
 	override func(context.Context) (process.AccountManager, error),
-	lifecycle account.RuntimeLifecycle,
-	credentialResolver account.ScopedCredentialResolver,
+
+	httpClient *http.Client,
 ) func(context.Context) (process.AccountManager, error) {
 	if override != nil {
 		return override
@@ -1010,7 +886,9 @@ func defaultBuildAccountManager(
 			return nil, fmt.Errorf("catalog setup")
 		}
 		exchangeCatalog := exchange.NewDefaultMemoryCatalog()
-		httpClient := &http.Client{Timeout: 30 * time.Second}
+		if httpClient == nil {
+			return nil, fmt.Errorf("shared HTTP client is required")
+		}
 		trustedProfiles := routeprofile.DefaultRegistry()
 		publicFactory, err := publicconn.NewExchangeFactory(httpClient, trustedProfiles)
 		if err != nil {
@@ -1025,10 +903,7 @@ func defaultBuildAccountManager(
 			GatewayCatalog:          gatewayCatalog,
 			HTTPClient:              httpClient,
 			AllowLiveWrites:         allowLiveWrites,
-			Lifecycle:               lifecycle,
-			CredentialResolver:      credentialResolver,
 			RuntimeGroupBuilder:     account.NewFactoryRuntimeGroupBuilder(httpClient, exchangeCatalog),
-			ProfileRegistry:         account.NewProfileRegistry(trustedProfiles),
 			PublicConnectors:        publicConnectors,
 			RequirePublicConnectors: true,
 		})
@@ -1046,42 +921,26 @@ func (gatewayKeychainRunner) Run(ctx context.Context, name string, args ...strin
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-func newGatewayCredentialResolver() (*secretstore.FilesystemProvider, account.ScopedCredentialResolver, error) {
-	keySourceName := strings.TrimSpace(os.Getenv("BT_SECRET_KEY_SOURCE"))
-	stateDir := strings.TrimSpace(os.Getenv("BT_SECRET_STORE_DIR"))
-	namespace := strings.TrimSpace(os.Getenv("BT_SECRET_STORE_NAMESPACE"))
-	keyVersion := strings.TrimSpace(os.Getenv("BT_SECRET_MASTER_KEY_VERSION"))
-	if !filepath.IsAbs(stateDir) || namespace != secretstore.Namespace || keyVersion != "v1" {
-		return nil, nil, fmt.Errorf("credential resolver configuration is invalid")
-	}
-	var keySource secretstore.KeySource
-	switch keySourceName {
-	case "file":
-		keyFile := strings.TrimSpace(os.Getenv("BT_SECRET_MASTER_KEY_FILE"))
-		if !filepath.IsAbs(keyFile) || os.Getenv("BT_SECRET_KEYCHAIN_SERVICE") != "" || os.Getenv("BT_SECRET_KEYCHAIN_ACCOUNT") != "" {
-			return nil, nil, fmt.Errorf("credential resolver key source is invalid")
+func newAccountCipher(ctx context.Context) (*secretstore.Cipher, error) {
+	var source secretstore.KeySource
+	switch strings.TrimSpace(os.Getenv("BT_SECRET_KEY_SOURCE")) {
+	case "", "file":
+		path := strings.TrimSpace(os.Getenv("BT_SECRET_MASTER_KEY_FILE"))
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("account encryption key file must be absolute")
 		}
-		keySource = secretstore.FileKeySource{Path: keyFile}
+		source = secretstore.FileKeySource{Path: path}
 	case "keychain":
-		service := strings.TrimSpace(os.Getenv("BT_SECRET_KEYCHAIN_SERVICE"))
-		keyAccount := strings.TrimSpace(os.Getenv("BT_SECRET_KEYCHAIN_ACCOUNT"))
-		if service == "" || keyAccount == "" || os.Getenv("BT_SECRET_MASTER_KEY_FILE") != "" {
-			return nil, nil, fmt.Errorf("credential resolver key source is invalid")
-		}
-		keySource = secretstore.KeychainSource{Service: service, Account: keyAccount, Runner: gatewayKeychainRunner{}}
+		source = secretstore.KeychainSource{Service: os.Getenv("BT_SECRET_KEYCHAIN_SERVICE"), Account: os.Getenv("BT_SECRET_KEYCHAIN_ACCOUNT"), Runner: gatewayKeychainRunner{}}
 	default:
-		return nil, nil, fmt.Errorf("credential resolver key source is invalid")
+		return nil, fmt.Errorf("unsupported account encryption key source")
 	}
-	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: stateDir, KeySource: keySource})
+	key, err := source.Load(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("initialize credential resolver failed")
+		return nil, fmt.Errorf("load account encryption key: %w", err)
 	}
-	resolver, err := secret.NewScopedCredentialResolver(provider.Resolver(), secretstore.Scope{Namespace: namespace, KeyVersion: keyVersion})
-	if err != nil {
-		provider.Close()
-		return nil, nil, fmt.Errorf("initialize credential resolver failed")
-	}
-	return provider, resolver, nil
+	defer clear(key)
+	return secretstore.NewCipher(key)
 }
 
 func defaultConnectPostgres(override func(context.Context, string) (process.PostgresPool, error)) func(context.Context, string) (process.PostgresPool, error) {
@@ -1135,7 +994,7 @@ func defaultVerifyDatabaseAuthority(override func(context.Context, process.Postg
 		if !ok {
 			return postgres.AuthorityResult{}, fmt.Errorf("postgres pool type")
 		}
-		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV11())
+		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV12())
 	}
 }
 

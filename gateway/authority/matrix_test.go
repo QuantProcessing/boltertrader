@@ -87,6 +87,20 @@ func TestGatewayV11IsExhaustiveAndStable(t *testing.T) {
 	assertInventory(t, matrix, 26, 0, 1)
 }
 
+func TestGatewayV12IsExhaustiveAndStable(t *testing.T) {
+	matrix := authority.GatewayV12()
+	if err := matrix.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if matrix.SchemaVersion != 12 || matrix.MigrationDigest != authority.GatewayV12MigrationDigest {
+		t.Fatalf("identity=%+v", matrix)
+	}
+	if got := matrix.Digest(); got != authority.GatewayV12Digest {
+		t.Fatalf("digest=%s", got)
+	}
+	assertInventory(t, matrix, 27, 0, 1)
+}
+
 func TestMatricesRejectUnknownDuplicateOrUnsafeObjects(t *testing.T) {
 	matrix := authority.PlatformV15()
 	matrix.Objects = append(matrix.Objects, authority.Object{Name: "platform_unknown", Kind: authority.Table})

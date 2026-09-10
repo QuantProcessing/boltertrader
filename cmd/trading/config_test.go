@@ -20,19 +20,18 @@ func validEnv(t *testing.T) map[string]string {
 	t.Helper()
 	dir := t.TempDir()
 	return map[string]string{
-		listenAddrEnv:        "127.0.0.1:18092",
-		databaseEnv:          "bolter_trading",
-		databaseRoleEnv:      "bolter_trading",
-		gatewayURLEnv:        "http://127.0.0.1:18080",
-		serviceTokenFileEnv:  writeToken(t, dir, "service.token", 0o600),
-		gatewayTokenFileEnv:  writeToken(t, dir, "gateway.token", 0o600),
-		previewSigningKeyEnv: writeToken(t, dir, "preview.key", 0o600),
+		listenAddrEnv:       "127.0.0.1:18092",
+		databaseEnv:         "bolter_trading",
+		databaseRoleEnv:     "bolter_trading",
+		gatewayURLEnv:       "http://127.0.0.1:18080",
+		serviceTokenFileEnv: writeToken(t, dir, "service.token", 0o600),
+		gatewayTokenFileEnv: writeToken(t, dir, "gateway.token", 0o600),
 	}
 }
 
 func applyEnv(t *testing.T, env map[string]string) {
 	t.Helper()
-	for _, name := range []string{listenAddrEnv, databaseEnv, databaseRoleEnv, databaseHostEnv, gatewayURLEnv, serviceTokenFileEnv, gatewayTokenFileEnv, previewSigningKeyEnv, livePrivateWritesEnv, allowNonLoopbackEnv, allowPlaintextEnv, inlinePreviewKeyEnv, inlineServiceTokenEnv, inlineGatewayTokenName} {
+	for _, name := range []string{listenAddrEnv, databaseEnv, databaseRoleEnv, databaseHostEnv, gatewayURLEnv, serviceTokenFileEnv, gatewayTokenFileEnv, livePrivateWritesEnv, allowNonLoopbackEnv, allowPlaintextEnv, inlineServiceTokenEnv, inlineGatewayTokenName} {
 		t.Setenv(name, "")
 		os.Unsetenv(name)
 	}
@@ -47,7 +46,7 @@ func TestLoadAcceptsAValidEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.ServiceToken) < 32 || len(cfg.GatewayToken) < 32 || len(cfg.ManualPreviewSigningKey) < 32 {
+	if len(cfg.ServiceToken) < 32 || len(cfg.GatewayToken) < 32 {
 		t.Fatal("secrets were not loaded")
 	}
 	if cfg.DatabaseHost != "127.0.0.1:15432" {
@@ -174,7 +173,7 @@ func TestLoadAllowsAPlaintextNonLoopbackGatewayOnlyWhenOptedIn(t *testing.T) {
 // An environment variable is readable from a process listing and survives in
 // shell history. Accepting one would make every other precaution here decorative.
 func TestLoadRefusesInlineSecrets(t *testing.T) {
-	for _, name := range []string{inlinePreviewKeyEnv, inlineServiceTokenEnv, inlineGatewayTokenName} {
+	for _, name := range []string{inlineServiceTokenEnv, inlineGatewayTokenName} {
 		env := validEnv(t)
 		env[name] = strings.Repeat("t", 40)
 		applyEnv(t, env)

@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,6 +66,7 @@ func (watcher *binanceDerivativeWatcher) stream(ctx context.Context, bootstrap n
 		return err
 	}
 	if err := client.SubscribeAllMarkPrice("1s", func(events []*binanceperp.WsMarkPriceEvent) error {
+		batches := make(map[nativeDerivativeField]*nativeDerivativeBatch)
 		for _, event := range events {
 			if event == nil {
 				continue
@@ -76,9 +78,10 @@ func (watcher *binanceDerivativeWatcher) stream(ctx context.Context, bootstrap n
 			observedAt := fundingMillisOrNow(event.EventTime)
 			fact, fields := markStreamFact(identity, event.FundingRate, event.MarkPrice, event.IndexPrice, event.NextFundingTime, observedAt)
 			if fields != 0 {
-				emit(derivativeDelta(bootstrap.Scope, observedAt, fields, fact))
+				appendNativeDerivativeBatch(batches, observedAt, fields, fact)
 			}
 		}
+		emitNativeDerivativeBatches(bootstrap.Scope, batches, emit)
 		return nil
 	}); err != nil {
 		return err
@@ -106,6 +109,7 @@ func (watcher *binanceDerivativeWatcher) streamAster(ctx context.Context, scope 
 		return err
 	}
 	if err := client.SubscribeAllMarkPrice("1s", func(events []*asterperp.WsMarkPriceEvent) error {
+		batches := make(map[nativeDerivativeField]*nativeDerivativeBatch)
 		for _, event := range events {
 			if event == nil {
 				continue
@@ -117,9 +121,10 @@ func (watcher *binanceDerivativeWatcher) streamAster(ctx context.Context, scope 
 			observedAt := fundingMillisOrNow(event.EventTime)
 			fact, fields := markStreamFact(identity, event.FundingRate, event.MarkPrice, event.IndexPrice, event.NextFundingTime, observedAt)
 			if fields != 0 {
-				emit(derivativeDelta(scope, observedAt, fields, fact))
+				appendNativeDerivativeBatch(batches, observedAt, fields, fact)
 			}
 		}
+		emitNativeDerivativeBatches(scope, batches, emit)
 		return nil
 	}); err != nil {
 		return err
@@ -154,6 +159,7 @@ func (watcher *lighterDerivativeWatcher) stream(ctx context.Context, bootstrap n
 		return err
 	}
 	if err := client.SubscribeAllMarketStats(func(payload []byte) {
+		batches := make(map[nativeDerivativeField]*nativeDerivativeBatch)
 		for _, row := range decodeLighterMarketStats(payload) {
 			identity, ok := identities[row.MarketID]
 			if !ok {
@@ -162,9 +168,10 @@ func (watcher *lighterDerivativeWatcher) stream(ctx context.Context, bootstrap n
 			observedAt := fundingMillisOrNow(row.Timestamp)
 			fact, fields := lighterMarketStatFact(identity, row, observedAt)
 			if fields != 0 {
-				emit(derivativeDelta(bootstrap.Scope, observedAt, fields, fact))
+				appendNativeDerivativeBatch(batches, observedAt, fields, fact)
 			}
 		}
+		emitNativeDerivativeBatches(bootstrap.Scope, batches, emit)
 	}); err != nil {
 		return err
 	}
@@ -193,6 +200,7 @@ func (watcher *hyperliquidDerivativeWatcher) stream(ctx context.Context, bootstr
 	}
 	if err := client.SubscribeAllDexsAssetCtxs(func(event hyperliquid.WsAllDexsAssetCtxs) {
 		observedAt := time.Now().UTC()
+		batches := make(map[nativeDerivativeField]*nativeDerivativeBatch)
 		for dex, rows := range event.Ctxs {
 			marketIdentities := identities[dex]
 			for index, row := range rows {
@@ -215,9 +223,10 @@ func (watcher *hyperliquidDerivativeWatcher) stream(ctx context.Context, bootstr
 				if fact.OpenInterestNotional.Valid {
 					fields |= nativeDerivativeFieldOpenInterestNotional
 				}
-				emit(derivativeDelta(bootstrap.Scope, observedAt, fields, fact))
+				appendNativeDerivativeBatch(batches, observedAt, fields, fact)
 			}
 		}
+		emitNativeDerivativeBatches(bootstrap.Scope, batches, emit)
 	}); err != nil {
 		return err
 	}
@@ -254,6 +263,45 @@ func markStreamFact(identity exchange.InstrumentIdentity, rate, mark, index stri
 
 func derivativeDelta(scope exchange.CatalogScope, observedAt time.Time, fields nativeDerivativeField, facts ...nativeDerivativeFact) nativeDerivativePatch {
 	return nativeDerivativePatch{Kind: nativeDerivativePatchDelta, Scope: scope, ObservedAt: observedAt, Fields: fields, Facts: facts}
+}
+
+type nativeDerivativeBatch struct {
+	observedAt time.Time
+	facts      []nativeDerivativeFact
+}
+
+// appendNativeDerivativeBatch groups one native all-market frame by field
+// shape. DerivativePatch carries one mask for all facts, so differently shaped
+// rows need separate batches, but rows with the same shape must not become one
+// Apply call per instrument.
+func appendNativeDerivativeBatch(batches map[nativeDerivativeField]*nativeDerivativeBatch, observedAt time.Time, fields nativeDerivativeField, fact nativeDerivativeFact) {
+	if fields == 0 {
+		return
+	}
+	batch := batches[fields]
+	if batch == nil {
+		batch = &nativeDerivativeBatch{}
+		batches[fields] = batch
+	}
+	if observedAt.After(batch.observedAt) {
+		batch.observedAt = observedAt
+	}
+	batch.facts = append(batch.facts, fact)
+}
+
+func emitNativeDerivativeBatches(scope exchange.CatalogScope, batches map[nativeDerivativeField]*nativeDerivativeBatch, emit func(nativeDerivativePatch)) {
+	fields := make([]nativeDerivativeField, 0, len(batches))
+	for field := range batches {
+		fields = append(fields, field)
+	}
+	sort.Slice(fields, func(i, j int) bool { return fields[i] < fields[j] })
+	for _, field := range fields {
+		batch := batches[field]
+		if batch == nil || len(batch.facts) == 0 {
+			continue
+		}
+		emit(derivativeDelta(scope, batch.observedAt, field, batch.facts...))
+	}
 }
 
 func derivativeIdentityByNative(facts []nativeDerivativeFact) map[string]exchange.InstrumentIdentity {

@@ -16,7 +16,7 @@ func (c *Client) GetInstruments(ctx context.Context, category, symbol string) ([
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get instruments failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get instruments", out.Code, out.Msg)
 	}
 	return out.Data, nil
 }
@@ -31,7 +31,7 @@ func (c *Client) GetTicker(ctx context.Context, category, symbol string) (*Ticke
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get ticker failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get ticker", out.Code, out.Msg)
 	}
 	if len(out.Data) == 0 {
 		return nil, fmt.Errorf("bitget sdk: ticker not found for %s %s", category, symbol)
@@ -48,7 +48,7 @@ func (c *Client) GetTickers(ctx context.Context, category string) ([]Ticker, err
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get tickers failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get tickers", out.Code, out.Msg)
 	}
 	return out.Data, nil
 }
@@ -68,7 +68,7 @@ func (c *Client) GetOrderBook(ctx context.Context, category, symbol string, limi
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get orderbook failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get orderbook", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -88,7 +88,7 @@ func (c *Client) GetRecentFills(ctx context.Context, category, symbol string, li
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get fills failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get fills", out.Code, out.Msg)
 	}
 	return out.Data, nil
 }
@@ -106,7 +106,7 @@ func (c *Client) GetOpenInterest(ctx context.Context, symbol, productType string
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get open interest failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get open interest", out.Code, out.Msg)
 	}
 	return &out.Data, nil
 }
@@ -132,7 +132,7 @@ func (c *Client) GetHistoryFundRate(ctx context.Context, symbol, productType str
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get history fund rate failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get history fund rate", out.Code, out.Msg)
 	}
 	return out.Data, nil
 }
@@ -151,7 +151,7 @@ func (c *Client) GetCurrentFundRate(ctx context.Context, symbol, productType str
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get current fund rate failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get current fund rate", out.Code, out.Msg)
 	}
 	for i := range out.Data {
 		out.Data[i].RequestTime = out.RequestTime
@@ -184,7 +184,7 @@ func (c *Client) GetCandles(ctx context.Context, category, symbol, interval, can
 		return nil, err
 	}
 	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: get candles failed: %s %s", out.Code, out.Msg)
+		return nil, newResponseError("get candles", out.Code, out.Msg)
 	}
 	return out.Data, nil
 }

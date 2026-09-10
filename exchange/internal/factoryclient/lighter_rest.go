@@ -1198,7 +1198,10 @@ func lighterCommandAck(product exchange.Product, operation string, op exchange.O
 	return ack, exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{Venue: lighterVenue, Product: product, Operation: operation, Code: ack.VenueCode, SafeMessage: "Lighter rejected order command"})
 }
 
-func lighterCommandErr(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string, err error, sdk *lighter.Client, tracker *lighterSendTracker) (exchange.OrderAcknowledgement, error) {
+func lighterCommandErr(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string, err error, sdk *lighter.Client, tracker *lighterSendTracker) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() {
+		normalizeHTTPCommand(&returnAck, &returnErr, err, lighterVenue, product, lighterCommandOperation(op))
+	}()
 	ack := exchange.OrderAcknowledgement{Venue: lighterVenue, Product: product, Operation: op, State: exchange.AckAmbiguous, NativeSymbol: instrument.Identity.NativeSymbol, NativeID: instrument.Identity.NativeID, OrderID: orderID, ClientOrderID: clientOrderID}
 	operation := lighterCommandOperation(op)
 	began, status := false, 0
@@ -1682,7 +1685,8 @@ func lighterReady(ctx context.Context, product exchange.Product, operation strin
 	}
 }
 
-func lighterNormalizeErr(product exchange.Product, operation string, err error) error {
+func lighterNormalizeErr(product exchange.Product, operation string, err error) (returnErr error) {
+	defer func() { returnErr = normalizeHTTPError(returnErr, err, lighterVenue, product, operation) }()
 	if err == nil {
 		return nil
 	}

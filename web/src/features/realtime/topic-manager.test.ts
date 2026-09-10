@@ -70,7 +70,7 @@ describe("RealtimeTopicManager", () => {
     });
   });
 
-  it("keeps a principal account subscription degraded until that account recovers", () => {
+	it("tracks exchange account connections independently from the browser socket", () => {
     const manager = new RealtimeTopicManager("/api/v1/account/realtime/ws");
     const states: RealtimeConnectionState[] = [];
     const stopState = manager.watchState((state) => states.push(state));
@@ -81,20 +81,20 @@ describe("RealtimeTopicManager", () => {
     socket.receive({ type: "ack", requestId: subscribe.requestId, subscriptionId: "account-events", topic: "account.events" });
 
     socket.receive({
-      type: "resync_required", subscriptionId: "account-events", topic: "account.events",
-      code: "UPSTREAM_GAP", data: { accountId: "acct-a" },
+	  type: "delta", subscriptionId: "account-events", topic: "account.events",
+	  data: { kind: "account.account_connection", accountId: "acct-a", payload: { route_id: "perp-usdt", state: "disconnected" } },
     });
     expect(states.at(-1)).toBe("degraded");
 
     socket.receive({
       type: "delta", subscriptionId: "account-events", topic: "account.events",
-      data: { kind: "account.account_health", accountId: "acct-b" },
+	  data: { kind: "account.account_connection", accountId: "acct-b", payload: { route_id: "perp-usdt", state: "connected" } },
     });
     expect(states.at(-1)).toBe("degraded");
 
     socket.receive({
       type: "delta", subscriptionId: "account-events", topic: "account.events",
-      data: { kind: "account.account_health", accountId: "acct-a" },
+	  data: { kind: "account.account_connection", accountId: "acct-a", payload: { route_id: "perp-usdt", state: "connected" } },
     });
     expect(states.at(-1)).toBe("online");
 

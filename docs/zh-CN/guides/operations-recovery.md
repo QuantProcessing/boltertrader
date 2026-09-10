@@ -1,132 +1,95 @@
 # 运维与恢复
 
-> 英文为规范版本。[English](../../guides/operations-recovery.md)
+> 本页为[英文规范](../../guides/operations-recovery.md)的中文说明。
 
-本页讲怎么把这套栈跑起来，以及结果不明确时该怎么办。它不能替代交易所自己的 runbook，
-而且这里没有任何东西能把离线证据变成生产就绪。
+交付形态保持现有单机 Compose：一个 PostgreSQL、Gateway、Trading、Auth edge 和 Web。
+同一个 Go 镜像还包含 `gateway-market` 与 `gateway-monitor`，无需新增监控服务。
+对外端口只绑定本机回环地址。
 
-## 运行这套栈
+## 启动与诊断
 
-五条命令覆盖整个生命周期。
+`make up` 生成缺失的服务凭据、构建镜像、运行三个迁移器、启动服务并检查就绪状态。
+`make down` 保留数据库卷；`make down-hard` 会删除数据，只用于明确可以丢弃的数据。
+已有数据库发生角色或迁移差异时先检查并制定升级方案，不要把删除卷当成常规修复。
 
-| 命令 | 效果 |
-| --- | --- |
-| `make up` | 生成密钥与 `.env.stack`，构建、启动、等待健康，然后跑 doctor |
-| `make doctor` | 诊断一个正在运行的栈，不改动任何东西 |
-| `make logs` | 跟随全部容器的输出 |
-| `make down` | 停掉栈，保留数据库卷 |
-| `make down-hard` | 停掉栈，并删除卷 |
+交易所凭证以密文保存在 PostgreSQL，必须同时备份 `.secrets/stack/secret_master_key`。
+替换主密钥不能解密原来的账户。`.secrets/stack` 其余文件保存服务令牌与登录初始化材料；
+`.secrets/store` 已不再使用。
 
-`make up` 可以反复跑。缺的它会生成，松的它会收紧，已经对的它不动。
+`gateway_market_hot_instruments{venue,market_family}` 只统计有活跃消费需求的不同标的。
+它不是连接数，也不表示每类衍生品数据都已经订阅。旧 `gateway_market_hot_subscriptions`
+会把同一数量重复记到多个数据集，现已删除。
 
-两种拆栈方式的区别，比看上去更重要。Postgres 镜像只在数据目录为空时跑一次初始化脚本。
-因此卷活下来，就意味着被改过的角色集合永远不会被应用——所以只要动了
-`docker/postgres/initdb/` 下的任何东西，就只有 `make down-hard` 能让那次改动生效。
+`make doctor` 检查 Docker、服务密钥文件、数据库角色与 HTTP 就绪。公开报价默认标为
+**未检查**，指定标的才验证真实 BBO：
 
-## 读懂 `make doctor`
+```sh
+go run ./internal/devsetup/cmd/doctor -instrument 'binance:live:spot:BTC-USDT'
+```
 
-Doctor 按固定顺序跑一组检查，而这个顺序就是排查顺序：某一项失败之后，它下面的往往
-都因为同一个原因而失败。
+标的 ID 从 `gateway-market` 的目录获取。诊断验证报价的源时间并释放临时订阅。
+进程正常、目录加载成功、某条实时行情可用是三个不同的结论。
 
-| 检查 | 健康的答案 |
-| --- | --- |
-| `docker` | 守护进程有响应 |
-| `.env.stack` | 存在且非空 |
-| `credentials` | 七个文件，权限 `0600`，位于 `.secrets/stack` |
-| `credential store` | 存在，且对 gateway 运行所用的 uid 可写 |
-| `postgres` | 端口可以接受连接 |
-| `postgres roles` | 六个角色、三个数据库、writer 成员资格已授予 |
-| `gateway` | 带认证的 `/v1/health/ready` 返回 `200` |
-| `trading` | 带认证的 `/api/v1/system/readiness` 返回 `200` |
-| `auth edge` | 无会话时 `/api/v1/me` 返回 `401` |
-| `web` | `/` 返回 `200` |
+需要代理时显式配置：
 
-其中三项值得解释，因为每一项都有一个看起来合理、实则错误的读法。
+```sh
+GATEWAY_HTTP_PROXY=http://127.0.0.1:10900 make up
+```
 
-**Gateway 探针会带 bearer token。** 就绪位于与其他每一条 `/v1` 路由相同的认证之后，
-所以不带认证的探针会把健康的 gateway 报成坏的。容器镜像是 distroless 的，没有 shell
-可以用来读那个 token 文件——这正是这项检查跑在宿主机上的原因。
+Bootstrap 会将回环地址改写为 Docker 可达的 `host.docker.internal`。主机直接启动 Go
+Gateway 时需要 `HTTP_PROXY`、`HTTPS_PROXY` 和适当的 `NO_PROXY`；仅有 `ALL_PROXY` 不够。
+镜像下载依赖另用可选的 `BOLTER_DOCKER_HTTP_PROXY`。代理端口连通不代表交易所接口可用，
+以指定标的的报价诊断为准。
 
-**Auth edge 返回 `401` 才算通过。** 那里返回 `200` 就意味着 edge 替一个它从未认证过的
-principal 作答——这项检查把任何其他状态码都视为失败，包括成功。
+## 未知订单
 
-**角色成员资格是被显式核对的。** 一次没发生的 grant 会留下两个都存在的角色和一个写不进去
-的服务，否则这个问题要到第一次 insert 才暴露，而不是在启动时。
+恢复只查询既有订单身份，不自动重发。“结果未知”的状态说明展示持久化任务原因、
+已开始查询次数、最近诊断时间和已确认的 Gateway 状态/版本。后续查询失败不会抹掉
+原先成交，也不会把未知改成失败。
 
-Skip 从来不是值得看的那一行。Skip 总是位于某个已经在它上面被报出来的失败的下游。
+保留 command、client-order、Gateway-order ID，核对交易所订单、成交及当前持仓后，
+再决定新的交易操作。界面没有“认为失败并重发”。新命令创建后 30 秒内没有开始发送会
+停止执行；它与“已经开始发送但结果未知”不同。
 
-## 启动与关停
+删除账户仅移除本地凭证与连接，不撤单、不平仓；历史命令和成交证据保留。
 
-Gateway 在自己的前置条件成立之前拒绝提供服务：配置、凭证解密、数据库连通、schema 版本、
-catalog 加载、route profile、就绪注册。一个始终不就绪的 gateway 一定是其中某一项没过，
-而 `make logs` 会说是哪一项。它不会以降级状态启动，因为一个在 catalog 加载完成前就接受
-写入的 gateway，会拿着自己并不掌握的规则去校验订单。
+## 备份与恢复
 
-关停方向上，gateway 在这套栈十五秒的停止窗口内最多 drain 十秒。在途请求会跑完，新请求
-不再开始。Drain 的结果被记录为指标，因此一个被以快于其 drain 速度停掉的栈是可见的，
-而不是靠推断。
+备份时停止 web、authedge、trading、gateway 四个应用容器，PostgreSQL 保持运行。
+这样三个数据库对应同一个维护时点。使用仓库外的私有目录：
 
-## 不明确是一种状态，不是重试信号
+```sh
+umask 077
+backup_dir="$HOME/bolter-backups/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
+docker compose --env-file .env.stack stop web authedge trading gateway
+for database in bolter_gateway bolter_trading bolter_authedge; do
+  docker compose --env-file .env.stack exec -T postgres \
+    pg_dump -U bolter_bootstrap -Fc "$database" > "$backup_dir/$database.dump" || exit 1
+done
+cp -R .secrets "$backup_dir/.secrets"
+cp .env.stack "$backup_dir/.env.stack"
+cp docker/gateway.docker.yaml "$backup_dir/gateway.yaml"
+docker compose --env-file .env.stack start gateway trading authedge web
+make doctor
+```
 
-提交之后的超时或传输错误，可能意味着交易所已经接受了这笔订单。这是本页最重要的一条
-运维事实，而两层都是围绕它构建的。
+同时记录代码 commit、镜像版本，以及 `GATEWAY_CONFIG_FILE` 指定的自定义配置。
+备份包含账户密钥与登录会话，应保存到独立、持久的私有存储。
 
-Trading 服务的命令账本有一个显式的 `uncertain` 状态；只要 gateway 查询失败、或者返回了
-它无法解读的证据，reconciler 就把该命令置于此。重试从五秒起退避，翻倍直到一分钟封顶，
-整段时间内该命令始终可被认领。它不会因为一次读失败就变成 `failed`。
+恢复到**全新的空部署**，保留原数据：
 
-**在第一次结果尚未定论之前，不要用一个新身份提交替代订单。** 保留原始的 command ID 和
-任何交易所订单 ID，并且只按这些精确身份去查。一条失败的命令，并不能证明没有任何写入抵达
-交易所。
+1. 使用备份时的代码/镜像，先恢复 `.secrets`，目录权限 0700、文件 0600。调整复制的
+   `.env.stack` 中主机路径、UID 和端口，并恢复自定义 Gateway 配置。
+2. 只启动 PostgreSQL：`docker compose --env-file .env.stack up -d --wait postgres`，
+   初始化脚本建立三个数据库与对应角色。
+3. 对每个空数据库运行 `docker compose --env-file .env.stack exec -T postgres pg_restore
+   -U bolter_bootstrap --exit-on-error -d bolter_gateway < "$backup_dir/bolter_gateway.dump"`，
+   对 Trading 和 Auth edge 重复同样操作。保留属主与 ACL，不对现有部署使用 `--clean`。
+4. 运行 `make up` 检查迁移校验和及就绪状态，再读取交易所当前事实。恢复的本地命令
+   不应作为新意图重新派发。
 
-| 观察到的结果 | Operator 动作 |
-| --- | --- |
-| 交给交易所之前的校验、生命周期或风控拒绝 | 修请求或就绪条件；不要为这次尝试做任何交易所侧 cleanup |
-| 已确认的订单 | 保留 command 与交易所 ID；按正常的状态与成交处理走 |
-| 可能已交给交易所但没有权威结果 | 冻结替代写入，按精确的已知身份去查，做 reconcile；证据仍不完整就让结果保持不明确 |
-| 权威的终态结果 | 只做那些由终态订单、成交或账户证据所支持的 cleanup |
-
-从一份完整的挂单列表中缺席，只能证明这笔订单不在挂单中。它不提供终态原因，不证明零成交，
-也不构成替代下单的授权。在实现了精确状态报告与精确成交报告的 product 上使用它们；否则
-结果保持未定论。
-
-终态只经由结算观察者抵达活动流，别无他途——所以界面显示的是账本结算下来的东西，而不是提交
-那一刻响应体所暗示的东西。见 [trading 服务](trading-service.md)。
-
-## 数据流缺口
-
-Gateway 的公开流按设计没有 cursor replay。每个逻辑 topic 都从一份全新的权威 snapshot 开始。
-检测到原生缺口时发出 `resync_required`；feed owner 重连后发布新 generation 的 snapshot，
-不会中断浏览器 socket 上其他正常 topic。
-
-把这个事件当作权威：丢弃不完整的 generation，取新的 snapshot。不要用你收到的那些事件去重建订单或持仓。缺口
-意味着你手上的序列不完整，而把不完整的序列当作完整的来应用，会得到一个看起来已经结算、
-实际并没有的持仓。
-
-私有账户通知不同：它是建立在 REST 权威状态上的变更提示，不是用来重建状态的事件日志。原生
-账户流出现缺口时只把对应账户标为降级，principal 级浏览器订阅保持打开；固定 60 秒 REST
-reconciliation 会修复漏掉的实体。
-
-## Cleanup 是有界的
-
-验收装置只撤销它能识别为自己所有的订单，只平掉它能归因且能定界的敞口。退出码为零时，
-适用该测试精确的、按 product 限定的成功定义。任何非零或不明确的退出，都意味着最终状态
-未被确认——哪怕延迟 cleanup 跑过了。
-
-绝不盲目撤销无关订单，也绝不平掉未经证实的持仓。**如果平仓结果不明确，再卖一笔可能凭空
-建立一个空头。** Cleanup 路径正因如此是 fail-closed 的：一次不明确的平仓之后，稳定的非零
-持仓证据会阻止再下一笔平仓单，而不是重试。
-
-现货 cleanup 由捕获到的权威基础资产余额基线、观测到的成交数量、手续费预留、size step 与
-最小名义额共同定界。它绝不从账户整体余额里去卖推定属于自己的部分。永续 cleanup 则被限制在
-选定的 instrument 与 account 范围内，带显式数量上限与 reduce-only 语义。
-
-## 证据
-
-记录 command、environment 与 product、client 与交易所 ID、终态报告，以及 reconciliation
-结果。不要记录任何 secret。原始执行证据保持私有；对外发布的内容只包含有范围、有日期、
-zero-skip 的结果。
-
-- [测试](../reference/testing.md)
-- [状态与 reconciliation](../concepts/state-reconciliation.md)
-- [本地栈](../getting-started/local-stack.md)
+`make test-compose-recovery` 在临时项目演练中断与三库恢复。
+`python3 scripts/acceptance/stack_recovery.py --public-seconds 180` 额外运行 Binance BTC
+现货与 OKX BTC 永续监控，跨服务重启记录资源采样，结束后删除全部临时容器、卷与密钥。
+只需公开网络，无交易所凭证。三分钟观测不等于长时间稳定性保证。

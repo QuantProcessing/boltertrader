@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"github.com/QuantProcessing/boltertrader/credential"
 	"strings"
 	"sync"
 	"testing"
@@ -355,7 +356,7 @@ func TestBrowserCredentialProjectionCoversEveryExecutableVariant(t *testing.T) {
 		"lighter": "lighter_signer", "hyperliquid": "evm_private_key", "aster": "aster_api_wallet", "nado": "nado_signer",
 	}
 	for venue, authKind := range want {
-		schema, err := browserCredentialSchema(venue)
+		schema, err := credential.DefaultRegistry().Schema(venue)
 		if err != nil || schema.AuthKind != authKind || len(schema.Fields) < 2 {
 			t.Fatalf("venue=%s schema=%+v err=%v", venue, schema, err)
 		}

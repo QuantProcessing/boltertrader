@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
@@ -75,7 +76,7 @@ func (c *Client) restBaseURL() string {
 
 // Do executes a generic HTTP request and returns the raw response body.
 // It handles authentication signatures if auth is required.
-func (c *Client) Do(ctx context.Context, method Method, path string, payload interface{}, auth bool) ([]byte, error) {
+func (c *Client) Do(ctx context.Context, method Method, path string, payload interface{}, auth bool) (_ []byte, returnErr error) {
 	var bodyReader io.Reader
 	var bodyString string
 
@@ -104,7 +105,11 @@ func (c *Client) Do(ctx context.Context, method Method, path string, payload int
 		c.Signer.SignRequest(req, string(method), path, bodyString, c.ApiKey, c.Passphrase)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := venuehttp.DoHTTP(c.HTTPClient, req, "okx")
+	defer func() {
+		returnErr = venuehttp.WithHTTPResponse(returnErr, resp)
+	}()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -122,6 +127,17 @@ func (c *Client) Do(ctx context.Context, method Method, path string, payload int
 		return nil, fmt.Errorf("http error %d: %s", resp.StatusCode, string(data))
 	}
 
+	var envelope struct {
+		Code    string          `json:"code"`
+		Message string          `json:"msg"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(data, &envelope) == nil && envelope.Code != "" && envelope.Code != "0" {
+		if envelope.Code == "50011" || envelope.Code == "50061" {
+			return nil, sdkcore.NewExchangeError("OKX", envelope.Code, envelope.Message, sdkcore.ErrRateLimited)
+		}
+		return nil, &APIError{Code: envelope.Code, Message: envelope.Message, Details: string(envelope.Data)}
+	}
 	return data, nil
 }
 

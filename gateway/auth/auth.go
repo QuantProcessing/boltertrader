@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,14 +34,14 @@ func NewBearerMiddleware(ctx context.Context, provider secret.Provider, ref secr
 	hash := sha256.Sum256([]byte(token))
 	return BearerMiddleware{
 		tokenHash: hash,
-		principal: domain.PrincipalID("token-" + hex.EncodeToString(hash[:8])),
+		principal: domain.PrincipalID("gateway-owner"),
 		identity:  domain.NewIdentityGenerator(domain.IdentityGeneratorOptions{}),
 	}, nil
 }
 
 func (middleware BearerMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !middleware.authorized(r.Header.Get("Authorization")) {
+		if len(r.Header.Values("Authorization")) != 1 || !middleware.authorized(r.Header.Get("Authorization")) {
 			writeUnauthorized(w, middleware.correlationID())
 			return
 		}
@@ -59,8 +58,8 @@ func Principal(ctx context.Context) (domain.PrincipalID, bool) {
 	return principal, ok && principal.Validate() == nil
 }
 
-// PrincipalID returns the stable non-secret identity derived from the bearer
-// token. It is safe to use for durable ownership and private event filtering.
+// PrincipalID identifies the owner of this personal Gateway. Changing a service
+// token changes authentication, not durable order ownership or event filtering.
 func (middleware BearerMiddleware) PrincipalID() domain.PrincipalID {
 	return middleware.principal
 }

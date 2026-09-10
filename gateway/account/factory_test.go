@@ -36,7 +36,7 @@ func (*probeClientHandle) exactLookupReady() bool            { return false }
 func TestFactoryCandidateProbeOnlyReadsBalance(t *testing.T) {
 	spot := &probeSpotClient{}
 	handle := &probeClientHandle{spotClient: spot}
-	route := factoryCandidateRoute{handle: handle}
+	route := factoryConnectionRoute{handle: handle}
 
 	if err := route.Probe(context.Background()); err != nil {
 		t.Fatal(err)

@@ -35,10 +35,16 @@ type PerpAccountREST interface {
 	Positions(context.Context, PositionsRequest) ([]Position, error)
 }
 
-// PerpREST is the Perp-only reference-data and leverage surface.
-type PerpREST interface {
+// PerpMarketREST is the public funding-data surface of perpetual products.
+type PerpMarketREST interface {
 	FundingRate(context.Context, FundingRateRequest) (FundingRate, error)
 	FundingRateHistory(context.Context, FundingRateHistoryRequest) (FundingRatePage, error)
+}
+
+// PerpREST combines public funding data and account leverage control for an
+// account client. Market-only consumers should depend on PerpMarketREST.
+type PerpREST interface {
+	PerpMarketREST
 	SetLeverage(context.Context, SetLeverageRequest) (Leverage, error)
 }
 

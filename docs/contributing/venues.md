@@ -16,10 +16,10 @@ This page is the sequence.
 | 1 | `sdk/<venue>/` | The venue's own API, in the venue's own vocabulary |
 | 2 | `exchange` | Conformance to `exchange.SpotClient` or `exchange.PerpClient` |
 | 3 | `exchange/factory` | One typed constructor per product row |
-| 4 | `credential` | The venue's auth kind |
-| 5 | `routeprofile` | The venue, product, settlement, and native environments |
+| 4 | `credential` | Auth kind and field schema |
+| 5 | `routeprofile` | The venue, product and settlement catalog |
 | 6 | `gateway/account` | The construction case for each route identity |
-| 7 | `gateway/capability` | The product row: code, exact-lookup strategy, write readiness |
+| 7 | `gateway/capability` | Derived route rows, implemented operations and readback strategy |
 | 8 | `exchange/testdata/public_surface_manifest.json` | The published surface both matrices are generated from |
 | 9 | `Makefile` | External acceptance targets |
 
@@ -111,29 +111,29 @@ knowledge about how the venue is spoken to. See
 
 ## 7. The gateway product row
 
-`gateway/capability` is where a venue becomes something the product can trade.
-Each row carries a three-letter product code, the row identity, the operations it
-admits, and three fields that decide how the gateway behaves when an order goes
-ambiguous:
+`gateway/capability` derives its rows from `routeprofile.DefaultProfiles()`. It
+adds only Gateway operation support and exact-readback strategy. `trading_supported`
+is static implementation support, not API-key permission, live test evidence or
+connection readiness. Lighter Spot remains read-only. Runtime readiness comes
+from the active account connection and the order recovery fence.
 
-- **Exact-lookup strategy** — how the row answers "what happened to this
-  identifier". Most rows read back by client or venue order ID. Lighter's two
-  rows scan the active list plus the first inactive page and report an absence as
-  unconfirmed rather than proven.
-- **Write-ready default** — whether the row accepts placements at all.
-- **Promotion evidence** — what a row must show before that default may change,
-  which for every row but one is `fixture_and_live_exact_lookup`. Lighter Spot
-  must additionally show two-sided liquidity. The evidence used to be
-  collectable on demo or testnet; with those gone it can only be gathered
-  against the live book, which raises the cost of promotion without changing
-  what promotion requires.
+`exchange.MarketCapabilities()` owns native public transports, cadence, topic
+limits and snapshot semantics. `exchange.NativeMarketFamily` maps supported
+routes to physical feed families; unknown products return no family. Gateway's
+`marketcapability` package applies freshness, selection and subscription budgets.
 
-One field is not negotiable per venue: no row claims that pagination proves
-absence, including the promoted ones. A new venue does not get to set it because
-its history endpoint looks complete — see
-[State and reconciliation](../concepts/state-reconciliation.md) for why an
-absence is only sometimes an answer. Which rows are write-ready today is owned by
-[Unsupported surfaces](../reference/unsupported.md).
+Credential fields come from `credential.Registry.Schema`, using the same auth-kind
+map as `Decode`. Trading renders that schema directly. Do not probe fake credentials
+or add a venue branch to a product page.
+
+Bind each typed factory configuration to its route ID in `exchange/factory/profiles.go`.
+The bidirectional binding test requires every route to have exactly one public
+connector, a credential schema and a native market family. Native SDK dispatch is
+still explicit; do not combine secrets, health and constructors in one registry.
+
+No route claims pagination proves order absence. Offline fixture results live in
+actual test runs and the manifest, rather than constant `passed` fields in an API.
+Real account/product acceptance must be dated and scoped separately.
 
 ## 8. The manifest drives both matrices
 
@@ -194,3 +194,14 @@ what a green run proves.
   per-row limits
 - [Testing](../reference/testing.md) — the command ladder
 - [Contributing documentation](documentation.md) — the mirror and curation rules
+
+## Worked existing venue: Bybit
+
+Bybit uses the SDK API-key client, typed spot/USDT-perp/USDC-perp constructors,
+one `credential.AuthAPIKeySecret` schema, and three route profiles. The two
+perpetual routes share the `linear` native feed family; their account/order
+identities stay distinct. Gateway account construction binds typed credentials;
+Trading and the browser consume route IDs and schema without a Bybit switch.
+`TestEveryRouteHasOneFactoryBindingCredentialSchemaAndMarketFamily`, the Bybit
+REST/WS fixtures and `TestBybitUsesOneLinearAllMarketOwner` exercise that path.
+This proves the offline implementation contract, not every Bybit account mode.

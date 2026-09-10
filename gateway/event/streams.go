@@ -17,7 +17,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/hotset"
-	"github.com/QuantProcessing/boltertrader/gateway/marketcapability"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
@@ -44,14 +43,6 @@ type atomicStreamRouteSource interface {
 // Diagnostic observers are optional and never participate in write admission
 // or event ordering. Browser account-realtime health comes from the socket
 // itself; these hooks only support local diagnostics and tests.
-type privateStreamStateObserver interface {
-	SetPrivateStreamState(domain.AccountID, bool, string) error
-}
-
-type privateStreamRouteStateObserver interface {
-	SetPrivateStreamRouteState(domain.WriteFence, bool, string) error
-}
-
 type StreamReconciler interface {
 	ObserveVenueOrder(context.Context, order.VenueOrderObservation) (order.Result, error)
 }
@@ -74,8 +65,10 @@ type FillPayload struct {
 }
 
 type BalancePayload struct {
-	AccountID domain.AccountID `json:"account_id"`
-	Balance   exchange.Balance `json:"balance"`
+	AccountID       domain.AccountID `json:"account_id"`
+	Product         exchange.Product `json:"product"`
+	SettlementAsset string           `json:"settlement_asset,omitempty"`
+	Balance         exchange.Balance `json:"balance"`
 }
 
 type PositionPayload struct {
@@ -86,13 +79,6 @@ type PositionPayload struct {
 	Operation    PositionOperation     `json:"operation"`
 	Position     exchange.Position     `json:"position"`
 	Reason       string                `json:"reason,omitempty"`
-}
-
-type AccountHealthPayload struct {
-	AccountID  domain.AccountID `json:"account_id"`
-	ReadReady  bool             `json:"read_ready"`
-	WriteReady bool             `json:"write_ready"`
-	Reason     string           `json:"reason,omitempty"`
 }
 
 type StreamManager struct {
@@ -106,8 +92,9 @@ type StreamManager struct {
 	subscriptionBuffer int
 	hotset             *hotset.Manager
 
-	mu       sync.Mutex
-	versions map[string]domain.ResourceVersion
+	mu          sync.Mutex
+	versions    map[string]domain.ResourceVersion
+	connections map[string]AccountConnectionState
 
 	startMu       sync.Mutex
 	lifecycleMu   sync.Mutex
@@ -159,6 +146,7 @@ func NewStreamManager(options StreamOptions) (*StreamManager, error) {
 		principal: options.PrincipalID, reconnectBackoff: options.ReconnectBackoff, reconnectMaximum: options.ReconnectMaximum,
 		subscriptionBuffer: options.SubscriptionBuffer,
 		versions:           make(map[string]domain.ResourceVersion),
+		connections:        make(map[string]AccountConnectionState),
 		registered:         make(map[domain.AccountID]struct{}), supervisors: make(map[domain.AccountID]*accountSupervisor),
 		transitions: make(map[domain.AccountID]*sync.Mutex),
 		closeDone:   make(chan struct{}),
@@ -359,19 +347,12 @@ func (manager *StreamManager) prepareAndInstallAccount(
 	if err := runContext.Err(); err != nil {
 		return err
 	}
-	if err := manager.positions.MarkSyncing(manager.principal, accountID); err != nil {
-		return fmt.Errorf("mark position projection syncing failed")
-	}
 	if _, err := manager.accounts.Status(accountID); err != nil {
 		if errors.Is(err, account.ErrUnknownAccount) {
 			return errAccountRuntimeUnavailable
 		}
 		return fmt.Errorf("read account stream scope failed")
 	}
-	if observer, ok := manager.accounts.(privateStreamStateObserver); ok {
-		_ = observer.SetPrivateStreamState(accountID, false, "private_stream_starting")
-	}
-
 	manager.lifecycleMu.Lock()
 	defer manager.lifecycleMu.Unlock()
 	if manager.closed {
@@ -469,7 +450,7 @@ func (manager *StreamManager) superviseStaticAccount(ctx context.Context, accoun
 		streams, err := manager.openAccountStreams(ctx, accountID)
 		if err != nil {
 			logPrivateStreamConnectFailure(accountID, "", err)
-			manager.unavailable(accountID, "private_stream_connect_failed", true)
+			manager.unavailable(accountID, "private_stream_connect_failed")
 			if !reconnect.Wait(ctx) {
 				return
 			}
@@ -481,17 +462,12 @@ func (manager *StreamManager) superviseStaticAccount(ctx context.Context, accoun
 			if ctx.Err() != nil {
 				return
 			}
-			manager.unavailable(accountID, account.ReasonPrivateStreamGap, true)
+			manager.unavailable(accountID, "private_stream_disconnected")
 			if !reconnect.Wait(ctx) {
 				return
 			}
 			continue
 		}
-		if observer, ok := manager.accounts.(privateStreamStateObserver); ok {
-			_ = observer.SetPrivateStreamState(accountID, true, "")
-		}
-		manager.publishHealth(accountID)
-		_ = manager.positions.MarkLive(manager.principal, accountID)
 		reconnect.Reset()
 
 		select {
@@ -536,7 +512,7 @@ func (manager *StreamManager) superviseDynamicAccount(
 		}
 		snapshot, err := manager.accounts.Instruments(accountID)
 		if err != nil || len(snapshot.Instruments) == 0 {
-			manager.unavailable(accountID, "private_stream_connect_failed", true)
+			manager.unavailable(accountID, "private_stream_connect_failed")
 			if !reconnect.Wait(ctx) {
 				return true
 			}
@@ -547,7 +523,7 @@ func (manager *StreamManager) superviseDynamicAccount(
 			return false
 		}
 		if err != nil {
-			manager.unavailable(accountID, "private_stream_connect_failed", true)
+			manager.unavailable(accountID, "private_stream_connect_failed")
 			if !reconnect.Wait(ctx) {
 				return true
 			}
@@ -581,7 +557,7 @@ func (manager *StreamManager) runDynamicAccount(
 			streams, err := manager.openDynamicRouteStreams(ctx, accountID, routeID, plan.routes[routeID], faults)
 			if err != nil {
 				logPrivateStreamConnectFailure(accountID, routeID, err)
-				manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed", true)
+				manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed")
 				initializationFailed = true
 				break
 			}
@@ -610,11 +586,6 @@ func (manager *StreamManager) runDynamicAccount(
 				if sessions[activation.routeID] != activation.streams || activation.err != nil {
 					continue
 				}
-				if observer, ok := manager.accounts.(privateStreamRouteStateObserver); ok {
-					_ = observer.SetPrivateStreamRouteState(domain.WriteFence{AccountFence: plan.generation, RouteID: activation.routeID}, true, "")
-				}
-				manager.publishHealth(accountID)
-				_ = manager.positions.MarkLive(manager.principal, accountID)
 			case fault := <-faults:
 				if sessions[fault.routeID] != fault.streams {
 					continue
@@ -622,7 +593,7 @@ func (manager *StreamManager) runDynamicAccount(
 				fault.streams.close()
 				delete(sessions, fault.routeID)
 				fence := domain.WriteFence{AccountFence: plan.generation, RouteID: fault.routeID}
-				manager.dynamicRouteUnavailable(accountID, fence, account.ReasonPrivateStreamGap, true)
+				manager.dynamicRouteUnavailable(accountID, fence, "private_stream_disconnected")
 				retrying[fault.routeID] = true
 				manager.startDynamicRouteReconnect(
 					ctx, accountID, fence, plan.routes[fault.routeID], faults, reconnects,
@@ -680,7 +651,7 @@ func (manager *StreamManager) reconnectDynamicRoute(
 		streams, err := manager.openDynamicRouteStreams(ctx, accountID, fence.RouteID, selected, faults)
 		if err != nil {
 			logPrivateStreamConnectFailure(accountID, fence.RouteID, err)
-			manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed", true)
+			manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed")
 			continue
 		}
 		return streams, true
@@ -757,19 +728,11 @@ func (manager *StreamManager) dynamicRouteUnavailable(
 	accountID domain.AccountID,
 	fence domain.WriteFence,
 	reason string,
-	resync bool,
 ) {
 	slog.Warn("private stream route unavailable; account realtime unavailable",
 		"account_id", string(accountID), "route_id", string(fence.RouteID),
-		"account_fence", fence.AccountFence, "reason", reason, "resync", resync)
-	if observer, ok := manager.accounts.(privateStreamRouteStateObserver); ok {
-		_ = observer.SetPrivateStreamRouteState(fence, false, reason)
-	}
-	_ = manager.positions.MarkStale(manager.principal, accountID, reason)
-	manager.publishHealth(accountID)
-	if resync {
-		_, _ = manager.hub.PublishResync(manager.principal, accountID, reason)
-	}
+		"account_fence", fence.AccountFence, "reason", reason)
+	manager.publishAccountConnection(accountID, fence.RouteID, AccountDisconnected, reason, time.Time{})
 }
 
 func closeDynamicRouteSessions(sessions map[domain.RouteID]*accountStreams) {
@@ -789,28 +752,35 @@ func (manager *StreamManager) activatePrivateStream(ctx context.Context, streams
 	}
 }
 
-func (manager *StreamManager) unavailable(accountID domain.AccountID, reason string, resync bool) {
+func (manager *StreamManager) unavailable(accountID domain.AccountID, reason string) {
 	slog.Warn("private stream unavailable; account realtime unavailable",
-		"account_id", string(accountID), "reason", reason, "resync", resync)
-	if observer, ok := manager.accounts.(privateStreamStateObserver); ok {
-		_ = observer.SetPrivateStreamState(accountID, false, reason)
-	}
-	_ = manager.positions.MarkStale(manager.principal, accountID, reason)
-	manager.publishHealth(accountID)
-	if resync {
-		_, _ = manager.hub.PublishResync(manager.principal, accountID, reason)
-	}
+		"account_id", string(accountID), "reason", reason)
+	manager.publishAccountConnection(accountID, "", AccountDisconnected, reason, time.Time{})
 }
 
-func (manager *StreamManager) publishHealth(accountID domain.AccountID) {
-	status, err := manager.accounts.Status(accountID)
-	if err != nil {
+func (manager *StreamManager) publishAccountConnection(accountID domain.AccountID, routeID domain.RouteID, state AccountConnectionState, reason string, observedAt time.Time) {
+	key := string(accountID) + "\x00" + string(routeID)
+	manager.mu.Lock()
+	if manager.connections[key] == state {
+		manager.mu.Unlock()
 		return
 	}
-	payload := AccountHealthPayload{
-		AccountID: accountID, ReadReady: status.ReadReady, WriteReady: status.WriteReady, Reason: status.Reason,
+	if state == AccountDisconnected && routeID == "" {
+		prefix := string(accountID) + "\x00"
+		for existing := range manager.connections {
+			if strings.HasPrefix(existing, prefix) {
+				delete(manager.connections, existing)
+			}
+		}
 	}
-	manager.publish(accountID, KindAccountHealth, "account", time.Time{}, payload)
+	if state == AccountConnected && routeID != "" {
+		delete(manager.connections, string(accountID)+"\x00")
+	}
+	manager.connections[key] = state
+	manager.mu.Unlock()
+	_ = manager.publish(accountID, KindAccountConnection, "connection:"+string(routeID), observedAt, AccountConnectionPayload{
+		AccountID: accountID, RouteID: routeID, State: state, Reason: strings.TrimSpace(reason),
+	})
 }
 
 // accountStreams owns one account's private subscriptions and the two signals a
@@ -905,7 +875,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 	streams := &accountStreams{
 		cancel: cancel, faults: make(chan struct{}, 1), activated: make(chan struct{}),
 		onFault: func() {
-			manager.unavailable(accountID, account.ReasonPrivateStreamGap, true)
+			manager.unavailable(accountID, "private_stream_disconnected")
 		},
 	}
 	closeOnError := func(err error) (*accountStreams, error) {
@@ -936,7 +906,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 			}
 			catalogItems = append(catalogItems, exchange.AccountInstrument{InstrumentID: string(public.ID), Instrument: instrument})
 		}
-		if err := manager.openAccountEventStream(streamContext, streams, socket, accountID, staticRoute, status.Product, catalogItems); err != nil {
+		if err := manager.openAccountEventStream(streamContext, streams, socket, accountID, staticRoute, status.Product, status.Settlement, catalogItems); err != nil {
 			return closeOnError(err)
 		}
 	case exchange.ProductPerp:
@@ -953,7 +923,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 			}
 			catalogItems = append(catalogItems, exchange.AccountInstrument{InstrumentID: string(public.ID), Instrument: instrument})
 		}
-		if err := manager.openAccountEventStream(streamContext, streams, socket, accountID, staticRoute, status.Product, catalogItems); err != nil {
+		if err := manager.openAccountEventStream(streamContext, streams, socket, accountID, staticRoute, status.Product, status.Settlement, catalogItems); err != nil {
 			return closeOnError(err)
 		}
 	default:
@@ -1096,10 +1066,10 @@ func (manager *StreamManager) openSelectedAccountRoute(ctx context.Context, stre
 	default:
 		return fmt.Errorf("private stream product unsupported")
 	}
-	return manager.openAccountEventStream(ctx, streams, socket, accountID, routeID, first.Instrument.Identity.Product, catalogItems)
+	return manager.openAccountEventStream(ctx, streams, socket, accountID, routeID, first.Instrument.Identity.Product, first.Status.Settlement, catalogItems)
 }
 
-func (manager *StreamManager) openAccountEventStream(ctx context.Context, streams *accountStreams, socket any, accountID domain.AccountID, routeID domain.RouteID, product exchange.Product, catalogItems []exchange.AccountInstrument) error {
+func (manager *StreamManager) openAccountEventStream(ctx context.Context, streams *accountStreams, socket any, accountID domain.AccountID, routeID domain.RouteID, product exchange.Product, settlement string, catalogItems []exchange.AccountInstrument) error {
 	accountSocket, ok := socket.(exchange.AccountWebSocket)
 	if len(catalogItems) == 0 {
 		return fmt.Errorf("private account event stream unavailable")
@@ -1115,7 +1085,7 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 	stream, err := accountSocket.WatchAccountEvents(ctx, exchange.WatchAccountEventsRequest{
 		Route: exchange.AccountRoute{
 			AccountID: string(accountID), RouteID: string(routeID), Venue: identity.Venue,
-			Environment: exchange.EnvironmentLive, Product: product, Settlement: identity.SettleAsset,
+			Environment: exchange.EnvironmentLive, Product: product, Settlement: settlement,
 			NativeFamily: accountNativeFamily(identity),
 		},
 		Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer},
@@ -1123,7 +1093,7 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 	if err != nil {
 		return err
 	}
-	hotState := newRouteHotState(ctx, manager.hotset, exchange.AccountRoute{AccountID: string(accountID), RouteID: string(routeID), Venue: identity.Venue, Environment: exchange.EnvironmentLive, Product: product, Settlement: identity.SettleAsset, NativeFamily: accountNativeFamily(identity)})
+	hotState := newRouteHotState(ctx, manager.hotset, exchange.AccountRoute{AccountID: string(accountID), RouteID: string(routeID), Venue: identity.Venue, Environment: exchange.EnvironmentLive, Product: product, Settlement: settlement, NativeFamily: accountNativeFamily(identity)})
 	streams.add(hotState.Close)
 	monitorSubscription(ctx, streams, stream, func(event exchange.AccountEvent) error {
 		if event.Validate() != nil {
@@ -1155,7 +1125,7 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 				if event.Balance == nil {
 					return fmt.Errorf("private account balance event is invalid")
 				}
-				return manager.publishBalances(accountID, *event.Balance)
+				return manager.publishBalances(accountID, product, settlement, *event.Balance)
 			})
 		case exchange.AccountEventPosition:
 			return streams.dispatchAccountData(func() error {
@@ -1165,15 +1135,15 @@ func (manager *StreamManager) openAccountEventStream(ctx context.Context, stream
 				hotState.UpdatePositions(event.InstrumentID, *event.Position)
 				return manager.publishPositions(accountID, routeID, instrumentID, *event.Position)
 			})
-		case exchange.AccountEventResyncRequired:
-			return fmt.Errorf("private account stream requires resync")
-		case exchange.AccountEventStreamStatus:
-			if event.Status != nil && event.Status.State == exchange.SubscriptionGap {
-				return fmt.Errorf("private account stream gap")
-			}
 		}
 		return nil
-	}, func() { streams.observeActivation(routeID) }, "account.events", accountID)
+	}, func() { streams.observeActivation(routeID) }, func(status exchange.StreamStatusEvent) {
+		state := AccountDisconnected
+		if status.State == exchange.SubscriptionActive {
+			state = AccountConnected
+		}
+		manager.publishAccountConnection(accountID, routeID, state, status.Reason, status.Time)
+	}, "account.events", accountID)
 	return nil
 }
 
@@ -1285,7 +1255,7 @@ func terminalOrderStatus(status string) bool {
 }
 
 func accountNativeFamily(identity exchange.InstrumentIdentity) string {
-	return marketcapability.NativeFamily(identity.Venue, identity.Product, identity.SettleAsset)
+	return exchange.NativeMarketFamily(identity.Venue, identity.Product, identity.SettleAsset)
 }
 
 // monitorSubscription drains one subscription until ctx ends or it faults.
@@ -1301,6 +1271,7 @@ func monitorSubscription[T any](
 	subscription exchange.Subscription[T],
 	onEvent func(T) error,
 	onActive func(),
+	onStatus func(exchange.StreamStatusEvent),
 	kind string,
 	accountID domain.AccountID,
 ) {
@@ -1327,10 +1298,12 @@ func monitorSubscription[T any](
 					statuses = nil
 					continue
 				}
-				if status.State == exchange.SubscriptionGap || status.State == exchange.SubscriptionClosed ||
-					status.Phase == exchange.GapStarted {
-					faultSubscription(streams, kind, accountID, fmt.Sprintf("status_%s_%s", status.State, status.Phase), nil)
+				if status.State == exchange.SubscriptionClosed {
+					faultSubscription(streams, kind, accountID, "status_closed", nil)
 					return
+				}
+				if onStatus != nil {
+					onStatus(status)
 				}
 				if status.State == exchange.SubscriptionActive && onActive != nil {
 					onActive()
@@ -1370,15 +1343,19 @@ func (manager *StreamManager) publishFill(accountID domain.AccountID, instrument
 	if resource == "" {
 		resource = event.Fill.OrderID + ":" + event.Fill.NativeSymbol
 	}
+	// Venue fill IDs can repeat across instruments. Account is already part of
+	// nextVersion's key; include the normalized instrument in the resource key.
+	resource = string(instrumentID) + "\x00" + resource
 	return manager.publish(accountID, KindFill, resource, event.Fill.Time, FillPayload{
 		AccountID: accountID, InstrumentID: instrumentID, Fill: event.Fill,
 	})
 }
 
-func (manager *StreamManager) publishBalances(accountID domain.AccountID, event exchange.BalanceEvent) error {
+func (manager *StreamManager) publishBalances(accountID domain.AccountID, product exchange.Product, settlementAsset string, event exchange.BalanceEvent) error {
 	for _, balance := range event.Balances {
-		if err := manager.publish(accountID, KindBalance, balance.Asset, event.Time, BalancePayload{
-			AccountID: accountID, Balance: balance,
+		resource := string(product) + "\x00" + settlementAsset + "\x00" + balance.Asset
+		if err := manager.publish(accountID, KindBalance, resource, event.Time, BalancePayload{
+			AccountID: accountID, Product: product, SettlementAsset: settlementAsset, Balance: balance,
 		}); err != nil {
 			return err
 		}

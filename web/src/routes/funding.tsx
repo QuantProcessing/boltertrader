@@ -64,8 +64,7 @@ export function FundingPage() {
         />
       </header>
 
-      {/* Below the bar rather than `ml-auto` inside it, same as the arbitrage
-          route: the bar is a fixed 44px of readouts, and a sentence that appears
+      {/* Below the bar rather than `ml-auto` inside it: the bar is a fixed 44px of readouts, and a sentence that appears
           only when a refresh has failed should not be reflowing them at exactly
           that moment. */}
       {board.isError ? (

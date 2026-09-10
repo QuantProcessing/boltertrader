@@ -12,8 +12,10 @@ instrument 身份由 [Account 与 instrument](accounts-instruments.md) 说明。
 | --- | --- | --- |
 | `sdk/<venue>/` | 单个 venue 的原生 API：传输、签名、endpoint profile 与线协议类型 | 标准库及其自身的传输依赖 |
 | `exchange/` | 基于 SDK 的 venue-neutral typed client 与模型，以及通过 `exchange/factory` 的构造 | 仅在 `exchange/internal/**` 中 import `sdk/**`，另加 `credential`、`routeprofile` |
-| `gateway/` | 共享能力面：account、加密凭证、catalog、能力与限额解析、持久订单身份、reconciliation 与私有事件投递 | `gateway/**`、`credential`、`exchange`、`exchange/factory`、`routeprofile`、`secretstore` |
-| `services/` | 构建在 gateway HTTP 面之上的产品行为：命令账本、projection、浏览器会话与转发 | 自身目录树、`internal/**`、`credential`、`routeprofile`、`secretstore` |
+| `gateway/` | 共享能力面：account、加密凭证、catalog、能力与限额解析、持久订单身份、reconciliation 与私有事件投递 | `gateway/**`、`credential`、`exchange`、`exchange/factory`、`routeprofile`、`secretstore`、共享协议类型 |
+| `api/exchange-gateway/v1` | 版本化协议类型与 schema | 标准库 |
+| `clients/gateway` | 应用 HTTP/WS 客户端 | 协议类型、HTTP/WS 与 decimal 库 |
+| `services/` | 构建在 gateway HTTP 面之上的产品行为：命令账本、projection、浏览器会话与转发 | 自身目录树、`clients/gateway`、共享协议类型、`internal/**`、`credential`、`routeprofile`、`secretstore` |
 | `web/` | 唯一的前端 | auth edge 的 `/api/v1` 面 |
 
 依赖严格向下。任何一层都不会 import 它上面的层，也不会 import 同级的内部实现。
@@ -25,13 +27,16 @@ instrument 身份由 [Account 与 instrument](accounts-instruments.md) 说明。
 
 ## 被强制的边界
 
-有三个测试把上表钉在代码上。正因为如此，边界违规会让 `make test` 变红，而不是
+边界测试把上表落实到代码中。正因为如此，边界违规会让 `make test` 变红，而不是
 只能靠 review 发现。
 
 - `gateway/contracts/import_boundary_test.go` 遍历 `gateway/` 下每个非测试
-  `.go` 文件，拒绝任何不属于 `gateway/...` 的仓库 import，例外只有五个 package：
+  `.go` 文件，拒绝任何不属于 `gateway/...` 的仓库 import，例外是共享协议包与以下 package：
   `credential`、`exchange`、`exchange/factory`、`routeprofile`、`secretstore`。
   因此 gateway 连误引用 venue SDK 都做不到。
+- `clients/gateway/boundary_test.go` 禁止客户端和协议包引用服务、SDK 或 Gateway 运行实现。
+- `services/monitor/run_test.go` 将独立监控及命令限制为只引用 Gateway 客户端、共享协议
+  和监控自身的应用包。
 - `exchange/boundary_test.go` 拒绝公开的 `exchange` 与 `exchange/factory` 文件中
   任何含 `/sdk/`、`/adapter/` 或 `/runtime/` 的 import，也拒绝名为 `rawParams`、
   `nativeParams`、`sdkClient`、`nativeClient` 的公开逃逸符号。SDK 接线位于
@@ -41,7 +46,7 @@ instrument 身份由 [Account 与 instrument](accounts-instruments.md) 说明。
   `exchange/testdata/public_surface_manifest.json` 上，因此文档里的能力声明不会
   与支撑它的代码脱节。
 
-services 层的边界由构造方式保证，而非由测试保证：`services/` 下没有任何生产文件
+services 层通过 HTTP 访问能力；监控另有显式 import 门禁。`services/` 下没有任何生产文件
 import `gateway/**` 或 `exchange/**`。产品服务通过 HTTP 访问 gateway——正是这一点
 让 gateway 可替换、可独立部署，并可被不在本仓库中的产品使用。
 
@@ -54,7 +59,7 @@ import `gateway/**` 或 `exchange/**`。产品服务通过 HTTP 访问 gateway�
 浏览器 ──► web (Caddy)
               │  同源：/api/* 被反向代理
               ▼
-         services/authedge ──┬──► gateway            /internal/v1/accounts…
+         services/authedge ──┬──► gateway            /internal/v1/accounts…, catalog, market reads
                              └──► services/trading   其余全部
                                         │
                                         └──► gateway /v1
@@ -93,17 +98,34 @@ gateway 刻意做厚，产品服务刻意做薄。任何不止一个产品会需
 保存在 Gateway 内存并通过内部流发送，不会因为产品或浏览器请求增加而重复查询。
 完整订单簿继续使用按 instrument 的实时流，不进入这份跨市场投影。
 
-产品服务只负责自己那些产品的决策——命令账本、预览、预留，以及其界面所需的
-projection。两个产品可以共用一个服务和这一整套机器：手动交易与资金费套利都住在
-`services/trading` 里，它们的差别在于端点、以及封签意图的形状，而不是把账本再抄
-一份。Trading 持有 Gateway 衍生品事实投影的本地副本，并负责策略相关计算；历史序列
-仍按需读取，可执行套利预览则刻意绕过投影，即时读取两条腿的 BBO。
+Gateway 进程只装配一个共享 HTTP 限流 transport，按实际请求扣减预算，覆盖
+catalog、资金费率、账户与连通性探测。公共查询合并不再另算一套虚拟配额。
+SDK 与 HTTP 层仅共用 `internal/venuehttp` 中的协议元信息；exchange 保留安全的
+HTTP 状态与等待时间，隔离原始响应。可能已经发送的订单遇到传输错误时进入
+不确定状态并对账。具体本地额度和适用边界见
+[HTTP 错误与请求预算](../../design/sdk-errors-rate-limits-2026-09-10.md)。
+
+公共行情消费者依赖 `MarketWebSocket`、`PerpMarketWebSocket`，公开资金费率读取
+依赖 `PerpMarketREST`；完整账户客户端再组合这些接口和私有操作。
+`PublicMarketConnector.WebSocket` 返回实际方法集已经收窄的对象，不能通过类型
+断言重新取得下单、撤单或私有账户订阅。可选衍生品参考数据和订阅重放继续保留。
+Gateway 的公共行情源只依赖这些公共接口。Go API 变更见
+[公共行情能力边界](../../design/public-market-boundary-2026-09-10.md)。
+独立应用现在通过 `/v1/market` 读取公共目录、K 线和共享快照，并订阅四类单商品
+行情 topic。它与内部消费者使用同一个 Source、Hub 和 hotset，沿用 Gateway
+Bearer 鉴权，不要求交易所账户。覆盖、身份、新鲜度与恢复规则见
+[应用行情 API](../../design/market-api-2026-09-10.md)。
+公共监听器先鉴权，再判断写入就绪。个人部署不再划分 token 权限等级。
+账户接入见[简单账户设计](../../design/simple-accounts-2026-09-10.md)。
+
+Trading 负责手动订单意图、命令恢复和账务。它消费 Gateway 的账户与 catalog
+事实，不创建交易所客户端或第二份行情缓存。
 市场能力矩阵是生产运行配置而不是说明文档：每个 dataset 的 transport、原生
 market family 边界、cadence 与 rate-limit operation 都由它选择。每个
 `venue + environment + native market family` 只有一个 feed owner；route profile
 只是该 owner 的输出投影，热点订单簿、BBO 与 K 线 topic 也共用该 owner 的一个
 原生 socket。Feed owner 将字段级 `DerivativePatch` 写入同一个内存事实仓库，
-资费看板、Trader 标记价、仓位 PnL 与套利投影都读取这份事实。
+资费看板、Trader 标记价、仓位 PnL都读取这份事实。
 当一个产品服务长出了第二个产品也会需要的能力，这就是把它下沉进 gateway 的
 信号，而不是复制一份的信号。
 

@@ -632,8 +632,8 @@ func binanceSpotFill(native binancespot.Trade, expectedSymbol string, nativeSymb
 		return exchange.Fill{}, fmt.Errorf("fill quantity must be positive decimal")
 	}
 	fee, err := decimal.NewFromString(native.Commission)
-	if err != nil || fee.IsNegative() {
-		return exchange.Fill{}, fmt.Errorf("fill fee must be non-negative decimal")
+	if err != nil {
+		return exchange.Fill{}, fmt.Errorf("fill fee must be a decimal")
 	}
 	side := exchange.SideSell
 	if native.IsBuyer {
@@ -751,7 +751,10 @@ func binanceSpotAckState(status string) (exchange.OrderAckState, error) {
 	}
 }
 
-func binanceSpotCommandAck(instrument exchange.Instrument, operation exchange.OrderOperation, operationName, orderID, clientOrderID string, err error) (exchange.OrderAcknowledgement, error) {
+func binanceSpotCommandAck(instrument exchange.Instrument, operation exchange.OrderOperation, operationName, orderID, clientOrderID string, err error) (returnAck exchange.OrderAcknowledgement, returnErr error) {
+	defer func() {
+		normalizeHTTPCommand(&returnAck, &returnErr, err, binanceSpotVenue, binanceSpotProduct, operationName)
+	}()
 	apiErr, apiOK := binanceSpotAPIError(err)
 	if binancespot.IsDefinitiveOrderRejection(err) && apiOK {
 		ack := exchange.OrderAcknowledgement{
@@ -800,7 +803,10 @@ func binanceSpotCommandAck(instrument exchange.Instrument, operation exchange.Or
 	return exchange.OrderAcknowledgement{}, binanceSpotNormalizeErr(err, operationName)
 }
 
-func binanceSpotNormalizeErr(err error, operation string) error {
+func binanceSpotNormalizeErr(err error, operation string) (returnErr error) {
+	defer func() {
+		returnErr = normalizeHTTPError(returnErr, err, binanceSpotVenue, binanceSpotProduct, operation)
+	}()
 	if err == nil {
 		return nil
 	}

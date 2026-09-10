@@ -219,7 +219,7 @@ func (c *Client) scanOrderHistory(
 			return false, err
 		}
 		if resp.RetCode != 0 {
-			return false, fmt.Errorf("bybit sdk: get order history failed: %d %s", resp.RetCode, resp.RetMsg)
+			return false, newResponseError("get order history", resp.RetCode, resp.RetMsg)
 		}
 
 		records := resp.Result.List
@@ -284,7 +284,7 @@ func (c *Client) GetRealtimeOrders(ctx context.Context, category, symbol, settle
 			return nil, err
 		}
 		if resp.RetCode != 0 {
-			return nil, fmt.Errorf("bybit sdk: get realtime orders failed: %d %s", resp.RetCode, resp.RetMsg)
+			return nil, newResponseError("get realtime orders", resp.RetCode, resp.RetMsg)
 		}
 
 		out = append(out, resp.Result.List...)
@@ -382,7 +382,7 @@ func (c *Client) getExecutions(ctx context.Context, req GetExecutionsRequest, bo
 			return nil, false, err
 		}
 		if resp.RetCode != 0 {
-			return nil, false, fmt.Errorf("bybit sdk: get executions failed: %d %s", resp.RetCode, resp.RetMsg)
+			return nil, false, newResponseError("get executions", resp.RetCode, resp.RetMsg)
 		}
 
 		page := resp.Result.List

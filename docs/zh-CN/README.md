@@ -16,7 +16,7 @@ BolterTrader 是一个分层的整体，不是一组可互换的产品。每一�
 ```text
 web                        唯一的前端
 services/authedge          浏览器会话与路径转发
-services/trading           手动交易与资金费套利两个产品
+services/trading           手动交易、命令恢复与账务
 gateway                    共享能力面
 exchange                   venue-neutral 的 typed client
 sdk                        每个 venue 一个 package，忠实表示其原生 API
@@ -54,6 +54,8 @@ Exchange 模块：
 服务：
 
 - [交易所网关](guides/exchange-gateway.md)
+- [Gateway Go 客户端与独立行情示例](guides/gateway-client.md)
+- [独立公开行情监控](guides/gateway-monitor.md)
 - [Trading 服务](guides/trading-service.md)
 - [Auth edge](guides/auth-edge.md)
 - [Web 应用](guides/web-app.md)

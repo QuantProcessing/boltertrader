@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 )
 
@@ -43,7 +42,7 @@ func (c *Client) GetTransactionLog(ctx context.Context, req TransactionLogReques
 		return TransactionLogResult{}, err
 	}
 	if resp.RetCode != 0 {
-		return TransactionLogResult{}, fmt.Errorf("bybit sdk: get transaction log failed: %d %s", resp.RetCode, resp.RetMsg)
+		return TransactionLogResult{}, newResponseError("get transaction log", resp.RetCode, resp.RetMsg)
 	}
 	return resp.Result, nil
 }

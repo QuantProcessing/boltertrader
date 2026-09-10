@@ -217,21 +217,24 @@ func newNativeDerivativeFeed(scope exchange.CatalogScope, loader DerivativeSnaps
 	return feed
 }
 
-// restDerivativeWatcher is the safety-net transport for a venue whose
-// realtime connection cannot be constructed. Venue-specific WebSocket
-// watchers replace it below; keeping the fallback here lets a route remain
-// degraded and observable rather than disappear from the board altogether.
-type restDerivativeWatcher struct {
+// pollingDerivativeWatcher is selected only when the runtime capability
+// matrix explicitly chooses a broad REST strategy. It is not a fallback for a
+// missing WebSocket implementation.
+type pollingDerivativeWatcher struct {
 	scope    exchange.CatalogScope
 	loader   DerivativeSnapshotLoader
 	interval time.Duration
 	settings Settings
 }
 
+type unsupportedDerivativeWatcher struct {
+	venue exchange.Venue
+}
+
 func derivativeWatcherFor(scope exchange.CatalogScope, loader DerivativeSnapshotLoader, settings Settings) derivativeWatcher {
 	streaming, interval := derivativeRuntimeStrategy(settings.MarketCapabilities)
 	if !streaming {
-		return &restDerivativeWatcher{scope: scope, loader: loader, interval: interval, settings: settings}
+		return &pollingDerivativeWatcher{scope: scope, loader: loader, interval: interval, settings: settings}
 	}
 	switch scope.Venue {
 	case exchange.VenueBinance:
@@ -247,7 +250,7 @@ func derivativeWatcherFor(scope exchange.CatalogScope, loader DerivativeSnapshot
 	case exchange.VenueNado:
 		return &nadoDerivativeWatcher{settings: settings}
 	default:
-		return &restDerivativeWatcher{scope: scope, loader: loader, interval: interval, settings: settings}
+		return &unsupportedDerivativeWatcher{venue: scope.Venue}
 	}
 }
 
@@ -272,7 +275,7 @@ func derivativeRuntimeStrategy(capabilities []exchange.MarketCapability) (bool, 
 	return streaming, interval
 }
 
-func (watcher *restDerivativeWatcher) stream(ctx context.Context, _ nativeDerivativePatch, emit func(nativeDerivativePatch)) error {
+func (watcher *pollingDerivativeWatcher) stream(ctx context.Context, _ nativeDerivativePatch, emit func(nativeDerivativePatch)) error {
 	interval := watcher.interval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -293,7 +296,13 @@ func (watcher *restDerivativeWatcher) stream(ctx context.Context, _ nativeDeriva
 	}
 }
 
-func (*restDerivativeWatcher) close() error { return nil }
+func (*pollingDerivativeWatcher) close() error { return nil }
+
+func (watcher *unsupportedDerivativeWatcher) stream(context.Context, nativeDerivativePatch, func(nativeDerivativePatch)) error {
+	return fmt.Errorf("%s derivative WebSocket strategy is not implemented", watcher.venue)
+}
+
+func (*unsupportedDerivativeWatcher) close() error { return nil }
 
 func (feed *nativeDerivativeFeed) Bootstrap(ctx context.Context) (nativeDerivativePatch, error) {
 	if feed == nil || feed.loader == nil || ctx == nil {

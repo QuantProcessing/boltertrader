@@ -34,15 +34,6 @@ const (
 	CommandOutcomeUnknown CommandOutcome = "unknown"
 )
 
-type StreamEvent string
-
-const (
-	StreamGap            StreamEvent = "gap"
-	StreamResync         StreamEvent = "resync"
-	StreamReplayEviction StreamEvent = "replay_eviction"
-	StreamUnknown        StreamEvent = "unknown"
-)
-
 type PostgresOperation string
 
 const (
@@ -99,7 +90,6 @@ type Metrics struct {
 	commandTotal        *prometheus.CounterVec
 	uncertainCount      prometheus.Gauge
 	oldestReconcile     prometheus.Gauge
-	streamTotal         *prometheus.CounterVec
 	catalogAge          *prometheus.GaugeVec
 	catalogVersion      *prometheus.GaugeVec
 	venueProbeUp        *prometheus.GaugeVec
@@ -150,10 +140,6 @@ func NewMetrics() *Metrics {
 			Name: "gateway_oldest_reconciliation_age_seconds",
 			Help: "Age in seconds of the oldest command requiring exact reconciliation.",
 		}),
-		streamTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "gateway_stream_event_total",
-			Help: "Private stream continuity events by bounded event class.",
-		}, []string{"event"}),
 		catalogAge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "gateway_catalog_snapshot_age_seconds",
 			Help: "Age in seconds of the current instrument Catalog snapshot.",
@@ -191,8 +177,8 @@ func NewMetrics() *Metrics {
 			Name: "gateway_market_fact_coverage_ratio", Help: "Catalog coverage ratio for a bounded market dataset.",
 		}, []string{"venue", "market_family", "dataset"}),
 		marketHot: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "gateway_market_hot_subscriptions", Help: "Active hot subscriptions by bounded market dataset.",
-		}, []string{"venue", "market_family", "dataset"}),
+			Name: "gateway_market_hot_instruments", Help: "Distinct instruments with active hotset demand by market owner; not native feed or connection count.",
+		}, []string{"venue", "market_family"}),
 		marketREST: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "gateway_market_rest_requests_total", Help: "Market REST requests by bounded operation and outcome.",
 		}, []string{"venue", "operation", "outcome"}),
@@ -216,7 +202,6 @@ func NewMetrics() *Metrics {
 		metrics.commandTotal,
 		metrics.uncertainCount,
 		metrics.oldestReconcile,
-		metrics.streamTotal,
 		metrics.catalogAge,
 		metrics.catalogVersion,
 		metrics.venueProbeUp,
@@ -241,9 +226,6 @@ func NewMetrics() *Metrics {
 		} {
 			metrics.commandTotal.WithLabelValues(string(operation), string(outcome))
 		}
-	}
-	for _, event := range []StreamEvent{StreamGap, StreamResync, StreamReplayEviction, StreamUnknown} {
-		metrics.streamTotal.WithLabelValues(string(event))
 	}
 	for _, outcome := range []ShutdownOutcome{ShutdownDrained, ShutdownTimedOut, ShutdownError, ShutdownUnknown} {
 		metrics.shutdownTotal.WithLabelValues(string(outcome))
@@ -433,14 +415,14 @@ func (metrics *Metrics) SetMarketFact(venue, family, dataset string, age time.Du
 	metrics.marketCoverage.WithLabelValues(labels...).Set(coverage)
 }
 
-func (metrics *Metrics) SetMarketHot(venue, family, dataset string, hot int) {
+func (metrics *Metrics) SetMarketHot(venue, family string, hot int) {
 	if metrics == nil {
 		return
 	}
 	if hot < 0 {
 		hot = 0
 	}
-	labels := []string{safeVenue(venue), safeMarketFamily(family), safeMarketDataset(dataset)}
+	labels := []string{safeVenue(venue), safeMarketFamily(family)}
 	metrics.marketHot.WithLabelValues(labels...).Set(float64(hot))
 }
 
@@ -473,26 +455,6 @@ func (metrics *Metrics) SetReconciliation(count int, oldestAge time.Duration) {
 	}
 	metrics.uncertainCount.Set(float64(count))
 	metrics.oldestReconcile.Set(oldestAge.Seconds())
-}
-
-func (metrics *Metrics) RecordStream(event StreamEvent) {
-	if metrics == nil {
-		return
-	}
-	metrics.streamTotal.WithLabelValues(string(safeStreamEvent(event))).Inc()
-}
-
-func (metrics *Metrics) ObserveResync(reason string) {
-	if metrics == nil {
-		return
-	}
-	metrics.RecordStream(StreamResync)
-	switch {
-	case strings.Contains(reason, "gap"):
-		metrics.RecordStream(StreamGap)
-	case reason == "cursor_evicted":
-		metrics.RecordStream(StreamReplayEviction)
-	}
 }
 
 func (metrics *Metrics) ObservePostgres(operation PostgresOperation, errorClass PostgresErrorClass, duration time.Duration) {
@@ -619,7 +581,7 @@ func safeMarketDataset(value string) string {
 }
 
 func safeMarketOperation(value string) string {
-	return safeFixed(strings.ToLower(value), []string{"instruments", "linear_tickers", "all_tickers", "funding_rates", "mark_prices", "open_interest", "index_tickers", "contracts", "bbo_snapshot"})
+	return safeFixed(strings.ToLower(value), []string{"instruments", "linear_tickers", "all_tickers", "funding_rates", "mark_prices", "open_interest", "index_tickers", "contracts"})
 }
 
 func safeProduct(value string) string {
@@ -655,15 +617,6 @@ func safeCommandOutcome(value CommandOutcome) CommandOutcome {
 		return value
 	default:
 		return CommandOutcomeUnknown
-	}
-}
-
-func safeStreamEvent(value StreamEvent) StreamEvent {
-	switch value {
-	case StreamGap, StreamResync, StreamReplayEviction:
-		return value
-	default:
-		return StreamUnknown
 	}
 }
 

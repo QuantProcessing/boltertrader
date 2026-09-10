@@ -91,10 +91,6 @@ func TestClientWithGatewayTransportDisablesPerpSDKLocalLimiter(t *testing.T) {
 	var calls atomic.Int64
 	transport, err := ratelimit.NewTransport(
 		ratelimit.NewCoordinator(time.Now),
-		vectorProviderFunc(func(*http.Request, ratelimit.RequestScope) []ratelimit.Key {
-			return []ratelimit.Key{{Kind: ratelimit.VenueProfile, Value: "binance/test/binance.perp.usdt.v1"}}
-		}),
-		ratelimit.PublicScope,
 		roundTripFunc(func(*http.Request) (*http.Response, error) {
 			calls.Add(1)
 			return &http.Response{
@@ -149,10 +145,4 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
-}
-
-type vectorProviderFunc func(*http.Request, ratelimit.RequestScope) []ratelimit.Key
-
-func (fn vectorProviderFunc) Keys(request *http.Request, scope ratelimit.RequestScope) []ratelimit.Key {
-	return fn(request, scope)
 }

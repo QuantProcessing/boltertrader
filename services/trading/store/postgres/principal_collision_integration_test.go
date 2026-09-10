@@ -61,7 +61,7 @@ func TestPostgresPortfolioAndLedgerSeparatePrincipalCollisionsAcrossRestart(t *t
 		}
 		snapshot, err := ledgerService.PnL(ctx, ledger.Query{PrincipalID: principal, ProductID: "funding", LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"})
 		wantNet := map[string]string{"principal-a": "4", "principal-b": "6"}[principal]
-		if err != nil || snapshot.NetPnL != wantNet {
+		if err != nil || snapshot.ByCurrency[0].NetPnL != wantNet {
 			t.Fatalf("principal=%s pnl=%+v err=%v", principal, snapshot, err)
 		}
 	}

@@ -51,9 +51,9 @@ Bootstrap also writes the paths to the files it generated —
 written into `.env.stack`, and no service takes a secret from its environment.
 Every one reads a file with mode `0600`.
 
-`BT_HOST_UID` and `BT_HOST_GID` exist because the gateway's credential store is a
-host bind mount rather than a named volume. Docker creates a named volume owned
-by `root`, which a container running as your uid could not write to.
+`BT_HOST_UID` and `BT_HOST_GID` let non-root containers read the generated
+0600 service-token and encryption-key files. Venue credentials are encrypted
+in PostgreSQL; there is no writable filesystem credential store.
 
 ## `BT_LIVE_PRIVATE_WRITES_ENABLED` — the live-write switch
 

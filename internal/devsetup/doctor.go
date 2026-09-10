@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	gatewayclient "github.com/QuantProcessing/boltertrader/clients/gateway"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -52,6 +53,7 @@ type Check struct {
 // Zero values preserve the one-shot behavior expected from `make doctor`.
 type DiagnoseOptions struct {
 	TradingReadyWait time.Duration
+	MarketInstrument string
 }
 
 // Diagnose reports on every part of the local stack, in dependency order, and
@@ -92,7 +94,7 @@ func DiagnoseWithOptions(ctx context.Context, root string, options DiagnoseOptio
 		// Without the env file there are no ports to probe and no secret
 		// directory to inspect, so every remaining check would fail for the
 		// same single reason and bury it.
-		for _, name := range []string{"credentials", "credential store", "postgres", "gateway", "trading", "auth edge", "web"} {
+		for _, name := range []string{"credentials", "postgres", "gateway", "trading", "auth edge", "web"} {
 			add(Check{Name: name, Status: Skip, Detail: "no " + EnvStackName + " to read the port from"})
 		}
 		return checks, nil
@@ -100,7 +102,6 @@ func DiagnoseWithOptions(ctx context.Context, root string, options DiagnoseOptio
 	add(Check{Name: EnvStackName, Status: Pass, Detail: envPath})
 
 	checks = append(checks, checkCredentials(filepath.Join(root, SecretDirName, StackDirName))...)
-	add(checkSecretStore(filepath.Join(root, SecretDirName, SecretStoreDirName)))
 
 	postgresPort := valueOr(values, postgresPortVar, defaultPostgresPort)
 	postgresUp := probeTCP("postgres", postgresPort, &checks)
@@ -111,6 +112,11 @@ func DiagnoseWithOptions(ctx context.Context, root string, options DiagnoseOptio
 	}
 
 	add(checkGateway(ctx, valueOr(values, gatewayPortVar, defaultGatewayPort), filepath.Join(root, SecretDirName, StackDirName, GatewayAuthTokenFile)))
+	if options.MarketInstrument != "" {
+		add(checkPublicMarket(ctx, valueOr(values, gatewayPortVar, defaultGatewayPort), filepath.Join(root, SecretDirName, StackDirName, GatewayAuthTokenFile), options.MarketInstrument))
+	} else {
+		add(Check{Name: "public market", Status: Skip, Detail: "service readiness does not verify live quotes", Fix: "run go run ./internal/devsetup/cmd/doctor -instrument <catalog instrument_id>; set GATEWAY_HTTP_PROXY explicitly if direct venue access is unavailable"})
+	}
 	add(checkTrading(ctx, valueOr(values, tradingPortVar, defaultTradingPort), filepath.Join(root, SecretDirName, StackDirName, TradingServiceTokenFile), options.TradingReadyWait))
 	add(checkAuthEdge(ctx, valueOr(values, authEdgePortVar, defaultAuthEdgePort)))
 	add(checkWeb(ctx, valueOr(values, webPortVar, defaultWebPort)))
@@ -181,15 +187,14 @@ func checkCredentials(secretDir string) []Check {
 	}
 
 	shapes := map[string]secretShape{
-		TradingServiceTokenFile:     shapeOpaque,
-		GatewayAuthTokenFile:        shapeOpaque,
-		ManualPreviewSigningKeyFile: shapeOpaque,
-		SecretMasterKeyFile:         shapeHexKey,
-		BootstrapPasswordHashFile:   shapeOpaque,
+		TradingServiceTokenFile:   shapeOpaque,
+		GatewayAuthTokenFile:      shapeOpaque,
+		SecretMasterKeyFile:       shapeHexKey,
+		BootstrapPasswordHashFile: shapeOpaque,
 	}
 	var problems []string
 	for _, name := range []string{
-		TradingServiceTokenFile, GatewayAuthTokenFile, ManualPreviewSigningKeyFile,
+		TradingServiceTokenFile, GatewayAuthTokenFile,
 		SecretMasterKeyFile, GatewayPostgresDSNFile, BootstrapPasswordFile,
 		BootstrapPasswordHashFile,
 	} {
@@ -209,48 +214,6 @@ func checkCredentials(secretDir string) []Check {
 		return checks
 	}
 	return []Check{{Name: "credentials", Status: Pass, Detail: "7 files, 0600, in " + secretDir}}
-}
-
-// checkSecretStore inspects the one path in the stack a service writes to: the
-// gateway's encrypted venue credentials. It is a bind mount, and Docker creates
-// a missing bind-mount source itself, owned by root — so the interesting failure
-// is not "absent" but "present and not writable by the uid the gateway runs as",
-// which the gateway reports as a startup error naming no path at all.
-func checkSecretStore(storeDir string) Check {
-	info, err := os.Stat(storeDir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return Check{
-			Name:   "credential store",
-			Status: Fail,
-			Detail: storeDir + " is missing",
-			Fix:    "run `make up`, which creates it before compose can",
-		}
-	case err != nil:
-		return Check{Name: "credential store", Status: Fail, Detail: err.Error()}
-	case !info.IsDir():
-		return Check{
-			Name:   "credential store",
-			Status: Fail,
-			Detail: storeDir + " is not a directory",
-			Fix:    "remove it and re-run `make up`",
-		}
-	}
-	// Probed rather than deduced from the owner, because the question is only
-	// ever whether a write succeeds, and the doctor runs as the same uid the
-	// containers do.
-	probe, err := os.CreateTemp(storeDir, ".doctor-*")
-	if err != nil {
-		return Check{
-			Name:   "credential store",
-			Status: Fail,
-			Detail: storeDir + " is not writable by this user",
-			Fix:    "`sudo chown -R $(id -u):$(id -g) " + storeDir + "`, or remove it and re-run `make up`",
-		}
-	}
-	_ = probe.Close()
-	_ = os.Remove(probe.Name())
-	return Check{Name: "credential store", Status: Pass, Detail: "writable, at " + storeDir}
 }
 
 // secretShape is what a file's contents must look like beyond being present and
@@ -672,4 +635,26 @@ func valueOr(values map[string]string, name, fallback string) string {
 func firstLine(text string) string {
 	line, _, _ := strings.Cut(text, "\n")
 	return strings.TrimSpace(line)
+}
+
+func checkPublicMarket(ctx context.Context, port, tokenPath, instrument string) Check {
+	token, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return Check{Name: "public market", Status: Skip, Detail: "no service token"}
+	}
+	client, err := gatewayclient.New(gatewayclient.Config{URL: "http://127.0.0.1:" + port, Token: strings.TrimSpace(string(token))})
+	if err != nil {
+		return Check{Name: "public market", Status: Fail, Detail: "invalid Gateway configuration"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	snapshot, err := client.MarketSnapshot(ctx, gatewayclient.MarketTopic{Topic: gatewayclient.BestBidOffer, InstrumentID: instrument})
+	if err != nil {
+		return Check{Name: "public market", Status: Fail, Detail: "no valid BBO snapshot for " + instrument, Fix: "check the instrument catalog and Gateway venue logs; Go needs explicit HTTP_PROXY/HTTPS_PROXY, and Compose uses GATEWAY_HTTP_PROXY (ALL_PROXY alone is insufficient)"}
+	}
+	age := time.Since(snapshot.Snapshot.ObservedAt)
+	if age < -time.Second || age > 5*time.Second {
+		return Check{Name: "public market", Status: Fail, Detail: "BBO source time is stale or ahead of the local clock"}
+	}
+	return Check{Name: "public market", Status: Pass, Detail: "fresh BBO for " + instrument + "; snapshot subscription released"}
 }

@@ -6,11 +6,11 @@ product
 
 ## Users
 
-BolterTrader is a private trading workspace for an experienced operator who repeatedly monitors exchange readiness, evaluates funding opportunities, submits bounded orders, manages accounts, and reconciles positions and PnL. The primary context is a desktop monitor used for focused, information-dense work, with mobile web used for status checks and safe corrective actions.
+BolterTrader is a private trading workspace for an experienced operator who repeatedly monitors exchange readiness, inspects public funding data, submits bounded orders, manages accounts, and reconciles positions and PnL. The primary context is a desktop monitor used for focused, information-dense work, with mobile web used for status checks and safe corrective actions.
 
 ## Product Purpose
 
-BolterTrader unifies Funding Trading and Manual Trading in one authenticated product over shared account, market-data, order, portfolio, ledger, and audit authority. It should make the exact account, venue, capability, execution state, and economic result visible at every decision point, and must make it unmistakable that every action reaches a real exchange — there is no test environment to fall back to. Success means the user can move from observation to confirmed action without guessing which service or venue owns the truth.
+BolterTrader provides personal Manual Trading and independent market monitoring over shared account, market-data, order, portfolio, ledger, and audit capabilities. It should make the exact account, venue, capability, execution state, and economic result visible at every decision point, and must make it unmistakable that every action reaches a real exchange — there is no test environment to fall back to. Success means the user can move from observation to confirmed action without guessing which service or venue owns the truth.
 
 ## Brand Personality
 

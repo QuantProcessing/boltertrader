@@ -44,7 +44,7 @@ func TestServiceProjectsConfiguredCapabilitiesAndDeduplicatedReferenceData(t *te
 		t.Fatalf("accounts = %+v", accounts)
 	}
 	capabilities, err := service.Capabilities("")
-	if err != nil || len(capabilities) != 2 || capabilities[0].AccountID != "a" || !capabilities[0].Row.WriteReadyDefault {
+	if err != nil || len(capabilities) != 2 || capabilities[0].AccountID != "a" || !capabilities[0].Row.TradingSupported {
 		t.Fatalf("capabilities = %+v err=%v", capabilities, err)
 	}
 	instruments, err := service.Instruments("")

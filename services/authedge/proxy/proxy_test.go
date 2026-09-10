@@ -265,7 +265,6 @@ func TestGatewayLifecycleRewritesOntoInternalPlane(t *testing.T) {
 	for _, testCase := range []struct{ method, browser, upstream string }{
 		{http.MethodPost, "/api/v1/accounts", "/internal/v1/accounts"},
 		{http.MethodDelete, "/api/v1/accounts/acct-1", "/internal/v1/accounts/acct-1"},
-		{http.MethodPost, "/api/v1/accounts/acct-1/disable", "/internal/v1/accounts/acct-1/disable"},
 	} {
 		t.Run(testCase.method+" "+testCase.browser, func(t *testing.T) {
 			h := newHarness(t, nil)
@@ -329,7 +328,7 @@ func TestQueryAndBodyAreForwarded(t *testing.T) {
 		t.Fatalf("query = %q", h.trading.query)
 	}
 
-	h.do(t, http.MethodPost, "/api/v1/commands", map[string]string{
+	h.do(t, http.MethodPost, "/api/v1/products/manual/commands", map[string]string{
 		csrfHeader:        "csrf",
 		"Content-Type":    "application/json",
 		"Idempotency-Key": "key-1",
@@ -365,7 +364,7 @@ func TestMutationsRequireCSRF(t *testing.T) {
 	h := newHarness(t, nil)
 	h.sessions.csrfErr = session.ErrInvalidCSRF
 
-	response := h.do(t, http.MethodPost, "/api/v1/commands", map[string]string{csrfHeader: "forged"}, `{}`)
+	response := h.do(t, http.MethodPost, "/api/v1/products/manual/commands", map[string]string{csrfHeader: "forged"}, `{}`)
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", response.StatusCode)
 	}
@@ -386,7 +385,7 @@ func TestCSRFFailureThatIsNotCSRFReads401(t *testing.T) {
 	h := newHarness(t, nil)
 	h.sessions.csrfErr = session.ErrInvalidSession
 
-	response := h.do(t, http.MethodPost, "/api/v1/commands", nil, `{}`)
+	response := h.do(t, http.MethodPost, "/api/v1/products/manual/commands", nil, `{}`)
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", response.StatusCode)
 	}
@@ -470,13 +469,13 @@ func TestPublicRoutesAnswerWithoutASession(t *testing.T) {
 	}
 }
 
-func TestRealtimeWebSocketRelaysTradingUpgrade(t *testing.T) {
+func TestRealtimeWebSocketRelaysGatewayMarketUpgrade(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/realtime/ws" || r.URL.RawQuery != "" {
+		if r.URL.Path != "/internal/v1/market/ws" || r.URL.RawQuery != "" {
 			t.Errorf("gateway websocket request=%s?%s", r.URL.Path, r.URL.RawQuery)
 		}
-		if got := r.Header.Get(authorizationHeader); got != "Bearer "+testToken {
-			t.Errorf("trading authorization=%q", got)
+		if got := r.Header.Get(authorizationHeader); got != "Bearer "+testToken+"-gateway" {
+			t.Errorf("gateway authorization=%q", got)
 		}
 		connection, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -506,7 +505,7 @@ func TestRealtimeWebSocketRelaysTradingUpgrade(t *testing.T) {
 	edge := httptest.NewServer(mux)
 	defer edge.Close()
 
-	target := "ws" + strings.TrimPrefix(edge.URL, "http") + "/api/v1/realtime/ws"
+	target := "ws" + strings.TrimPrefix(edge.URL, "http") + "/api/v1/market/realtime/ws"
 	connection, response, err := websocket.Dial(context.Background(), target, nil)
 	if response != nil && response.Body != nil {
 		defer response.Body.Close()
@@ -830,7 +829,7 @@ func TestSessionServiceSatisfiesSessions(t *testing.T) {
 	defer server.Close()
 
 	post := func(csrf string) int {
-		request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/commands", strings.NewReader(`{}`))
+		request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/products/manual/commands", strings.NewReader(`{}`))
 		request.AddCookie(&http.Cookie{Name: session.CookieName, Value: result.Session.Token})
 		if csrf != "" {
 			request.Header.Set(csrfHeader, csrf)
@@ -853,5 +852,30 @@ func TestSessionServiceSatisfiesSessions(t *testing.T) {
 	}
 	if got := trading.header.Get(principalHeader); got != session.DefaultPrincipalID {
 		t.Fatalf("principal = %q, want %q", got, session.DefaultPrincipalID)
+	}
+}
+
+func TestRetiredProductRoutesNeverReachAnUpstream(t *testing.T) {
+	h := newHarness(t, nil)
+	for _, path := range []string{"/api/v1/products/arbitrage/opportunities", "/api/v1/products/arbitrage/positions", "/api/v1/products/arbitrage/commands", "/api/v1/products/arbitrage/execution-previews", "/api/v1/realtime/ws", "/api/v1/reservations", "/api/v1/reservations/old"} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			response := h.do(t, method, path, nil, "")
+			response.Body.Close()
+			if response.StatusCode != http.StatusNotFound {
+				t.Fatalf("%s %s = %d", method, path, response.StatusCode)
+			}
+		}
+	}
+	if h.trading.path != "" || h.gateway.path != "" {
+		t.Fatalf("retired route forwarded: trading=%s gateway=%s", h.trading.path, h.gateway.path)
+	}
+}
+
+func TestGenericCommandWriteIsNotForwarded(t *testing.T) {
+	h := newHarness(t, nil)
+	response := h.do(t, http.MethodPost, "/api/v1/commands", nil, "")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed || h.trading.path != "" || h.gateway.path != "" {
+		t.Fatalf("status=%d trading=%s gateway=%s", response.StatusCode, h.trading.path, h.gateway.path)
 	}
 }

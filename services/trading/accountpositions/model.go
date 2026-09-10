@@ -1,18 +1,12 @@
-// Package accountpositions maintains Trading's principal-scoped, multi-account
-// projection of the positions the Gateway says actually exist at venues. It is
-// intentionally separate from the fill-lineage portfolio package: this model
-// answers "what is held now", while portfolio answers product attribution.
+// Package accountpositions queries and aggregates current venue positions from
+// Gateway. It does not persist positions or reconstruct them from local fills.
 package accountpositions
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 )
-
-var ErrResyncRequired = errors.New("account position resync required")
 
 type Freshness string
 
@@ -41,18 +35,10 @@ const (
 	RouteUnavailable RouteHealth = "unavailable"
 )
 
-type Operation string
-
-const (
-	OperationUpsert Operation = "upsert"
-	OperationRemove Operation = "remove"
-)
-
 type AccountRoute struct {
 	RouteID         string `json:"routeId"`
 	Product         string `json:"product"`
 	SettlementAsset string `json:"settlementAsset,omitempty"`
-	RequestedState  string `json:"requestedState"`
 }
 
 type Account struct {
@@ -102,38 +88,10 @@ type SourceSnapshot struct {
 	Items      []SourceItem `json:"items"`
 }
 
-type SourceEvent struct {
-	EventID         string
-	ResourceVersion uint64
-	Kind            string
-	OccurredAt      time.Time
-	Operation       Operation
-	AccountID       string
-	RouteID         string
-	InstrumentID    string
-	PositionSlot    string
-	Position        SourcePosition
-	Payload         json.RawMessage
-	Reason          string
-}
-
-const (
-	SourceEventConnected     = "connected"
-	SourceEventOrder         = "order"
-	SourceEventFill          = "fill"
-	SourceEventBalance       = "balance"
-	SourceEventPosition      = "position"
-	SourceEventAccountHealth = "account_health"
-	SourceEventResync        = "resync_required"
-)
-
-// Source is the narrow Gateway contract this projection consumes. The watch is
-// account-scoped rather than instrument-scoped: position events update this
-// projection while the other event kinds become realtime change notifications.
+// Source reads the current account directory and venue position snapshots.
 type Source interface {
 	ListAccounts(context.Context, string) ([]Account, error)
 	PositionSnapshot(context.Context, string, string) (SourceSnapshot, error)
-	WatchAccountEvents(context.Context, string, string, func(SourceEvent) error) error
 }
 
 type Key struct {

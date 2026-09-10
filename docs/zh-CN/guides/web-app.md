@@ -29,7 +29,7 @@ Caddy 提供构建产物，并把 `/api/*` 反向代理到 `authedge:18091` 的 
 CORS 面需要配置。Caddy 保留浏览器的 `Host` 头，所以 edge 看到的正是 cookie 被设置时的那个
 origin。见 [auth edge](auth-edge.md)。
 
-实时连接不需要特殊的 Caddy 缓冲配置：`/api/v1/realtime/ws` 是标准 WebSocket upgrade，
+实时连接不需要特殊的 Caddy 缓冲配置：Gateway 市场和账户流使用标准 WebSocket upgrade，
 Caddy 会双向转发。
 
 ## 路由
@@ -39,17 +39,12 @@ Caddy 会双向转发。
 | `/login` | 唯一无需会话即可抵达的路由 |
 | `/trade` | 行情条、K 线图、订单簿、下单票、blotter |
 | `/funding` | 跨所资金费率矩阵，每个 venue 一列 |
-| `/funding/arbitrage` | 排过名的价差、资金费历史图、对冲下单票、已开的对儿 |
 | `/portfolio` | 持仓、余额、PnL |
 | `/activity` | 带时间戳的命令链条 |
 | `/settings` | Account、凭证、runtime 就绪 |
 
-顶部导航承载这全部六项；操作者要做的每一件事，在任何位置都只有一次点击的距离。没有会话时，
-每条路由都会跳转到 `/login`。
-
-`/funding` 是唯一一个在任何 account 存在之前就能渲染的页面——看板是公共数据，不需要凭证
-——所以在一套全新安装上它就是可读的。`/funding/arbitrage` 不是：它要在操作者选中的那些
-account 之间给对儿排名，一个都没选中时它就没有什么可排的。
+顶部导航提供这五个页面。`/trade` 和 `/funding` 无需账户即可读取公共市场数据；
+私有账户读取和交易操作需要登录。
 
 整个外壳上还有一个命令面板，用于在 instrument 与路由之间跳转。
 
@@ -57,7 +52,7 @@ account 之间给对儿排名，一个都没选中时它就没有什么可排的
 
 读取经由 `react-query` 打到 `src/api/endpoints.ts` 里的那些端点。实时连接按归属共享，而不是
 每个组件各建一条：Gateway 市场数据使用 `/api/v1/market/realtime/ws`，Gateway 账户通知使用
-`/api/v1/account/realtime/ws`，Trading 业务投影使用 `/api/v1/realtime/ws`。同一 topic 的组件
+`/api/v1/account/realtime/ws`。同一 topic 的组件
 订阅仍会合并。订单簿从 WS 快照开始，由浏览器应用连续增量或自包含 full 事件重建；Gateway
 不保存完整深度，也不会把交易所 REST 订单簿拼进实时流。
 账户实体按实体 ID、来源时间戳和 resource version 覆盖，因此较旧的飞行中 REST 响应不能把
@@ -66,9 +61,9 @@ account 之间给对儿排名，一个都没选中时它就没有什么可排的
 时，外壳显示 `degraded`；只有浏览器连接本身不可用时才显示 reconnecting。账户降级按账户分别
 记录，只能由同一账户的健康恢复事件清除。
 
-下单是那个两步的票据：**Review order** 请求一份封签预览并开始它的有效期倒计时，
-**Confirm** 提交这个封签对象。封签过期时按钮会直接这么说。理由见
-[trading 服务](trading-service.md)。
+下单票使用屏幕上已有的账户、catalog 与公共价格在本地生成确认信息。**Confirm** 只发送一次
+命令请求，不存在预览请求、服务端预览状态或过期倒计时。Trading 仍会在该命令请求中执行权威
+的账户、路由与规则校验。详见 [trading 服务](trading-service.md)。
 
 界面中的 credential value 是只写的。它们只提交一次，之后绝不返回——会从表单、浏览器存储
 以及后续每一个响应中消失。

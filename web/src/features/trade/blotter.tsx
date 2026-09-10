@@ -1,10 +1,10 @@
 import * as Tabs from "@radix-ui/react-tabs";
-import type { ColumnDef } from "@tanstack/react-table";
+import type { CellContext, ColumnDef } from "@tanstack/react-table";
 import { Inbox } from "lucide-react";
-import { useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 
 import { ApiError } from "@/api/errors";
-import type { AccountPosition, AccountPositionState, Command, CommandState, Fill, ManualIntent, PositionFreshness } from "@/api/types";
+import type { AccountPosition, AccountPositionState, Command, CommandState, Fill, Instrument, ManualIntent, PositionFreshness } from "@/api/types";
 import { isResumable } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
@@ -13,11 +13,14 @@ import { InstrumentName } from "@/components/ui/instrument-name";
 import { Num, Side } from "@/components/ui/num";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useToast } from "@/components/ui/toast";
-import { commandFailureReason, venueOfCommand } from "@/features/trade/order-status";
+import { Tooltip } from "@/components/ui/tooltip";
+import { commandFailureReason, commandUncertaintyReason } from "@/features/trade/order-status";
+import { PositionCloseControl } from "@/features/trade/close-position";
 import { liquidationPrice, positionMarkPrice, positionUnrealizedPnl } from "@/features/trade/live-position";
 import type { LiveMarkPrice } from "@/features/market/stream";
+import { sumDecimals } from "@/features/trade/order-ticket";
 import { useCancelOrder, useFills, useOrders } from "@/features/trade/queries";
-import { compactIdentifier, decimalSign, formatTimestamp } from "@/lib/format";
+import { compactIdentifier, decimalSign, formatFullTimestamp, formatTimestamp, splitDecimal } from "@/lib/format";
 import { instrumentSymbol } from "@/lib/instrument";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -38,6 +41,7 @@ export function Blotter({
   positionsError,
   positionAccounts,
   liveMark,
+  instrument,
 }: {
   instrumentId: string | null;
   positions: AccountPosition[];
@@ -45,6 +49,7 @@ export function Blotter({
   positionsError: boolean;
   positionAccounts: AccountPositionState[];
   liveMark?: LiveMarkPrice | null;
+  instrument: Instrument | null;
 }) {
   const orders = useOrders();
   const fills = useFills();
@@ -60,6 +65,7 @@ export function Blotter({
       positionsError={positionsError}
       positionAccounts={positionAccounts}
       liveMark={liveMark}
+      instrument={instrument}
       fillsLoading={fills.isFetching && fills.data === undefined}
     />
   );
@@ -82,6 +88,7 @@ export function ReadOnlyBlotter({ instrumentId }: { instrumentId: string | null 
       positionsError={false}
       positionAccounts={[]}
       fillsLoading={false}
+      instrument={null}
     />
   );
 }
@@ -97,6 +104,7 @@ function BlotterContent({
   positionAccounts,
   liveMark,
   fillsLoading,
+  instrument,
 }: {
   instrumentId: string | null;
   orders: Command[];
@@ -108,6 +116,7 @@ function BlotterContent({
   positionAccounts: AccountPositionState[];
   liveMark?: LiveMarkPrice | null;
   fillsLoading: boolean;
+  instrument: Instrument | null;
 }) {
   const t = useT();
   const [activeTab, setActiveTab] = useState("positions");
@@ -138,7 +147,7 @@ function BlotterContent({
         <OrdersTable orders={orders} loading={ordersLoading} />
       </Content>
       <Content value="positions">
-        <PositionsTable positions={positions} loading={positionsLoading} liveMark={liveMark} />
+        <PositionsTable positions={positions} loading={positionsLoading} liveMark={liveMark} instrument={instrument} />
       </Content>
       <Content value="fills">
         <FillsTable fills={fills} loading={fillsLoading} instrumentId={instrumentId} />
@@ -216,53 +225,40 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
       header: t("col.instrument"),
       accessorFn: (order) => intentOf(order)?.instrumentId ?? "—",
       cell: (context) => <InstrumentName instrumentId={String(context.getValue() ?? "")} />,
-    },
-    {
-      id: "state",
-      header: t("col.state"),
-      accessorFn: (order) => order.state,
-      cell: (context) => {
-        const order = context.row.original;
-        const blockers = order.blockers.map((blocker) => blocker.code).join(", ");
-        return (
-          // `order.state` and the blocker codes are the server's own words, and
-          // stay in them: the audit log and the operator's support ticket both
-          // say `uncertain` and `risk.notional_cap` whatever the interface says.
-          <StateBadge
-            tone={stateTone(order.state)}
-            label={order.state}
-            detail={blockers === "" ? undefined : t("blotter.blocked", { codes: blockers })}
-          />
-        );
-      },
-      meta: { width: "112px" },
-    },
-    {
-      id: "reason",
-      header: t("col.reason"),
-      accessorFn: (order) => order.state === "failed" ? commandFailureReason(order, venueOfCommand(order), t) : "",
-      cell: (context) => {
-        const reason = String(context.getValue() ?? "");
-        return reason ? <span className="block max-w-72 truncate text-danger" title={reason}>{reason}</span> : <span className="text-dim">—</span>;
-      },
-      meta: { width: "288px" },
-    },
-    {
-      id: "orderId",
-      header: t("col.orderId"),
-      accessorFn: (order) => order.commandId,
-      cell: (context) => {
-        const value = String(context.getValue() ?? "");
-        return <span className="text-dim" data-numeric="" title={value}>{compactIdentifier(value, 22)}</span>;
-      },
-      meta: { width: "156px" },
+      meta: { width: "184px" },
     },
     {
       id: "side",
       header: t("col.side"),
       accessorFn: (order) => intentOf(order)?.side ?? "",
       cell: (context) => <Side side={String(context.getValue() ?? "")} />,
-      meta: { width: "72px" },
+      meta: { width: "80px" },
+    },
+    {
+      id: "updated",
+      header: t("col.updated"),
+      accessorFn: (order) => order.updatedAt,
+      cell: (context) => {
+        const order = context.row.original;
+        return (
+          <Tooltip
+            align="start"
+            content={
+              <dl className="grid grid-cols-[auto_auto] gap-x-3 gap-y-1 whitespace-nowrap">
+                <dt className="text-dim">{t("col.created")}</dt>
+                <dd className="font-mono">{formatFullTimestamp(order.createdAt)}</dd>
+                <dt className="text-dim">{t("col.updated")}</dt>
+                <dd className="font-mono">{formatFullTimestamp(order.updatedAt)}</dd>
+              </dl>
+            }
+          >
+            <span className="whitespace-nowrap font-mono text-dim" tabIndex={0}>
+              {formatFullTimestamp(order.updatedAt)}
+            </span>
+          </Tooltip>
+        );
+      },
+      meta: { width: "184px" },
     },
     {
       id: "type",
@@ -272,31 +268,56 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
       meta: { width: "80px" },
     },
     {
-      id: "price",
-      header: t("col.price"),
-      accessorFn: (order) => intentOf(order)?.limitPrice ?? "",
-      cell: (context) => <Num value={asDecimal(context.getValue())} />,
-      meta: { numeric: true },
-    },
-    {
       id: "quantity",
       header: t("col.quantity"),
       accessorFn: (order) => intentOf(order)?.quantity ?? "",
       cell: (context) => <Num value={asDecimal(context.getValue())} />,
-      meta: { numeric: true },
+      meta: { numeric: true, width: "112px" },
     },
     {
-      id: "tif",
-      header: t("col.tif"),
-      accessorFn: (order) => intentOf(order)?.timeInForce ?? "—",
-      meta: { width: "64px" },
+      id: "filled",
+      header: t("col.filled"),
+      accessorFn: orderFilledQuantity,
+      cell: (context) => <Num value={asDecimal(context.getValue())} />,
+      meta: { numeric: true, width: "112px" },
     },
     {
-      id: "updated",
-      header: t("col.updated"),
-      accessorFn: (order) => order.updatedAt,
-      cell: (context) => <span className="text-dim">{formatTimestamp(String(context.getValue() ?? ""))}</span>,
-      meta: { align: "right", width: "104px" },
+      id: "price",
+      header: t("col.price"),
+      accessorFn: (order) => intentOf(order)?.limitPrice ?? "",
+      cell: (context) => <Num value={asDecimal(context.getValue())} />,
+      meta: { numeric: true, width: "112px" },
+    },
+    {
+      id: "average",
+      header: t("col.average"),
+      accessorFn: orderAverageFillPrice,
+      cell: (context) => <Num value={asDecimal(context.getValue())} />,
+      meta: { numeric: true, width: "112px" },
+    },
+    {
+      id: "reduceOnly",
+      header: t("col.reduceOnly"),
+      accessorFn: (order) => intentOf(order)?.reduceOnly ?? false,
+      cell: (context) => t(context.getValue() ? "utility.yes" : "utility.no"),
+      meta: { width: "88px" },
+    },
+    {
+      id: "state",
+      header: t("col.state"),
+      accessorFn: (order) => order.state,
+      cell: (context) => {
+        const order = context.row.original;
+        const failure = order.state === "failed" ? commandFailureReason(order, t) : order.state === "uncertain" ? commandUncertaintyReason(order, t) : undefined;
+        return (
+          <StateBadge
+            tone={stateTone(order.state)}
+            label={commandStateLabel(order.state, t)}
+            detail={failure}
+          />
+        );
+      },
+      meta: { width: "120px" },
     },
     {
       id: "actions",
@@ -304,9 +325,8 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
       enableSorting: false,
       cell: (context) => {
         const order = context.row.original;
-        // Only the states the server will still act on get a button. Offering
-        // cancel on a filled order and answering 404 is worse than not
-        // offering it.
+        // Completed orders have no row action. Working orders expose the one
+        // operation they support directly instead of hiding it in a menu.
         if (!isResumable(order.state)) return null;
         return (
           <Button
@@ -326,7 +346,7 @@ function OrdersTable({ orders, loading }: { orders: Command[]; loading: boolean 
           </Button>
         );
       },
-      meta: { align: "right", width: "88px" },
+      meta: { align: "right", width: "72px" },
     },
   ];
 
@@ -355,14 +375,16 @@ function PositionsTable({
   positions,
   loading,
   liveMark,
+  instrument,
 }: {
   positions: AccountPosition[];
   loading: boolean;
   liveMark?: LiveMarkPrice | null;
+  instrument: Instrument | null;
 }) {
   const t = useT();
-
-  const columns: ColumnDef<AccountPosition, unknown>[] = [
+  const context = useMemo(() => ({ instrument, liveMark }), [instrument, liveMark]);
+  const columns = useMemo<ColumnDef<AccountPosition, unknown>[]>(() => [
     {
       id: "instrument",
       header: t("col.instrument"),
@@ -393,18 +415,15 @@ function PositionsTable({
     {
       id: "mark",
       header: t("col.mark"),
-      accessorFn: (position) => positionMarkPrice(position, liveMark?.price, liveMark?.stale).value,
-      cell: (context) => <span className={liveMark?.stale ? "text-dim" : undefined}><Num value={String(context.getValue() ?? "")} /></span>,
+      accessorFn: (position) => position.markPrice,
+      cell: PositionMarkCell,
       meta: { numeric: true },
     },
     {
       id: "unrealized",
       header: t("col.unrealized"),
-      accessorFn: (position) => positionUnrealizedPnl(position, liveMark?.price, liveMark?.stale).value,
-      cell: ({ row }) => {
-        const pnl = positionUnrealizedPnl(row.original, liveMark?.price, liveMark?.stale);
-        return <span title={pnl.estimated ? t("portfolio.source.estimated") : undefined}>{pnl.estimated ? "≈ " : ""}<Num value={pnl.value} decimals={2} directional signed /></span>;
-      },
+      accessorFn: (position) => position.unrealizedPnl,
+      cell: PositionUnrealizedCell,
       meta: { numeric: true },
     },
     {
@@ -414,21 +433,65 @@ function PositionsTable({
       cell: (context) => <Num value={String(context.getValue() ?? "")} />,
       meta: { numeric: true },
     },
-  ];
+    {
+      id: "actions",
+      header: "",
+      enableSorting: false,
+      cell: PositionCloseCell,
+      meta: { align: "right", width: "88px" },
+    },
+  ], [t]);
 
   return (
-    <DataTable
-      columns={columns}
-      data={positions}
-      loading={loading}
-      getRowId={(position) => `${position.accountId}:${position.routeId ?? ""}:${position.instrumentId}:${position.positionSlot ?? "net"}`}
-      caption={t("blotter.caption.positions")}
-      empty={
-        <EmptyState
-          icon={Inbox}
-          title={t("blotter.empty.positions")}
-          detail={t("blotter.empty.positions.detail")}
-        />
+    <PositionTableContext.Provider value={context}>
+      <DataTable
+        columns={columns}
+        data={positions}
+        loading={loading}
+        getRowId={(position) => `${position.accountId}:${position.routeId ?? ""}:${position.instrumentId}:${position.positionSlot ?? "net"}`}
+        caption={t("blotter.caption.positions")}
+        empty={
+          <EmptyState
+            icon={Inbox}
+            title={t("blotter.empty.positions")}
+            detail={t("blotter.empty.positions.detail")}
+          />
+        }
+      />
+    </PositionTableContext.Provider>
+  );
+}
+
+interface PositionTableValue {
+  instrument: Instrument | null;
+  liveMark?: LiveMarkPrice | null;
+}
+
+const PositionTableContext = createContext<PositionTableValue>({ instrument: null });
+
+function PositionMarkCell({ row }: CellContext<AccountPosition, unknown>) {
+  const { liveMark } = useContext(PositionTableContext);
+  const mark = positionMarkPrice(row.original, liveMark?.price, liveMark?.stale);
+  return <span className={mark.stale ? "text-dim" : undefined}><Num value={mark.value} /></span>;
+}
+
+function PositionUnrealizedCell({ row }: CellContext<AccountPosition, unknown>) {
+  const t = useT();
+  const { liveMark } = useContext(PositionTableContext);
+  const pnl = positionUnrealizedPnl(row.original, liveMark?.price, liveMark?.stale);
+  return <span title={pnl.estimated ? t("portfolio.source.estimated") : undefined}>{pnl.estimated ? "≈ " : ""}<Num value={pnl.value} decimals={2} directional signed /></span>;
+}
+
+function PositionCloseCell({ row }: CellContext<AccountPosition, unknown>) {
+  const { instrument, liveMark } = useContext(PositionTableContext);
+  return (
+    <PositionCloseControl
+      position={row.original}
+      instrument={instrument?.instrumentId === row.original.instrumentId ? instrument : null}
+      referencePrice={
+        instrument?.instrumentId === row.original.instrumentId && liveMark && !liveMark.stale
+          ? liveMark.price
+          : row.original.markPrice
       }
     />
   );
@@ -543,6 +606,64 @@ function FillsTable({
 
 /* --- Helpers ------------------------------------------------------------- */
 
+export function orderFilledQuantity(order: Pick<Command, "executionEvidence">): string {
+  const quantities = (order.executionEvidence?.fills ?? [])
+    .map((fill) => fill.quantity ?? "")
+    .filter((quantity) => unsignedFixed(quantity) !== null);
+  return quantities.length > 0 ? sumDecimals(quantities) : "";
+}
+
+export function orderAverageFillPrice(order: Pick<Command, "executionEvidence">): string {
+  const fills = (order.executionEvidence?.fills ?? [])
+    .map((fill) => ({ quantity: unsignedFixed(fill.quantity ?? ""), price: unsignedFixed(fill.price ?? "") }))
+    .filter((fill): fill is { quantity: FixedValue; price: FixedValue } => fill.quantity !== null && fill.price !== null);
+  if (fills.length === 0) return "";
+
+  const quantityScale = Math.max(...fills.map((fill) => fill.quantity.scale));
+  const priceScale = Math.max(...fills.map((fill) => fill.price.scale));
+  let totalQuantity = 0n;
+  let totalNotional = 0n;
+  for (const fill of fills) {
+    const quantity = rescale(fill.quantity, quantityScale);
+    const price = rescale(fill.price, priceScale);
+    totalQuantity += quantity;
+    totalNotional += quantity * price;
+  }
+  if (totalQuantity === 0n) return "";
+  // A weighted average can have a fractional result even when every fill price
+  // is an integer. Keep eight additional decimal places during the division,
+  // then trim trailing zeroes for display. BigInt keeps the projection exact
+  // and avoids sending order evidence through floating-point arithmetic.
+  const divisionScale = 8;
+  const numerator = totalNotional * 10n ** BigInt(divisionScale);
+  const average = (numerator + totalQuantity / 2n) / totalQuantity;
+  return fixedValueString(average, priceScale + divisionScale);
+}
+
+interface FixedValue {
+  units: bigint;
+  scale: number;
+}
+
+function unsignedFixed(value: string): FixedValue | null {
+  const parts = splitDecimal(value);
+  if (!parts || parts.sign === "-") return null;
+  const units = BigInt(`${parts.integer}${parts.fraction}`);
+  return units > 0n ? { units, scale: parts.fraction.length } : null;
+}
+
+function rescale(value: FixedValue, scale: number): bigint {
+  return value.units * 10n ** BigInt(scale - value.scale);
+}
+
+function fixedValueString(units: bigint, scale: number): string {
+  if (scale === 0) return units.toString();
+  const digits = units.toString().padStart(scale + 1, "0");
+  const integer = digits.slice(0, -scale);
+  const fraction = digits.slice(-scale).replace(/0+$/, "");
+  return fraction === "" ? integer : `${integer}.${fraction}`;
+}
+
 /**
  * `Command.payload` is opaque JSON on the wire. Every command the manual
  * product writes carries a `ManualIntent`, but the type says `unknown` and a
@@ -577,6 +698,23 @@ function stateTone(state: CommandState): StateTone {
       return "danger";
     case "canceled":
       return "neutral";
+  }
+}
+
+function commandStateLabel(state: CommandState, t: Translate): string {
+  switch (state) {
+    case "accepted":
+      return t("order.state.accepted");
+    case "submitted":
+      return t("order.state.submitted");
+    case "uncertain":
+      return t("order.state.uncertain");
+    case "filled":
+      return t("order.state.filled");
+    case "canceled":
+      return t("order.state.canceled");
+    case "failed":
+      return t("order.state.failed");
   }
 }
 

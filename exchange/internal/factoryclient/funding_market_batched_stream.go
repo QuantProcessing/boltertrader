@@ -157,6 +157,7 @@ func (watcher *gateDerivativeWatcher) stream(ctx context.Context, bootstrap nati
 			rows = []gate.FuturesTicker{row}
 		}
 		observedAt := fundingGateTime(envelope)
+		batches := make(map[nativeDerivativeField]*nativeDerivativeBatch)
 		for _, row := range rows {
 			factsMu.RLock()
 			identity, ok := identities[row.Contract]
@@ -167,9 +168,10 @@ func (watcher *gateDerivativeWatcher) stream(ctx context.Context, bootstrap nati
 			}
 			fact, fields := gateTickerFact(identity, row, multiplier, observedAt)
 			if fields != 0 {
-				emit(derivativeDelta(bootstrap.Scope, observedAt, fields, fact))
+				appendNativeDerivativeBatch(batches, observedAt, fields, fact)
 			}
 		}
+		emitNativeDerivativeBatches(bootstrap.Scope, batches, emit)
 	}
 	if err := client.Subscribe(ctx, "futures.tickers", payload, handler); err != nil {
 		return err
@@ -333,6 +335,7 @@ func (watcher *nadoDerivativeWatcher) runNadoFacts(ctx context.Context, base *na
 		})
 		if err == nil {
 			observedAt := time.Now().UTC()
+			batches := make(map[nativeDerivativeField]*nativeDerivativeBatch)
 			for _, row := range contracts {
 				identity, ok := identities[int64(row.ProductID)]
 				if !ok {
@@ -363,9 +366,10 @@ func (watcher *nadoDerivativeWatcher) runNadoFacts(ctx context.Context, base *na
 					fields |= nativeDerivativeFieldNextFundingTime
 				}
 				if fields != 0 {
-					emit(derivativeDelta(scope, observedAt, fields, fact))
+					appendNativeDerivativeBatch(batches, observedAt, fields, fact)
 				}
 			}
+			emitNativeDerivativeBatches(scope, batches, emit)
 		}
 		select {
 		case <-ctx.Done():

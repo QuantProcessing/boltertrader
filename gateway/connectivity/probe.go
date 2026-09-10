@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/internal/venuehttp"
 )
 
 type State string
@@ -209,6 +210,7 @@ func (manager *Manager) Snapshot() []Snapshot {
 }
 
 type HTTPCheck struct {
+	Venue  exchange.Venue
 	Client *http.Client
 	Method string
 	URL    string
@@ -231,7 +233,7 @@ func (check HTTPCheck) Check(ctx context.Context) error {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	response, err := client.Do(request)
+	response, err := venuehttp.DoHTTP(client, request, string(check.Venue))
 	if err != nil {
 		return err
 	}
@@ -261,6 +263,7 @@ func DefaultHTTPCheckers(client *http.Client) map[exchange.Venue]Checker {
 	result := make(map[exchange.Venue]Checker, len(checks))
 	for venue, check := range checks {
 		check.Client = client
+		check.Venue = venue
 		result[venue] = check
 	}
 	return result

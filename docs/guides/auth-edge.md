@@ -50,10 +50,9 @@ Routes are declared explicitly and sent to the service that owns the data:
 | --- | --- | --- |
 | `/api/v1/accounts`, `/api/v1/accounts/{accountId}` and its actions | Gateway | Rewritten onto the internal plane |
 | `/api/v1/accounts/{accountId}/runtimes` | Trading | A projection, not the account itself |
-| `/api/v1/catalog/*`, `/api/v1/market-data`, `/api/v1/candles`, funding reads | Gateway | Browser-shaped adapters on the internal plane |
+| `/api/v1/catalog/*`, `/api/v1/market-data`, `/api/v1/candles`, funding reads | Gateway | Shared application contracts on the internal plane |
 | `/api/v1/market/realtime/ws` | Gateway | Public venue market stream |
 | `/api/v1/account/realtime/ws` | Gateway | Session-required private account notifications |
-| `/api/v1/realtime/ws` | Trading | Business projections such as arbitrage opportunities |
 | `/api/v1/venues/connectivity` | Gateway | REST snapshot; live updates use the Gateway market socket |
 | `/api/v1/commands`, `/api/v1/reservations`, `/api/v1/products/manual/*` | Trading | |
 | `/api/v1/positions`, `/api/v1/ledger`, `/api/v1/pnl`, `/api/v1/fills`, `/api/v1/activity` | Trading | |
@@ -101,11 +100,10 @@ only for the session.
 
 ## Realtime WebSocket
 
-The edge relays three WebSocket ownership boundaries without applying the
+The edge relays two Gateway WebSocket streams without applying the
 ordinary request deadline: public venue data goes directly to Gateway at
 `/api/v1/market/realtime/ws`, private account notifications go directly to
-Gateway at `/api/v1/account/realtime/ws`, and Trading serves only business
-projections at `/api/v1/realtime/ws`. The account socket requires a browser
+Gateway at `/api/v1/account/realtime/ws`. The account socket requires a browser
 session; the market socket may be anonymous.
 
 ## What it does not do

@@ -274,13 +274,6 @@ func TestSourceServesPublicMarketWithoutAnAccount(t *testing.T) {
 	}
 
 	query := Query{Venue: "binance", Environment: "live", Product: "perp", InstrumentID: instrumentID}
-	fact, err := source.MarketData(context.Background(), query, 20, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fact.Book.Bids[0].Price.String() != "100" || !fact.HasMark || !fact.HasFunding || len(fact.FundingHistory.Rates) != 1 {
-		t.Fatalf("fact=%+v", fact)
-	}
 	page, err := source.Candles(context.Background(), query, "1m", 300)
 	if err != nil || len(page.Page.Candles) != 1 {
 		t.Fatalf("candles=%+v err=%v", page, err)
@@ -317,11 +310,11 @@ func TestMarketDataReadsResidentHubWithoutJoiningFundingHistory(t *testing.T) {
 	defer hub.Close()
 	source.SetMarketHub(hub)
 	instrumentID := string(snapshot.Instruments[0].Catalog.ID)
-	fact, err := source.MarketData(t.Context(), Query{Venue: "binance", Environment: "live", Product: "perp", InstrumentID: instrumentID}, 20, 20)
+	fact, err := source.MarketData(t.Context(), Query{Venue: "binance", Environment: "live", Product: "perp", InstrumentID: instrumentID}, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fact.Book.Bids) != 1 || fact.Book.Bids[0].Price.String() != "99" || fact.Book.Sequence != "resident-1" || !fact.HasMark || fact.Mark.Price.String() != "100.5" || fact.HasFunding || len(fact.FundingHistory.Rates) != 0 {
+	if len(fact.Book.Bids) != 1 || fact.Book.Bids[0].Price.String() != "99" || fact.Book.Sequence != "resident-1" || !fact.HasMark || fact.Mark.Price.String() != "100.5" {
 		t.Fatalf("resident fact=%+v", fact)
 	}
 	if connector.bookReads != 0 {
@@ -377,7 +370,7 @@ func TestRunBootstrapsCatalogAndSnapshotDoesNotRefreshVenue(t *testing.T) {
 	}
 }
 
-func TestSourceKeepsDepthWhenOptionalMarketFacetsFail(t *testing.T) {
+func TestSourceDoesNotFallBackToVenueRESTWithoutHub(t *testing.T) {
 	observedAt := time.Date(2026, 8, 19, 1, 2, 3, 0, time.UTC)
 	connector := &fakeConnector{
 		instrument: exchange.Instrument{
@@ -412,12 +405,11 @@ func TestSourceKeepsDepthWhenOptionalMarketFacetsFail(t *testing.T) {
 		Venue: "binance", Environment: "live", Product: "perp",
 		InstrumentID: string(snapshot.Instruments[0].Catalog.ID),
 	}
-	fact, err := source.MarketData(context.Background(), query, 20, 20)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := source.MarketData(context.Background(), query, 20); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("MarketData error=%v, want ErrUnavailable", err)
 	}
-	if len(fact.Book.Bids) != 1 || len(fact.Book.Asks) != 1 || fact.HasMark || fact.HasFunding {
-		t.Fatalf("fact=%+v", fact)
+	if connector.bookReads != 0 {
+		t.Fatalf("market-data fallback performed %d REST order-book reads", connector.bookReads)
 	}
 }
 
@@ -504,6 +496,42 @@ func TestSourcePoolsNativeFamilySocketAndConsumesCatalogCapabilities(t *testing.
 
 type bybitRouteFactory struct{ connectors map[string]Connector }
 
+type unavailableCatalogConnector struct{ fakeConnector }
+
+func (connector *unavailableCatalogConnector) Refresh(context.Context) ([]exchange.Instrument, error) {
+	connector.refreshes++
+	return nil, errors.New("venue catalog unavailable")
+}
+
+func TestPublicInstrumentLookupIsScopeLocalAndCatalogReportsMissingScopes(t *testing.T) {
+	usdt := publicPerpInstrument("BTC", "BTCUSDT")
+	usdt.Identity.Venue = exchange.VenueBybit
+	available := &fakeConnector{instrument: usdt}
+	unavailable := &unavailableCatalogConnector{}
+	source, err := NewSource(bybitRouteFactory{connectors: map[string]Connector{"USDT": available, "USDC": unavailable}}, routeprofile.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	instrument, err := source.ResolveInstrument(t.Context(), "bybit:live:perp:USDT:BTC-USDT")
+	if err != nil || instrument.Catalog.Symbol != "BTC-USDT" || !instrument.Ready {
+		t.Fatalf("instrument=%+v error=%v", instrument, err)
+	}
+	if unavailable.refreshes != 0 {
+		t.Fatal("USDT lookup probed unrelated USDC catalog")
+	}
+	snapshot, err := source.Snapshot(t.Context())
+	if err != nil || len(snapshot.Instruments) != 1 || len(snapshot.UnavailableProfiles) != 1 || snapshot.UnavailableProfiles[0] != "bybit.perp.usdc.v1" {
+		t.Fatalf("partial snapshot=%+v error=%v", snapshot, err)
+	}
+	if _, err := source.ResolveInstrument(t.Context(), "bybit:live:perp:USDC:BTC-USDC"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("failed catalog lookup=%v, want unavailable", err)
+	}
+	if _, err := source.ResolveInstrument(t.Context(), "bybit:live:perp:USDT:UNKNOWN-USDT"); !errors.Is(err, exchange.ErrNotFound) {
+		t.Fatalf("unknown instrument=%v, want not found", err)
+	}
+}
+
 func (factory bybitRouteFactory) Build(profile routeprofile.Profile) (Connector, error) {
 	if profile.Venue == "bybit" && profile.Product == routeprofile.ProductPerp {
 		return factory.connectors[profile.SettlementAsset], nil
@@ -524,7 +552,7 @@ type fakeConnector struct {
 	historyErr  error
 	refreshes   int
 	bookReads   int
-	socket      exchange.SpotWebSocket
+	socket      exchange.MarketWebSocket
 }
 
 type signalingConnector struct {
@@ -569,12 +597,12 @@ func (connector *fakeConnector) MarkPrice(context.Context, exchange.Instrument) 
 	return connector.mark, true, connector.markErr
 }
 
-func (connector *fakeConnector) WebSocket() exchange.SpotWebSocket { return connector.socket }
+func (connector *fakeConnector) WebSocket() exchange.MarketWebSocket { return connector.socket }
 
 func (*fakeConnector) Close() error { return nil }
 
 type fakeMarkSocket struct {
-	exchange.PerpWebSocket
+	exchange.PerpMarketWebSocket
 	subscription exchange.Subscription[exchange.MarkPriceEvent]
 	request      exchange.WatchRequest
 }
@@ -607,7 +635,7 @@ func TestNativeMarketFamilyUsesVenueConnectionBoundary(t *testing.T) {
 		venue, settlement, want string
 	}{
 		{string(exchange.VenueBinance), "USDT", "perpetual"},
-		{string(exchange.VenueBinance), "USDC", "perpetual"},
+		{string(exchange.VenueBinance), "USDC", ""},
 		{string(exchange.VenueBybit), "USDT", "linear"},
 		{string(exchange.VenueBybit), "USDC", "linear"},
 		{string(exchange.VenueBitget), "USDT", "usdt-futures"},

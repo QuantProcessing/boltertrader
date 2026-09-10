@@ -4,22 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	wire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
 	"io"
 	"mime"
 	"net/http"
 	"unicode/utf8"
 )
 
-type errorEnvelope struct {
-	Error errorBody `json:"error"`
-}
-
-type errorBody struct {
-	Code          string `json:"code"`
-	Message       string `json:"message"`
-	CorrelationID string `json:"correlation_id"`
-	Retryable     bool   `json:"retryable"`
-}
+type errorEnvelope = wire.ErrorEnvelope
+type errorBody = wire.ErrorBody
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")

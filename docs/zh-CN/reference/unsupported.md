@@ -16,7 +16,7 @@
 | --- | --- |
 | 策略 runtime——一个长期运行、自己持有 bus、cache 与策略编排的进程 | Gateway HTTP surface 之上的产品服务。Trading 服务里装着其中两个 |
 | 回测 | 没有。这棵树里任何地方都没有历史模拟的 surface |
-| Funding 产品——一个交易资金费价差的服务 | 重写已经落地。一个免凭证的资金费看板负责读取费率，[trading 服务](../guides/trading-service.md)里的套利产品则把这个价差做成跨所双腿对冲来交易 |
+| 本地资金费套利应用 | 已删除。Gateway 继续提供通用资金费率、历史和看板。 |
 
 如果你翻到某个页面、注释或 issue 提到策略 `Context`、`runtime/` 包，或者 per-venue 的
 `adapter/` 包，那是[当前架构](../concepts/architecture.md)之前的东西。

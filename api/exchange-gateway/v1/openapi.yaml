@@ -5,6 +5,47 @@ info:
 security:
   - bearerAuth: []
 paths:
+  /v1/market/instruments:
+    get:
+      operationId: listMarketInstruments
+      description: Account-independent public catalog. Requires the Gateway bearer token. No query parameters. A partial or stale catalog has complete=false; unavailable_profiles names omitted scopes and each item carries directory readiness. Omission is not proof of delisting.
+      responses:
+        '200': {description: public instrument directory, content: {application/json: {schema: {$ref: '#/components/schemas/MarketCatalogResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/market/candles:
+    get:
+      operationId: getMarketCandles
+      description: Reads bounded public candle history without an account. Use an opaque instrument_id returned by the public catalog; do not construct native symbols. Decimal values are strings.
+      parameters:
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+        - {name: interval, in: query, required: true, schema: {type: string, enum: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 100}}
+      responses:
+        '200': {description: public candles, content: {application/json: {schema: {$ref: '#/components/schemas/MarketCandlesResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/market/snapshot:
+    get:
+      operationId: getMarketSnapshot
+      description: Returns the first complete snapshot of the same Market Hub topic used by WebSocket consumers, then releases the logical subscription. A gap or unavailable snapshot returns 503, never an empty successful book. The original observedAt is preserved; an HTTP 200 alone is not a freshness guarantee.
+      parameters:
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+        - {name: topic, in: query, required: true, schema: {type: string, enum: [market.order_book, market.bbo, market.candles, market.mark_price]}}
+        - {name: depth, in: query, description: Required only for market.order_book; forbidden for other topics., schema: {type: integer, minimum: 1, maximum: 100}}
+        - {name: interval, in: query, description: Required only for market.candles; forbidden for other topics., schema: {type: string, enum: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d]}}
+      responses:
+        '200': {description: account-independent shared snapshot, content: {application/json: {schema: {$ref: '#/components/schemas/MarketSnapshotResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/market/ws:
+    get:
+      operationId: streamPublicMarkets
+      description: |
+        Account-independent market subscriptions authenticated by the Authorization Bearer header; query tokens and query parameters are rejected. Control messages use MarketControl. Supports at most 64 active subscriptions and 64 topics per control, with a 64 KiB control limit. Does not expose account.events, funding.board, connectivity, cursor replay, or protected internalPurpose priorities.
+        An ack allocates a subscription ID; data readiness begins at snapshot. Keep separate state per subscriptionId and generation. Snapshot replaces state, delta mutates it, and full replaces the current visible book. Sequence is local to the shared topic and generation; sourceSequence is an opaque venue token. Discard state on resync_required and wait for a new-generation snapshot. An upstream Hub gap keeps the subscription alive and resnapshots automatically. UPSTREAM_UNAVAILABLE is terminal for that subscription: resubscribe with bounded backoff. INSTRUMENT_UNKNOWN and UNSUPPORTED_TOPIC are terminal error messages. A socket disconnect, including consumer lag, requires reconnecting and resubscribing; the final resync message may not arrive. There is no persistent replay across sessions or process restarts.
+        Market snapshots and updates use the existing camelCase realtime envelope. REST query parameters use snake_case. Order-book quantities are strings; zero quantity in a delta removes that price level. BBO updates replace the entire best quote and may have increasing but non-contiguous sequence numbers because Gateway coalesces high-frequency updates. Order-book deltas require contiguous sequences within a generation. Candle snapshots contain candles, while updates contain candle keyed by openTime. Mark updates replace the current price. Consumers must track data freshness separately from pong/control liveness.
+      x-control-schema: {$ref: '#/components/schemas/MarketControl'}
+      responses:
+        '101': {description: market WebSocket upgraded, content: {application/json: {schema: {$ref: '#/components/schemas/MarketMessage'}}}}
+        default: {$ref: '#/components/responses/Error'}
   /v1/health/live:
     get: {operationId: getLiveHealth, responses: {'200': {description: live}}}
   /v1/health/ready:
@@ -70,6 +111,15 @@ paths:
         - {$ref: '#/components/parameters/PaginationLimit'}
         - {$ref: '#/components/parameters/PaginationCursor'}
       responses: {'200': {description: orders}, default: {$ref: '#/components/responses/Error'}}
+  /v1/orders/by-idempotency-key/{idempotency_key}:
+    get:
+      operationId: getOrderByIdempotencyKey
+      description: Reads a durable order using the original placement key, scoped to the authenticated principal. Never dispatches an order. A 404 is not proof that an in-flight placement cannot subsequently be recorded.
+      parameters: [{name: idempotency_key, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: order and lookup scope, content: {application/json: {schema: {$ref: '#/components/schemas/OrderLookupResponse'}}}}
+        '404': {description: no order currently recorded for this principal and key}
+        default: {$ref: '#/components/responses/Error'}
   /v1/orders/{gateway_order_id}:
     get:
       operationId: getOrder
@@ -77,17 +127,13 @@ paths:
       responses: {'200': {description: order}}
     patch:
       operationId: amendOrder
+      description: Reserved operation. Amendment is unsupported and returns 501 without accepting an amendment payload.
       parameters: [{name: gateway_order_id, in: path, required: true, schema: {type: string}}]
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/AmendOrderRequest'}}}
       responses: {'501': {description: unsupported capability}, default: {$ref: '#/components/responses/Error'}}
     delete:
       operationId: cancelOrder
+      description: Cancels the principal-owned Gateway order by its durable identity. No request body or caller-supplied account/runtime fence is required; routing comes from the stored order.
       parameters: [{name: gateway_order_id, in: path, required: true, schema: {type: string}}]
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/CancelOrderRequest'}}}
       responses: {'202': {description: cancel accepted}, default: {$ref: '#/components/responses/Error'}}
   /v1/open-orders:
     get:
@@ -112,15 +158,26 @@ paths:
         - {$ref: '#/components/parameters/PaginationCursor'}
       responses:
         '200':
-          description: Fills. next_cursor is present only when the venue page proves a known continuation.
+          description: 'Fills. Each item carries product, base_asset, and settlement_asset from the resolved instrument. fill.fee is a signed cost in fill.fee_asset (positive charge, negative rebate). The fill.fill_id is venue-native and scoped by account_id and instrument_id; consumers must use all three fields for deduplication. next_cursor is present only when the venue page proves a known continuation.'
         default: {$ref: '#/components/responses/Error'}
   /v1/balances:
     get:
       operationId: listBalances
+      description: Complete non-zero balances across selected routes, read sequentially. No pagination or atomic cross-venue snapshot is implied. More than 10000 rows returns BALANCE_SNAPSHOT_TOO_LARGE instead of a partial success.
       parameters:
         - {name: account_id, in: query, schema: {type: string}}
-        - {$ref: '#/components/parameters/PaginationLimit'}
-      responses: {'200': {description: balances}, default: {$ref: '#/components/responses/Error'}}
+      responses:
+        '200':
+          description: Complete balance snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, complete]
+                properties:
+                  complete: {type: boolean, const: true}
+                  items: {type: array, maxItems: 10000, items: {type: object}}
+        default: {$ref: '#/components/responses/Error'}
   /v1/positions:
     get:
       operationId: listPositions
@@ -280,7 +337,7 @@ paths:
           explode: true
           schema:
             type: array
-            items: {type: string, enum: [order, fill, balance, position, account_health]}
+            items: {type: string, enum: [order, fill, balance, position, account_connection]}
       responses:
         '101':
           description: private event stream; each server message is a PrivateEvent
@@ -302,14 +359,144 @@ components:
   responses:
     Error:
       description: stable error envelope
+      headers:
+        Retry-After:
+          description: Optional delay in whole seconds for HTTP 429. Does not authorize automatic order resubmission.
+          schema: {type: string, pattern: '^[0-9]+$'}
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
+    MarketInstrument:
+      type: object
+      additionalProperties: true
+      required: [instrument_id, route_profile_id, venue, environment, product, settlement, symbol, base_asset, quote_asset, ready]
+      properties:
+        instrument_id: {type: string, description: Opaque stable Gateway identity; URL-encode when used in a query.}
+        route_profile_id: {type: string}
+        venue: {type: string}
+        environment: {type: string, enum: [live]}
+        product: {type: string, enum: [spot, perp]}
+        settlement: {type: string}
+        symbol: {type: string}
+        base_asset: {type: string}
+        quote_asset: {type: string}
+        ready: {type: boolean, description: Directory freshness only; not a promise of live market-data freshness.}
+    MarketCatalogResponse:
+      type: object
+      additionalProperties: true
+      required: [revision, observed_at, complete, unavailable_profiles, items]
+      properties:
+        revision: {type: string}
+        observed_at: {type: string, format: date-time, description: Oldest contributing catalog observation; not response generation time.}
+        complete: {type: boolean}
+        unavailable_profiles: {type: array, items: {type: string}}
+        items: {type: array, items: {$ref: '#/components/schemas/MarketInstrument'}}
+    MarketCandlesResponse:
+      type: object
+      additionalProperties: true
+      required: [instrument_id, interval, candles, page]
+      properties:
+        instrument_id: {type: string}
+        interval: {type: string}
+        candles: {type: array, items: {$ref: '#/components/schemas/Candle'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+    MarketSnapshotResponse:
+      type: object
+      additionalProperties: true
+      required: [instrument_id, snapshot]
+      properties:
+        instrument_id: {type: string}
+        snapshot: {$ref: '#/components/schemas/MarketMessage'}
+    MarketControl:
+      type: object
+      required: [op, requestId]
+      description: subscribe requires topics; unsubscribe requires subscriptionId on each item; ping has no topics. A rejected subscription batch allocates no subscriptions. Unknown fields have no effect; cursor and internalPurpose are rejected when nonempty.
+      properties:
+        op: {type: string, enum: [subscribe, unsubscribe, ping]}
+        requestId: {type: string, minLength: 1}
+        topics: {type: array, minItems: 1, maxItems: 64, items: {$ref: '#/components/schemas/MarketTopicRequest'}}
+    MarketTopicRequest:
+      type: object
+      description: For subscribe, topic and instrumentId are required and subscriptionId must be absent. depth is required only for order_book; interval only for candles. For unsubscribe, subscriptionId is required.
+      properties:
+        subscriptionId: {type: string}
+        topic: {type: string, enum: [market.order_book, market.bbo, market.candles, market.mark_price]}
+        instrumentId: {type: string}
+        depth: {type: integer, minimum: 1, maximum: 100}
+        interval: {type: string, enum: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d]}
+    MarketMessage:
+      type: object
+      additionalProperties: true
+      required: [type]
+      properties:
+        type: {type: string, enum: [ack, snapshot, delta, full, resync_required, error, pong]}
+        requestId: {type: string}
+        subscriptionId: {type: string}
+        topic: {type: string, enum: [market.order_book, market.bbo, market.candles, market.mark_price]}
+        generation: {type: integer, minimum: 1, description: Present on Hub data and gap messages; scoped to this live subscription, not a durable epoch.}
+        sequence: {type: integer, minimum: 1}
+        sourceSequence: {type: string}
+        observedAt: {type: string, format: date-time}
+        data:
+          oneOf:
+            - type: object
+              required: [bids, asks]
+              properties:
+                bids: {type: array, items: {$ref: '#/components/schemas/BookLevel'}}
+                asks: {type: array, items: {$ref: '#/components/schemas/BookLevel'}}
+                kind: {type: string, enum: [snapshot, delta, full]}
+                previous: {type: string}
+            - type: object
+              required: [bid, ask]
+              properties:
+                bid: {$ref: '#/components/schemas/BookLevel'}
+                ask: {$ref: '#/components/schemas/BookLevel'}
+            - type: object
+              required: [interval]
+              properties:
+                interval: {type: string}
+                candles: {type: array, items: {$ref: '#/components/schemas/MarketStreamCandle'}}
+                candle: {$ref: '#/components/schemas/MarketStreamCandle'}
+            - type: object
+              required: [price, staleAfterMs, ageMs, receivedAt]
+              properties:
+                price: {type: string}
+                staleAfterMs: {type: integer, minimum: 0}
+                ageMs: {type: integer, minimum: 0, description: Age at serialization; continue aging locally after receipt.}
+                receivedAt: {type: string, format: date-time, description: Original Gateway fact receipt time; unchanged on replay.}
+        code: {type: string}
+        reason: {type: string}
+    MarketStreamCandle:
+      type: object
+      additionalProperties: true
+      required: [openTime, closeTime, open, high, low, close, volume, complete]
+      properties:
+        openTime: {type: string, format: date-time}
+        closeTime: {type: string, format: date-time}
+        open: {type: string}
+        high: {type: string}
+        low: {type: string}
+        close: {type: string}
+        volume: {type: string}
+        complete: {type: boolean}
     PlaceOrderRequest:
       type: object
-      required: [account_id, route_id, instrument_id, idempotency_key, side, type, quantity, desired_state_revision, runtime_generation, credential_version]
+      required: [account_id, route_id, instrument_id, idempotency_key, side, type, quantity, runtime_id]
       additionalProperties: false
+      example:
+        account_id: acct-a
+        route_id: spot
+        instrument_id: binance:live:spot:BTC-USDT
+        idempotency_key: idem-1
+        side: buy
+        type: limit
+        quantity: '0.001'
+        limit_price: '100'
+        limit_policy: resting
+        reduce_only: false
+        leverage: 0
+        runtime_id: 018f47a8-2578-7d3c-9d7d-5e4f4a445e11
       properties:
         account_id: {type: string}
         route_id: {type: string}
@@ -321,42 +508,28 @@ components:
         limit_price: {type: string}
         limit_policy: {type: string, enum: [resting, ioc, post_only]}
         reduce_only: {type: boolean}
-        desired_state_revision: {type: integer, minimum: 1}
-        runtime_generation: {type: integer, minimum: 1}
-        credential_version: {type: integer, minimum: 1}
-    AmendOrderRequest:
+        leverage: {type: integer, minimum: 0, description: 'Optional perpetual leverage; zero leaves the current leverage unchanged.'}
+        runtime_id: {type: string, minLength: 1, description: 'Runtime ownership fence obtained from the account. A stale runtime is rejected before venue dispatch.'}
+    OrderLookupResponse:
       type: object
-      required: [account_id, route_id, idempotency_key, desired_state_revision, runtime_generation, credential_version]
-      additionalProperties: false
+      additionalProperties: true
+      required: [idempotency_key, account_id, instrument_id, order]
       properties:
-        account_id: {type: string}
-        route_id: {type: string}
         idempotency_key: {type: string}
-        quantity: {type: string}
-        limit_price: {type: string}
-        desired_state_revision: {type: integer, minimum: 1}
-        runtime_generation: {type: integer, minimum: 1}
-        credential_version: {type: integer, minimum: 1}
-    CancelOrderRequest:
-      type: object
-      required: [account_id, route_id, idempotency_key, desired_state_revision, runtime_generation, credential_version]
-      additionalProperties: false
-      properties:
         account_id: {type: string}
-        route_id: {type: string}
-        idempotency_key: {type: string}
-        desired_state_revision: {type: integer, minimum: 1}
-        runtime_generation: {type: integer, minimum: 1}
-        credential_version: {type: integer, minimum: 1}
+        instrument_id: {type: string}
+        order: {$ref: '#/components/schemas/OrderResponse'}
     OrderResponse:
       type: object
-      required: [command_id, gateway_order_id, client_order_id, state, resource_version]
+      required: [command_id, gateway_order_id, client_order_id, account_id, instrument_id, state, resource_version]
       properties:
         command_id: {type: string}
         gateway_order_id: {type: string}
         client_order_id: {type: string}
+        account_id: {type: string}
+        instrument_id: {type: string}
         state: {type: string}
-        resource_version: {type: integer, minimum: 0}
+        resource_version: {type: integer, minimum: 1}
         venue_code: {type: string, description: Normalized venue rejection code when state is rejected.}
         venue_message: {type: string, description: Safe normalized rejection reason when state is rejected.}
     ErrorEnvelope:
@@ -626,22 +799,7 @@ components:
       properties:
         event_id: {type: string}
         account_id: {type: string}
-        resource_version: {type: integer, minimum: 0}
-        kind: {type: string, enum: [order, fill, balance, position, account_health, resync_required]}
+        resource_version: {type: integer, minimum: 1}
+        kind: {type: string, enum: [order, fill, balance, position, account_connection]}
         occurred_at: {type: string, format: date-time}
         payload: {type: object, additionalProperties: true}
-    ResyncRequiredEvent:
-      allOf:
-        - {$ref: '#/components/schemas/PrivateEvent'}
-        - type: object
-          properties:
-            kind: {type: string, enum: [resync_required]}
-            payload:
-              type: object
-              required: [reason, resources]
-              additionalProperties: false
-              properties:
-                reason: {type: string}
-                resources:
-                  type: array
-                  items: {type: string}

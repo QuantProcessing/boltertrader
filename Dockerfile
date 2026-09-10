@@ -5,8 +5,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 COPY . .
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 ARG GOPROXY=https://proxy.golang.org,direct
 
 # One image carries every process in the stack. The alternative — an image per
@@ -21,6 +21,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       exchange-gateway \
       exchange-gateway-docker-support \
       gateway-migrate \
+      gateway-market \
+      gateway-monitor \
       trading \
       trading-migrate \
       authedge \

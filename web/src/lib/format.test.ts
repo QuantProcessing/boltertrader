@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { compactIdentifier, decimalSign, formatDecimal, formatDuration, splitDecimal, splitInstrument } from "./format";
+import { compactIdentifier, decimalSign, formatDecimal, formatDuration, formatFullTimestamp, splitDecimal, splitInstrument } from "./format";
 
 /**
  * The separator `formatDecimal` actually used, recovered from its own output
@@ -103,5 +103,12 @@ describe("formatDuration", () => {
     expect(formatDuration(4_400)).toBe("4s");
     expect(formatDuration(80_000)).toBe("1m 20s");
     expect(formatDuration(-500)).toBe("0s");
+  });
+});
+
+describe("formatFullTimestamp", () => {
+  it("always retains the calendar date", () => {
+    const at = new Date(2026, 7, 29, 19, 36, 7);
+    expect(formatFullTimestamp(at.toISOString())).toBe("2026-08-29 19:36:07");
   });
 });

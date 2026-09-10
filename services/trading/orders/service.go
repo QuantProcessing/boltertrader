@@ -50,6 +50,8 @@ type OrderEventEvidence struct {
 }
 
 type FillEvidence struct {
+	InstrumentProduct  string    `json:"instrumentProduct,omitempty"`
+	BaseAsset          string    `json:"baseAsset,omitempty"`
 	FillID             string    `json:"fillId"`
 	AccountID          string    `json:"accountId"`
 	InstrumentID       string    `json:"instrumentId"`
@@ -86,26 +88,40 @@ const (
 	ReconciliationLookupFailed     ReconciliationReason = "lookup_failed"
 	ReconciliationEvidenceInvalid  ReconciliationReason = "evidence_invalid"
 	ReconciliationAwaitingTerminal ReconciliationReason = "awaiting_terminal_evidence"
+	ReconciliationAwaitingHandoff  ReconciliationReason = "awaiting_handoff"
 )
 
+// Commands must begin execution promptly. Recovery never sends a stale intent.
+const HandoffStartWindow = 30 * time.Second
+const HandoffNotStarted = "HANDOFF_NOT_STARTED"
+
 type Command struct {
-	CommandID         string            `json:"commandId"`
-	PrincipalID       string            `json:"-"`
-	AccountID         string            `json:"accountId"`
-	LineageID         string            `json:"lineageId"`
-	ProductID         string            `json:"productId"`
-	ReservationID     *string           `json:"reservationId"`
-	IdempotencyKey    string            `json:"idempotencyKey"`
-	Method            string            `json:"-"`
-	Path              string            `json:"-"`
-	CommandKind       string            `json:"commandKind"`
-	State             State             `json:"state"`
-	Payload           json.RawMessage   `json:"payload"`
-	PayloadHash       string            `json:"-"`
-	Blockers          []Blocker         `json:"blockers"`
-	CreatedAt         time.Time         `json:"createdAt"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
-	ExecutionEvidence ExecutionEvidence `json:"executionEvidence,omitempty"`
+	CommandID   string `json:"commandId"`
+	PrincipalID string `json:"-"`
+	AccountID   string `json:"accountId"`
+	LineageID   string `json:"lineageId"`
+	ProductID   string `json:"productId"`
+
+	// ReservationID is retained for historical reads; new commands do not reserve resources.
+	ReservationID     *string               `json:"reservationId"`
+	IdempotencyKey    string                `json:"idempotencyKey"`
+	Method            string                `json:"-"`
+	Path              string                `json:"-"`
+	CommandKind       string                `json:"commandKind"`
+	State             State                 `json:"state"`
+	Payload           json.RawMessage       `json:"payload"`
+	PayloadHash       string                `json:"-"`
+	Blockers          []Blocker             `json:"blockers"`
+	CreatedAt         time.Time             `json:"createdAt"`
+	UpdatedAt         time.Time             `json:"updatedAt"`
+	ExecutionEvidence ExecutionEvidence     `json:"executionEvidence,omitempty"`
+	Reconciliation    *ReconciliationStatus `json:"reconciliation,omitempty"`
+}
+
+type ReconciliationStatus struct {
+	Reason        ReconciliationReason `json:"reason"`
+	NextAttemptAt time.Time            `json:"nextAttemptAt"`
+	AttemptCount  int                  `json:"attemptCount"`
 }
 
 type Blocker struct {
@@ -113,17 +129,33 @@ type Blocker struct {
 }
 
 type CreateRequest struct {
-	PrincipalID, AccountID, ProductID, LineageID, ReservationID string
-	IdempotencyKey, Method, Path, CommandKind                   string
-	Payload                                                     json.RawMessage
+	PrincipalID, AccountID, ProductID, LineageID string
+	IdempotencyKey, Method, Path, CommandKind    string
+	Payload                                      json.RawMessage
 }
 
-type ReservationClaim struct {
-	ReservationID, PrincipalID, ProductID string
+// IdempotencyIdentity is the persisted request namespace, independent of runtime routing.
+type IdempotencyIdentity struct {
+	PrincipalID, Method, Path, Key string
 }
 
-type ReservationGate interface {
-	Consume(context.Context, ReservationClaim) error
+func (service *Service) Find(ctx context.Context, identity IdempotencyIdentity) (Command, error) {
+	if identity.PrincipalID == "" || identity.Method == "" || identity.Path == "" || identity.Key == "" {
+		return Command{}, fmt.Errorf("command lookup identity is required")
+	}
+	identity.Method = strings.ToUpper(identity.Method)
+	return service.store.Find(ctx, identity)
+}
+
+func (store *MemoryStore) Find(_ context.Context, identity IdempotencyIdentity) (Command, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := commandKey(Command{PrincipalID: identity.PrincipalID, Method: identity.Method, Path: identity.Path, IdempotencyKey: identity.Key})
+	id, ok := store.keys[key]
+	if !ok {
+		return Command{}, ErrNotFound
+	}
+	return store.withReconciliation(store.commands[id]), nil
 }
 
 type ReconciliationTask struct {
@@ -136,37 +168,37 @@ type ReconciliationTask struct {
 
 type TransitionRequest struct {
 	CommandID     string
+	ExpectedState State
 	State         State
+	Blockers      []Blocker
 	Reason        ReconciliationReason
 	NextAttemptAt time.Time
 	Evidence      ExecutionEvidence
 }
 
 type Store interface {
-	Reserve(context.Context, Command) (Command, bool, error)
-	Abort(context.Context, string) error
+	Create(context.Context, Command) (Command, bool, error)
 	Get(context.Context, string) (Command, error)
+	Find(context.Context, IdempotencyIdentity) (Command, error)
 	ListOwned(context.Context, string, string) ([]Command, error)
+	// Transition validates and merges against the stored command atomically with
+	// the state, evidence and reconciliation task update. Implementations must
+	// hold their lock/transaction across ReduceTransition and the write.
 	Transition(context.Context, TransitionRequest, time.Time) (Command, error)
 	ClaimDue(context.Context, time.Time, time.Time, int) ([]ReconciliationTask, error)
 }
 
-type AtomicReservationStore interface {
-	ReserveWithReservation(context.Context, Command, ReservationClaim) (Command, bool, error)
-}
-
 type Service struct {
 	store Store
-	gate  ReservationGate
 	now   func() time.Time
 	live  atomic.Bool
 }
 
-func NewService(store Store, gate ReservationGate, now func() time.Time) *Service {
+func NewService(store Store, now func() time.Time) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: store, gate: gate, now: now}
+	return &Service{store: store, now: now}
 }
 
 func (service *Service) SetLiveWritesEnabled(enabled bool) { service.live.Store(enabled) }
@@ -217,32 +249,7 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Comm
 		CommandKind: request.CommandKind, State: StateAccepted, Payload: canonical, PayloadHash: hash,
 		Blockers: []Blocker{}, CreatedAt: now, UpdatedAt: now,
 	}
-	if request.ReservationID != "" {
-		value := request.ReservationID
-		command.ReservationID = &value
-	}
-	if command.ReservationID != nil && service.gate != nil {
-		claim := ReservationClaim{
-			ReservationID: *command.ReservationID, PrincipalID: command.PrincipalID, ProductID: command.ProductID,
-		}
-		if store, ok := service.store.(AtomicReservationStore); ok {
-			return store.ReserveWithReservation(ctx, command, claim)
-		}
-	}
-	stored, replay, err := service.store.Reserve(ctx, command)
-	if err != nil || replay {
-		return stored, replay, err
-	}
-	if command.ReservationID != nil && service.gate != nil {
-		err = service.gate.Consume(ctx, ReservationClaim{
-			ReservationID: *command.ReservationID, PrincipalID: command.PrincipalID, ProductID: command.ProductID,
-		})
-		if err != nil {
-			_ = service.store.Abort(ctx, command.CommandID)
-			return Command{}, false, fmt.Errorf("consume reservation: %w", err)
-		}
-	}
-	return stored, false, nil
+	return service.store.Create(ctx, command)
 }
 
 func newCommandID() (string, error) {
@@ -254,23 +261,60 @@ func newCommandID() (string, error) {
 }
 
 func (service *Service) Transition(ctx context.Context, request TransitionRequest) (Command, error) {
-	if request.CommandID == "" {
-		return Command{}, fmt.Errorf("command id is required")
-	}
+	now := service.now().UTC()
 	if request.State == StateSubmitted && request.Reason == "" && request.NextAttemptAt.IsZero() {
 		request.Reason = ReconciliationAwaitingTerminal
-		request.NextAttemptAt = service.now().UTC().Add(5 * time.Second)
+		request.NextAttemptAt = now.Add(5 * time.Second)
+	}
+	return service.store.Transition(ctx, request, now)
+}
+
+// BeginExecution atomically consumes the single permission to send this
+// command. State and recovery task are persisted before any network write.
+// Replays and concurrent callers only observe the current result.
+func (service *Service) BeginExecution(ctx context.Context, commandID string) (Command, bool, error) {
+	current, err := service.Get(ctx, commandID)
+	if err != nil || current.State != StateAccepted {
+		return current, false, err
+	}
+	now := service.now().UTC()
+	request := TransitionRequest{CommandID: commandID, ExpectedState: StateAccepted,
+		State: StateUncertain, Reason: ReconciliationAmbiguousHandoff, NextAttemptAt: now.Add(HandoffStartWindow)}
+	expired := !now.Before(current.CreatedAt.Add(HandoffStartWindow))
+	if expired {
+		request = TransitionRequest{CommandID: commandID, ExpectedState: StateAccepted, State: StateFailed,
+			Blockers: []Blocker{{Code: HandoffNotStarted}}}
+	}
+	updated, err := service.store.Transition(ctx, request, now)
+	if err != nil && updated.CommandID == "" {
+		updated = current
+	}
+	if errors.Is(err, ErrInvalidTransition) {
+		return updated, false, nil
+	}
+	return updated, err == nil && !expired, err
+}
+
+// ReduceTransition checks a transition against the latest persisted command.
+// Stores call it while holding exclusive access to that command. Keeping the
+// merge here prevents concurrent evidence observations from replacing each
+// other and prevents a stale writer from reopening a terminal command.
+func ReduceTransition(current Command, request TransitionRequest, now time.Time) (Command, error) {
+	if request.CommandID == "" {
+		return current, fmt.Errorf("command id is required")
+	}
+	if request.CommandID != current.CommandID {
+		return current, fmt.Errorf("command identity mismatch")
+	}
+	if request.ExpectedState != "" && current.State != request.ExpectedState {
+		return current, ErrInvalidTransition
 	}
 	if request.State == StateUncertain || request.State == StateSubmitted {
 		if request.NextAttemptAt.IsZero() || !request.Reason.valid() {
-			return Command{}, fmt.Errorf("uncertain state requires a bounded reconciliation plan")
+			return current, fmt.Errorf("nonterminal state requires a bounded reconciliation plan")
 		}
 	} else if request.Reason != "" || !request.NextAttemptAt.IsZero() {
-		return Command{}, fmt.Errorf("reconciliation is valid only for nonterminal state")
-	}
-	current, err := service.store.Get(ctx, request.CommandID)
-	if err != nil {
-		return Command{}, err
+		return current, fmt.Errorf("reconciliation is valid only for nonterminal state")
 	}
 	if !allowedTransition(current.State, request.State) {
 		return current, ErrInvalidTransition
@@ -278,11 +322,15 @@ func (service *Service) Transition(ctx context.Context, request TransitionReques
 	if err := validateExecutionEvidence(current.ExecutionEvidence, request.Evidence); err != nil {
 		return current, err
 	}
-	request.Evidence, err = mergeExecutionEvidence(current.ExecutionEvidence, request.Evidence)
+	evidence, err := mergeExecutionEvidence(current.ExecutionEvidence, request.Evidence)
 	if err != nil {
 		return current, err
 	}
-	return service.store.Transition(ctx, request, service.now().UTC())
+	current.State, current.UpdatedAt, current.ExecutionEvidence = request.State, now, evidence
+	if request.Blockers != nil {
+		current.Blockers = append([]Blocker(nil), request.Blockers...)
+	}
+	return current, nil
 }
 
 func validateExecutionEvidence(current, next ExecutionEvidence) error {
@@ -327,18 +375,30 @@ func mergeExecutionEvidence(current, next ExecutionEvidence) (ExecutionEvidence,
 		events[event.EventID] = event
 		merged.OrderEvents = append(merged.OrderEvents, event)
 	}
-	fills := make(map[string]FillEvidence, len(current.Fills)+len(next.Fills))
+	indexes := map[string]int{}
 	merged.Fills = nil
 	for _, fill := range append(append([]FillEvidence(nil), current.Fills...), next.Fills...) {
-		if previous, exists := fills[fill.FillID]; exists {
-			if previous != fill {
+		if index, exists := indexes[fill.FillID]; exists {
+			previous := merged.Fills[index]
+			oldFacts, newFacts := previous, fill
+			oldFacts.InstrumentProduct, oldFacts.BaseAsset = "", ""
+			newFacts.InstrumentProduct, newFacts.BaseAsset = "", ""
+			if oldFacts != newFacts || (previous.InstrumentProduct != "" && fill.InstrumentProduct != "" && previous.InstrumentProduct != fill.InstrumentProduct) || (previous.BaseAsset != "" && fill.BaseAsset != "" && previous.BaseAsset != fill.BaseAsset) {
 				return current, fmt.Errorf("Gateway fill evidence conflicts")
 			}
+			if previous.InstrumentProduct == "" {
+				previous.InstrumentProduct = fill.InstrumentProduct
+			}
+			if previous.BaseAsset == "" {
+				previous.BaseAsset = fill.BaseAsset
+			}
+			merged.Fills[index] = previous
 			continue
 		}
-		fills[fill.FillID] = fill
+		indexes[fill.FillID] = len(merged.Fills)
 		merged.Fills = append(merged.Fills, fill)
 	}
+
 	return merged, nil
 }
 
@@ -401,33 +461,24 @@ func commandKey(command Command) string {
 	return strings.Join([]string{command.PrincipalID, command.Method, command.Path, command.IdempotencyKey}, "\x00")
 }
 
-func (store *MemoryStore) Reserve(_ context.Context, command Command) (Command, bool, error) {
+func (store *MemoryStore) Create(_ context.Context, command Command) (Command, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	key := commandKey(command)
 	if id := store.keys[key]; id != "" {
 		existing := store.commands[id]
-		if existing.PayloadHash != command.PayloadHash || existing.AccountID != command.AccountID || existing.ProductID != command.ProductID || existing.LineageID != command.LineageID || existing.CommandKind != command.CommandKind || stringValue(existing.ReservationID) != stringValue(command.ReservationID) {
+		if existing.PayloadHash != command.PayloadHash || existing.AccountID != command.AccountID || existing.ProductID != command.ProductID || existing.LineageID != command.LineageID || existing.CommandKind != command.CommandKind {
 			return existing, true, ErrIdempotencyConflict
 		}
-		return existing, true, nil
+		return store.withReconciliation(existing), true, nil
 	}
 	store.commands[command.CommandID] = command
 	store.keys[key] = command.CommandID
-	return command, false, nil
-}
-
-func (store *MemoryStore) Abort(_ context.Context, id string) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	command, ok := store.commands[id]
-	if !ok {
-		return nil
+	if command.State == StateAccepted {
+		store.tasks[command.CommandID] = ReconciliationTask{CommandID: command.CommandID,
+			Reason: ReconciliationAwaitingHandoff, NextAttempt: command.CreatedAt.Add(HandoffStartWindow)}
 	}
-	delete(store.keys, commandKey(command))
-	delete(store.commands, id)
-	delete(store.tasks, id)
-	return nil
+	return store.withReconciliation(command), false, nil
 }
 
 func (store *MemoryStore) Get(_ context.Context, id string) (Command, error) {
@@ -437,7 +488,7 @@ func (store *MemoryStore) Get(_ context.Context, id string) (Command, error) {
 	if !ok {
 		return Command{}, ErrNotFound
 	}
-	return command, nil
+	return store.withReconciliation(command), nil
 }
 
 func (store *MemoryStore) ListOwned(_ context.Context, principal string, productID string) ([]Command, error) {
@@ -446,7 +497,7 @@ func (store *MemoryStore) ListOwned(_ context.Context, principal string, product
 	items := make([]Command, 0)
 	for _, command := range store.commands {
 		if command.PrincipalID == principal && command.ProductID == productID {
-			items = append(items, command)
+			items = append(items, store.withReconciliation(command))
 		}
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -465,11 +516,9 @@ func (store *MemoryStore) Transition(_ context.Context, request TransitionReques
 	if !ok {
 		return Command{}, ErrNotFound
 	}
-	command.State, command.UpdatedAt = request.State, now
-	if !executionEvidenceEmpty(request.Evidence) {
-		request.Evidence.OrderEvents = append([]OrderEventEvidence(nil), request.Evidence.OrderEvents...)
-		request.Evidence.Fills = append([]FillEvidence(nil), request.Evidence.Fills...)
-		command.ExecutionEvidence = request.Evidence
+	command, err := ReduceTransition(command, request, now)
+	if err != nil {
+		return command, err
 	}
 	store.commands[request.CommandID] = command
 	if request.State == StateUncertain || request.State == StateSubmitted {
@@ -479,7 +528,7 @@ func (store *MemoryStore) Transition(_ context.Context, request TransitionReques
 	} else {
 		delete(store.tasks, request.CommandID)
 	}
-	return command, nil
+	return store.withReconciliation(command), nil
 }
 
 func (store *MemoryStore) ClaimDue(_ context.Context, now, leaseUntil time.Time, limit int) ([]ReconciliationTask, error) {
@@ -500,9 +549,11 @@ func (store *MemoryStore) ClaimDue(_ context.Context, now, leaseUntil time.Time,
 	return result, nil
 }
 
-func stringValue(value *string) string {
-	if value == nil {
-		return ""
+// Caller holds store.mu. This is read-only task status, not permission to resend.
+func (store *MemoryStore) withReconciliation(command Command) Command {
+	command.Reconciliation = nil
+	if task, ok := store.tasks[command.CommandID]; ok {
+		command.Reconciliation = &ReconciliationStatus{Reason: task.Reason, NextAttemptAt: task.NextAttempt, AttemptCount: task.AttemptCount}
 	}
-	return *value
+	return command
 }

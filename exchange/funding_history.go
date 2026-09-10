@@ -17,7 +17,7 @@ answers "what has this one instrument been paying" in one call per instrument.
 That asymmetry belongs to the venues, not to us — none of the ten publishes a
 bulk history endpoint — and it is why a history is read for a chosen pair rather
 than for a whole board. A board of several hundred symbols times nine venues is
-not backfillable; an arbitrage pair is two calls.
+not backfillable; a two-venue comparison is two calls.
 
 It is deliberately not `FundingRatePage`. That type is the account-bound reply to
 `PerpClient.FundingRateHistory`, and it carries `MarkPrice`, `ObservedAt` and

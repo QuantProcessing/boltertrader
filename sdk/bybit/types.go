@@ -506,19 +506,21 @@ type OrderRecord struct {
 }
 
 type ExecutionRecord struct {
-	Category    string `json:"category"`
-	ExecType    string `json:"execType"`
-	ExecID      string `json:"execId"`
-	OrderID     string `json:"orderId"`
-	OrderLinkID string `json:"orderLinkId"`
-	Symbol      string `json:"symbol"`
-	Side        string `json:"side"`
-	ExecPrice   string `json:"execPrice"`
-	ExecQty     string `json:"execQty"`
-	ExecFee     string `json:"execFee"`
-	FeeCurrency string `json:"feeCurrency"`
-	IsMaker     bool   `json:"isMaker"`
-	ExecTime    string `json:"execTime"`
+	Category    string          `json:"category"`
+	ExecType    string          `json:"execType"`
+	ExecID      string          `json:"execId"`
+	OrderID     string          `json:"orderId"`
+	OrderLinkID string          `json:"orderLinkId"`
+	Symbol      string          `json:"symbol"`
+	Side        string          `json:"side"`
+	ExecPrice   string          `json:"execPrice"`
+	ExecQty     string          `json:"execQty"`
+	ExecFee     string          `json:"execFee"`
+	FeeCurrency string          `json:"feeCurrency"`
+	FeeCoin     string          `json:"feeCoin"`
+	ExtraFees   json.RawMessage `json:"extraFees"`
+	IsMaker     bool            `json:"isMaker"`
+	ExecTime    string          `json:"execTime"`
 }
 
 type ExecutionsResult struct {

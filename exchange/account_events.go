@@ -10,19 +10,10 @@ import (
 type AccountEventKind string
 
 const (
-	AccountEventOrder          AccountEventKind = "order"
-	AccountEventFill           AccountEventKind = "fill"
-	AccountEventBalance        AccountEventKind = "balance"
-	AccountEventPosition       AccountEventKind = "position"
-	AccountEventStreamStatus   AccountEventKind = "stream_status"
-	AccountEventResyncRequired AccountEventKind = "resync_required"
-)
-
-type AccountEventPhase string
-
-const (
-	AccountEventPhaseSnapshot AccountEventPhase = "snapshot"
-	AccountEventPhaseLive     AccountEventPhase = "live"
+	AccountEventOrder    AccountEventKind = "order"
+	AccountEventFill     AccountEventKind = "fill"
+	AccountEventBalance  AccountEventKind = "balance"
+	AccountEventPosition AccountEventKind = "position"
 )
 
 // AccountRoute is the native private-stream boundary. Instrument is
@@ -48,29 +39,22 @@ func (route AccountRoute) Validate() error {
 }
 
 type AccountEvent struct {
-	Kind           AccountEventKind   `json:"kind"`
-	Route          AccountRoute       `json:"route"`
-	InstrumentID   string             `json:"instrumentId,omitempty"`
-	SourceSequence string             `json:"sourceSequence,omitempty"`
-	Phase          AccountEventPhase  `json:"phase"`
-	ObservedAt     time.Time          `json:"observedAt"`
-	Order          *OrderEvent        `json:"order,omitempty"`
-	Fill           *FillEvent         `json:"fill,omitempty"`
-	Balance        *BalanceEvent      `json:"balance,omitempty"`
-	Position       *PositionEvent     `json:"position,omitempty"`
-	Status         *StreamStatusEvent `json:"status,omitempty"`
-	Reason         string             `json:"reason,omitempty"`
+	Kind         AccountEventKind `json:"kind"`
+	Route        AccountRoute     `json:"route"`
+	InstrumentID string           `json:"instrumentId,omitempty"`
+	ObservedAt   time.Time        `json:"observedAt"`
+	Order        *OrderEvent      `json:"order,omitempty"`
+	Fill         *FillEvent       `json:"fill,omitempty"`
+	Balance      *BalanceEvent    `json:"balance,omitempty"`
+	Position     *PositionEvent   `json:"position,omitempty"`
 }
 
 func (event AccountEvent) Validate() error {
 	if err := event.Route.Validate(); err != nil || event.ObservedAt.IsZero() {
 		return fmt.Errorf("account event identity is invalid")
 	}
-	if event.Phase != AccountEventPhaseSnapshot && event.Phase != AccountEventPhaseLive {
-		return fmt.Errorf("account event phase is invalid")
-	}
 	payloads := 0
-	for _, present := range []bool{event.Order != nil, event.Fill != nil, event.Balance != nil, event.Position != nil, event.Status != nil} {
+	for _, present := range []bool{event.Order != nil, event.Fill != nil, event.Balance != nil, event.Position != nil} {
 		if present {
 			payloads++
 		}
@@ -91,14 +75,6 @@ func (event AccountEvent) Validate() error {
 	case AccountEventPosition:
 		if event.Position == nil || payloads != 1 {
 			return fmt.Errorf("account position event is invalid")
-		}
-	case AccountEventStreamStatus:
-		if event.Status == nil || payloads != 1 {
-			return fmt.Errorf("account status event is invalid")
-		}
-	case AccountEventResyncRequired:
-		if strings.TrimSpace(event.Reason) == "" || payloads != 0 {
-			return fmt.Errorf("account resync event is invalid")
 		}
 	default:
 		return fmt.Errorf("account event kind is invalid")

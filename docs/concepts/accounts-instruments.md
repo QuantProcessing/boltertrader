@@ -9,87 +9,43 @@ answers, and both are narrower than they look.
 The [Glossary](../reference/glossary.md) owns the vocabulary. This page owns the
 model behind it.
 
-## An account is four things at once
+## An account is a saved venue connection
 
-A gateway account is not a credential pair with a label. It is a record that
-carries, together:
+Gateway stores one account record containing its ID, venue, display name,
+encrypted credential bundle, creation time and validation time. Credential
+material is never included in account responses. Login protects access to the
+personal instance; there are no per-account roles or permission grants.
 
-| Part | What it holds |
-| --- | --- |
-| Identity | Venue, venue environment, native environment, display name |
-| Credentials | A reference into the secret store — never the material |
-| Routes | One or more product routes, each bound to a route profile |
-| Revisions | Desired-state revision, runtime generation, credential version |
-| State | One of eight lifecycle states |
+Adding an account validates the credential format and queries a venue balance.
+A successful read, including zero balance, saves and connects the account. It
+does not prove that the key can place orders: the venue enforces that permission
+and its error is returned when an operation is rejected.
 
-The separation of the credential *reference* from the credential *material* is
-the load-bearing one. Credentials enter through the gateway's internal plane and
-land in the secret store; every read path afterwards returns a redacted
-projection that has no secret field to omit in the first place. Nothing above the
-gateway can ask for the material, because no type above the gateway has a place
-to put it.
+## Add, view and delete
 
-The three revision counters exist so that a decision made at one moment can be
-refused later instead of silently reinterpreted. They are covered in
-[Execution and risk](execution-risk.md), where they do their work.
+These are the only account operations. There is no desired-state revision,
+credential version, rotation, activation or disable workflow. Connection health
+is an observation of the current local connection, not a persisted lifecycle.
 
-## The lifecycle is a state machine, not a status field
+Deletion stops new calls, waits for calls already in flight, closes local
+clients and deletes the credential record. It does not cancel orders, close
+positions or require an empty venue account. To change credentials, delete and
+add again. The new account gets a new ID and reads the venue's current state;
+there is no historical order migration.
 
-An account's state is what the control plane may request next, and the allowed
-transitions are the whole authority:
+Orders retain their own immutable IDs, dispatch records and reconciliation
+state. Removing credentials does not delete that evidence or turn an unknown
+order outcome into a rejection. See [Execution and risk](execution-risk.md).
 
-| From | May become |
-| --- | --- |
-| *(new)* | `creating` |
-| `creating` | `active`, `disabled` |
-| `active` | `rotating`, `draining`, `disabled` |
-| `rotating` | `active`, `disabled` |
-| `draining` | `drained`, `disabled` |
-| `drained` | `removing`, `disabled` |
-| `disabled` | `removing`, `removed` |
-| `removing` | `removed` |
-| `removed` | *(nothing)* |
+## Routes describe adapter support
 
-The shape is linear and irreversible apart from two excursions. **Rotation**
-leaves `active` and returns to it, carrying a fence that names the credential
-version and runtime generation it moves from and to. **Draining** leaves `active`
-and does not return: it exists so that an account can be wound down while its
-open orders and positions are still being resolved, rather than being cut off
-mid-flight.
+A route identifies a product, settlement asset and route profile. Gateway derives
+these routes from the exchange registry; users do not configure them as key
+permissions. A venue can have several routes when products or settlement assets
+use different clients or endpoints.
 
-`disabled` is reachable from almost everywhere on purpose. It is the stop, and a
-stop should never be blocked by which step you happened to be on.
-
-Removal has a precondition the state table does not show: an account with open
-orders, live reservations, uncertain commands, or owned positions reports those
-as blockers, and the blockers are enumerated rather than summarized. "Cannot
-remove" is not an answer an operator can act on; "three uncertain commands" is.
-
-## Routes carry the product, the account does not
-
-An account does not have a product. Its **routes** do.
-
-Each route names a product, a settlement asset, a route profile, and the state
-the operator wants it in. The profile is resolved through the route-profile
-registry by venue and profile ID, and validation is a two-way agreement: the
-profile's product and settlement asset must each match the route's own. A route
-that resolves but disagrees is rejected, because a route profile is exactly the
-thing that decides where a signed request goes.
-
-This is why an account may hold several routes at once — a venue that settles
-perps in more than one asset needs one route per settlement — and why an account
-in `creating`, `active`, or `rotating` must carry at least one active route. An
-account with no way to reach a venue is not in any of those states; it is
-`disabled` with extra steps.
-
-There used to be a second boundary, absolute in the same way: a mode. `test`
-covered demo and testnet, `live` covered live, and a process running in one
-could not resolve a profile belonging to the other. Both non-production tiers
-are gone, so the boundary has one side and no longer separates anything. What
-remains of it is a validation rather than a partition — an account read back
-from storage whose venue environment or native environment is not `live` is
-rejected, because those columns are just strings and a row written before the
-endpoints were removed must not be silently routed at the live venue.
+Only production endpoints are supported. The simplified registration flow does
+not import old account records or reinterpret their environment settings.
 
 ## Instruments are a projection, not a pass-through
 
@@ -146,7 +102,7 @@ only reason a single order ticket can serve nine venues.
 ## Related
 
 - [Architecture](architecture.md) — where this boundary sits
-- [Execution and risk](execution-risk.md) — what the revision counters guard
+- [Execution and risk](execution-risk.md) — connection checks and order identity
 - [State and reconciliation](state-reconciliation.md) — how an account's view of
   the venue is rebuilt
 - [Market and reference data](../guides/market-reference-data.md) — the read

@@ -20,16 +20,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestStreamManagerPublishesPrivateResourcesAndReconnectsWithoutRESTRecovery(t *testing.T) {
+func TestStreamManagerPublishesPrivateResourcesAcrossAdapterRecoveryWithoutRESTRecovery(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
 	first := newFakeStreamGeneration()
-	second := newFakeStreamGeneration()
-	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
+	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, newFakeStreamGeneration()}}
 	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	instrument := streamTestInstrument(exchange.ProductSpot)
 	accounts := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{
-			AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true, WriteReady: true,
+			AccountID: "acct-a", Product: exchange.ProductSpot, Settlement: "USDT", ReadReady: true, WriteReady: true,
 		}},
 		snapshot:   catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},
 		instrument: instrument,
@@ -51,11 +50,9 @@ func TestStreamManagerPublishesPrivateResourcesAndReconnectsWithoutRESTRecovery(
 	}
 	t.Cleanup(manager.Close)
 	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool {
-		return accounts.LatestReady()
-	})
-	if event := receiveEvent(t, subscription); event.Kind != KindAccountHealth {
-		t.Fatalf("initial private stream event kind=%s, want %s", event.Kind, KindAccountHealth)
+	awaitAccountConnection(t, hub, "acct-a", "static", AccountConnected)
+	if event := receiveEvent(t, subscription); event.Kind != KindAccountConnection {
+		t.Fatalf("initial private stream event kind=%s, want %s", event.Kind, KindAccountConnection)
 	}
 	fill := exchange.Fill{
 		NativeSymbol: "BTCUSDT", FillID: "fill-1", OrderID: "venue-1",
@@ -91,7 +88,8 @@ func TestStreamManagerPublishesPrivateResourcesAndReconnectsWithoutRESTRecovery(
 	if err := json.Unmarshal(events[KindBalance][0].Payload, &balancePayload); err != nil {
 		t.Fatal(err)
 	}
-	if balancePayload.AccountID != "acct-a" || balancePayload.Balance.Asset != "USDT" {
+	if balancePayload.AccountID != "acct-a" || balancePayload.Product != exchange.ProductSpot ||
+		balancePayload.SettlementAsset != "USDT" || balancePayload.Balance.Asset != "USDT" {
 		t.Fatalf("balance payload=%+v", balancePayload)
 	}
 	first.orders.events <- exchange.OrderEvent{
@@ -111,29 +109,25 @@ func TestStreamManagerPublishesPrivateResourcesAndReconnectsWithoutRESTRecovery(
 	first.fills.status <- exchange.StreamStatusEvent{
 		State: exchange.SubscriptionGap, Phase: exchange.GapStarted, Reason: "sequence_gap",
 	}
-	resync := receiveEvent(t, subscription)
-	if resync.Kind == KindAccountHealth {
-		var health AccountHealthPayload
-		if err := json.Unmarshal(resync.Payload, &health); err != nil {
-			t.Fatal(err)
-		}
-		status, err := accounts.Status("acct-a")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if health.WriteReady != status.WriteReady ||
-			health.ReadReady != status.ReadReady || health.Reason != status.Reason {
-			t.Fatalf("account health=%+v REST status=%+v", health, status)
-		}
-		resync = receiveEvent(t, subscription)
+	disconnected := receiveEvent(t, subscription)
+	if disconnected.Kind != KindAccountConnection || connectionState(t, disconnected) != AccountDisconnected {
+		t.Fatalf("disconnect event=%+v", disconnected)
 	}
-	if resync.Kind != KindResyncRequired {
-		t.Fatalf("gap event=%+v", resync)
+	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Phase: exchange.GapRecovered}
+	if event := receiveEvent(t, subscription); event.Kind != KindAccountConnection || connectionState(t, event) != AccountConnected {
+		t.Fatalf("recovered private stream event=%+v", event)
 	}
-	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool {
-		return socket.Generation() >= 2 && accounts.LatestReady()
-	})
+	if socket.Generation() != 1 {
+		t.Fatalf("recoverable disconnect replaced logical subscription: generation=%d", socket.Generation())
+	}
+	first.orders.events <- exchange.OrderEvent{
+		Kind: exchange.EventDelta,
+		Order: exchange.Order{
+			NativeSymbol: "BTCUSDT", OrderID: "venue-2",
+			ClientOrderID: "102", Status: "filled",
+		},
+	}
+	awaitCondition(t, func() bool { return len(reconciler.Observations()) == 2 })
 	if reconciler.Recoveries() != 0 || reconciler.Suspensions() != 0 {
 		t.Fatalf("transport reconnect triggered REST/suspension: recoveries=%d suspensions=%d", reconciler.Recoveries(), reconciler.Suspensions())
 	}
@@ -168,7 +162,7 @@ func TestStreamManagerPublishesPerpPositionsWithMonotonicVersions(t *testing.T) 
 	}
 	t.Cleanup(manager.Close)
 	generation.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.LatestReady() })
+	awaitAccountConnection(t, hub, "acct-p", "static", AccountConnected)
 
 	subscription := subscribeTest(t, hub, "principal-a", "acct-p", "")
 	position := exchange.Position{
@@ -261,7 +255,7 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 			}
 			t.Cleanup(manager.Close)
 			first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-			awaitCondition(t, func() bool { return accounts.LatestReady() })
+			awaitAccountConnection(t, hub, "acct-a", "static", AccountConnected)
 			subscription := subscribeTest(t, hub, "principal-a", "acct-a", "")
 			first.orders.events <- exchange.OrderEvent{
 				Kind: exchange.EventDelta,
@@ -273,11 +267,8 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 			awaitCondition(t, func() bool { return len(reconciler.Observations()) == 1 })
 			if test.wantResync {
 				event := receiveEvent(t, subscription)
-				if event.Kind == KindAccountHealth {
-					event = receiveEvent(t, subscription)
-				}
-				if event.Kind != KindResyncRequired {
-					t.Fatalf("event=%+v, want resync_required", event)
+				if event.Kind != KindAccountConnection || connectionState(t, event) != AccountDisconnected {
+					t.Fatalf("event=%+v, want disconnected account connection", event)
 				}
 				awaitCondition(t, func() bool { return socket.Generation() >= 2 })
 				if got := reconciler.Recoveries(); got != test.wantRecover {
@@ -306,7 +297,7 @@ func TestStreamManagerOpensOneAccountStreamPerDynamicRoute(t *testing.T) {
 	spotETH := domain.InstrumentID("binance:live:spot:ETH-USDT")
 	perpBTC := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	fence := domain.AccountFence{
-		AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3,
+		AccountID: "acct-dynamic", RuntimeID: "connection-one",
 	}
 	base := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{AccountID: "acct-dynamic", ReadReady: true}},
@@ -448,9 +439,9 @@ func TestStreamManagerFailsClosedWhenDynamicRouteSelectionsCrossGenerations(t *t
 	spotClient := &fakeStreamSpotClient{socket: spotSocket}
 	firstID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	secondID := domain.InstrumentID("binance:live:spot:ETH-USDT")
-	firstFence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
+	firstFence := domain.AccountFence{AccountID: "acct-dynamic", RuntimeID: "connection-one"}
 	secondFence := firstFence
-	secondFence.RuntimeGeneration = 2
+	secondFence.RuntimeID = "connection-two"
 	base := &fakeStreamAccounts{
 		status:   account.Status{Resource: account.Resource{AccountID: "acct-dynamic", ReadReady: true}},
 		snapshot: catalog.Snapshot{Instruments: []catalog.Instrument{{ID: firstID}, {ID: secondID}}},
@@ -478,10 +469,10 @@ func TestStreamManagerFailsClosedWhenDynamicRouteSelectionsCrossGenerations(t *t
 	}
 }
 
-func TestStreamManagerReconnectRequiresFreshPrivateActivation(t *testing.T) {
+func TestStreamManagerRecoverableGapKeepsLogicalSubscription(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
-	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
-	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
+	first := newFakeStreamGeneration()
+	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, newFakeStreamGeneration()}}
 	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	base := &fakeStreamAccounts{
 		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true}},
@@ -503,33 +494,34 @@ func TestStreamManagerReconnectRequiresFreshPrivateActivation(t *testing.T) {
 	}
 	t.Cleanup(manager.Close)
 	awaitCondition(t, func() bool { return socket.Generation() == 1 })
-	if accounts.LatestReady() || accounts.ActivationCount() != 0 {
-		t.Fatalf("ready=%t activations=%d before initial activation", accounts.LatestReady(), accounts.ActivationCount())
+	if got := latestAccountConnection(hub, "acct-a", "static"); got != "" {
+		t.Fatalf("connection=%s before initial activation", got)
 	}
 	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.ActivationCount() == 1 })
+	awaitAccountConnection(t, hub, "acct-a", "static", AccountConnected)
 
 	first.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	awaitCondition(t, func() bool {
-		return socket.Generation() == 2 && !accounts.LatestReady()
-	})
-	if accounts.ActivationCount() != 1 {
-		t.Fatalf("activations=%d before reconnect activation", accounts.ActivationCount())
+	awaitAccountConnection(t, hub, "acct-a", "static", AccountDisconnected)
+	if socket.Generation() != 1 {
+		t.Fatalf("recoverable disconnect replaced stream: generation=%d", socket.Generation())
 	}
-	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.ActivationCount() == 2 })
+	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Phase: exchange.GapRecovered}
+	awaitAccountConnection(t, hub, "acct-a", "static", AccountConnected)
+	if socket.Generation() != 1 {
+		t.Fatalf("recovery recreated stream: generation=%d", socket.Generation())
+	}
 }
 
 func TestStreamManagerDynamicRoutesRequireIndependentActivation(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
-	spotFirst, spotSecond := newFakeStreamGeneration(), newFakeStreamGeneration()
+	spotFirst := newFakeStreamGeneration()
 	perpFirst := newFakeStreamGeneration()
-	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, spotSecond}}
+	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, newFakeStreamGeneration()}}
 	perpSocket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{perpFirst}}}
 	spotID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	perpID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	fence := domain.AccountFence{
-		AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3,
+		AccountID: "acct-dynamic", RuntimeID: "connection-one",
 	}
 	base := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{AccountID: "acct-dynamic", ReadReady: true}},
@@ -558,37 +550,35 @@ func TestStreamManagerDynamicRoutesRequireIndependentActivation(t *testing.T) {
 
 	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool {
-		return accounts.LatestReady() && accounts.ActivationCount() == 1 &&
-			accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt")
-	})
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountConnected)
+	awaitAccountConnection(t, hub, "acct-dynamic", "perp-usdt", AccountConnected)
 
 	spotFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	awaitCondition(t, func() bool {
-		return spotSocket.Generation() == 2 && !accounts.LatestReady()
-	})
-	if !accounts.RouteReady("perp-usdt") || perpSocket.spot.Generation() != 1 {
-		t.Fatalf("spot reconnect changed perp route: ready=%t generation=%d",
-			accounts.RouteReady("perp-usdt"), perpSocket.spot.Generation())
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountDisconnected)
+	if spotSocket.Generation() != 1 {
+		t.Fatalf("recoverable spot disconnect replaced route: generation=%d", spotSocket.Generation())
 	}
-	spotSecond.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.ActivationCount() == 2 })
-	if !accounts.RouteReady("spot") || !accounts.RouteReady("perp-usdt") {
-		t.Fatalf("route readiness after spot recovery: spot=%t perp=%t",
-			accounts.RouteReady("spot"), accounts.RouteReady("perp-usdt"))
+	if latestAccountConnection(hub, "acct-dynamic", "perp-usdt") != AccountConnected || perpSocket.spot.Generation() != 1 {
+		t.Fatalf("spot reconnect changed perp route: state=%s generation=%d",
+			latestAccountConnection(hub, "acct-dynamic", "perp-usdt"), perpSocket.spot.Generation())
+	}
+	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Phase: exchange.GapRecovered}
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountConnected)
+	if latestAccountConnection(hub, "acct-dynamic", "perp-usdt") != AccountConnected {
+		t.Fatalf("perp connection changed during spot recovery: %s", latestAccountConnection(hub, "acct-dynamic", "perp-usdt"))
 	}
 }
 
 func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
-	spotFirst, spotSecond := newFakeStreamGeneration(), newFakeStreamGeneration()
+	spotFirst := newFakeStreamGeneration()
 	perpFirst := newFakeStreamGeneration()
-	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, spotSecond}}
+	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, newFakeStreamGeneration()}}
 	perpSocket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{perpFirst}}}
 	spotID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	perpID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	fence := domain.AccountFence{
-		AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3,
+		AccountID: "acct-dynamic", RuntimeID: "connection-one",
 	}
 	base := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{AccountID: "acct-dynamic", ReadReady: true}},
@@ -600,7 +590,7 @@ func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *te
 		spotID: dynamicStreamSelection(fence, "spot", spotID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: spotSocket}),
 		perpID: dynamicStreamSelection(fence, "perp-usdt", perpID, streamTestInstrument(exchange.ProductPerp), &fakeStreamPerpClient{socket: perpSocket}),
 	}}
-	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
+	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: &fakeStreamReconciler{}, Hub: hub, PrincipalID: "principal-a",
 		ReconnectBackoff: time.Millisecond,
@@ -614,33 +604,37 @@ func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *te
 	t.Cleanup(manager.Close)
 	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt") })
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountConnected)
+	awaitAccountConnection(t, hub, "acct-dynamic", "perp-usdt", AccountConnected)
 
 	spotFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	awaitCondition(t, func() bool { return spotSocket.Generation() == 2 && !accounts.RouteReady("spot") })
-	if !accounts.RouteReady("perp-usdt") {
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountDisconnected)
+	if spotSocket.Generation() != 1 {
+		t.Fatalf("recoverable spot disconnect replaced route: generation=%d", spotSocket.Generation())
+	}
+	if latestAccountConnection(hub, "acct-dynamic", "perp-usdt") != AccountConnected {
 		t.Fatal("spot gap degraded unrelated perp readiness")
 	}
 	if generation := perpSocket.spot.Generation(); generation != 1 {
 		t.Fatalf("spot gap restarted unrelated perp subscriptions: generation=%d", generation)
 	}
 
-	spotSecond.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.RouteReady("spot") })
-	if !accounts.RouteReady("perp-usdt") {
+	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Phase: exchange.GapRecovered}
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountConnected)
+	if latestAccountConnection(hub, "acct-dynamic", "perp-usdt") != AccountConnected {
 		t.Fatal("spot recovery changed unrelated perp readiness")
 	}
 }
 
-func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnects(t *testing.T) {
+func TestStreamManagerKeepsSiblingRoutesDuringConcurrentAdapterRecovery(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
-	spotFirst, spotSecond := newFakeStreamGeneration(), newFakeStreamGeneration()
+	spotFirst := newFakeStreamGeneration()
 	perpFirst := newFakeStreamGeneration()
-	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, spotSecond}}
+	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, newFakeStreamGeneration()}}
 	perpSocket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{perpFirst}}}
 	spotID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	perpID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
-	fence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3}
+	fence := domain.AccountFence{AccountID: "acct-dynamic", RuntimeID: "connection-one"}
 	base := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{AccountID: fence.AccountID, ReadReady: true}},
 		snapshot: catalog.Snapshot{Instruments: []catalog.Instrument{
@@ -651,7 +645,7 @@ func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnects(t *testin
 		spotID: dynamicStreamSelection(fence, "spot", spotID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: spotSocket}),
 		perpID: dynamicStreamSelection(fence, "perp-usdt", perpID, streamTestInstrument(exchange.ProductPerp), &fakeStreamPerpClient{socket: perpSocket}),
 	}}
-	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
+	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes}
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
@@ -666,29 +660,29 @@ func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnects(t *testin
 	t.Cleanup(manager.Close)
 	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt") })
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountConnected)
+	awaitAccountConnection(t, hub, "acct-dynamic", "perp-usdt", AccountConnected)
 
 	spotFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	awaitCondition(t, func() bool { return spotSocket.Generation() == 2 })
 	perpFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	deadline := time.Now().Add(250 * time.Millisecond)
-	for accounts.RouteReady("perp-usdt") && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if accounts.RouteReady("perp-usdt") {
-		t.Fatal("spot reconnect prevented sibling perp fault from becoming unavailable")
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountDisconnected)
+	awaitAccountConnection(t, hub, "acct-dynamic", "perp-usdt", AccountDisconnected)
+	if spotSocket.Generation() != 1 || perpSocket.spot.Generation() != 1 ||
+		latestAccountConnection(hub, "acct-dynamic", "spot") != AccountDisconnected || latestAccountConnection(hub, "acct-dynamic", "perp-usdt") != AccountDisconnected {
+		t.Fatalf("adapter recovery replaced routes: spot=%d perp=%d state=%s/%s",
+			spotSocket.Generation(), perpSocket.spot.Generation(), latestAccountConnection(hub, "acct-dynamic", "spot"), latestAccountConnection(hub, "acct-dynamic", "perp-usdt"))
 	}
 	if reconciler.Recoveries() != 0 {
 		t.Fatalf("route reconnects triggered REST recovery: %d", reconciler.Recoveries())
 	}
 }
 
-func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t *testing.T) {
+func TestStreamManagerWaitsForAdapterRecoveryBeforeInitialActivation(t *testing.T) {
 	hub := newTestHub(t, 16, 8)
-	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
-	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
+	first := newFakeStreamGeneration()
+	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, newFakeStreamGeneration()}}
 	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
-	fence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3}
+	fence := domain.AccountFence{AccountID: "acct-dynamic", RuntimeID: "connection-one"}
 	base := &fakeStreamAccounts{
 		status:   account.Status{Resource: account.Resource{AccountID: fence.AccountID, ReadReady: true}},
 		snapshot: catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},
@@ -696,7 +690,7 @@ func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t 
 	routes := &atomicStreamAccounts{fakeStreamAccounts: base, selections: map[domain.InstrumentID]account.SelectedOrderRoute{
 		instrumentID: dynamicStreamSelection(fence, "spot", instrumentID, streamTestInstrument(exchange.ProductSpot), &fakeStreamSpotClient{socket: socket}),
 	}}
-	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes, routeReady: make(map[domain.RouteID]bool)}
+	accounts := &dynamicActivationStreamAccounts{atomicStreamAccounts: routes}
 	reconciler := &fakeStreamReconciler{}
 	manager, err := NewStreamManager(StreamOptions{
 		Accounts: accounts, Reconciler: reconciler, Hub: hub, PrincipalID: "principal-a",
@@ -710,17 +704,20 @@ func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t 
 	}
 	t.Cleanup(manager.Close)
 	awaitCondition(t, func() bool { return socket.Generation() == 1 })
-	if accounts.RouteReady("spot") {
+	if latestAccountConnection(hub, "acct-dynamic", "spot") == AccountConnected {
 		t.Fatal("route became ready before its private stream activated")
 	}
 
 	first.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
-	awaitCondition(t, func() bool { return socket.Generation() == 2 })
-	if accounts.RouteReady("spot") {
+	time.Sleep(20 * time.Millisecond)
+	if socket.Generation() != 1 {
+		t.Fatalf("recoverable pre-activation gap replaced subscription: generation=%d", socket.Generation())
+	}
+	if latestAccountConnection(hub, "acct-dynamic", "spot") == AccountConnected {
 		t.Fatal("route became ready after reconnect but before the replacement stream activated")
 	}
-	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, func() bool { return accounts.RouteReady("spot") })
+	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive, Phase: exchange.GapRecovered}
+	awaitAccountConnection(t, hub, "acct-dynamic", "spot", AccountConnected)
 }
 
 func TestStreamManagerRegistersAccountsBeforeAndDuringStartIdempotently(t *testing.T) {
@@ -811,7 +808,7 @@ func TestStreamManagerStartDoesNotInvokeRESTRecoveryOrSuspendWrites(t *testing.T
 		t.Fatalf("Start: %v", err)
 	}
 	generation.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
-	awaitCondition(t, accounts.LatestReady)
+	awaitAccountConnection(t, hub, "acct-a", "static", AccountConnected)
 	if reconciler.Recoveries() != 0 || reconciler.Suspensions() != 0 {
 		t.Fatalf("private stream startup invoked REST recovery/suspension: recoveries=%d suspensions=%d", reconciler.Recoveries(), reconciler.Suspensions())
 	}
@@ -824,7 +821,6 @@ type fakeStreamAccounts struct {
 	instrument exchange.Instrument
 	spot       exchange.SpotClient
 	perp       exchange.PerpClient
-	states     []bool
 }
 
 func (accounts *fakeStreamAccounts) Status(accountID domain.AccountID) (account.Status, error) {
@@ -859,36 +855,6 @@ func (accounts *fakeStreamAccounts) Perp(domain.AccountID) (exchange.PerpClient,
 		return nil, account.ErrProductMismatch
 	}
 	return accounts.perp, nil
-}
-
-func (accounts *fakeStreamAccounts) SetPrivateStreamState(_ domain.AccountID, ready bool, reason string) error {
-	if ready && reason != "" {
-		return errors.New("ready state has reason")
-	}
-	accounts.mu.Lock()
-	defer accounts.mu.Unlock()
-	accounts.states = append(accounts.states, ready)
-	accounts.status.WriteReady = ready
-	accounts.status.Reason = reason
-	return nil
-}
-
-func (accounts *fakeStreamAccounts) LatestReady() bool {
-	accounts.mu.Lock()
-	defer accounts.mu.Unlock()
-	return len(accounts.states) > 0 && accounts.states[len(accounts.states)-1]
-}
-
-func (accounts *fakeStreamAccounts) ActivationCount() int {
-	accounts.mu.Lock()
-	defer accounts.mu.Unlock()
-	count := 0
-	for _, ready := range accounts.states {
-		if ready {
-			count++
-		}
-	}
-	return count
 }
 
 type atomicStreamAccounts struct {
@@ -940,58 +906,6 @@ func dynamicStreamSelection(
 
 type dynamicActivationStreamAccounts struct {
 	*atomicStreamAccounts
-	activationMu sync.Mutex
-	routeReady   map[domain.RouteID]bool
-}
-
-func (accounts *dynamicActivationStreamAccounts) SetPrivateStreamState(accountID domain.AccountID, ready bool, reason string) error {
-	accounts.activationMu.Lock()
-	if accounts.routeReady == nil {
-		accounts.routeReady = make(map[domain.RouteID]bool)
-	}
-	if !ready {
-		for _, selection := range accounts.selections {
-			accounts.routeReady[selection.RouteID] = false
-		}
-	}
-	accounts.activationMu.Unlock()
-	return accounts.fakeStreamAccounts.SetPrivateStreamState(accountID, ready, reason)
-}
-
-func (accounts *dynamicActivationStreamAccounts) SetPrivateStreamRouteState(fence domain.WriteFence, ready bool, reason string) error {
-	accounts.activationMu.Lock()
-	if accounts.routeReady == nil {
-		accounts.routeReady = make(map[domain.RouteID]bool)
-	}
-	accounts.routeReady[fence.RouteID] = ready
-	allReady := accounts.allRoutesReadyLocked()
-	accounts.activationMu.Unlock()
-	if allReady {
-		return accounts.fakeStreamAccounts.SetPrivateStreamState(fence.AccountID, true, "")
-	}
-	return accounts.fakeStreamAccounts.SetPrivateStreamState(fence.AccountID, false, reason)
-}
-
-func (accounts *dynamicActivationStreamAccounts) RouteReady(routeID domain.RouteID) bool {
-	accounts.activationMu.Lock()
-	defer accounts.activationMu.Unlock()
-	return accounts.routeReady[routeID]
-}
-
-func (accounts *dynamicActivationStreamAccounts) allRoutesReadyLocked() bool {
-	seen := make(map[domain.RouteID]struct{})
-	for _, selection := range accounts.selections {
-		seen[selection.RouteID] = struct{}{}
-	}
-	if len(seen) == 0 {
-		return false
-	}
-	for routeID := range seen {
-		if !accounts.routeReady[routeID] {
-			return false
-		}
-	}
-	return true
 }
 
 type fakeStreamReconciler struct {
@@ -1198,9 +1112,6 @@ func newFakeRouteSubscription(parent context.Context, route exchange.AccountRout
 	ctx, cancel := context.WithCancel(parent)
 	result := &fakeRouteSubscription{events: make(chan exchange.AccountEvent, 32), status: make(chan exchange.StreamStatusEvent, 32), errors: make(chan error, 8), cancel: cancel}
 	emit := func(event exchange.AccountEvent) {
-		if event.Phase == "" {
-			event.Phase = exchange.AccountEventPhaseLive
-		}
 		select {
 		case result.events <- event:
 		case <-ctx.Done():
@@ -1212,6 +1123,11 @@ func newFakeRouteSubscription(parent context.Context, route exchange.AccountRout
 			case <-ctx.Done():
 				return
 			case status := <-input:
+				if status.State != exchange.SubscriptionActive && status.State != exchange.SubscriptionClosed {
+					status.State = exchange.SubscriptionConnecting
+				}
+				status.Phase = ""
+				status.Generation = 0
 				select {
 				case result.status <- status:
 				case <-ctx.Done():
@@ -1395,4 +1311,28 @@ func awaitCondition(t *testing.T, condition func() bool) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func awaitAccountConnection(t *testing.T, hub *Hub, accountID domain.AccountID, routeID domain.RouteID, want AccountConnectionState) {
+	t.Helper()
+	awaitCondition(t, func() bool { return latestAccountConnection(hub, accountID, routeID) == want })
+}
+
+func latestAccountConnection(hub *Hub, accountID domain.AccountID, routeID domain.RouteID) AccountConnectionState {
+	for _, event := range hub.AccountConnections("principal-a") {
+		var payload AccountConnectionPayload
+		if event.AccountID == accountID && json.Unmarshal(event.Payload, &payload) == nil && payload.RouteID == routeID {
+			return payload.State
+		}
+	}
+	return ""
+}
+
+func connectionState(t *testing.T, event Event) AccountConnectionState {
+	t.Helper()
+	var payload AccountConnectionPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.State
 }

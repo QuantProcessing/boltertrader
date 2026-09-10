@@ -28,7 +28,7 @@ export function useVenues(): UseQueryResult<{ revision: string; items: Venue[] }
 
 /**
  * Trading's view of one account's connection readiness and capabilities.
- * Two seconds because creation and removal are asynchronous.
+ * Connection health is independent of exchange API permissions.
  */
 export function useAccountRuntimes(accountId: string | null): UseQueryResult<AccountRuntime[]> {
   return useQuery({
@@ -36,7 +36,7 @@ export function useAccountRuntimes(accountId: string | null): UseQueryResult<Acc
     queryFn: ({ signal }) => trading.accountRuntimes(accountId as string, signal),
     enabled: accountId !== null,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 2_000,
+    refetchInterval: 30_000,
   });
 }
 
@@ -44,30 +44,16 @@ function freshId(): string {
   return crypto.randomUUID();
 }
 
-function useLifecycleMutation<TVariables>(
-  run: (variables: TVariables) => Promise<Account>,
-  accountIdOf: (variables: TVariables) => string,
-) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: run,
-    // Refetch after both success and failure so asynchronous lifecycle changes
-    // and server-side blockers are reflected immediately.
-    onSettled: (_account, _error, variables) => {
-      void queryClient.invalidateQueries({ queryKey: marketKeys.accounts() });
-      void queryClient.invalidateQueries({ queryKey: settingsKeys.runtimes(accountIdOf(variables)) });
-    },
-  });
-}
-
 export function useCreateAccount() {
   const queryClient = useQueryClient();
   return useMutation({
+    gcTime: 0,
+    onSettled: (_data, _error, request) => {
+      for (const key of Object.keys(request.credentialBundle.secrets)) delete request.credentialBundle.secrets[key];
+    },
     mutationFn: (request: CreateAccountRequest): Promise<Account> => accounts.create(request, freshId()),
     onSuccess: (account) => {
-      // Put the accepted creating record on screen immediately. The lifecycle
-      // poll then replaces it with the authoritative active/failed state; the
-      // form callback can safely select it without waiting for another GET.
+      // The response already represents a saved and validated connection.
       queryClient.setQueryData<Account[]>(marketKeys.accounts(), (current = []) => {
         const without = current.filter((item) => item.accountId !== account.accountId);
         return [...without, account];
@@ -77,16 +63,16 @@ export function useCreateAccount() {
   });
 }
 
-export function useDisableAccount() {
-  return useLifecycleMutation(
-    (account: Account) => accounts.disable(account.accountId),
-    (account) => account.accountId,
-  );
-}
-
 export function useRemoveAccount() {
-  return useLifecycleMutation(
-    (account: Account) => accounts.remove(account.accountId, freshId()),
-    (account) => account.accountId,
-  );
+ const queryClient = useQueryClient();
+ return useMutation({
+  mutationFn: (account: Account) => accounts.remove(account.accountId),
+  onSuccess: (_result, account) => {
+   queryClient.setQueryData<Account[]>(marketKeys.accounts(), (current = []) => current.filter(item => item.accountId !== account.accountId));
+   queryClient.removeQueries({queryKey: settingsKeys.runtimes(account.accountId)});
+   void queryClient.invalidateQueries({queryKey: marketKeys.accounts()});
+   void queryClient.invalidateQueries({queryKey: ["trading", "account-positions"]});
+   void queryClient.invalidateQueries({queryKey: ["trading", "portfolio-positions"]});
+  },
+ });
 }

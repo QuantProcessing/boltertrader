@@ -102,8 +102,7 @@ class MockRealtimeSocket extends EventTarget {
 
   async #snapshot(subscriptionId: string, topic: SubscribeTopic): Promise<void> {
     try {
-	  if (topic.topic === "account.events") {
-		this.#data(subscriptionId, topic.topic, "checkpoint", {});
+      if (topic.topic === "account.events") {
         return;
       }
       const instrument = topic.instrumentId ? instrumentOf(topic.instrumentId) : undefined;
@@ -133,19 +132,12 @@ class MockRealtimeSocket extends EventTarget {
         const fact = await fetchMarketFact(instrument!);
         const price = fact.markPrice || midpoint(fact.bestBid, fact.bestAsk);
         if (!price) throw new Error("mark price is unavailable");
-        this.#data(subscriptionId, topic.topic, "snapshot", { price }, fact.observedAt);
+        this.#data(subscriptionId, topic.topic, "snapshot", { price, ageMs: 0, staleAfterMs: 60_000 });
         return;
       }
       if (topic.topic === "funding.board") {
         const board = await fetchFundingBoard();
         this.#data(subscriptionId, topic.topic, "snapshot", board, board.observedAt);
-        return;
-      }
-      if (topic.topic === "arbitrage.opportunities") {
-        const response = await fetch(paths.arbitrageOpportunities);
-        if (!response.ok) throw new Error(`opportunities returned ${response.status}`);
-        const body = await response.json() as { data: unknown };
-        this.#data(subscriptionId, topic.topic, "snapshot", body.data);
         return;
       }
       if (topic.topic === "system.venue_connectivity") {
@@ -168,7 +160,7 @@ class MockRealtimeSocket extends EventTarget {
   #data(
     subscriptionId: string,
     topic: string,
-    type: "snapshot" | "checkpoint",
+    type: "snapshot",
     data: unknown,
     observedAt = new Date().toISOString(),
   ): void {

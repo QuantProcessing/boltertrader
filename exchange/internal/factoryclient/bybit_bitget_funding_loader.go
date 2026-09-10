@@ -174,6 +174,8 @@ func NewBitgetDerivativeSnapshotLoader(productType string, settings Settings) De
 	return bitgetDerivativeSnapshotLoader{productType: productType, settings: settings}
 }
 
+func (bitgetDerivativeSnapshotLoader) coordinatesDerivativeRequests() bool { return true }
+
 // LoadDerivativeSnapshot reads one Bitget product type's ticker surface.
 //
 // Unlike Bybit, Bitget scopes the request itself — USDT-FUTURES and
@@ -188,13 +190,18 @@ func NewBitgetDerivativeSnapshotLoader(productType string, settings Settings) De
 func (loader bitgetDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context.Context, scope exchange.CatalogScope) (DerivativeSnapshot, error) {
 	sdk := newBitgetPublicSDK(loader.settings)
 
-	rows, err := sdk.GetTickers(ctx, loader.productType)
+	rows, err := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueBitget, "all_tickers", loader.productType, func(callCtx context.Context) ([]bitget.Ticker, error) {
+		return sdk.GetTickers(callCtx, loader.productType)
+	})
 	if err != nil {
 		meta := clientMeta{venue: exchange.VenueBitget, product: exchange.ProductPerp}
 		return DerivativeSnapshot{}, normErr(meta, derivativeSnapshotOperation, err)
 	}
 	intervals := map[string]exchange.OptionalInt{}
-	if instruments, err := loadBitgetInstruments(ctx, loader.settings, loader.productType); err == nil {
+	instruments, instrumentsErr := coordinatedMarketRequest(ctx, loader.settings, exchange.VenueBitget, "instruments", loader.productType, func(callCtx context.Context) ([]bitget.Instrument, error) {
+		return loadBitgetInstruments(callCtx, loader.settings, loader.productType)
+	})
+	if instrumentsErr == nil {
 		for _, instrument := range instruments {
 			if hours := fundingIntervalHours(instrument.FundInterval); hours.Valid {
 				intervals[instrument.Symbol] = hours
