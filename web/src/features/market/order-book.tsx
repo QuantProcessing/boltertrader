@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ListTree } from "lucide-react";
 
 import type { DepthLevel, Instrument, MarketFact } from "@/api/types";
@@ -70,6 +70,13 @@ export function OrderBook({
   unavailable?: boolean;
   onPickPrice: (price: string) => void;
 }) {
+  const container = useRef<HTMLElement>(null);
+  const [depthRows, setDepthRows] = useState(8);
+  useEffect(() => {
+    if (!container.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => { if (entry) setDepthRows(Math.max(3, Math.min(DEPTH_ROWS, Math.floor((entry.contentRect.height - 154) / 44)))); });
+    observer.observe(container.current); return () => observer.disconnect();
+  }, []);
   const [step, setStep] = useState<number>(1);
   const [view, setView] = useState<View>("both");
   const t = useT();
@@ -91,12 +98,12 @@ export function OrderBook({
     [fact?.bids, decimals],
   );
 
-  const rows = view === "both" ? DEPTH_ROWS : DEPTH_ROWS * 2;
+  const rows = view === "both" ? depthRows : depthRows * 2;
   const scale = Math.max(asks.slice(0, rows).at(-1)?.total ?? 0, bids.slice(0, rows).at(-1)?.total ?? 0);
   const spread = fact ? spreadOf(fact, quoted) : null;
 
   return (
-    <section aria-label={t("book.label")} className="flex min-h-0 flex-1 flex-col">
+    <section ref={container} aria-label={t("book.label")} className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center gap-2 border-b border-line px-3">
         <ListTree className="size-3.5 text-dim" aria-hidden="true" />
         <h2 className="text-title font-semibold text-text">{t("book.label")}</h2>
@@ -105,41 +112,18 @@ export function OrderBook({
         </span>
       </div>
 
-      {/* Which side, and at what grid. */}
-      <div className="flex h-row shrink-0 items-center gap-2 border-b border-line">
+      <div className="flex h-row shrink-0 items-center gap-2 border-b border-line px-2">
         <Segmented
           name="depth-view"
           label={t("book.side")}
           value={view}
-          // Built inline rather than memoised: `useT` returns a fresh closure
-          // every render, so a `[t]` dependency would never hit.
           options={VIEWS.map((entry) => ({ value: entry.value, label: t(entry.labelKey), tone: entry.tone }))}
           onChange={setView}
-          className="w-[174px] shrink-0"
-          trackClassName="gap-1"
+          className="min-w-0 flex-1"
         />
-        <div role="group" aria-label={t("book.grouping")} className="ml-auto flex shrink-0 items-center gap-1">
-          {STEPS.map((multiple) => {
-            const label = stepLabel(quoted - exponent(multiple));
-            return (
-              <button
-                key={multiple}
-                type="button"
-                onClick={() => setStep(multiple)}
-                aria-pressed={step === multiple}
-                className={cn(
-                  "rounded-control px-1.5 py-0.5 text-micro tabular-nums",
-                  "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
-                  step === multiple
-                    ? "bg-fill-strong text-text"
-                    : "text-dim hover:bg-fill hover:text-muted",
-                )}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
+        <select aria-label={t("book.grouping")} value={step} onChange={(event) => setStep(Number(event.target.value) as (typeof STEPS)[number])} className="h-8 w-16 shrink-0 rounded-control border border-line bg-fill px-1 text-meta text-text">
+          {STEPS.map((multiple) => <option key={multiple} value={multiple}>{stepLabel(quoted - exponent(multiple))}</option>)}
+        </select>
       </div>
 
       <div className={cn("th grid shrink-0 gap-2 px-3 py-1", COLUMNS)}>

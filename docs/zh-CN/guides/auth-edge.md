@@ -39,8 +39,7 @@ Auth edge 是浏览器唯一会直接对话的服务。它只终结会话，别�
 | `/api/v1/accounts`、`/api/v1/accounts/{accountId}` 及其动作 | Gateway | 被重写到内部面 |
 | `/api/v1/accounts/{accountId}/runtimes` | Trading | 这是投影，不是 account 本身 |
 | `/api/v1/catalog/*`、`/api/v1/market-data`、`/api/v1/candles`、资金费读取 | Gateway | 内部面提供统一应用契约 |
-| `/api/v1/market/realtime/ws` | Gateway | 公共交易所行情流 |
-| `/api/v1/account/realtime/ws` | Gateway | 需要会话的私有账户通知 |
+| `/api/v1/realtime/ws` | Edge 复用 | 公共行情与需会话的账户/Trading topic |
 | `/api/v1/venues/connectivity` | Gateway | REST 快照；实时更新走 Gateway 行情连接 |
 | `/api/v1/commands`、`/api/v1/products/manual/*` | Trading | |
 | `/api/v1/positions`、`/api/v1/ledger`、`/api/v1/pnl`、`/api/v1/fills`、`/api/v1/activity` | Trading | |
@@ -79,15 +78,14 @@ Gateway 的这些路由也是唯一会改变路径的：`/api/v1/accounts` 在�
 
 ## 实时 WebSocket
 
-Edge 按数据归属转发两类 Gateway WebSocket：公共市场数据经
-`/api/v1/market/realtime/ws` 直达 Gateway，私有账户通知经
-`/api/v1/account/realtime/ws` 直达 Gateway。账户连接要求会话，市场连接允许匿名。
+浏览器只连接 `/api/v1/realtime/ws`。Edge 按 topic 懒连接各归属服务：行情与账户数据仍由
+Gateway 负责，持久化订单/成交投影由 Trading 负责。Edge 为 subscription ID 添加命名空间，
+不解释或合并业务事实。匿名仅可订阅公共 topic，私有 topic 必须有会话；每 30 秒复核会话，
+过期即断开。过期 cookie 不会自动降级为匿名，伪造 principal/cookie 头也不会传入上游。
 
 ## 它不做的事
 
-它不做聚合。一个浏览器请求至多变成一个上游请求，上游的响应体原样返回。edge 里没有任何
-地方会合并两个服务的答案，因为那会把产品逻辑放进这个唯一必须「笨到可以被托付会话」的
-进程里。
+它不合并业务事实、不保存业务投影。HTTP 保持一请求一归属服务，实时复用仅改变传输层的订阅身份。
 
 它不做会话之外的授权。某个 principal 能否触及某个 account 或某个 product，由拥有它的那个
 服务决定，依据是 edge 担保的 principal。

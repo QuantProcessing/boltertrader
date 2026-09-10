@@ -7,8 +7,11 @@ import "@/styles/app.css";
 async function enableMocking(): Promise<void> {
   if (import.meta.env.VITE_BOLTER_MOCK !== "1") return;
   const { installMockRealtime, startWorker } = await import("@/mocks/browser");
-  installMockRealtime();
   await startWorker();
+  // MSW also installs a WebSocket interceptor. Our complete local socket must
+  // replace it afterwards, otherwise its passthrough opens an orphan socket
+  // when React releases a connecting subscription during StrictMode startup.
+  installMockRealtime();
 }
 
 const container = document.getElementById("root");

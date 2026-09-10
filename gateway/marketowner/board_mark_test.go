@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/catalog"
+	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/markethub"
 	"github.com/QuantProcessing/boltertrader/gateway/publicmarket"
 	"github.com/shopspring/decimal"
@@ -36,6 +38,16 @@ func TestBoardMarksMergesRichHotReferenceWithIndependentFieldClocks(t *testing.T
 	}
 
 	marks := BoardMarks{Facts: store, Markets: &publicmarket.Source{}}
+	instrument := publicmarket.Instrument{Catalog: catalog.Instrument{ID: domain.InstrumentID(fact.InstrumentID)}}
+	index, indexAt, _, err := marks.snapshot(instrument, exchange.DatasetIndex)
+	if err != nil || index != "69990" || !indexAt.Equal(baseAt) {
+		t.Fatalf("index became mark: %s %s %v", index, indexAt, err)
+	}
+	mark, _, _, err := marks.snapshot(instrument, exchange.DatasetMark)
+	if err != nil || mark != "70000" {
+		t.Fatalf("mark changed: %s %v", mark, err)
+	}
+
 	hotAt := baseAt.Add(time.Second)
 	marks.PublishReference(context.Background(), fact.InstrumentID, exchange.DerivativeReferenceEvent{
 		MarkPrice: exchange.OptionalDecimal{Value: decimal.NewFromInt(70_100), Valid: true}, MarkObservedAt: hotAt,

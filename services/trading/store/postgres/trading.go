@@ -479,3 +479,11 @@ func (store *CommandStore) Find(ctx context.Context, identity orders.Idempotency
 }
 
 type scanner interface{ Scan(...any) error }
+
+func (store *CommandStore) ExpediteAccount(ctx context.Context, accountID string, now time.Time) error {
+	_, err := store.db.ExecContext(ctx, `UPDATE reconciliation_tasks r SET next_attempt_at=$2 FROM commands c WHERE r.command_id=c.command_id AND c.account_id=$1 AND r.reason IN ($3,$4) AND r.next_attempt_at>$2`, accountID, now, orders.ReconciliationAwaitingTerminal, orders.ReconciliationEvidenceInvalid)
+	if err != nil {
+		return fmt.Errorf("expedite account reconciliation")
+	}
+	return nil
+}

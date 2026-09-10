@@ -201,6 +201,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		}
 		reconciler.SetSettlementObserver(func(command orders.Command) {
 			httpapi.PublishCommandActivity(activityLog, command)
+			commandService.NotifyChange(command.PrincipalID)
 		})
 	}
 

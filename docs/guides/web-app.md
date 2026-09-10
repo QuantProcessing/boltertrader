@@ -33,56 +33,53 @@ The single origin is what lets the session cookie stay `HttpOnly` and
 keeps the browser's `Host` header so the edge sees the origin the cookie was set
 for. See [the auth edge](auth-edge.md).
 
-Realtime needs no special Caddy buffering rule. The market, account, and
-business paths are standard WebSocket upgrades and Caddy relays them
-bidirectionally.
+Caddy relays the single `/api/v1/realtime/ws` WebSocket upgrade bidirectionally.
 
 ## Routes
 
 | Route | What it is |
 | --- | --- |
-| `/login` | The only route reachable without a session |
+| `/login` | Sign in; public trade/funding views also allow anonymous use |
 | `/trade` | Ticker strip, chart, order book, order ticket, blotter |
 | `/funding` | The cross-venue funding matrix, one column per venue |
 | `/portfolio` | Positions, balances, PnL |
 | `/activity` | The command chain with timestamps |
 | `/settings` | Accounts, credentials, runtime readiness |
 
-The top navigation carries these five pages. `/trade` and `/funding` display
+The sidebar carries these five pages. `/trade` and `/funding` display
 public market data without an account; private account reads and writes require
 a session.
 
-There is one command palette over the whole shell for jumping between
-instruments and routes.
+The instrument picker changes the market for the chart, book and ticket together.
 
 ## Data flow
 
-Reads go through `react-query` against the endpoints in `src/api/endpoints.ts`.
-Live updates use one shared socket per ownership boundary rather than one socket
-per component: Gateway market data at `/api/v1/market/realtime/ws`, Gateway
-account notifications at `/api/v1/account/realtime/ws`. Duplicate component subscriptions still
-share one logical topic. Depth starts from a WebSocket-derived snapshot and is
-rebuilt from native deltas or self-contained full replacements; Gateway never
-stores a full book or joins a venue REST book to the stream.
-Account entities are overlaid by entity ID, source timestamp, and resource
-version, so an older in-flight REST response cannot roll a newer WebSocket
-update backward. REST reconciliation runs on a fixed 60-second cadence and is
-never triggered by each event or reconnect. Each ownership socket also uses an
-application ping/pong watchdog. The shell reports `degraded` when Gateway is
-still reachable but a venue market or account stream is recovering; it reports
-reconnecting only when the browser socket itself is unavailable. Account
-degradation is tracked per account and clears only on that account's health
-recovery event.
+HTTP bootstraps snapshots and submits explicit commands. All continuous browser
+updates share **one** `/api/v1/realtime/ws` connection at Auth Edge. Public topics
+cover depth, candles, mark/index prices, funding and venue connectivity;
+`account.events` carries private balances and positions; `trading.orders` carries
+persisted orders, canonical fills and related ledger/activity projections.
+Duplicate consumers share a topic, cancellation releases it, and heartbeat plus
+reconnection resubscribes the current set. Vite's development HMR socket is separate.
 
-The ticket computes its review from the account, catalog and public prices
-already on screen. **Confirm** sends one command request; there is no preview
-request, server-side preview state or expiry countdown. Trading still performs
-the authoritative account, route and rule checks in that command request. See
-[the trading service](trading-service.md).
+Depth starts with a native WS snapshot and applies deltas/full replacements.
+Gateway never joins a REST order book into that stream. Account entities merge
+by identity, timestamp and version; persisted Trading command identities own
+order status. A late REST result cannot roll a terminal order back to submitted.
+Disconnect retains the last index estimate with a delay marker. Account snapshots
+refresh on reconnect, with a 60-second REST repair interval as fallback.
 
-Credential values are write-only in the interface. They are submitted once and
-never returned — they disappear from the form, from browser storage, and from
-every subsequent response.
+Linear unrealized P&L uses the venue's index price and exact decimal arithmetic.
+Mark price remains distinct, including the compact chart line. Missing index data
+never substitutes mark price; inverse/unsupported formulas keep the venue's P&L.
+Totals stay in their original currencies. The sidebar, light/dark/system themes,
+compact metrics and responsive panes follow the workspace design in `design.md`.
+
+The ticket reviews existing account/catalog/market facts locally. Confirm sends
+one command request. Its response updates the order immediately; subsequent
+persisted changes arrive over the socket. Gateway order/fill events wake Trading's
+read-only reconciliation, without resending orders or shortening ambiguous
+handoff windows. Credential values are write-only and disappear after submission.
 
 ## Verify it
 
@@ -94,8 +91,7 @@ That installs from the lockfile, type-checks and builds, and runs the Vitest
 unit suite. It does not start the application, contact a venue, or exercise a
 credentialed browser flow.
 
-A separate live spec exists that places and cancels a real resting order. There
-is no non-production venue behind it any more — it reaches a real exchange and
-spends real funds. It is not part of `make test-browser`; run it deliberately or
-not at all. The normal application has no mock mode: anonymous read-only views
-use live public data through the running stack.
+For an uncredentialed interaction preview, run `npm --prefix web run dev:mock`.
+Accounts and fills are local simulations; public market values come from venue
+endpoints and require outbound network. Nothing in that mock reads credentials,
+signs venue requests or places real orders. See [Testing](../reference/testing.md).

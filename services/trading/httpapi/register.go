@@ -30,6 +30,7 @@ var (
 	}
 
 	tradingRoutes = []string{
+		"GET /api/v1/trading/realtime/ws",
 		"GET /api/v1/commands/{commandId}",
 		"GET /api/v1/positions", "GET /api/v1/ledger", "GET /api/v1/pnl",
 	}

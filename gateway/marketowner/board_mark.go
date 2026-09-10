@@ -110,16 +110,20 @@ func (source BoardMarks) Open(ctx context.Context, key markethub.SubscriptionKey
 	if err != nil || !ok || source.Capabilities == nil {
 		return markethub.NativeStream{}, false, err
 	}
-	capability, capabilityErr := source.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, exchange.DatasetMark, false)
-	if capabilityErr != nil || capability.Granularity == exchange.GranularitySingleInstrument {
+	capability, capabilityErr := source.Capabilities.Resolve(key.Owner.Venue, key.Owner.NativeFamily, key.Dataset, false)
+	if capabilityErr != nil || (capability.Granularity == exchange.GranularitySingleInstrument && key.Dataset != exchange.DatasetIndex) {
 		return markethub.NativeStream{}, false, capabilityErr
 	}
 	staleAfter := marketcapability.FreshnessWindow(capability)
-	changes, cancel, err := source.Facts.SubscribeInstrument(ctx, key.Owner, key.InstrumentID, exchange.DerivativeFieldMark, 8)
+	field := exchange.DerivativeFieldMark
+	if key.Dataset == exchange.DatasetIndex {
+		field = exchange.DerivativeFieldIndex | exchange.DerivativeFieldFunding | exchange.DerivativeFieldOpenInterest | exchange.DerivativeFieldNextFundingTime
+	}
+	changes, cancel, err := source.Facts.SubscribeInstrument(ctx, key.Owner, key.InstrumentID, field, 8)
 	if err != nil {
 		return markethub.NativeStream{}, true, err
 	}
-	price, at, receivedAt, err := source.snapshot(instrument)
+	price, at, receivedAt, err := source.snapshot(instrument, key.Dataset)
 	if err != nil {
 		cancel()
 		return markethub.NativeStream{}, true, err
@@ -127,9 +131,9 @@ func (source BoardMarks) Open(ctx context.Context, key markethub.SubscriptionKey
 	events := make(chan markethub.Message, 64)
 	failures := make(chan error, 1)
 	streamCtx, stop := context.WithCancel(ctx)
-	go source.forward(streamCtx, instrument, price, at, receivedAt, staleAfter, changes, events, failures)
+	go source.forward(streamCtx, instrument, key.Dataset, price, at, receivedAt, staleAfter, changes, events, failures)
 	return markethub.NativeStream{
-		Snapshot: message(key, markethub.MessageSnapshot, at, "", markData(price, at, receivedAt, staleAfter, time.Now().UTC())),
+		Snapshot: message(key, markethub.MessageSnapshot, at, "", source.referenceData(instrument, key.Dataset, price, at, receivedAt, staleAfter)),
 		Events:   events, Errors: failures,
 		Close: func() error {
 			stop()
@@ -148,10 +152,13 @@ func (source BoardMarks) instrument(ctx context.Context, instrumentID string) (p
 	return instrument, ok, nil
 }
 
-func (source BoardMarks) snapshot(instrument publicmarket.Instrument) (string, time.Time, time.Time, error) {
+func (source BoardMarks) snapshot(instrument publicmarket.Instrument, dataset exchange.MarketDataset) (string, time.Time, time.Time, error) {
 	fact, ok := source.Facts.Get(string(instrument.Catalog.ID))
+	if dataset == exchange.DatasetIndex {
+		fact.MarkPrice, fact.MarkObservedAt = fact.IndexPrice, fact.IndexObservedAt
+	}
 	if ok && fact.MarkPrice.Valid && !fact.MarkObservedAt.IsZero() {
-		receivedAt, _ := source.Facts.FieldReceivedAt(string(instrument.Catalog.ID), exchange.DatasetMark)
+		receivedAt, _ := source.Facts.FieldReceivedAt(string(instrument.Catalog.ID), dataset)
 		if receivedAt.IsZero() {
 			receivedAt = fact.MarkObservedAt.UTC()
 		}
@@ -160,7 +167,7 @@ func (source BoardMarks) snapshot(instrument publicmarket.Instrument) (string, t
 	return "", time.Time{}, time.Time{}, fmt.Errorf("%w: broad mark is absent", markethub.ErrUnavailable)
 }
 
-func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.Instrument, lastPrice string, lastAt, lastReceivedAt time.Time, staleAfter time.Duration, changes <-chan markethub.FactChange, events chan<- markethub.Message, failures chan<- error) {
+func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.Instrument, dataset exchange.MarketDataset, lastPrice string, lastAt, lastReceivedAt time.Time, staleAfter time.Duration, changes <-chan markethub.FactChange, events chan<- markethub.Message, failures chan<- error) {
 	defer close(events)
 	defer close(failures)
 	for {
@@ -175,12 +182,12 @@ func (source BoardMarks) forward(ctx context.Context, instrument publicmarket.In
 				}
 				return
 			}
-			price, at, receivedAt, err := source.snapshot(instrument)
-			if err != nil || (price == lastPrice && at.Equal(lastAt) && receivedAt.Equal(lastReceivedAt)) {
+			price, at, receivedAt, err := source.snapshot(instrument, dataset)
+			if err != nil || (dataset != exchange.DatasetIndex && price == lastPrice && at.Equal(lastAt) && receivedAt.Equal(lastReceivedAt)) {
 				continue
 			}
 			lastPrice, lastAt, lastReceivedAt = price, at, receivedAt
-			if !emit(ctx, events, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: at, Data: markethub.Encode(markData(price, at, receivedAt, staleAfter, time.Now().UTC()))}) {
+			if !emit(ctx, events, markethub.Message{Kind: markethub.MessageDelta, ObservedAt: at, Data: markethub.Encode(source.referenceData(instrument, dataset, price, at, receivedAt, staleAfter))}) {
 				return
 			}
 		}
@@ -199,4 +206,29 @@ func markData(price string, observedAt, receivedAt time.Time, staleAfter time.Du
 		"price": price, "staleAfterMs": staleAfter.Milliseconds(), "ageMs": age.Milliseconds(),
 		"receivedAt": receivedAt.UTC(),
 	}
+}
+
+// Index subscribers also receive the derivative context from this same fact.
+// No extra venue request or second funding cache is introduced.
+func (source BoardMarks) referenceData(instrument publicmarket.Instrument, dataset exchange.MarketDataset, price string, at, receivedAt time.Time, staleAfter time.Duration) map[string]any {
+	data := markData(price, at, receivedAt, staleAfter, time.Now().UTC())
+	if dataset != exchange.DatasetIndex {
+		return data
+	}
+	fact, ok := source.Facts.Get(string(instrument.Catalog.ID))
+	if !ok {
+		return data
+	}
+	if fact.FundingRate.Valid {
+		data["fundingRate"] = fact.FundingRate.Value.String()
+		data["fundingObservedAt"] = fact.FundingObservedAt
+	}
+	if fact.OpenInterest.Valid {
+		data["openInterest"] = fact.OpenInterest.Value.String()
+		data["openInterestObservedAt"] = fact.OpenInterestObservedAt
+	}
+	if !fact.NextFundingTime.IsZero() {
+		data["nextFundingTime"] = fact.NextFundingTime
+	}
+	return data
 }

@@ -145,15 +145,14 @@ third surface again, resolving on four product rows only; see
 
 ## Live updates
 
-Neither of the above is polled by the interface. Gateway serves public venue
-topics at `/api/v1/market/realtime/ws` and private change notifications at
-`/api/v1/account/realtime/ws`. Latest-value topics start with a snapshot. Order-book
-depth is also WS-only: it starts with a WebSocket-derived snapshot and then
-uses native `delta` or self-contained `full` events. A gap emits
-`resync_required` before the native stream reopens with a new snapshot. Account
-events intentionally have no cursor replay, generation, or resync state;
-reconnecting clients keep their timestamp-merged rows while the fixed
-60-second REST reconciliation repairs anything missed.
+Public venue topics, private account notifications and Trading order projections
+share the browser's `/api/v1/realtime/ws` connection. Gateway owns the underlying
+market/account streams. Latest-value topics start with a snapshot; order books
+apply native deltas or full replacements and resnapshot after gaps. Index and
+mark topics preserve distinct source clocks and freshness. Index subscriptions
+also carry available funding/open-interest context from the same derivative fact.
+Account events do not replay history: reconnect refreshes account snapshots while
+a 60-second REST repair remains as fallback. See [Web app](web-app.md).
 
 ## What is available where
 

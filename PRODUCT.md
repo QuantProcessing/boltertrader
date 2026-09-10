@@ -16,7 +16,7 @@ BolterTrader provides personal Manual Trading and independent market monitoring 
 
 Precise, quiet, trustworthy. The interface should feel operational and deliberate, with enough density for comparison and repeated action but no theatrical decoration. Copy is concise, concrete, and explicit about uncertainty or denial.
 
-The product ships one theme: dark. A trading terminal is looked at for hours in a dimmed room, and every surface, chart stroke, and depth bar is tuned for that one background rather than compromised across two. `design.md` is the normative source for colour, type, spacing, and layout; where this document and that one disagree, `design.md` wins on appearance and this one wins on behaviour.
+The product uses a quiet personal workspace with light, dark and system themes, a sidebar, readable trading data and prompt execution feedback. `design.md` defines appearance; this document defines product behavior.
 
 ## Anti-references
 
@@ -35,4 +35,4 @@ The product ships one theme: dark. A trading terminal is looked at for hours in 
 
 ## Accessibility & Inclusion
 
-Target WCAG 2.2 AA. All workflows must be keyboard accessible, provide visible focus, use color plus text or icon for state, preserve useful contrast on every surface of the dark theme, support reduced motion, and maintain at least 44px touch targets on mobile. Dynamic status changes must be announced without stealing focus. Credential values are write-only and must disappear from the rendered interface, browser storage, and subsequent responses after submission.
+Target WCAG 2.2 AA. All workflows must be keyboard accessible, provide visible focus, use color plus text or icon for state, preserve useful contrast on every surface of both themes, support reduced motion, and maintain at least 44px touch targets on mobile. Dynamic status changes must be announced without stealing focus. Credential values are write-only and must disappear from the rendered interface, browser storage, and subsequent responses after submission.

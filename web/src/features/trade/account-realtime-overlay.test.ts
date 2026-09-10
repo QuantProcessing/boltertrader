@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { AccountBalance, AccountPositionSnapshot, Command } from "@/api/types";
-import { applyBalanceOverlays, applyOrderOverlays, applyPositionOverlays, recordAccountRealtimeEvent } from "@/features/trade/account-realtime-overlay";
+import type { AccountBalance, AccountPositionSnapshot } from "@/api/types";
+import { applyBalanceOverlays, applyPositionOverlays, recordAccountRealtimeEvent } from "@/features/trade/account-realtime-overlay";
 
 describe("account realtime overlay", () => {
   it("does not let an older REST position overwrite a newer WS entity", () => {
@@ -41,20 +41,6 @@ describe("account realtime overlay", () => {
 
     const reconciled = applyPositionOverlays(positionSnapshot("2026-08-26T00:00:03Z", instrumentId, "3", 3));
     expect(reconciled.items[0]?.quantity).toBe("3");
-  });
-
-  it("maps Gateway order states and keeps the newer WS state over REST", () => {
-    const command = order("2026-08-26T00:00:01Z", "submitted");
-    expect(recordAccountRealtimeEvent({
-      eventId: "event-order-2",
-      accountId: "account-a",
-      resourceVersion: 2,
-      kind: "account.order",
-      observedAt: "2026-08-26T00:00:02Z",
-      payload: { command_id: command.commandId, account_id: "account-a", state: "filled" },
-    })).toBe("order");
-    expect(applyOrderOverlays([command])[0]?.state).toBe("filled");
-    expect(applyOrderOverlays([order("2026-08-26T00:00:03Z", "failed")])[0]?.state).toBe("failed");
   });
 
   it("merges balances by entity key and lets the next periodic REST read reconcile", () => {
@@ -110,22 +96,5 @@ function positionSnapshot(verifiedAt: string, instrumentId: string, quantity: st
       resourceVersion,
       observedAt: verifiedAt,
     }],
-  };
-}
-
-function order(updatedAt: string, state: Command["state"]): Command {
-  return {
-    commandId: "command-a",
-    accountId: "account-a",
-    lineageId: "lineage-a",
-    productId: "manual",
-    reservationId: null,
-    idempotencyKey: "idempotency-a",
-    commandKind: "place",
-    state,
-    payload: {},
-    blockers: [],
-    createdAt: "2026-08-26T00:00:00Z",
-    updatedAt,
   };
 }

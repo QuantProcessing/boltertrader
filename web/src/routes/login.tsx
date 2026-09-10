@@ -46,14 +46,14 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-bg px-4 text-text">
-      <div className="w-full max-w-80">
+    <div className="flex h-dvh overflow-y-auto items-center justify-center bg-bg px-4 text-text">
+      <div className="w-full max-w-[400px] rounded-modal border border-line bg-panel p-8">
         <div className="mb-6">
-          <h1 className="flex items-center gap-2 text-title font-semibold">
+          <h1 className="flex items-center gap-3 text-[26px] font-semibold">
             <BrandMark className="size-6" />
             {t("login.wordmark")}
           </h1>
-          <p className="mt-1 text-meta text-muted">{t("login.subtitle")}</p>
+          <p className="mt-3 text-base text-muted">{t("login.subtitle")}</p>
         </div>
 
         <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-3.5">
@@ -89,6 +89,7 @@ export function LoginPage() {
             {pending ? t("login.pending") : t("login.submit")}
           </Button>
         </form>
+        <a href="/trade" className="mt-6 block text-center text-meta text-muted hover:text-text">浏览公开行情</a>
       </div>
     </div>
   );

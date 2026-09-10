@@ -3,14 +3,13 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	realtimewire "github.com/QuantProcessing/boltertrader/api/exchange-gateway/v1"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 // accountEventStream is the browser-facing private realtime channel. Gateway
@@ -26,107 +25,16 @@ func (handler *InternalHandler) accountEventStream(w http.ResponseWriter, r *htt
 		}
 		return
 	}
-	connection, err := websocket.Accept(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer connection.CloseNow()
-	connection.SetReadLimit(realtimewire.MaxControlBytes)
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 
-	outbound := make(chan realtimewire.Message, realtimewire.OutboundBuffer)
-	controls := make(chan realtimeControlResult, 1)
-	writeDone := make(chan error, 1)
-	topicDone := make(chan struct{}, 1)
-	lagged := make(chan struct{}, 1)
-	go readRealtimeControls(ctx, connection, controls)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				writeDone <- ctx.Err()
-				return
-			case message := <-outbound:
-				writeCtx, writeCancel := context.WithTimeout(ctx, 10*time.Second)
-				err := wsjson.Write(writeCtx, connection, message)
-				writeCancel()
-				if err != nil {
-					writeDone <- err
-					return
-				}
-			}
+	serveMarketStream(w, r, 1, func(request realtimewire.TopicRequest) error {
+		if request.Topic != realtimewire.TopicAccountEvents {
+			return fmt.Errorf("account topic required")
 		}
-	}()
-	emit := func(message realtimewire.Message) bool {
-		select {
-		case <-ctx.Done():
-			return false
-		case outbound <- message:
-			return true
-		default:
-			select {
-			case lagged <- struct{}{}:
-			default:
-			}
-			return false
-		}
-	}
-
-	var activeCancel context.CancelFunc
-	activeID := ""
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-writeDone:
-			return
-		case <-lagged:
-			_ = connection.Close(websocket.StatusTryAgainLater, "consumer_lagged")
-			return
-		case <-topicDone:
-			if activeCancel != nil {
-				activeCancel()
-			}
-			activeCancel, activeID = nil, ""
-		case result := <-controls:
-			if result.err != nil {
-				_ = connection.Close(websocket.StatusPolicyViolation, "invalid_control")
-				return
-			}
-			control := result.control
-			switch control.Operation {
-			case realtimewire.OperationPing:
-				emit(realtimewire.Message{Type: realtimewire.MessagePong, RequestID: control.RequestID, ObservedAt: time.Now().UTC()})
-			case realtimewire.OperationUnsubscribe:
-				for _, request := range control.Topics {
-					if request.SubscriptionID == activeID && activeCancel != nil {
-						activeCancel()
-						activeCancel, activeID = nil, ""
-					}
-					emit(realtimewire.Message{Type: realtimewire.MessageAck, RequestID: control.RequestID, SubscriptionID: request.SubscriptionID, Topic: request.Topic, ObservedAt: time.Now().UTC()})
-				}
-			case realtimewire.OperationSubscribe:
-				for _, request := range control.Topics {
-					if request.Topic != realtimewire.TopicAccountEvents || activeCancel != nil {
-						emit(realtimewire.Message{Type: realtimewire.MessageError, RequestID: control.RequestID, Topic: request.Topic, Code: "TOPIC_UNSUPPORTED", ObservedAt: time.Now().UTC()})
-						continue
-					}
-					activeID = "account-events"
-					subCtx, subCancel := context.WithCancel(ctx)
-					activeCancel = subCancel
-					emit(realtimewire.Message{Type: realtimewire.MessageAck, RequestID: control.RequestID, SubscriptionID: activeID, Topic: request.Topic, ObservedAt: time.Now().UTC()})
-					go func(subscriptionID string) {
-						handler.runAccountEvents(subCtx, subscriptionID, emit)
-						select {
-						case topicDone <- struct{}{}:
-						case <-ctx.Done():
-						}
-					}(activeID)
-				}
-			}
-		}
-	}
+		return nil
+	}, func(ctx context.Context, id string, _ realtimewire.TopicRequest, emit func(realtimewire.Message) bool) error {
+		handler.runAccountEvents(ctx, id, emit)
+		return nil
+	})
 }
 
 func (handler *InternalHandler) runAccountEvents(ctx context.Context, subscriptionID string, emit func(realtimewire.Message) bool) {

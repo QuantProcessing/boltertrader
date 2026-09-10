@@ -12,7 +12,8 @@ const (
 	// Gateway is the shared exchange capability layer. Public market and private
 	// account realtime connections terminate here; Trading only owns business
 	// projections and command orchestration.
-	Gateway UpstreamName = "gateway"
+	Gateway  UpstreamName = "gateway"
+	Realtime UpstreamName = "realtime" // Auth Edge multiplexes logical subscriptions.
 )
 
 // Route is one browser-facing path and the upstream path it becomes.
@@ -98,8 +99,7 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/funding-board", Upstream: Gateway, Target: "/internal/v1/funding-board", Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/funding-history", Upstream: Gateway, Target: "/internal/v1/funding-history", Public: true},
 	{Method: http.MethodGet, Path: "/api/v1/venues/connectivity", Upstream: Gateway, Target: "/internal/v1/venues/connectivity", Public: true},
-	{Method: http.MethodGet, Path: "/api/v1/market/realtime/ws", Upstream: Gateway, Target: "/internal/v1/market/ws", Public: true, WebSocket: true},
-	{Method: http.MethodGet, Path: "/api/v1/account/realtime/ws", Upstream: Gateway, Target: "/internal/v1/account/ws", WebSocket: true},
+	{Method: http.MethodGet, Path: "/api/v1/realtime/ws", Upstream: Realtime, Public: true, WebSocket: true},
 	{Method: http.MethodGet, Path: "/api/v1/accounts", Upstream: Gateway, Target: "/internal/v1/accounts"},
 	{Method: http.MethodPost, Path: "/api/v1/accounts", Upstream: Gateway, Target: "/internal/v1/accounts"},
 	{Method: http.MethodGet, Path: "/api/v1/accounts/{accountId}", Upstream: Gateway, Target: "/internal/v1/accounts/{accountId}"},

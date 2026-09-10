@@ -362,3 +362,7 @@ func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
 	}
 	return fmt.Errorf("Gateway market-data route is unavailable")
 }
+
+func (client *Client) WatchAccountActivity(ctx context.Context, notify func(string)) error {
+	return client.protocol.WatchAccountActivity(ctx, notify)
+}

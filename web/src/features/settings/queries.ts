@@ -36,7 +36,7 @@ export function useAccountRuntimes(accountId: string | null): UseQueryResult<Acc
     queryFn: ({ signal }) => trading.accountRuntimes(accountId as string, signal),
     enabled: accountId !== null,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
   });
 }
 

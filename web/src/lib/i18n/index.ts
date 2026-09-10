@@ -14,7 +14,7 @@
  * reader and does not need re-asking every tab, whereas a risk disclosure does.
  * ------------------------------------------------------------------------- */
 
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 import { setDateLocale } from "@/lib/format";
 import { en, type Dictionary, type Key } from "./en";
@@ -123,5 +123,6 @@ export type Translate = (key: Key, values?: Record<string, string | number>) => 
 export function useT(): Translate {
   const locale = useLocale();
   const dictionary = DICTIONARIES[locale];
-  return (key, values) => interpolate(dictionary[key], values);
+  // A translation dependency must not invalidate stateful table cells on every tick.
+  return useCallback<Translate>((key, values) => interpolate(dictionary[key], values), [dictionary]);
 }

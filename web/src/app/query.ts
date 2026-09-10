@@ -14,6 +14,7 @@
 import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query";
 
 import { ApiError, NetworkError, isAuthFailure, isProjectionWarmingUp, isStaleSession } from "@/api/errors";
+import { PRIVATE_QUERY_META } from "./query-privacy";
 import { sessionStore } from "./session";
 
 /**
@@ -39,7 +40,7 @@ function shouldRetry(failureCount: number, error: unknown): boolean {
 export function createQueryClient(): QueryClient {
   const onError = (error: unknown) => sessionStore.reportAuthFailure(error);
 
-  return new QueryClient({
+  const client = new QueryClient({
     queryCache: new QueryCache({ onError }),
     mutationCache: new MutationCache({ onError }),
     defaultOptions: {
@@ -60,4 +61,7 @@ export function createQueryClient(): QueryClient {
       },
     },
   });
+  client.setQueryDefaults(["trading"], { meta: PRIVATE_QUERY_META });
+  client.setQueryDefaults(["manual"], { meta: PRIVATE_QUERY_META });
+  return client;
 }

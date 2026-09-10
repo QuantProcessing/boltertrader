@@ -22,7 +22,7 @@ export const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/api/v1/catalog/instruments",
   "/api/v1/market-data",
   "/api/v1/candles",
-  "/api/v1/market/realtime/ws",
+  "/api/v1/realtime/ws",
   "/api/v1/funding-board",
   "/api/v1/funding-history",
   "/api/v1/venues/connectivity",

@@ -55,6 +55,7 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 			publishCommandActivity(handler.trading.options.Activity, result.Command)
 		}
 	}
+	handler.trading.options.Commands.NotifyChange(principal)
 	status := http.StatusOK
 	if result.Changed {
 		status = http.StatusAccepted

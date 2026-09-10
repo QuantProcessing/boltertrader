@@ -3,9 +3,8 @@
 > Canonical language: English. [Chinese mirror](../zh-CN/guides/auth-edge.md)
 
 The auth edge is the only service a browser talks to. It terminates the session
-and nothing else: it holds no domain state, owns no tables beyond its own
-sessions, and makes no trading decision. Everything it forwards, it forwards
-unchanged.
+and the browser realtime transport: it holds no domain state, owns no tables beyond its own
+sessions, and makes no trading decision. HTTP payloads and realtime data payloads remain service-owned.
 
 Its job is a translation. On the inbound side a request is authenticated by a
 cookie the browser sends automatically. On the outbound side it is authenticated
@@ -15,7 +14,7 @@ never become the header an upstream trusts.
 
 ## What it handles itself
 
-Four routes never leave the process:
+Session routes are handled locally:
 
 | Route | Effect |
 | --- | --- |
@@ -51,8 +50,7 @@ Routes are declared explicitly and sent to the service that owns the data:
 | `/api/v1/accounts`, `/api/v1/accounts/{accountId}` and its actions | Gateway | Rewritten onto the internal plane |
 | `/api/v1/accounts/{accountId}/runtimes` | Trading | A projection, not the account itself |
 | `/api/v1/catalog/*`, `/api/v1/market-data`, `/api/v1/candles`, funding reads | Gateway | Shared application contracts on the internal plane |
-| `/api/v1/market/realtime/ws` | Gateway | Public venue market stream |
-| `/api/v1/account/realtime/ws` | Gateway | Session-required private account notifications |
+| `/api/v1/realtime/ws` | Edge multiplexing | Public market and session-required account/Trading topics |
 | `/api/v1/venues/connectivity` | Gateway | REST snapshot; live updates use the Gateway market socket |
 | `/api/v1/commands`, `/api/v1/reservations`, `/api/v1/products/manual/*` | Trading | |
 | `/api/v1/positions`, `/api/v1/ledger`, `/api/v1/pnl`, `/api/v1/fills`, `/api/v1/activity` | Trading | |
@@ -100,19 +98,18 @@ only for the session.
 
 ## Realtime WebSocket
 
-The edge relays two Gateway WebSocket streams without applying the
-ordinary request deadline: public venue data goes directly to Gateway at
-`/api/v1/market/realtime/ws`, private account notifications go directly to
-Gateway at `/api/v1/account/realtime/ws`. The account socket requires a browser
-session; the market socket may be anonymous.
+The browser opens `/api/v1/realtime/ws`. Auth Edge multiplexes topics onto lazy
+service connections: market/account data remain at Gateway, persisted order and
+fill projections remain at Trading. It namespaces subscription IDs and forwards
+payloads without interpreting trading facts. Anonymous clients may subscribe only
+to public topics. Private subscriptions require a session, checked again every
+30 seconds; expiry closes the connection. An expired cookie never falls back to
+anonymous access. Forged principal/cookie headers do not cross this boundary.
 
 ## What it does not do
 
-It does not aggregate. One browser request becomes at most one upstream request,
-and the upstream's response body is returned as it came. There is no place in
-the edge where two services' answers are merged, because that would put product
-logic in the one process that must stay dumb enough to be trusted with the
-session.
+It does not aggregate business facts or store projections. HTTP routing remains
+one request to one owner; realtime multiplexing changes transport identities only.
 
 It does not authorize beyond the session. Whether a principal may touch a
 particular account or product is decided by the service that owns it, using the

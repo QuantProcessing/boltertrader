@@ -16,13 +16,13 @@ export function InstrumentName({
 
   return (
     <span
-      className={cn("inline-flex min-w-0 max-w-full items-baseline gap-2", className)}
+      className={cn("inline-flex min-w-0 max-w-full flex-col items-start gap-0.5 leading-tight", className)}
       title={identity.raw || undefined}
     >
       <span className="truncate font-medium text-text" data-numeric="">
         {identity.symbol}
       </span>
-      {meta ? <span className="shrink-0 text-micro text-dim">{meta}</span> : null}
+      {meta ? <span className="max-w-full truncate text-micro text-dim">{meta}</span> : null}
     </span>
   );
 }

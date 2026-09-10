@@ -1,40 +1,65 @@
-import type { AccountPosition, FundingBoardSnapshot, PositionSettlementSummary } from "@/api/types";
-import { positionMarkPrice, positionUnrealizedPnl } from "@/features/trade/live-position";
+import type { AccountPosition, PositionSettlementSummary } from "@/api/types";
+import {
+  positionUnrealizedPnl,
+  addDecimalValues,
+} from "@/features/trade/live-position";
 
-interface PublicMark {
+interface ReferenceQuote {
   price?: string;
   stale: boolean;
 }
 
-/** Reprice each venue position with the mark belonging to its canonical ID. */
-export function applyFundingBoardMarks(positions: AccountPosition[], board?: FundingBoardSnapshot): AccountPosition[] {
-  const marks = fundingBoardMarks(board);
+/** Index estimates keep their value when delayed, with an explicit stale marker. */
+export function applyIndexPrices(
+  positions: AccountPosition[],
+  prices: Record<string, ReferenceQuote>,
+): AccountPosition[] {
   return positions.map((position) => {
-    const mark = marks.get(position.instrumentId);
-    if (!mark?.price) return position;
-    const displayedMark = positionMarkPrice(position, mark.price, mark.stale);
-    const pnl = positionUnrealizedPnl(position, mark.price, mark.stale);
+    const index = prices[position.instrumentId];
+    if (!index?.price) return position;
+    const pnl = positionUnrealizedPnl(position, index.price, index.stale);
     return {
       ...position,
-      markPrice: displayedMark.value,
-      markPriceSource: "venue_public",
+      indexPrice: index.price,
+      indexPriceStale: index.stale,
       unrealizedPnl: pnl.value,
-      unrealizedPnlSource: pnl.stale ? "unavailable" : pnl.estimated ? "estimated" : position.unrealizedPnlSource,
+      unrealizedPnlSource: pnl.estimated
+        ? "estimated"
+        : position.unrealizedPnlSource,
     };
   });
 }
 
-export function summarizeLivePositions(positions: AccountPosition[]): PositionSettlementSummary[] {
-  const byAsset = new Map<string, { count: number; live: number; stale: number; total: number; excluded: number }>();
+export function summarizeLivePositions(
+  positions: AccountPosition[],
+): PositionSettlementSummary[] {
+  const byAsset = new Map<
+    string,
+    {
+      count: number;
+      live: number;
+      stale: number;
+      total: string[];
+      excluded: number;
+    }
+  >();
   for (const position of positions) {
-    const asset = position.unrealizedPnlCurrency || position.settlementAsset || "—";
-    const current = byAsset.get(asset) ?? { count: 0, live: 0, stale: 0, total: 0, excluded: 0 };
+    const asset =
+      position.unrealizedPnlCurrency || position.settlementAsset || "—";
+    const current = byAsset.get(asset) ?? {
+      count: 0,
+      live: 0,
+      stale: 0,
+      total: [],
+      excluded: 0,
+    };
     current.count += 1;
     if (position.freshness === "live") current.live += 1;
     else current.stale += 1;
     const pnl = Number(position.unrealizedPnl);
-    if (position.unrealizedPnl === "" || !Number.isFinite(pnl)) current.excluded += 1;
-    else current.total += pnl;
+    if (position.unrealizedPnl === "" || !Number.isFinite(pnl))
+      current.excluded += 1;
+    else current.total.push(position.unrealizedPnl);
     byAsset.set(asset, current);
   }
   return [...byAsset.entries()].map(([settlementAsset, value]) => ({
@@ -42,21 +67,10 @@ export function summarizeLivePositions(positions: AccountPosition[]): PositionSe
     positionCount: value.count,
     liveCount: value.live,
     staleCount: value.stale,
-    unrealizedPnl: value.excluded === value.count ? undefined : String(value.total),
+    unrealizedPnl:
+      value.excluded === value.count
+        ? undefined
+        : addDecimalValues(value.total),
     excludedPnlCount: value.excluded,
   }));
-}
-
-function fundingBoardMarks(board?: FundingBoardSnapshot): Map<string, PublicMark> {
-  const marks = new Map<string, PublicMark>();
-  for (const venue of board?.venues ?? []) {
-    for (const row of venue.rows) {
-      if (!row.instrumentId) continue;
-      marks.set(row.instrumentId, {
-        price: row.markPrice,
-        stale: venue.unavailable || row.missingFields?.includes("mark") === true || row.staleFields?.includes("mark") === true,
-      });
-    }
-  }
-  return marks;
 }

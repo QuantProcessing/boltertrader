@@ -27,6 +27,8 @@ func (streams marketStreams) run(ctx context.Context, subscriptionID string, req
 		dataset = exchange.DatasetCandle
 	case realtimewire.TopicMarkPrice:
 		dataset = exchange.DatasetMark
+	case realtimewire.TopicIndexPrice:
+		dataset = exchange.DatasetIndex
 	}
 	key, err := streams.keys.SubscriptionKey(ctx, request.InstrumentID, dataset, request.Interval, request.Depth)
 	if err != nil {
@@ -79,7 +81,7 @@ func (streams marketStreams) run(ctx context.Context, subscriptionID string, req
 // A Hub replay retains the original fact. Recompute its age at delivery so a
 // late consumer cannot mistake an old mark with cached ageMs=0 for a fresh one.
 func marketWireData(topic realtimewire.Topic, payload json.RawMessage, now time.Time) json.RawMessage {
-	if topic != realtimewire.TopicMarkPrice {
+	if topic != realtimewire.TopicMarkPrice && topic != realtimewire.TopicIndexPrice {
 		return payload
 	}
 	var fields map[string]json.RawMessage

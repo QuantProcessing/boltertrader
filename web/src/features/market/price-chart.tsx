@@ -1,3 +1,4 @@
+import { useTheme } from "@/app/theme";
 import {
   CandlestickSeries,
   HistogramSeries,
@@ -18,7 +19,7 @@ import { useEffect, useRef } from "react";
 import { CANDLE_INTERVALS, type AccountPosition, type Candle, type CandleInterval, type Instrument } from "@/api/types";
 import { Num } from "@/components/ui/num";
 import { PopoverContent, PopoverRoot, PopoverTrigger } from "@/components/ui/popover";
-import type { LiveMarkPrice } from "@/features/market/stream";
+import type { LiveReferencePrice } from "@/features/market/stream";
 import { readChartPalette } from "@/lib/chart-palette";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -53,8 +54,8 @@ export function PriceChart({
   candles: Candle[] | undefined;
   /** The venue's forming bar, delivered by the public WebSocket. */
   liveCandle?: Candle | null;
-  /** Public mark-price stream used by PnL and rendered independently from the last traded candle. */
-  mark?: LiveMarkPrice | null;
+  /** Public mark-price line, independent of the last trade and index-price P&L. */
+  mark?: LiveReferencePrice | null;
   instrument: Instrument | null;
   /** Current selected-account positions; entry and venue liquidation prices are drawn. */
   positions?: AccountPosition[];
@@ -62,6 +63,7 @@ export function PriceChart({
   onIntervalChange: (next: CandleInterval) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const { resolved: theme } = useTheme();
   const chartRef = useRef<IChartApi | null>(null);
   const priceRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
@@ -167,6 +169,12 @@ export function PriceChart({
   }, []);
 
   useEffect(() => {
+    const palette = readChartPalette();
+    chartRef.current?.applyOptions({ layout: { textColor: palette.dim }, grid: { vertLines: { color: palette.line }, horzLines: { color: palette.line } }, rightPriceScale: { borderColor: palette.line }, timeScale: { borderColor: palette.line }, crosshair: { vertLine: { color: palette.lineStrong, labelBackgroundColor: palette.raised }, horzLine: { color: palette.lineStrong, labelBackgroundColor: palette.raised } } });
+    priceRef.current?.applyOptions({ upColor: palette.up, downColor: palette.down, wickUpColor: palette.up, wickDownColor: palette.down });
+  }, [theme]);
+
+  useEffect(() => {
     const price = priceRef.current;
     const volume = volumeRef.current;
     if (!price || !volume || !candles) return;
@@ -204,7 +212,7 @@ export function PriceChart({
         to: bars.length + 6,
       });
     }
-  }, [candles, instrument?.instrumentId, instrument?.venue, interval]);
+  }, [candles, instrument?.instrumentId, instrument?.venue, interval, theme]);
 
   // Forming bars are hot data. `update` replaces the bar when its timestamp is
   // unchanged and appends it when a new interval starts, which is exactly the
@@ -230,7 +238,7 @@ export function PriceChart({
       value: Number.isFinite(size) ? size : 0,
       color: close >= open ? palette.upFaint : palette.downFaint,
     });
-  }, [latestHistory, liveCandle]);
+  }, [latestHistory, liveCandle, theme]);
 
   useEffect(() => {
     const series = priceRef.current;
@@ -254,7 +262,7 @@ export function PriceChart({
     };
     if (liveLineRef.current) liveLineRef.current.applyOptions(options);
     else liveLineRef.current = series.createPriceLine(options);
-  }, [currentLine?.direction, currentLine?.price]);
+  }, [currentLine?.direction, currentLine?.price, theme]);
 
   useEffect(() => {
     const series = priceRef.current;
@@ -271,11 +279,11 @@ export function PriceChart({
       lineWidth: 1 as const,
       lineStyle: LineStyle.Dashed,
       axisLabelVisible: true,
-      title: [t("chart.markPrice"), markLine.stale ? t("chart.position.stale") : ""].filter(Boolean).join(" · "),
+      title: "",
     };
     if (markLineRef.current) markLineRef.current.applyOptions(options);
     else markLineRef.current = series.createPriceLine(options);
-  }, [markLine?.price, markLine?.stale, t]);
+  }, [markLine?.price, markLine?.stale, t, theme]);
 
   useEffect(() => {
     const series = priceRef.current;
@@ -309,7 +317,7 @@ export function PriceChart({
       if (existing) existing.applyOptions(options);
       else positionLinesRef.current.set(descriptor.key, series.createPriceLine(options));
     }
-  }, [positions, t]);
+  }, [positions, t, theme]);
 
   useEffect(() => {
     const series = priceRef.current;
@@ -345,12 +353,10 @@ export function PriceChart({
         </div>
         <IntervalSelector interval={interval} onChange={onIntervalChange} />
       </div>
-      <div
-        ref={containerRef}
-        className="min-h-0 flex-1"
-        role="img"
-        aria-label={t("chart.label", { interval })}
-      />
+      <div className="relative min-h-0 flex-1">
+        <div ref={containerRef} className="h-full" role="img" aria-label={t("chart.label", { interval })} />
+        {!candles?.length && !liveCandle ? <span role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center text-meta text-dim">{t("strip.loading")}</span> : null}
+      </div>
     </div>
   );
 }
@@ -385,7 +391,7 @@ export function currentCandlePriceLine(candle: Candle | null | undefined): Curre
 }
 
 /** Mark is a separate reference line; zero and malformed values remain absent. */
-export function markPriceLine(mark: Pick<LiveMarkPrice, "price" | "stale"> | null | undefined): MarkPriceLine | null {
+export function markPriceLine(mark: Pick<LiveReferencePrice, "price" | "stale"> | null | undefined): MarkPriceLine | null {
   const price = Number.parseFloat(mark?.price ?? "");
   if (!Number.isFinite(price) || price <= 0) return null;
   return { price, stale: mark?.stale ?? false };

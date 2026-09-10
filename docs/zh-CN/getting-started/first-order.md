@@ -57,8 +57,7 @@ Credential value 是只写的。它们只发送一次，加密进 gateway 的凭
 ## 5. 打开交易终端
 
 **Trade** 针对所选 instrument 展示：行情条、K 线图、订单簿、下单票和 blotter。
-市场更新通过 Gateway 的 `/api/v1/market/realtime/ws` 到达；账户通知使用另一条需要认证的
-Gateway WebSocket。
+市场更新通过 `/api/v1/realtime/ws` 到达；登录后的账户与订单订阅复用同一条连接。
 
 选择该账户交易所支持的交易标的。
 

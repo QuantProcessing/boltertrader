@@ -419,13 +419,10 @@ export function FundingMatrix({
 
   const withoutOpenInterest = rows.filter((entry) => entry.row.openInterestValue === null).length;
 
-  // `t` is deliberately out of the dependency array: `useT()` returns a fresh
-  // closure every render, so keying on it would defeat the memo entirely. The
-  // language store re-renders this component when the locale changes, and the
-  // headers are read from `tableColumns` on that render.
+  // Keep translated columns stable between market updates.
   const tableColumns = useMemo(
     () => buildColumns(visible, unit, now, t),
-    [visible, unit, now],
+    [visible, unit, now, t],
   );
 
   // Built here rather than at module scope, for the reason given above the

@@ -324,8 +324,7 @@ export function OrderTicket({
       </div>
 
       <div className="flex flex-col gap-2.5 p-3">
-        {/* Options are rebuilt per render rather than memoised: `useT` returns a
-            fresh closure every time, so a `[t]` dependency would never hit. */}
+        {/* Labels follow the selected language. */}
         <Segmented
           name="side"
           label={t("ticket.side")}
@@ -342,7 +341,7 @@ export function OrderTicket({
           }}
         />
 
-        <div className="grid grid-cols-2 gap-x-4 border-b border-line pb-2">
+        <div className="grid grid-cols-2 gap-x-4 border-b border-line pb-3">
           <TicketStat
             label={t("ticket.availableMargin")}
             value={
@@ -353,7 +352,7 @@ export function OrderTicket({
           />
           <TicketStat
             label={t("ticket.position")}
-            value={`${formatDecimal(positionQuantity, { decimals: quantityDecimals })} ${instrument?.baseAsset ?? ""}`}
+            value={accountId && selectedAccount ? `${formatDecimal(positionQuantity, { decimals: quantityDecimals })} ${instrument?.baseAsset ?? ""}` : "—"}
           />
         </div>
 
@@ -1003,9 +1002,9 @@ function unitsToDecimal(value: bigint, scale: number): string {
 
 function TicketStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-h-5 items-center justify-between gap-3 text-meta text-dim">
+    <div className="flex min-h-5 flex-col items-start gap-1 text-meta text-dim">
       <span>{label}</span>
-      <span className="text-muted" data-numeric="">
+      <span className="whitespace-nowrap text-base text-text" data-numeric="">
         {value}
       </span>
     </div>

@@ -188,7 +188,13 @@ export function DataTable<TData>({
             : rows.map((row) => (
                 <tr
                   key={row.id}
+                  tabIndex={onRowClick ? 0 : undefined}
                   onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+                  onKeyDown={onRowClick ? (event) => {
+                    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+                    event.preventDefault();
+                    onRowClick(row.original);
+                  } : undefined}
                   className={cn(
                     "group h-row transition-colors hover:bg-raised",
                     onRowClick && "cursor-pointer",

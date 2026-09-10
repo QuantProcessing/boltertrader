@@ -25,16 +25,7 @@ export default defineConfig({
         target: AUTH_EDGE,
         changeOrigin: false,
         ws: true,
-        // Keep legacy streaming responses unbuffered. Current market, account,
-        // and business realtime ownership boundaries are WebSockets and use
-        // this same proxy with ws:true.
-        configure: (proxy) => {
-          proxy.on("proxyRes", (proxyRes) => {
-            if (proxyRes.headers["content-type"]?.includes("text/event-stream")) {
-              proxyRes.headers["cache-control"] = "no-cache, no-transform";
-            }
-          });
-        },
+
       },
     },
   },

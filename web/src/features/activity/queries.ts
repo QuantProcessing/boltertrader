@@ -1,3 +1,4 @@
+import { selectActivity } from "@/features/trade/ledger-snapshot";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 
 import { trading, type ActivityQuery } from "@/api/endpoints";
@@ -25,10 +26,13 @@ export function useActivity(query: ActivityQuery): UseQueryResult<ActivityEvent[
   const readOnly = useReadOnly();
   return useQuery({
     queryKey: activityKeys.list(query),
-    queryFn: ({ signal }) => trading.activity(query, signal),
+    queryFn: async ({ signal }) => {
+      const startedAt = Date.now();
+      return selectActivity(await trading.activity(query, signal), {...query}, startedAt);
+    },
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
-    refetchInterval: 10_000,
+    refetchInterval: 60_000,
     placeholderData: (previous) => previous,
   });
 }

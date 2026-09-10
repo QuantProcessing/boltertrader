@@ -5,7 +5,9 @@ import type { AccountBalance, AccountPositionSnapshot, Command, Fill, ManualOrde
 import { useReadOnly } from "@/app/mode";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 
-import { applyBalanceOverlays, applyOrderOverlays, applyPositionOverlays } from "./account-realtime-overlay";
+import { applyBalanceOverlays, applyPositionOverlays } from "./account-realtime-overlay";
+
+import { mergeCommands, mergeFills } from "./order-snapshot";
 
 /* ---------------------------------------------------------------------------
  * The order path, and the ledgers it moves.
@@ -30,10 +32,8 @@ export const tradeKeys = {
 };
 
 export function privateFallbackInterval(): number | false {
-  // Reconciliation is deliberately periodic rather than event-triggered.
-  // Private WebSocket events update the visible entities in-place; this REST
-  // read repairs missed/de-duplicated events without coupling stream reconnects
-  // to request bursts.
+  // WebSocket events drive updates. This slow REST read repairs missed facts;
+  // reconnect also refreshes account snapshots because account deltas cannot replay.
   return 60_000;
 }
 
@@ -61,7 +61,7 @@ export function useOrders(): UseQueryResult<Command[]> {
     meta: PRIVATE_QUERY_META,
     refetchInterval: privateFallbackInterval,
     refetchOnWindowFocus: "always",
-    select: applyOrderOverlays,
+    select: mergeCommands,
   });
 }
 
@@ -111,6 +111,7 @@ export function useFills(): UseQueryResult<Fill[]> {
   return useQuery({
     queryKey: tradeKeys.fills(),
     queryFn: ({ signal }) => trading.fills({}, signal),
+    select: mergeFills,
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
     refetchInterval: privateFallbackInterval,
@@ -134,7 +135,11 @@ export function usePlaceOrder() {
         idempotencyKey: freshId(),
         order,
       }),
-    onSuccess: () => invalidateTradeLedgers(queryClient),
+    onSuccess: (command) => {
+      queryClient.setQueryData(tradeKeys.orders(), mergeCommands([command]));
+      // Venue acknowledgement is complete; background repair must not block the ticket.
+      void invalidateTradeLedgers(queryClient);
+    },
   });
 }
 
@@ -153,7 +158,11 @@ export function useCancelOrder() {
         orderId: order.commandId,
         idempotencyKey: freshId(),
       }),
-    onSuccess: () => invalidateTradeLedgers(queryClient),
+    onSuccess: (command) => {
+      queryClient.setQueryData(tradeKeys.orders(), mergeCommands([command]));
+      // Venue acknowledgement is complete; background repair must not block the ticket.
+      void invalidateTradeLedgers(queryClient);
+    },
   });
 }
 

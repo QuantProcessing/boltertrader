@@ -73,7 +73,7 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 			candles = append(candles, toWireCandle(candle))
 		}
 		return markethub.NativeStream{Snapshot: message(key, markethub.MessageSnapshot, time.Now().UTC(), "", map[string]any{"interval": key.Interval, "candles": candles}), Events: events, Errors: failures, Close: stream.Subscription.Close}, nil
-	case exchange.DatasetMark:
+	case exchange.DatasetMark, exchange.DatasetIndex:
 		// The logical mark topic always reads the authoritative FactStore.
 		// Hot single-instrument reference streams are activated separately and
 		// merge their richer fields into that store; opening WatchMarkPrice here
@@ -81,6 +81,9 @@ func (owner Owner) Open(ctx context.Context, key markethub.SubscriptionKey) (mar
 		boardStream, supported, err := owner.BoardMarks.Open(ctx, key)
 		if supported || err != nil {
 			return boardStream, err
+		}
+		if key.Dataset == exchange.DatasetIndex {
+			return markethub.NativeStream{}, fmt.Errorf("%w: index price unavailable", markethub.ErrUnavailable)
 		}
 		markStream, err := owner.Source.WatchMarkPrice(ctx, key.InstrumentID)
 		if err != nil {

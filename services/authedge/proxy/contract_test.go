@@ -30,7 +30,7 @@ func TestTableMatchesWhatTradingServes(t *testing.T) {
 	sort.Strings(want)
 
 	var got []string
-	for _, route := range Routes() {
+	for _, route := range upstreamRoutesForTest() {
 		if route.Upstream != Trading {
 			continue
 		}
@@ -59,7 +59,7 @@ func TestTableMatchesWhatTheGatewayServes(t *testing.T) {
 	sort.Strings(want)
 
 	var got []string
-	for _, route := range Routes() {
+	for _, route := range upstreamRoutesForTest() {
 		if route.Upstream != Gateway {
 			continue
 		}
@@ -75,7 +75,7 @@ func TestTableMatchesWhatTheGatewayServes(t *testing.T) {
 // and no account lifecycle at all; forwarding there would be a silent downgrade.
 func TestGatewayRoutesStayOnTheInternalPlane(t *testing.T) {
 	t.Parallel()
-	for _, route := range Routes() {
+	for _, route := range upstreamRoutesForTest() {
 		if route.Upstream != Gateway {
 			continue
 		}
@@ -118,7 +118,7 @@ func TestForwardedRoutesDoNotShadowOwnedRoutes(t *testing.T) {
 // session, and keep the auth edge from widening the carve-out on its own.
 func TestPublicRoutesAreDeclaredPublicData(t *testing.T) {
 	t.Parallel()
-	allowed := make(map[string]struct{})
+	allowed := map[string]struct{}{"GET /api/v1/realtime/ws": {}}
 	for _, pattern := range tradinghttp.PublicDataRoutes() {
 		allowed[pattern] = struct{}{}
 	}
@@ -159,8 +159,7 @@ func TestRealtimeWebSocketsFollowDataOwnership(t *testing.T) {
 		upstream UpstreamName
 		public   bool
 	}{
-		"GET /api/v1/market/realtime/ws":  {Gateway, true},
-		"GET /api/v1/account/realtime/ws": {Gateway, false},
+		"GET /api/v1/realtime/ws": {Realtime, true},
 	}
 	found := make(map[string]bool)
 	for _, route := range Routes() {
@@ -190,7 +189,7 @@ func TestPublicRoutesAreExactlyTheExpectedReads(t *testing.T) {
 		"GET /api/v1/funding-board",
 		"GET /api/v1/funding-history",
 		"GET /api/v1/market-data",
-		"GET /api/v1/market/realtime/ws",
+		"GET /api/v1/realtime/ws",
 		"GET /api/v1/system/readiness",
 		"GET /api/v1/system/status",
 		"GET /api/v1/venues/connectivity",
@@ -236,4 +235,17 @@ func routesMissingFrom(from, minus []string) []string {
 		}
 	}
 	return out
+}
+
+func upstreamRoutesForTest() []Route {
+	var result []Route
+	for _, route := range Routes() {
+		if route.Upstream != Realtime {
+			result = append(result, route)
+		}
+	}
+	for _, route := range realtimeUpstreams {
+		result = append(result, route)
+	}
+	return result
 }

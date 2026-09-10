@@ -158,6 +158,7 @@ interface Book {
   bids: Level[];
   asks: Level[];
   markPrice?: string;
+  indexPrice?: string;
   fundingRate?: string;
   openInterest?: string;
 }
@@ -192,6 +193,7 @@ function factOf(instrument: Instrument, book: Book, observedAt: string): MarketF
     bids,
     asks,
     ...(book.markPrice !== undefined ? { markPrice: book.markPrice } : {}),
+    ...(book.indexPrice !== undefined ? { indexPrice: book.indexPrice } : {}),
     ...(book.fundingRate !== undefined ? { fundingRate: book.fundingRate } : {}),
     ...(book.openInterest !== undefined ? { openInterest: book.openInterest } : {}),
     observedAt,
@@ -227,7 +229,7 @@ async function binanceBook(instrument: Instrument): Promise<Book> {
   // waterfall would make the book older than the mark it is shown beside.
   const [depth, premium, openInterest] = await Promise.all([
     getJSON<Book>(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=${DEPTH}`),
-    getJSON<{ markPrice: string; lastFundingRate: string }>(
+    getJSON<{ markPrice: string; indexPrice: string; lastFundingRate: string }>(
       `https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`,
     ),
     getJSON<{ openInterest: string }>(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`),
@@ -235,6 +237,7 @@ async function binanceBook(instrument: Instrument): Promise<Book> {
   return {
     ...depth,
     markPrice: premium.markPrice,
+    indexPrice: premium.indexPrice,
     fundingRate: premium.lastFundingRate,
     openInterest: openInterest.openInterest,
   };
@@ -247,7 +250,7 @@ async function bybitBook(instrument: Instrument): Promise<Book> {
     getJSON<{ result: { b: Level[]; a: Level[] } }>(
       `https://api.bybit.com/v5/market/orderbook?category=${category}&symbol=${symbol}&limit=${DEPTH}`,
     ),
-    getJSON<{ result: { list: { markPrice?: string; fundingRate?: string; openInterest?: string }[] } }>(
+    getJSON<{ result: { list: { markPrice?: string; indexPrice?: string; fundingRate?: string; openInterest?: string }[] } }>(
       `https://api.bybit.com/v5/market/tickers?category=${category}&symbol=${symbol}`,
     ),
   ]);
@@ -258,6 +261,7 @@ async function bybitBook(instrument: Instrument): Promise<Book> {
     ...(instrument.product === "perp" && ticker
       ? {
           markPrice: ticker.markPrice,
+          indexPrice: ticker.indexPrice,
           fundingRate: ticker.fundingRate,
           openInterest: ticker.openInterest,
         }

@@ -1,3 +1,5 @@
+import { useT } from "@/lib/i18n";
+import { useReferencePrices } from "@/features/market/reference-prices";
 import { useEffect, useMemo, useState } from "react";
 
 import type { CandleInterval, Instrument } from "@/api/types";
@@ -5,7 +7,6 @@ import { useReadOnly } from "@/app/mode";
 import { Blotter, ReadOnlyBlotter } from "@/features/trade/blotter";
 import { OrderTicket } from "@/features/trade/order-ticket";
 import { useAccountPositions } from "@/features/trade/queries";
-import { useTradeRealtime } from "@/features/trade/realtime";
 import { InstrumentStrip } from "@/features/market/instrument-strip";
 import { OrderBook } from "@/features/market/order-book";
 import { PriceChart } from "@/features/market/price-chart";
@@ -38,6 +39,7 @@ const DEFAULT_INTERVAL: CandleInterval = "15m";
 const CHART_BARS = 300;
 
 export function TradePage() {
+  const t = useT();
   const readOnly = useReadOnly();
   const instruments = useInstruments();
   const accounts = useAccounts();
@@ -48,7 +50,10 @@ export function TradePage() {
   const [limitPrice, setLimitPrice] = useState("");
   const [accountId, setAccountId] = useState("");
 
-  const catalog = useMemo(() => instruments.data?.items ?? [], [instruments.data]);
+  const catalog = useMemo(
+    () => instruments.data?.items ?? [],
+    [instruments.data],
+  );
 
   // Open on a liquid, recognisable public market. Catalog order is grouped by
   // connector rather than by usefulness, so taking its first row made the
@@ -58,22 +63,33 @@ export function TradePage() {
 
   const query = instrument ? marketOf(instrument) : null;
   const fact = useMarketFact(query);
-  const candles = useCandles(query ? { ...query, interval, limit: CHART_BARS } : null);
-  const today = useCandles(query ? { ...query, interval: "1d", limit: 1 } : null);
+  const candles = useCandles(
+    query ? { ...query, interval, limit: CHART_BARS } : null,
+  );
+  const today = useCandles(
+    query ? { ...query, interval: "1d", limit: 1 } : null,
+  );
   const restFact = fact.data?.value;
   const stream = usePublicMarketStreams(
     instrument?.instrumentId,
     interval,
     instrument?.product,
   );
-  const liveMark = stream.mark?.instrumentId === instrument?.instrumentId ? stream.mark : null;
-  const currentRestFact = restFact?.instrumentId === instrument?.instrumentId ? restFact : undefined;
+  const [marketView, setMarketView] = useState<"chart" | "book">("chart");
+  const indices = useReferencePrices(
+    instrument?.product === "perp" ? [instrument.instrumentId] : [],
+  );
+  const liveIndex = instrument ? indices[instrument.instrumentId] : undefined;
+  const liveMark =
+    stream.mark?.instrumentId === instrument?.instrumentId ? stream.mark : null;
+  const currentRestFact =
+    restFact?.instrumentId === instrument?.instrumentId ? restFact : undefined;
 
   // Disabling a private query does not erase a previously cached response.
   // Filter at the write surface as well so signing out cannot retain an account
   // (or a sealed preview) from the authenticated session.
   const eligible = useMemo(
-    () => readOnly ? [] : tradableAccounts(accounts.data ?? [], instrument),
+    () => (readOnly ? [] : tradableAccounts(accounts.data ?? [], instrument)),
     [accounts.data, instrument, readOnly],
   );
   useEffect(() => {
@@ -81,31 +97,45 @@ export function TradePage() {
     setAccountId(eligible[0]?.accountId ?? "");
   }, [accountId, eligible]);
 
-  const accountPositions = useAccountPositions(accountId, instrument?.instrumentId ?? "");
+  const accountPositions = useAccountPositions(
+    accountId,
+    instrument?.instrumentId ?? "",
+  );
   const positionItems = accountPositions.data?.items ?? [];
-  useTradeRealtime(!readOnly && Boolean(accountPositions.data));
   const marketFact = useMemo(() => {
-    if (!stream.book) return currentRestFact;
+    if (!instrument) return undefined;
     return {
       venue: instrument?.venue ?? currentRestFact?.venue ?? "",
-      environment: instrument?.environment ?? currentRestFact?.environment ?? "live",
+      environment:
+        instrument?.environment ?? currentRestFact?.environment ?? "live",
       product: instrument?.product ?? currentRestFact?.product ?? "",
-      instrumentId: instrument?.instrumentId ?? currentRestFact?.instrumentId ?? "",
-      bestBid: stream.book.bids[0]?.price ?? currentRestFact?.bestBid ?? "",
-      bestBidSize: stream.book.bids[0]?.quantity ?? currentRestFact?.bestBidSize ?? "",
-      bestAsk: stream.book.asks[0]?.price ?? currentRestFact?.bestAsk ?? "",
-      bestAskSize: stream.book.asks[0]?.quantity ?? currentRestFact?.bestAskSize ?? "",
-      bids: stream.book.bids,
-      asks: stream.book.asks,
+      instrumentId:
+        instrument?.instrumentId ?? currentRestFact?.instrumentId ?? "",
+      bestBid: stream.book?.bids[0]?.price ?? currentRestFact?.bestBid ?? "",
+      bestBidSize:
+        stream.book?.bids[0]?.quantity ?? currentRestFact?.bestBidSize ?? "",
+      bestAsk: stream.book?.asks[0]?.price ?? currentRestFact?.bestAsk ?? "",
+      bestAskSize:
+        stream.book?.asks[0]?.quantity ?? currentRestFact?.bestAskSize ?? "",
+      bids: stream.book?.bids ?? currentRestFact?.bids ?? [],
+      asks: stream.book?.asks ?? currentRestFact?.asks ?? [],
       markPrice: liveMark?.price ?? currentRestFact?.markPrice,
-      fundingRate: currentRestFact?.fundingRate,
-      openInterest: currentRestFact?.openInterest,
-      fundingObservedAt: currentRestFact?.fundingObservedAt,
+      indexPrice: liveIndex?.price,
+      fundingRate: liveIndex?.fundingRate ?? currentRestFact?.fundingRate,
+      openInterest: liveIndex?.openInterest ?? currentRestFact?.openInterest,
+      fundingObservedAt:
+        liveIndex?.fundingObservedAt ?? currentRestFact?.fundingObservedAt,
       fundingTime: currentRestFact?.fundingTime,
-      nextFundingTime: currentRestFact?.nextFundingTime,
-      observedAt: liveMark?.observedAt ?? stream.book.observedAt,
+      nextFundingTime:
+        liveIndex?.nextFundingTime ?? currentRestFact?.nextFundingTime,
+      observedAt:
+        liveIndex?.observedAt ??
+        liveMark?.observedAt ??
+        stream.book?.observedAt ??
+        currentRestFact?.observedAt ??
+        "",
     };
-  }, [currentRestFact, instrument, liveMark, stream.book]);
+  }, [currentRestFact, instrument, liveMark, liveIndex, stream.book]);
   const midPrice = midpointPrice(
     marketFact?.bestBid,
     marketFact?.bestAsk,
@@ -113,7 +143,7 @@ export function TradePage() {
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="trade-workspace">
       <InstrumentStrip
         instruments={catalog}
         instrument={instrument}
@@ -124,13 +154,37 @@ export function TradePage() {
           setLimitPrice("");
         }}
         fact={marketFact}
-        today={today.data?.value}
-        budget={fact.data?.rateLimit}
+        today={
+          stream.dayCandle
+            ? ({
+                ...today.data?.value,
+                candles: [stream.dayCandle],
+              } as import("@/api/types").CandlePage)
+            : today.data?.value
+        }
         loading={instruments.isPending}
       />
 
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
+      <div className="trade-market-tabs" aria-label={t("workspace.marketView")}>
+        <button
+          type="button"
+          className="rounded-control px-3 py-2 text-meta"
+          aria-pressed={marketView === "chart"}
+          onClick={() => setMarketView("chart")}
+        >
+          {t("workspace.chart")}
+        </button>
+        <button
+          type="button"
+          className="rounded-control px-3 py-2 text-meta"
+          aria-pressed={marketView === "book"}
+          onClick={() => setMarketView("book")}
+        >
+          {t("workspace.book")}
+        </button>
+      </div>
+      <div className="trade-grid" data-market-view={marketView}>
+        <div className="trade-chart">
           <PriceChart
             candles={candles.data?.value.candles}
             liveCandle={stream.candle}
@@ -140,24 +194,9 @@ export function TradePage() {
             interval={interval}
             onIntervalChange={setInterval}
           />
-          <div className="flex h-deck shrink-0 flex-col border-t border-line">
-            {readOnly ? (
-              <ReadOnlyBlotter instrumentId={instrument?.instrumentId ?? null} />
-            ) : (
-              <Blotter
-                instrumentId={instrument?.instrumentId ?? null}
-                positions={positionItems}
-                positionsLoading={accountPositions.isFetching && accountPositions.data === undefined}
-                positionsError={accountPositions.isError}
-                positionAccounts={accountPositions.data?.accounts ?? []}
-                liveMark={liveMark}
-                instrument={instrument}
-              />
-            )}
-          </div>
         </div>
 
-        <div className="flex w-side shrink-0 flex-col border-l border-line">
+        <div className="trade-book">
           <OrderBook
             fact={marketFact}
             midPrice={midPrice}
@@ -169,7 +208,27 @@ export function TradePage() {
           />
         </div>
 
-        <div className="w-ticket shrink-0 overflow-y-auto border-l border-line bg-panel">
+        <div className="trade-blotter">
+          {readOnly ? (
+            <ReadOnlyBlotter />
+          ) : (
+            <Blotter
+              instrumentId={instrument?.instrumentId ?? null}
+              positions={positionItems}
+              positionsLoading={
+                accountPositions.isFetching &&
+                accountPositions.data === undefined
+              }
+              positionsError={accountPositions.isError}
+              positionAccounts={accountPositions.data?.accounts ?? []}
+              liveMark={liveMark}
+              liveIndex={liveIndex}
+              instrument={instrument}
+            />
+          )}
+        </div>
+
+        <div className="trade-ticket">
           <OrderTicket
             instrument={instrument}
             accounts={eligible}
@@ -180,7 +239,9 @@ export function TradePage() {
             onLimitPriceChange={setLimitPrice}
             markPrice={
               liveMark
-                ? liveMark.stale ? undefined : liveMark.price
+                ? liveMark.stale
+                  ? undefined
+                  : liveMark.price
                 : currentRestFact?.markPrice
             }
             bestBid={marketFact?.bestBid}
@@ -196,7 +257,8 @@ export function TradePage() {
 export function preferredInstrument(catalog: Instrument[]): Instrument | null {
   const ready = catalog.filter((candidate) => candidate.ready);
   const isBtc = (candidate: Instrument) =>
-    candidate.baseAsset.toUpperCase() === "BTC" || candidate.symbol.toUpperCase().startsWith("BTC-");
+    candidate.baseAsset.toUpperCase() === "BTC" ||
+    candidate.symbol.toUpperCase().startsWith("BTC-");
   return (
     ready.find(
       (candidate) =>

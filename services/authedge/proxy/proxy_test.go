@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/services/authedge/session"
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"
@@ -469,60 +467,6 @@ func TestPublicRoutesAnswerWithoutASession(t *testing.T) {
 	}
 }
 
-func TestRealtimeWebSocketRelaysGatewayMarketUpgrade(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/v1/market/ws" || r.URL.RawQuery != "" {
-			t.Errorf("gateway websocket request=%s?%s", r.URL.Path, r.URL.RawQuery)
-		}
-		if got := r.Header.Get(authorizationHeader); got != "Bearer "+testToken+"-gateway" {
-			t.Errorf("gateway authorization=%q", got)
-		}
-		connection, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Errorf("accept upstream websocket: %v", err)
-			return
-		}
-		defer connection.CloseNow()
-		if err := wsjson.Write(r.Context(), connection, map[string]string{"eventType": "snapshot"}); err != nil {
-			t.Errorf("write upstream websocket: %v", err)
-		}
-	}))
-	defer upstream.Close()
-
-	sessions := &fakeSessions{err: session.ErrInvalidSession}
-	forwarder, err := New(Options{
-		Trading:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken},
-		Gateway:  Upstream{BaseURL: mustURL(t, upstream.URL), Token: testToken + "-gateway"},
-		Sessions: sessions,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	if _, err := forwarder.Register(mux); err != nil {
-		t.Fatal(err)
-	}
-	edge := httptest.NewServer(mux)
-	defer edge.Close()
-
-	target := "ws" + strings.TrimPrefix(edge.URL, "http") + "/api/v1/market/realtime/ws"
-	connection, response, err := websocket.Dial(context.Background(), target, nil)
-	if response != nil && response.Body != nil {
-		defer response.Body.Close()
-	}
-	if err != nil {
-		t.Fatalf("dial auth edge websocket: %v", err)
-	}
-	defer connection.CloseNow()
-	var event map[string]string
-	if err := wsjson.Read(context.Background(), connection, &event); err != nil {
-		t.Fatalf("read relayed websocket event: %v", err)
-	}
-	if event["eventType"] != "snapshot" {
-		t.Fatalf("relayed event=%v", event)
-	}
-}
-
 // A signed-in reader still asserts their identity on a public route. The
 // carve-out is a floor, not a ceiling: dropping the principal here would make
 // every reader anonymous to the upstream the moment a route went Public, which
@@ -725,7 +669,7 @@ func TestRoutesAreUnique(t *testing.T) {
 			t.Fatalf("duplicate route %q", route.Pattern())
 		}
 		seen[route.Pattern()] = true
-		if route.Upstream != Trading && route.Upstream != Gateway {
+		if route.Upstream != Trading && route.Upstream != Gateway && route.Upstream != Realtime {
 			t.Fatalf("route %q names unknown upstream %q", route.Pattern(), route.Upstream)
 		}
 		if !strings.HasPrefix(route.Path, "/api/v1/") {
@@ -857,7 +801,7 @@ func TestSessionServiceSatisfiesSessions(t *testing.T) {
 
 func TestRetiredProductRoutesNeverReachAnUpstream(t *testing.T) {
 	h := newHarness(t, nil)
-	for _, path := range []string{"/api/v1/products/arbitrage/opportunities", "/api/v1/products/arbitrage/positions", "/api/v1/products/arbitrage/commands", "/api/v1/products/arbitrage/execution-previews", "/api/v1/realtime/ws", "/api/v1/reservations", "/api/v1/reservations/old"} {
+	for _, path := range []string{"/api/v1/products/arbitrage/opportunities", "/api/v1/products/arbitrage/positions", "/api/v1/products/arbitrage/commands", "/api/v1/products/arbitrage/execution-previews", "/api/v1/market/realtime/ws", "/api/v1/account/realtime/ws", "/api/v1/reservations", "/api/v1/reservations/old"} {
 		for _, method := range []string{http.MethodGet, http.MethodPost} {
 			response := h.do(t, method, path, nil, "")
 			response.Body.Close()

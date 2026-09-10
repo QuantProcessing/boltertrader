@@ -28,10 +28,10 @@ const button = cva(
           "border border-danger/50 text-danger hover:border-danger hover:bg-danger hover:text-bg",
       },
       size: {
-        sm: "h-6 px-2 text-meta",
-        md: "h-[30px] px-3 text-base",
+        sm: "h-8 px-2 text-meta",
+        md: "h-9 px-3 text-base",
         lg: "h-row px-4 text-base",
-        icon: "size-[30px] p-0",
+        icon: "size-9 p-0",
       },
     },
     defaultVariants: { variant: "outline", size: "md" },

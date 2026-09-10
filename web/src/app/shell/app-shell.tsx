@@ -4,10 +4,11 @@ import { useEffect } from "react";
 
 import { useReadOnly } from "@/app/mode";
 import { useSession } from "@/app/session";
+import { useTradeRealtime } from "@/features/trade/realtime";
 import { cn } from "@/lib/utils";
 import { BottomStatus } from "./bottom-status";
 import { EntryDialog } from "./entry-dialog";
-import { TopNav } from "./top-nav";
+import { TopNav, WorkspaceToolbar } from "./top-nav";
 
 /* ---------------------------------------------------------------------------
  * The frame every route inside the app renders inside.
@@ -26,6 +27,7 @@ import { TopNav } from "./top-nav";
 export function AppShell() {
   const { status } = useSession();
   const readOnly = useReadOnly();
+  useTradeRealtime(status === "authenticated" && !readOnly);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -68,8 +70,10 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-bg text-text">
+    <div className="workspace-shell bg-bg text-text">
       <TopNav />
+      <div className="workspace-main">
+      <WorkspaceToolbar />
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
           className={cn(
@@ -81,6 +85,7 @@ export function AppShell() {
         </div>
       </main>
       <BottomStatus />
+      </div>
       <EntryDialog />
     </div>
   );

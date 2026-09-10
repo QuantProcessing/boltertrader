@@ -58,7 +58,7 @@ export function Segmented<T extends string>({
           const optionId = `${id}-${option.value}`;
           const selected = option.value === value;
           return (
-            <div key={option.value} className="min-w-0 flex-1">
+            <div key={option.value} className="relative min-w-0 flex-1">
               <input
                 id={optionId}
                 type="radio"

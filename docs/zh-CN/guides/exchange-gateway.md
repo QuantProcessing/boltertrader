@@ -188,10 +188,10 @@ funding-history 排序；position、open-order 与 execution 不会因交易所 
 免凭证的交易所 client 回答。它们仍由内部 bearer token 保护，也不会暴露凭证、
 原生交易所错误等内部细节。
 
-Auth Edge 将市场流公开为 `/api/v1/market/realtime/ws`，将需要会话的账户通知公开为
-`/api/v1/account/realtime/ws`。账户流只负责实时变更通知，启动或重连后仍读取权威 REST
-快照；Trading 可以消费这些数据，但不再充当浏览器行情转发层。浏览器每 20 秒发送一次应用层
-ping，并要求 10 秒内收到 pong，因此浏览器到 Gateway 的半开连接不会长期显示为在线。交易所
+Auth Edge 将 Gateway 行情/账户 topic 与 Trading 订单投影复用到浏览器的
+`/api/v1/realtime/ws`。私有 topic 要求登录。Gateway 保留内部市场/账户流，启动或重连时
+REST 快照修复私有状态；Trading 消费订单/成交唤醒，不转发浏览器行情。浏览器每 20 秒发送一次应用层
+ping，并要求 10 秒内收到 pong，因此浏览器到 Edge 的半开连接不会长期显示为在线。交易所
 原生 client 独立执行 read-idle deadline；heartbeat 或读取失败会关闭原生 socket，并进入 owner
 有上限的指数退避重连。
 

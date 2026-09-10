@@ -33,7 +33,7 @@ function ReadOnlySettings() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-bar shrink-0 items-center border-b border-line px-3">
+      <header className="workspace-page-header flex h-bar shrink-0 items-center border-b border-line px-3">
         <h1 className="text-title font-medium text-text">{t("settings.accounts")}</h1>
       </header>
       <EmptyState
@@ -71,7 +71,7 @@ function SettingsWorkspace() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-bar shrink-0 items-center gap-3 border-b border-line px-3">
+      <header className="workspace-page-header flex h-bar shrink-0 items-center gap-3 border-b border-line px-3">
         <h1 className="text-title font-medium text-text">{t("settings.accounts")}</h1>
         <Tag>{list.length}</Tag>
         <Button

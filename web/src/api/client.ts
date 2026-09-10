@@ -44,6 +44,8 @@ export interface ResponseMeta {
  * this error.
  */
 let sessionEpoch = 0;
+const epochListeners = new Set<() => void>();
+export function watchSessionEpoch(listener: () => void): () => void { epochListeners.add(listener); return () => { epochListeners.delete(listener); }; }
 
 export function currentSessionEpoch(): number {
   return sessionEpoch;
@@ -52,6 +54,7 @@ export function currentSessionEpoch(): number {
 /** Invalidates every in-flight request. Call on login, logout and expiry. */
 export function advanceSessionEpoch(): void {
   sessionEpoch += 1;
+  for (const listener of epochListeners) listener();
 }
 
 /* --- CSRF ---------------------------------------------------------------- */

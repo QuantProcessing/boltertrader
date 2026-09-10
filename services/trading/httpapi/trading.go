@@ -37,6 +37,7 @@ func RegisterTradingRoutes(mux *http.ServeMux, options TradingOptions) error {
 		return fmt.Errorf("complete trading options are required")
 	}
 	handler := &tradingHandler{options: options}
+	mux.HandleFunc("GET /api/v1/trading/realtime/ws", handler.ordersStream)
 	mux.HandleFunc("GET /api/v1/commands/{commandId}", handler.getCommand)
 	mux.HandleFunc("GET /api/v1/positions", handler.positions)
 	mux.HandleFunc("GET /api/v1/ledger", handler.ledgerEntries)
@@ -90,18 +91,7 @@ func (handler *tradingHandler) ledgerEntries(w http.ResponseWriter, r *http.Requ
 		tradingError(w, http.StatusServiceUnavailable, "ACCOUNTING_UNAVAILABLE")
 		return
 	}
-	statuses := map[[4]string]string{}
-	for _, position := range positions {
-		statuses[[4]string{position.ProductID, position.LineageID, position.AccountID, position.InstrumentID}] = position.AccountingStatus
-	}
-	type entryResource struct {
-		ledger.Entry
-		AccountingStatus string `json:"accountingStatus,omitempty"`
-	}
-	resources := make([]entryResource, 0, len(items))
-	for _, entry := range items {
-		resources = append(resources, entryResource{Entry: entry, AccountingStatus: statuses[[4]string{entry.ProductID, entry.LineageID, entry.AccountID, entry.InstrumentID}]})
-	}
+	resources := projectLedgerEntries(items, positions)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": resources}})
 }
 
@@ -212,4 +202,21 @@ func tradingFailure(w http.ResponseWriter, r *http.Request, operation string, er
 		slog.Error("trading command failed", "operation", operation, "method", r.Method, "path", r.URL.Path, "code", code)
 	}
 	tradingError(w, statusForTradingError(err), code)
+}
+
+type ledgerEntryResource struct {
+	ledger.Entry
+	AccountingStatus string `json:"accountingStatus,omitempty"`
+}
+
+func projectLedgerEntries(items []ledger.Entry, positions []portfolio.Position) []ledgerEntryResource {
+	statuses := map[[4]string]string{}
+	for _, position := range positions {
+		statuses[[4]string{position.ProductID, position.LineageID, position.AccountID, position.InstrumentID}] = position.AccountingStatus
+	}
+	resources := make([]ledgerEntryResource, 0, len(items))
+	for _, entry := range items {
+		resources = append(resources, ledgerEntryResource{Entry: entry, AccountingStatus: statuses[[4]string{entry.ProductID, entry.LineageID, entry.AccountID, entry.InstrumentID}]})
+	}
+	return resources
 }

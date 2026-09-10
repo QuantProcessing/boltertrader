@@ -49,7 +49,7 @@ export function FundingPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
+      <header className="workspace-page-header flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
         <h1 className="shrink-0 text-title font-semibold text-text">{t("nav.funding")}</h1>
 
         <Metric label={t("funding.venues")} value={String(venues.length)} />

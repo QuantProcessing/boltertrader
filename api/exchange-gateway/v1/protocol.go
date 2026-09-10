@@ -30,9 +30,11 @@ const (
 	TopicBBO               Topic = "market.bbo"
 	TopicCandles           Topic = "market.candles"
 	TopicMarkPrice         Topic = "market.mark_price"
+	TopicIndexPrice        Topic = "market.index_price"
 	TopicFundingBoard      Topic = "funding.board"
 	TopicVenueConnectivity Topic = "system.venue_connectivity"
 	TopicAccountEvents     Topic = "account.events"
+	TopicTradingOrders     Topic = "trading.orders"
 )
 
 type TopicRequest struct {
@@ -59,7 +61,7 @@ func (request TopicRequest) Validate() error {
 		if strings.TrimSpace(request.InstrumentID) == "" || request.Depth <= 0 || request.Depth > 100 || request.Interval != "" {
 			return fmt.Errorf("order-book topic is invalid")
 		}
-	case TopicBBO, TopicMarkPrice:
+	case TopicBBO, TopicMarkPrice, TopicIndexPrice:
 		if strings.TrimSpace(request.InstrumentID) == "" || request.Depth != 0 || request.Interval != "" {
 			return fmt.Errorf("instrument topic is invalid")
 		}
@@ -67,7 +69,7 @@ func (request TopicRequest) Validate() error {
 		if strings.TrimSpace(request.InstrumentID) == "" || strings.TrimSpace(request.Interval) == "" || request.Depth != 0 {
 			return fmt.Errorf("candle topic is invalid")
 		}
-	case TopicFundingBoard, TopicVenueConnectivity, TopicAccountEvents:
+	case TopicFundingBoard, TopicVenueConnectivity, TopicAccountEvents, TopicTradingOrders:
 		if request.InstrumentID != "" || request.Depth != 0 || request.Interval != "" {
 			return fmt.Errorf("global topic is invalid")
 		}

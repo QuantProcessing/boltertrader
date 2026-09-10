@@ -56,7 +56,7 @@ export function ActivityPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-bar shrink-0 items-center gap-4 border-b border-line px-3">
+      <header className="workspace-page-header flex h-bar shrink-0 items-center gap-4 border-b border-line px-3">
         <label className="flex shrink-0 items-center gap-2">
           <span className="th">{t("col.kind")}</span>
           <select
@@ -99,8 +99,8 @@ export function ActivityPage() {
         </p>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <div className="activity-layout">
+        <div className="activity-list min-h-0 min-w-0 flex-1 overflow-y-auto">
           <DataTable
             columns={columns(selectedId, t)}
             data={rows}
@@ -122,7 +122,7 @@ export function ActivityPage() {
           />
         </div>
 
-        <aside className="w-96 shrink-0 overflow-y-auto border-l border-line">
+        <aside className="activity-detail w-80 shrink-0 overflow-y-auto">
           <Detail event={selected} />
         </aside>
       </div>

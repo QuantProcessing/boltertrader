@@ -337,6 +337,7 @@ export interface MarketFact {
   bids: DepthLevel[];
   asks: DepthLevel[];
   markPrice?: string;
+  indexPrice?: string;
   fundingRate?: string;
   openInterest?: string;
   sourceSequence?: string;
@@ -605,6 +606,8 @@ export type PositionSlot = "net" | "long" | "short";
 
 /** Venue-authoritative position for one real account route. */
 export interface AccountPosition {
+  indexPrice?: string;
+  indexPriceStale?: boolean;
   accountId: string;
   routeId?: string;
   instrumentId: string;

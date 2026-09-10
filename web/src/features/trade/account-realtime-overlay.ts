@@ -1,4 +1,5 @@
-import type { AccountBalance, AccountPosition, AccountPositionSnapshot, Command, CommandState } from "@/api/types";
+import { watchSessionEpoch } from "@/api/client";
+import type { AccountBalance, AccountPosition, AccountPositionSnapshot } from "@/api/types";
 
 interface AccountWireEvent {
   eventId: string;
@@ -35,12 +36,6 @@ interface PositionPayloadWire {
   position?: PositionWire;
 }
 
-interface OrderPayloadWire {
-  command_id?: unknown;
-  account_id?: unknown;
-  state?: unknown;
-}
-
 interface BalanceWire {
   asset?: unknown;
   available?: unknown;
@@ -60,11 +55,6 @@ interface PositionOverlay {
   payload: PositionPayloadWire;
 }
 
-interface OrderOverlay {
-  event: AccountWireEvent;
-  payload: OrderPayloadWire;
-}
-
 interface BalanceOverlay {
   event: AccountWireEvent;
   payload: BalancePayloadWire;
@@ -78,15 +68,15 @@ export interface PositionOverlayFilter {
 }
 
 const positionOverlays = new Map<string, PositionOverlay>();
-const orderOverlays = new Map<string, OrderOverlay>();
 const balanceOverlays = new Map<string, BalanceOverlay>();
+watchSessionEpoch(() => { positionOverlays.clear(); balanceOverlays.clear(); });
 
 /**
  * Accept one Gateway account notification into the browser read model.
  * Identity plus the venue/entity timestamp decides precedence; socket arrival
  * order and a locally generated sequence deliberately do not.
  */
-export function recordAccountRealtimeEvent(value: unknown): "position" | "order" | "balance" | "other" {
+export function recordAccountRealtimeEvent(value: unknown): "position" | "balance" | "other" {
   const event = parseAccountEvent(value);
   if (!event) return "other";
   if (event.kind === "account.position") {
@@ -96,14 +86,6 @@ export function recordAccountRealtimeEvent(value: unknown): "position" | "order"
     const current = positionOverlays.get(key);
     if (!current || newer(event, current.event)) positionOverlays.set(key, { event, payload });
     return "position";
-  }
-  if (event.kind === "account.order") {
-    const payload = parseOrderPayload(event.payload);
-    if (!payload) return "other";
-    const key = String(payload.command_id);
-    const current = orderOverlays.get(key);
-    if (!current || newer(event, current.event)) orderOverlays.set(key, { event, payload });
-    return "order";
   }
   if (event.kind === "account.balance") {
     const payload = parseBalancePayload(event.payload);
@@ -121,12 +103,12 @@ export function applyPositionOverlays(snapshot: AccountPositionSnapshot, filter:
   const verifiedAt = epoch(snapshot.verifiedAt);
   let items = [...snapshot.items];
   for (const [key, overlay] of positionOverlays) {
+    const account = snapshot.accounts.find((candidate) => candidate.accountId === overlay.event.accountId);
+    if (!account || !matchesFilter(account.venue, overlay, filter)) continue;
     if (verifiedAt >= epoch(overlay.event.observedAt)) {
       positionOverlays.delete(key);
       continue;
     }
-    const account = snapshot.accounts.find((candidate) => candidate.accountId === overlay.event.accountId);
-    if (!account || !matchesFilter(account.venue, overlay, filter)) continue;
     const index = items.findIndex((item) => accountPositionKey(item) === key);
     const current = index >= 0 ? items[index] : undefined;
     if (current && !newerThanPosition(overlay.event, current)) continue;
@@ -156,24 +138,6 @@ function matchesFilter(venue: string, overlay: PositionOverlay, filter: Position
   if (filter.venue && filter.venue !== venue) return false;
   if (filter.product && filter.product !== instrumentId.split(":")[2]) return false;
   return true;
-}
-
-/** Apply newer order WS facts over one 60-second REST result. */
-export function applyOrderOverlays(commands: Command[]): Command[] {
-  let changed = false;
-  const next = commands.map((command) => {
-    const overlay = orderOverlays.get(command.commandId);
-    if (!overlay) return command;
-    if (epoch(command.updatedAt) >= epoch(overlay.event.observedAt)) {
-      orderOverlays.delete(command.commandId);
-      return command;
-    }
-    const state = commandState(overlay.payload.state);
-    if (!state) return command;
-    changed = true;
-    return { ...command, state, updatedAt: overlay.event.observedAt };
-  });
-  return changed ? next : commands;
 }
 
 /** Apply mutable balance entities by stable account/product/settlement/asset key. */
@@ -226,11 +190,6 @@ function parsePositionPayload(value: unknown): PositionPayloadWire | null {
   if (!stringValue(payload.route_id) || !stringValue(payload.instrument_id)) return null;
   if (payload.operation !== "upsert" && payload.operation !== "remove") return null;
   return payload;
-}
-
-function parseOrderPayload(value: unknown): OrderPayloadWire | null {
-  if (!isObject(value) || !stringValue(value.command_id) || !stringValue(value.state)) return null;
-  return value as OrderPayloadWire;
 }
 
 function parseBalancePayload(value: unknown): BalancePayloadWire | null {
@@ -330,26 +289,6 @@ function newerThanPosition(event: AccountWireEvent, current: AccountPosition): b
   const eventAt = epoch(event.observedAt);
   if (eventAt !== currentAt) return eventAt > currentAt;
   return event.resourceVersion >= (current.resourceVersion ?? 0);
-}
-
-function commandState(value: unknown): CommandState | null {
-  switch (value) {
-    case "prepared":
-    case "accepted":
-      return "accepted";
-    case "dispatching":
-    case "open":
-    case "partially_filled":
-      return "submitted";
-    case "uncertain":
-    case "filled":
-    case "canceled":
-      return value;
-    case "rejected":
-      return "failed";
-    default:
-      return null;
-  }
 }
 
 function positionSlot(value: unknown): "net" | "long" | "short" {

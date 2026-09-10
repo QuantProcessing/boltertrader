@@ -113,11 +113,10 @@ Instrument picker、行情、K 线、资金费历史、手工下单、持仓、�
 
 ## 实时更新
 
-上面两者都不由界面轮询。Gateway 的 `/api/v1/market/realtime/ws` 承载公共市场 topic，
-`/api/v1/account/realtime/ws` 承载私有变更通知。最新值 topic 首帧为 snapshot；订单簿同样只走 WS，以 WebSocket 快照开始，随后接收
-原生 `delta` 或自包含 `full`。gap 时发送 `resync_required`，原生流重开后给出新快照。
-账户事件不做 cursor replay、generation 或 resync 状态；重连期间保留按时间戳合并的行，
-固定 60 秒 REST reconciliation 会修复漏掉的变化。
+公共行情、私有账户和 Trading 订单投影复用浏览器的 `/api/v1/realtime/ws`。底层行情与账户流仍由
+Gateway 拥有。最新值 topic 首帧为快照；订单簿使用原生增量/full，gap 后重新快照。指数价与标记价
+保留各自来源时间和新鲜度，指数订阅同时携带同一衍生品事实中可用的资费、持仓量等信息。
+账户事件不回放历史：重连时重读账户快照，并保留 60 秒 REST 修复兜底。见 [Web 应用](web-app.md)。
 
 ## 什么在哪里可用
 

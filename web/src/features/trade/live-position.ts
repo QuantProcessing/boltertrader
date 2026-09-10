@@ -12,36 +12,25 @@ export interface PositionValue {
   stale?: boolean;
 }
 
-/** Prefer the selected venue's streaming mark, but never treat zero as a price. */
-export function positionMarkPrice(position: AccountPosition, liveMarkPrice?: string, liveMarkStale = false): PositionValue {
-  if (positiveDecimal(liveMarkPrice)) {
-    return liveMarkStale
-      ? { value: liveMarkPrice!, estimated: true, stale: true }
-      : { value: liveMarkPrice!, estimated: true };
-  }
-  return { value: position.markPrice, estimated: false };
-}
-
 /**
- * Reprices a normalized linear position from the public mark stream.
+ * Reprices a normalized linear position from the public index stream.
  *
  * Venue adapters normalize contract quantities into canonical base quantity
  * before this reaches the browser. Coin-settled/inverse rows fail closed and
  * retain the venue P&L because their reciprocal formula is different.
  */
-export function positionUnrealizedPnl(position: AccountPosition, liveMarkPrice?: string, liveMarkStale = false): PositionValue {
-  if (liveMarkStale && positiveDecimal(liveMarkPrice)) return { value: "", estimated: true, stale: true };
-  const mark = parseFixed(liveMarkPrice);
+export function positionUnrealizedPnl(position: AccountPosition, liveIndexPrice?: string, liveIndexStale = false): PositionValue {
+  const index = parseFixed(liveIndexPrice);
   const entry = parseFixed(position.entryPrice);
   const quantity = parseFixed(position.quantity);
-  if (!mark || mark.units <= 0n || !entry || entry.units <= 0n || !quantity || quantity.units === 0n || !linearPosition(position)) {
+  if (!index || index.units <= 0n || !entry || entry.units <= 0n || !quantity || quantity.units === 0n || !linearPosition(position)) {
     return { value: position.unrealizedPnl, estimated: false };
   }
 
-  const delta = subtract(mark, entry);
+  const delta = subtract(index, entry);
   const direction = positionDirection(position, quantity);
   const pnl = multiply({ units: abs(quantity.units) * direction, scale: quantity.scale }, delta);
-  return { value: fixedString(pnl), estimated: true };
+  return { value: fixedString(pnl), estimated: true, ...(liveIndexStale ? { stale: true } : {}) };
 }
 
 /** Zero is the venue's unavailable sentinel, not a real liquidation level. */
@@ -54,7 +43,7 @@ function linearPosition(position: AccountPosition): boolean {
   const symbol = position.symbol || instrumentSymbol(position.instrumentId);
   const [, quote] = symbol.toUpperCase().split(/[-_/]/);
   const settlement = position.settlementAsset?.toUpperCase();
-  return !settlement || !quote || settlement === quote;
+  return Boolean(settlement && quote && settlement === quote);
 }
 
 function positionDirection(position: AccountPosition, quantity: FixedDecimal): bigint {
@@ -106,4 +95,10 @@ function fixedString(value: FixedDecimal): string {
 
 function abs(value: bigint): bigint {
   return value < 0n ? -value : value;
+}
+
+export function addDecimalValues(values: string[]): string {
+  let total: FixedDecimal = { units: 0n, scale: 0 };
+  for (const value of values) { const parsed = parseFixed(value); if (!parsed) continue; const scale = Math.max(total.scale, parsed.scale); total = { units: scaledUnits(total, scale) + scaledUnits(parsed, scale), scale }; }
+  return fixedString(total);
 }

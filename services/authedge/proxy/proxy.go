@@ -170,10 +170,14 @@ func (proxy *Proxy) Register(mux *http.ServeMux) ([]string, error) {
 	}
 	registered := make([]string, 0, len(routes))
 	for _, route := range routes {
-		if _, ok := proxy.upstreams[route.Upstream]; !ok {
+		if _, ok := proxy.upstreams[route.Upstream]; !ok && route.Upstream != Realtime {
 			return nil, httpx.ConfigErr(fmt.Sprintf("route %s names unknown upstream %s", route.Pattern(), route.Upstream))
 		}
-		mux.Handle(route.Pattern(), proxy.handler(route))
+		if route.Path == "/api/v1/realtime/ws" {
+			mux.HandleFunc(route.Pattern(), proxy.realtime)
+		} else {
+			mux.Handle(route.Pattern(), proxy.handler(route))
+		}
 		registered = append(registered, route.Pattern())
 	}
 	return registered, nil

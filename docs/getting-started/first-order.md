@@ -69,8 +69,8 @@ venue snapshot and require no historical order migration.
 
 **Trade** shows, for the selected instrument: the ticker strip, a candlestick
 chart, the order book, the order ticket, and the blotter. Venue data arrives
-directly from Gateway at `/api/v1/market/realtime/ws`; account notifications use
-the separate authenticated Gateway socket.
+through the shared `/api/v1/realtime/ws` connection; private account and order
+subscriptions use the same connection after login.
 
 Pick a supported instrument on the account's venue.
 

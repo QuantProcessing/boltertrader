@@ -3,7 +3,7 @@ import { Command } from "cmdk";
 import { Check, ChevronDown, Coins } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import type { CandlePage, Instrument, MarketFact, RateLimitStatus } from "@/api/types";
+import type { CandlePage, Instrument, MarketFact } from "@/api/types";
 import { formatDecimal } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import { instrumentDisplaySymbol } from "@/lib/instrument";
@@ -43,7 +43,6 @@ export function InstrumentStrip({
   onSelect,
   fact,
   today,
-  budget,
   loading,
 }: {
   instruments: Instrument[];
@@ -52,12 +51,10 @@ export function InstrumentStrip({
   fact: MarketFact | undefined;
   /** A `1d` page of exactly one bar: the session's open, high, low and volume. */
   today: CandlePage | undefined;
-  /** The venue's remaining allowance for this account, from the last read. */
-  budget: RateLimitStatus | undefined;
   loading: boolean;
 }) {
   const bar = today?.candles.at(-1);
-  const last = bar?.close ?? fact?.markPrice ?? fact?.bestBid;
+  const last = bar?.close;
   const change = bar ? percentChange(bar.open, bar.close) : null;
   const { price } = precisionOf(instrument);
   const tone = change === null ? undefined : change >= 0 ? "up" : "down";
@@ -65,7 +62,7 @@ export function InstrumentStrip({
   const t = useT();
 
   return (
-    <div className="flex h-bar shrink-0 items-stretch border-b border-line bg-panel">
+    <div className="instrument-strip shrink-0">
       <div className="flex shrink-0 items-center pl-3 pr-2">
         <InstrumentPicker instruments={instruments} instrument={instrument} onSelect={onSelect} loading={loading} />
       </div>
@@ -79,6 +76,7 @@ export function InstrumentStrip({
           <Readout label={t("strip.last")} value={last} decimals={price} unit={instrument?.quoteAsset} tone={tone} strong />
         ) : null}
         {fact?.markPrice ? <Readout label={t("strip.mark")} value={fact.markPrice} decimals={price} /> : null}
+        {fact?.indexPrice ? <Readout label={t("col.index")} value={fact.indexPrice} decimals={price} /> : null}
         {change === null ? null : (
           <Readout
             label={t("strip.today")}
@@ -124,41 +122,17 @@ export function InstrumentStrip({
             displayValue={fundingCountdown(fact.nextFundingTime)}
           />
         ) : null}
-        {bar?.open ? <Readout label={t("strip.open")} value={bar.open} decimals={price} /> : null}
-        {bar?.high ? <Readout label={t("strip.high")} value={bar.high} decimals={price} /> : null}
-        {bar?.low ? <Readout label={t("strip.low")} value={bar.low} decimals={price} /> : null}
+
+
+
       </Cluster>
 
-      {/* The budget being spent belongs to the venue, not to us. Showing what is
-          left is the only warning an operator gets before a poll starts coming
-          back rate-limited. */}
-      {budget ? (
-        <div className="ml-auto flex shrink-0 items-center border-l border-line px-3 text-right">
-          <div>
-            <div className="th">{t("strip.budget")}</div>
-            <div className="text-base text-muted" data-numeric="">
-              {budget.remaining}
-              <span className="text-dim">/{budget.limit}</span>
-            </div>
-          </div>
-        </div>
-      ) : null}
+
     </div>
   );
 }
 
-/**
- * A run of readouts sharing one seam.
- *
- * Scrolling is per cluster rather than across the whole bar, so the instrument
- * picker and the venue budget stay pinned at the two ends where they are looked
- * for. `min-w-0` is what lets a flex child actually shrink instead of pushing
- * the budget off the right edge — which is why `fixed` has to opt out of it: a
- * shrinkable price cluster gives up width at the same rate as the statistics
- * beside it, and at 520px that scrolled Last and Today out of view while Open
- * and High kept theirs. The two numbers the instrument was chosen for are the
- * last thing on this bar that should yield.
- */
+/** Related readouts share a scrollable group on narrow screens. */
 function Cluster({ children, fixed = false }: { children: React.ReactNode; fixed?: boolean }) {
   return (
     <div

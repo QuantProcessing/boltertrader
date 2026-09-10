@@ -126,8 +126,7 @@ export const paths = {
   catalogInstruments: "/api/v1/catalog/instruments",
   marketData: "/api/v1/market-data",
   candles: "/api/v1/candles",
-  marketRealtimeSocket: "/api/v1/market/realtime/ws",
-  accountRealtimeSocket: "/api/v1/account/realtime/ws",
+  realtimeSocket: "/api/v1/realtime/ws",
   fundingBoard: "/api/v1/funding-board",
   fundingHistory: "/api/v1/funding-history",
 

@@ -189,9 +189,11 @@ type Store interface {
 }
 
 type Service struct {
-	store Store
-	now   func() time.Time
-	live  atomic.Bool
+	store     Store
+	now       func() time.Time
+	live      atomic.Bool
+	changesMu sync.Mutex
+	changes   map[string]map[chan struct{}]struct{}
 }
 
 func NewService(store Store, now func() time.Time) *Service {
@@ -249,7 +251,11 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Comm
 		CommandKind: request.CommandKind, State: StateAccepted, Payload: canonical, PayloadHash: hash,
 		Blockers: []Blocker{}, CreatedAt: now, UpdatedAt: now,
 	}
-	return service.store.Create(ctx, command)
+	created, changed, err := service.store.Create(ctx, command)
+	if err == nil && changed {
+		service.NotifyChange(created.PrincipalID)
+	}
+	return created, changed, err
 }
 
 func newCommandID() (string, error) {
@@ -264,9 +270,17 @@ func (service *Service) Transition(ctx context.Context, request TransitionReques
 	now := service.now().UTC()
 	if request.State == StateSubmitted && request.Reason == "" && request.NextAttemptAt.IsZero() {
 		request.Reason = ReconciliationAwaitingTerminal
-		request.NextAttemptAt = now.Add(5 * time.Second)
+		delay := 500 * time.Millisecond
+		if current, err := service.store.Get(ctx, request.CommandID); err == nil && current.State == StateSubmitted {
+			delay = 5 * time.Second
+		}
+		request.NextAttemptAt = now.Add(delay)
 	}
-	return service.store.Transition(ctx, request, now)
+	updated, err := service.store.Transition(ctx, request, now)
+	if err == nil {
+		service.NotifyChange(updated.PrincipalID)
+	}
+	return updated, err
 }
 
 // BeginExecution atomically consumes the single permission to send this

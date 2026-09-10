@@ -225,13 +225,13 @@ answers them with credential-free venue clients. They remain authenticated by
 the internal bearer token and never expose credential material or raw venue
 errors.
 
-Auth Edge exposes `/internal/v1/market/ws` to browsers as the anonymous-capable
-`/api/v1/market/realtime/ws`. Private exchange account notifications are
-exposed separately as `/api/v1/account/realtime/ws`; they are live change
-notifications, while REST snapshots remain authoritative after startup or a
-reconnect. Trading may consume both streams but is no longer a browser relay.
+Auth Edge combines Gateway market/account topics and Trading order projections
+on the browser's `/api/v1/realtime/ws` connection. Private topics require login.
+Gateway keeps its internal market/account streams; REST snapshots repair private
+state at startup or reconnect. Trading consumes account order/fill wakeups but
+does not relay browser market data.
 Browser sockets send an application ping every 20 seconds and require a pong
-within 10 seconds, so a half-open browser-to-Gateway connection cannot remain
+within 10 seconds, so a half-open browser-to-edge connection cannot remain
 visibly online. Native venue clients independently enforce read-idle deadlines;
 their heartbeat or read failure closes the native socket and enters the owner's
 bounded exponential reconnect loop.

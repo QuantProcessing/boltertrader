@@ -1,103 +1,71 @@
-/* ---------------------------------------------------------------------------
- * BolterTrader — design tokens
- *
- * `design.md` at the repo root is the normative document; this file is its
- * implementation. Every value below is quoted there with the arithmetic that
- * produced it. Change one here without changing it there and the two disagree,
- * which is worse than either being wrong.
- *
- * One rule governs the whole file: every token that can carry text clears
- * WCAG 2.2 AA (4.5:1) against `--bt-raised` — the *lightest* surface it can
- * land on, not the darkest. Checking against `--bt-bg` is how a ladder passes
- * on paper and fails on a hovered row. The ratios in the comments are measured,
- * not estimated. Do not soften a value without redoing them.
- *
- * There is one scheme. See §1 of design.md for why the light theme is gone.
- * ------------------------------------------------------------------------- */
-
+/* Quiet Workspace tokens adapted for readable trading data. See design.md. */
 :root {
   color-scheme: dark;
-
-  /* --- Surfaces ------------------------------------------------------------
-   * Four steps of near-black, separated by luminance alone. The faint violet
-   * chroma is shared by all four so they read as one material lit from
-   * different angles rather than four different greys. Semantic colour is
-   * still zero- or low-chroma where it must not tint a P&L column. */
-  --bt-bg: oklch(0.145 0.012 285); /* the page, and nothing else */
-  --bt-panel: oklch(0.185 0.012 285); /* every Panel, the bars */
-  --bt-overlay: oklch(0.207 0.011 285); /* popovers, dialogs, the palette */
-  --bt-raised: oklch(0.232 0.01 286); /* row hover, wells, skeletons */
-
-  /* --- Hairlines and fills -------------------------------------------------
-   * White at low alpha, not opaque grey. One token then reads correctly over
-   * every surface: a seam over `raised` comes out brighter than the same seam
-   * over `bg`, which is what the eye expects from a real edge.
-   *
-   * `line` composites to 1.14:1 over bg. That is below the 3:1 non-text bar on
-   * purpose — a seam is not a UI component under 1.4.11. Where a border is the
-   * only thing identifying a control, use `line-strong` or the focus ring. */
-  --bt-fill: oklch(1 0 0 / 0.05);
-  --bt-fill-strong: oklch(1 0 0 / 0.08);
-  --bt-line: oklch(1 0 0 / 0.07);
-  --bt-line-strong: oklch(1 0 0 / 0.14);
-
-  /* --- Text ladder ---------------------------------------------------------
-   * Descends monotonically, which Lighter's own naming does not. Ratios are
-   * against `raised`. */
-  --bt-text: oklch(0.964 0 0); /* 15.2:1 */
-  --bt-muted: oklch(0.741 0.005 258); /*  7.3:1 — labels, secondary values */
-  --bt-dim: oklch(0.622 0.005 286); /*  4.7:1 — the floor. Nothing softer carries meaning. */
-  --bt-faint: oklch(0.436 0.006 286); /*  2.1:1 — DECORATIVE ONLY. Never text. */
-
-  /* --- Semantic ------------------------------------------------------------
-   * Distinct hues because PRODUCT.md requires provisional, stale, degraded,
-   * uncertain, blocked and manual-intervention to be told apart. Colour is only
-   * ever half the signal — 1.4.1 means every one of these is paired with a
-   * label, a glyph, or a position. */
-  --bt-up: oklch(0.8 0.17 159); /*  9.6:1 */
-  --bt-down: oklch(0.68 0.19 19); /*  5.3:1 */
-
-  --bt-ok: oklch(0.8 0.17 159); /* confirmed, active, ready */
-  --bt-pending: oklch(0.741 0.005 258); /* provisional, submitted — colourless on purpose */
-  --bt-warn: oklch(0.84 0.172 84); /* 10.2:1 — stale, degraded, uncertain */
-  --bt-danger: oklch(0.68 0.195 19); /*  5.3:1 — blocked, failed, rejected */
-  --bt-manual: oklch(0.78 0.09 271.6); /*  8.3:1 — needs a human */
-
-  --bt-accent: oklch(0.78 0.09 271.6); /*  8.3:1 — focus, links, the primary control */
-  --bt-accent-hover: oklch(0.84 0.08 271.6);
-  --bt-accent-fg: oklch(0.23 0.05 271.6); /* dark label on a bright accent fill */
-
-  /* --- Sides ---------------------------------------------------------------
-   * Buy and sell need their own labels because a filled CTA puts text *on* the
-   * colour, which the ladder above cannot supply.
-   *
-   * Both labels are dark, and symmetrically so — the fills are the `up`/`down`
-   * pair, and both are bright enough that only a dark label clears 4.5:1 on
-   * them. White on `--bt-sell` measures 3.16:1 and is the one obvious-looking
-   * choice here that rule #1 forbids. */
-  --bt-buy: oklch(0.8 0.17 159);
-  --bt-buy-fg: oklch(0.235 0.075 160); /* 9.18:1 on a buy fill */
-  --bt-sell: oklch(0.68 0.19 19);
-  --bt-sell-fg: oklch(0.235 0.09 19); /* 5.43:1 on a sell fill */
-
-  /* --- Elevation -----------------------------------------------------------
-   * Panels do not float; only things that genuinely leave the plane get a
-   * shadow. The 0.5px first layer is a hairline ring, not a glow — it is what
-   * keeps a popover's edge legible where it overlaps a panel of nearly the
-   * same luminance. */
-  --bt-shadow-overlay:
-    0 0 0 0.5px oklch(1 0 0 / 0.08), 0 1px 2px oklch(0.145 0.012 285 / 0.35),
-    0 4px 8px oklch(0.145 0.012 285 / 0.45);
-  --bt-shadow-modal:
-    0 0 0 0.5px oklch(1 0 0 / 0.08), 0 1px 2px oklch(0.145 0.012 285 / 0.35),
-    0 4px 8px oklch(0.145 0.012 285 / 0.45), 0 16px 32px oklch(0.145 0.012 285 / 0.55);
+  --bt-bg: #111815;
+  --bt-sidebar: #151d19;
+  --bt-panel: #1b2420;
+  --bt-overlay: #222e27;
+  --bt-raised: #27362d;
+  --bt-fill: #222e27;
+  --bt-fill-strong: #304037;
+  --bt-line: #35473c;
+  --bt-line-strong: #6d8575;
+  --bt-text: #e7efe9;
+  --bt-muted: #b4c4b9;
+  --bt-dim: #a1b5a8;
+  --bt-faint: #6d8575;
+  --bt-up: #79d5b1;
+  --bt-down: #f1a39b;
+  --bt-ok: #79d5b1;
+  --bt-pending: #b4c4b9;
+  --bt-warn: #e8c37f;
+  --bt-danger: #f1a39b;
+  --bt-manual: #b0b5ff;
+  --bt-accent: #858bff;
+  --bt-accent-hover: #989dff;
+  --bt-accent-fg: #10132e;
+  --bt-accent-soft: #2b2f4c;
+  --bt-buy: #79d5b1;
+  --bt-buy-fg: #112b21;
+  --bt-sell: #f1a39b;
+  --bt-sell-fg: #341915;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bt-bg: #f3f6f3;
+  --bt-sidebar: #eaf0ea;
+  --bt-panel: #fafcf9;
+  --bt-overlay: #f7faf6;
+  --bt-raised: #e4ece4;
+  --bt-fill: #eef3ec;
+  --bt-fill-strong: #dce6dc;
+  --bt-line: #d5dfd5;
+  --bt-line-strong: #829486;
+  --bt-text: #26332f;
+  --bt-muted: #4c6154;
+  --bt-dim: #526859;
+  --bt-faint: #829486;
+  --bt-up: #176c50;
+  --bt-down: #a53234;
+  --bt-ok: #176c50;
+  --bt-pending: #526859;
+  --bt-warn: #815a17;
+  --bt-danger: #a53234;
+  --bt-manual: #555cba;
+  --bt-accent: #555cde;
+  --bt-accent-hover: #454bc6;
+  --bt-accent-fg: #ffffff;
+  --bt-accent-soft: #e7e8fc;
+  --bt-buy: #176c50;
+  --bt-buy-fg: #ffffff;
+  --bt-sell: #a53234;
+  --bt-sell-fg: #ffffff;
 }
 
-/* --- Tailwind bindings -----------------------------------------------------
- * `inline` keeps the var() reference in the generated utility rather than
- * resolving it at build time. With one scheme that no longer changes what is
- * rendered, but it keeps the indirection intact so a token can still be
- * overridden inside a subtree — which the chart palette reader depends on. */
+:root {
+  --bt-shadow-overlay: 0 6px 24px #0003;
+  --bt-shadow-modal: 0 24px 64px #0005;
+}
 @theme inline {
   --color-bg: var(--bt-bg);
   --color-panel: var(--bt-panel);
@@ -132,82 +100,48 @@
   --color-danger: var(--bt-danger);
   --color-manual: var(--bt-manual);
 
-  /* Inter for prose, Geist Mono for anything that can change. Tabular figures
-   * are what stop a streaming price from shifting the column. */
-  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans:
+    "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system,
+    sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* Type scale. Five steps, and that is the whole vocabulary — a sixth size is
-   * how density turns into noise.
-   *
-   * Tracking rides on the size rather than on the call site: design.md §6 ties
-   * -0.02em to `title` and above, and a rule that has to be remembered as a
-   * second class next to `text-title` is a rule that gets forgotten at the
-   * eighth heading. Body and below stay at 0 — optical tracking on a 13px UI
-   * face just makes it muddy. `.th` sets its own, positive, in app.css. */
-  --text-micro: 0.6875rem; /* 11px — column headers, uppercase */
+  --text-micro: 0.75rem;
   --text-micro--line-height: 0.875rem;
-  --text-meta: 0.75rem; /* 12px — secondary values, timestamps */
+  --text-meta: 0.75rem;
   --text-meta--line-height: 1rem;
-  --text-base: 0.8125rem; /* 13px — body, table cells, controls */
+  --text-base: 0.875rem;
   --text-base--line-height: 1.125rem;
-  --text-title: 0.9375rem; /* 15px — panel titles */
+  --text-title: 0.9375rem;
   --text-title--line-height: 1.25rem;
   --text-title--letter-spacing: -0.02em;
-  --text-metric: 1.375rem; /* 22px — the numbers people came for */
+  --text-metric: 1.375rem;
   --text-metric--line-height: 1.625rem;
   --text-metric--letter-spacing: -0.02em;
-  --text-metric--font-weight: 700; /* §6 reserves 700 for this size alone */
+  --text-metric--font-weight: 700;
 
-  /* Weights come off the variable axis at the non-integer stops Lighter uses,
-   * so `font-medium` and `font-semibold` mean 485 and 585 here rather than the
-   * 500/600 Tailwind ships. Renaming the utilities instead would have left two
-   * plausible spellings of the same weight in the codebase; redefining what the
-   * two existing ones resolve to leaves one. 400 is body and needs no class. */
-  --font-weight-medium: 485; /* table headers, de-emphasised labels */
-  --font-weight-semibold: 585; /* active nav item, panel title */
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
 
-  /* Radii are semantic, not a t-shirt scale — the name says where it goes, so
-   * there is no argument about whether a badge is "sm" or "md". Single-pixel
-   * steps at the bottom are what make the density read as precision. */
-  --radius-seam: 1px; /* cell highlights, depth bars */
-  --radius-control: 2px; /* buttons, inputs, selects */
-  --radius-pill: 3px; /* badges, tags */
-  --radius-card: 4px; /* inset wells */
-  --radius-modal: 6px; /* dialogs, popovers, the palette */
-  --radius-panel: 8px; /* Panel */
+  --radius-seam: 1px;
+  --radius-control: 8px;
+  --radius-pill: 6px;
+  --radius-card: 10px;
+  --radius-modal: 16px;
+  --radius-panel: 12px;
 
-  /* Tailwind v4's spacing base. 0.22rem rather than the default 0.25rem: every
-   * p-2 and gap-3 in the codebase resolves against this, and the tighter step
-   * is what lets a 34px row hold 13px text with real padding. */
-  --spacing: 0.22rem;
+  --spacing: 0.25rem;
 
-  --spacing-row: 34px; /* the rhythm every table shares */
-  --spacing-nav: 52px; /* primary navigation and workspace identity */
-  --spacing-bar: 44px; /* panel bars, and the minimum touch target on mobile */
-  --spacing-status: 24px; /* persistent connectivity strip at the viewport edge */
+  --spacing-row: 42px;
+  --spacing-nav: 60px;
+  --spacing-bar: 44px;
+  --spacing-status: 28px;
 
-  /* Depth rows are deliberately tighter than `--spacing-row`: the book's job is
-   * to show as many levels at once as the column can hold, and it carries no
-   * controls — only two numbers and a bar. This is the row `format.ts` is
-   * talking about when it explains why the group separator has to be a
-   * *no-break* space. */
   --spacing-depth: 22px;
 
-  /* The terminal's fixed panels, from design.md §9. These are px rather than
-   * steps of the scale above because they are the one set of measurements the
-   * design fixes outright: the shape is two side columns and a lower deck, and
-   * a shape stated in a diagram has to be stated once in the code too. Writing
-   * them as `w-64`/`w-80` is what let the layout drift when `--spacing` moved to
-   * 0.22rem — the classes silently became 225px and 281px, and the book's price
-   * column started wrapping mid-number.
-   *
-   * `side` and `deck` share a value and stay separate anyway: one is a width and
-   * one is a height, and the day the blotter grows the book should not. */
-  --spacing-side: 340px; /* order book, spread list */
-  --spacing-ticket: 340px; /* the ticket, which holds a form rather than a list */
-  --spacing-deck: 190px; /* blotter, ledger */
-  --spacing-content: 1600px; /* centered reading width outside the trade terminal */
+  --spacing-side: 276px;
+  --spacing-ticket: 320px;
+  --spacing-deck: 280px;
+  --spacing-content: 1600px;
 
   --shadow-overlay: var(--bt-shadow-overlay);
   --shadow-modal: var(--bt-shadow-modal);

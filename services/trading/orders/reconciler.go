@@ -50,6 +50,34 @@ func terminalState(state State) bool {
 }
 
 func (runner *Reconciler) Run(ctx context.Context) {
+	wakeups := make(chan string, 64)
+	watchDone := make(chan struct{})
+	if watcher, ok := runner.gateway.(interface {
+		WatchAccountActivity(context.Context, func(string)) error
+	}); ok {
+		go func() {
+			defer close(watchDone)
+			for ctx.Err() == nil {
+				_ = watcher.WatchAccountActivity(ctx, func(account string) {
+					select {
+					case wakeups <- account:
+					default:
+					}
+				})
+				timer := time.NewTimer(time.Second)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+		}()
+	} else {
+		close(watchDone)
+	}
+	defer func() { <-watchDone }()
+
 	ticker := time.NewTicker(runner.interval)
 	defer ticker.Stop()
 	for {
@@ -63,6 +91,10 @@ func (runner *Reconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case account := <-wakeups:
+			if err := runner.commands.ExpediteAccount(ctx, account); err != nil && ctx.Err() == nil {
+				slog.Error("account reconciliation wakeup failed", "cause", err)
+			}
 		}
 	}
 }

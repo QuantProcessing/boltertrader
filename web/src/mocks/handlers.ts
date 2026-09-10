@@ -361,7 +361,7 @@ const trading = [
     const accountId = query.get("accountId");
     const instrumentId = query.get("instrumentId");
     return items(
-      FILLS.filter((fill) => !accountId || fill.accountId === accountId).filter(
+      orders.fills().filter((fill) => !accountId || fill.accountId === accountId).filter(
         (fill) => !instrumentId || fill.instrumentId === instrumentId,
       ),
     );
@@ -484,7 +484,9 @@ const manual = [
       if (!instrument) return notFound("instrument");
       if (!accounts.find(order.accountId)) return notFound("account");
       if (manualBlockers(instrument, order).length > 0) return invalid("order violates venue rules");
+      const quote = order.orderType === "market" ? await fetchMarketFact(instrument) : undefined;
       const placed = orders.place({
+        fillPrice: quote ? order.side === "buy" ? quote.bestAsk : quote.bestBid : undefined,
         order,
         lineageId: body.lineageId,
         idempotencyKey: body.idempotencyKey,

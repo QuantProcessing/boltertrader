@@ -104,7 +104,7 @@ func (handler *InternalHandler) runInternalTopic(ctx context.Context, subscripti
 
 func isSharedMarketTopic(topic realtimewire.Topic) bool {
 	switch topic {
-	case realtimewire.TopicOrderBook, realtimewire.TopicBBO, realtimewire.TopicCandles, realtimewire.TopicMarkPrice:
+	case realtimewire.TopicOrderBook, realtimewire.TopicBBO, realtimewire.TopicCandles, realtimewire.TopicMarkPrice, realtimewire.TopicIndexPrice:
 		return true
 	default:
 		return false

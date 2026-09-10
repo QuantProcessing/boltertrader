@@ -1,3 +1,4 @@
+import { selectLedger } from "@/features/trade/ledger-snapshot";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 
 import { accountData, trading, type LedgerQuery, type PortfolioPositionQuery } from "@/api/endpoints";
@@ -64,15 +65,17 @@ export function usePortfolioPositions(query: PortfolioPositionQuery): UseQueryRe
 /**
  * The ledger, filtered to whatever scope the page is showing.
  *
- * Fifteen seconds because entries are written when something already happened:
- * a fill, a fee, a funding payment. Nothing here is a decision aid, so polling
- * it at the book's rate would only cost requests.
+ * Trading pushes persisted entries with order snapshots. The slow REST read
+ * repairs missed facts and provides the initial projection.
  */
 export function useLedger(query: LedgerQuery): UseQueryResult<LedgerEntry[]> {
   const readOnly = useReadOnly();
   return useQuery({
     queryKey: portfolioKeys.ledger(query),
-    queryFn: ({ signal }) => trading.ledger(query, signal),
+    queryFn: async ({ signal }) => {
+      const startedAt = Date.now();
+      return selectLedger(await trading.ledger(query, signal), {...query}, startedAt);
+    },
     enabled: !readOnly,
     meta: PRIVATE_QUERY_META,
     refetchInterval: privateFallbackInterval,
