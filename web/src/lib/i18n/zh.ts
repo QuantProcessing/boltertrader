@@ -41,19 +41,6 @@ export const zh: Dictionary = {
 
   "common.close": "关闭",
 
-  "entry.title": "进入 Bolter",
-  "entry.subtitle": "风险免责声明",
-  "entry.risk.live": "登录后可通过您配置的真实账户提交真实订单。本产品背后没有测试环境。",
-  "entry.risk.loss": "衍生品与杠杆可能造成超出本金的损失。",
-  "entry.risk.venue": "行情、资费与成交均来自交易所。其故障、限频与拒单的后果由您承担。",
-  "entry.risk.responsibility": "以您的凭证从本工作台发出的每一笔订单，均由您负责。",
-  "entry.acknowledge": "我已阅读并理解上述风险。",
-  "entry.readOnly": "以只读模式继续",
-  "entry.readOnly.detail": "仅公开行情数据，不显示账户、持仓与订单。",
-  "entry.readWrite": "登录并启用实盘交易",
-  "entry.readWrite.detail": "登录后可使用账户，并向真实交易所提交订单。",
-  "entry.footnote": "未登录时为只读；登录后可使用账户与交易功能。",
-
   "mode.readOnly": "只读",
 
   // 品牌名不译。

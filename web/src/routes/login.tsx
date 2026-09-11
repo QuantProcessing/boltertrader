@@ -2,7 +2,6 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 
 import { isApiError } from "@/api/errors";
-import { modeStore } from "@/app/mode";
 import { sessionStore } from "@/app/session";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
@@ -32,7 +31,6 @@ export function LoginPage() {
     setError(null);
     try {
       await sessionStore.login(username, password);
-      modeStore.choose("readWrite");
       await navigate({ href: redirect ?? "/trade", replace: true });
     } catch (cause) {
       // The server's message is shown as written. It says "invalid username or

@@ -106,8 +106,8 @@ const appRoute = createRoute({
     if (snapshot.status === "authenticated") return;
     // A signed-out visitor reaches a read-only route on the strength of the
     // route saying so, and nothing else. They are not sent to `/login` and not
-    // asked to make an entry choice here: the disclosure renders inside the
-    // shell, so it can sit over a live market rather than a blank page.
+    // asked to make an entry choice here: public market routes open directly in
+    // read-only mode.
     if (opensToReadOnly(matches)) return;
     // `location.href` is the full path with search, so signing in returns the
     // operator to the screen they asked for rather than to the default one.

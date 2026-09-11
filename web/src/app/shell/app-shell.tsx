@@ -7,7 +7,6 @@ import { useSession } from "@/app/session";
 import { useTradeRealtime } from "@/features/trade/realtime";
 import { cn } from "@/lib/utils";
 import { BottomStatus } from "./bottom-status";
-import { EntryDialog } from "./entry-dialog";
 import { TopNav, WorkspaceToolbar } from "./top-nav";
 
 /* ---------------------------------------------------------------------------
@@ -20,8 +19,7 @@ import { TopNav, WorkspaceToolbar } from "./top-nav";
  *
  * Two kinds of visitor reach it. An authenticated one gets the product. A
  * signed-out one gets here only on a route that opted into read-only, and gets
- * the market with every private surface either absent or saying why — plus the
- * entry dialog, once, over the top of it.
+ * the market with every private surface either absent or saying why.
  * ------------------------------------------------------------------------- */
 
 export function AppShell() {
@@ -86,7 +84,6 @@ export function AppShell() {
       </main>
       <BottomStatus />
       </div>
-      <EntryDialog />
     </div>
   );
 }

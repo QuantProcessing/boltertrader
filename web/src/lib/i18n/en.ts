@@ -44,19 +44,6 @@ export const en = {
 
   "common.close": "Close",
 
-  "entry.title": "Access Bolter",
-  "entry.subtitle": "Risk disclosure",
-  "entry.risk.live": "Signing in enables real orders on the real accounts you configured. There is no test venue behind this product.",
-  "entry.risk.loss": "Derivatives and leverage can lose more than the amount you put in.",
-  "entry.risk.venue": "Prices, funding and fills come from the venues. Their outages, rate limits and rejections are yours to absorb.",
-  "entry.risk.responsibility": "You are responsible for every order this workspace sends under your credentials.",
-  "entry.acknowledge": "I have read and understood the risks above.",
-  "entry.readOnly": "Continue in read-only mode",
-  "entry.readOnly.detail": "Public market data only. Accounts, positions and orders stay hidden.",
-  "entry.readWrite": "Sign in to trade",
-  "entry.readWrite.detail": "Signing in enables accounts and real-exchange order submission.",
-  "entry.footnote": "Signed out is read-only. Signing in enables the account and trading workspace.",
-
   "mode.readOnly": "READ-ONLY",
 
   // The door. `login.failed` is the only message this screen writes itself: a

@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { describeError } from "@/api/errors";
 import type { Account, Venue } from "@/api/types";
-import { modeStore, useReadOnly } from "@/app/mode";
+import { useReadOnly } from "@/app/mode";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field, Input, inputClass } from "@/components/ui/field";
@@ -46,7 +46,6 @@ function ReadOnlySettings() {
             variant="primary"
             size="sm"
             onClick={() => {
-              modeStore.choose("readWrite");
               void navigate({ to: "/login", search: { redirect: "/settings" } });
             }}
           >

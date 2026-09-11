@@ -17,7 +17,7 @@ import {
   Monitor,
 } from "lucide-react";
 
-import { modeStore, useReadOnly } from "@/app/mode";
+import { useReadOnly } from "@/app/mode";
 import { preferencesStore, usePreferences } from "@/app/preferences";
 import { useSession, sessionStore } from "@/app/session";
 import { Button } from "@/components/ui/button";
@@ -356,5 +356,4 @@ function SettingsPopover() {
  */
 async function signOut(): Promise<void> {
   await sessionStore.logout();
-  modeStore.choose("readOnly");
 }

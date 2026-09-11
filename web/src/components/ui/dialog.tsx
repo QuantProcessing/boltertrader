@@ -52,8 +52,8 @@ export function DialogContent({
         className={cn(
           "fixed top-1/2 left-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2",
           // `max-h` with an internal scroll rather than a panel that grows past
-          // the viewport: a risk disclosure whose buttons are below the fold is
-          // a disclosure nobody reads.
+          // the viewport: a chart, a book and an order ticket that scroll off
+          // the bottom of the window together are worse than any being shorter.
           "flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden",
           "rounded-modal border border-line-strong bg-overlay shadow-modal",
           className,
