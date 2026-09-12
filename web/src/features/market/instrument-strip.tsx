@@ -58,7 +58,6 @@ export function InstrumentStrip({
   const change = bar ? percentChange(bar.open, bar.close) : null;
   const { price } = precisionOf(instrument);
   const tone = change === null ? undefined : change >= 0 ? "up" : "down";
-  const funding = percentageOf(fact?.fundingRate);
   const t = useT();
 
   return (
@@ -106,28 +105,7 @@ export function InstrumentStrip({
             unit={instrument?.baseAsset}
           />
         ) : null}
-        {fact?.fundingRate && funding !== null ? (
-          <Readout
-            label={t("strip.funding")}
-            value={fact.fundingRate}
-            displayValue={`${funding >= 0 ? "+" : ""}${funding.toFixed(4)}`}
-            unit="%"
-            tone={funding >= 0 ? "up" : "down"}
-          />
-        ) : null}
-        {fact?.nextFundingTime ? (
-          <Readout
-            label={t("strip.nextFunding")}
-            value={fact.nextFundingTime}
-            displayValue={fundingCountdown(fact.nextFundingTime)}
-          />
-        ) : null}
-
-
-
       </Cluster>
-
-
     </div>
   );
 }
@@ -215,13 +193,6 @@ function percentChange(from: string, to: string): number | null {
   return ((close - open) / open) * 100;
 }
 
-/** Funding is a fractional wire value; the strip labels it explicitly as %. */
-function percentageOf(value: string | undefined): number | null {
-  if (!value) return null;
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed * 100 : null;
-}
-
 /** Compact display only; the original decimal string never leaves the query. */
 function compactDecimal(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -237,17 +208,6 @@ function compactDecimal(value: string | undefined): string | undefined {
     if (absolute >= threshold) return `${formatDecimal((parsed / threshold).toFixed(2))}${suffix}`;
   }
   return formatDecimal(value, { decimals: absolute >= 10 ? 2 : 4 });
-}
-
-function fundingCountdown(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return undefined;
-  const seconds = Math.max(0, Math.floor((timestamp - Date.now()) / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainder = seconds % 60;
-  return [hours, minutes, remainder].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
 /* --- The selector -------------------------------------------------------- */

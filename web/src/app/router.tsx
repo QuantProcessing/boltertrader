@@ -25,7 +25,6 @@ import { Outlet, createRootRouteWithContext, createRoute, createRouter, redirect
 import type { SessionStore } from "@/app/session";
 import { AppShell } from "@/app/shell/app-shell";
 import { ActivityPage } from "@/routes/activity";
-import { FundingPage } from "@/routes/funding";
 import { LoginPage } from "@/routes/login";
 import { PortfolioPage, validatePortfolioSearch } from "@/routes/portfolio";
 import { SettingsPage } from "@/routes/settings";
@@ -130,9 +129,9 @@ const indexRoute = createRoute({
 });
 
 /**
- * The two routes a signed-out visitor may read.
+ * The public routes a signed-out visitor may read.
  *
- * Both are venue public data end to end — a book, a chart, a funding board —
+ * Trade is venue public data end to end — a book and a chart —
  * and the auth edge's `Public` carve-out is what actually serves them without a
  * session. This flag and that table have to agree: opening a route here whose
  * requests the edge still guards renders a screen of 401s.
@@ -146,13 +145,6 @@ const tradeRoute = createRoute({
   path: "/trade",
   staticData: { readOnly: true, fullBleed: true },
   component: TradePage,
-});
-
-const fundingRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/funding",
-  staticData: { readOnly: true },
-  component: FundingPage,
 });
 
 /**
@@ -183,7 +175,6 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     indexRoute,
     tradeRoute,
-    fundingRoute,
     portfolioRoute,
     activityRoute,
     settingsRoute,

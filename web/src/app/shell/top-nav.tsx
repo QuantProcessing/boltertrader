@@ -4,7 +4,6 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import {
   Activity,
   CandlestickChart,
-  CircleDollarSign,
   Languages,
   LogIn,
   LogOut,
@@ -51,13 +50,12 @@ interface Section {
 
 const SECTIONS: Section[] = [
   { to: "/trade", label: "nav.trade" },
-  { to: "/funding", label: "nav.funding" },
   { to: "/portfolio", label: "nav.portfolio", private: true },
   { to: "/activity", label: "nav.activity", private: true },
   { to: "/settings", label: "nav.settings", private: true },
 ];
 
-const icons = [CandlestickChart, CircleDollarSign, Wallet, Activity, Settings];
+const icons = [CandlestickChart, Wallet, Activity, Settings];
 
 export function TopNav() {
   const t = useT();

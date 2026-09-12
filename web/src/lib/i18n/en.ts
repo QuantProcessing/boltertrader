@@ -58,7 +58,6 @@ export const en = {
   "login.unreachable": "Could not reach the server. Check that it is running.",
 
   "nav.trade": "Trade",
-  "nav.funding": "Funding",
   "nav.portfolio": "Portfolio",
   "nav.activity": "Activity",
   "nav.settings": "Settings",
@@ -125,8 +124,6 @@ export const en = {
   "strip.low": "Low",
   "strip.volume": "Volume",
   "strip.mark": "Mark",
-  "strip.funding": "Funding",
-  "strip.nextFunding": "Next funding",
   "strip.openInterest": "Open interest",
   "strip.budget": "Venue budget",
   "strip.loading": "Loading…",
@@ -337,56 +334,6 @@ export const en = {
   "blotter.empty.fills": "No fills",
   "blotter.empty.fills.detail": "Nothing has executed on {instrument} or anywhere else.",
 
-  // The funding board. Rate *units* are
-  // codes and stay as they are in every language — `24h`, `7d`, `30d`, `APR`,
-  // `%/d` — so only `Period` needs a key here.
-  "funding.unavailable": "The funding board is not available",
-  "funding.unavailable.detail": "The Gateway has not published a board yet. It retries on its own.",
-  "funding.venues": "Venues",
-  "funding.degraded": "Degraded",
-  "funding.observed": "Observed",
-  "funding.budgetLeft": "Budget left",
-  "funding.stale": "Showing the last board; the refresh failed.",
-  "funding.unit.period": "Per period (%)",
-  // What the countdown says once the interval has elapsed.
-  "funding.due": "due",
-  "funding.search": "Search",
-  "funding.minOpenInterest": "Min open interest (U)",
-  "funding.openInterestNotional": "Open interest (U)",
-  "funding.rateUnit": "Funding rate unit",
-  "funding.crossVenueOnly": "Cross-venue only",
-  "funding.count": "{shown} of {total} pairs",
-  "funding.withoutOpenInterest": "{count} without U notional",
-  "funding.caption": "Funding rates by instrument and venue",
-  "funding.empty.filtered": "No pairs match these filters",
-  "funding.empty.allDown": "The board is empty. Every venue column is unavailable.",
-  "funding.empty.filtered.detail": "Widen the search, lower the open-interest threshold, or turn off cross-venue only.",
-  // Two keys because English inflects the verb as well as the noun. Chinese
-  // says one sentence for both.
-  "funding.degraded.one": "{count} shown venue is down or stale.",
-  "funding.degraded.many": "{count} shown venues are down or stale.",
-  "funding.columns": "Columns",
-  "funding.showAll": "Show all",
-  // Said twice — on the venue chip and again on the column header — from one
-  // pair of keys, so the chip and the header cannot drift apart.
-  "funding.venue.down": "down",
-  "funding.venue.down.detail": "This venue is unavailable. Last-known data is retained for diagnosis and excluded from spread comparisons.",
-  "funding.venue.stale": "stale",
-  "funding.venue.stale.detail": "These rates are older than the rest of the table.",
-  "funding.venue.connected": "connected",
-  "funding.venue.updated": "Last updated: {time}.",
-  "funding.venue.neverUpdated": "No valid update received yet.",
-  "funding.venueCount.one": "{count} venue",
-  "funding.venueCount.many": "{count} venues",
-  "funding.noOpenInterest": "No venue on this row publishes open interest that can be converted to U notional.",
-  "funding.openInterestFrom": "Largest venue notional, published by {venue} and denominated in {asset}",
-  "funding.noInterval": "This venue does not publish a funding interval, so the rate cannot be annualised.",
-  "funding.staleValue": "This is the last-known rate. It is stale and excluded from spread calculations.",
-  "funding.missingValue": "The venue did not provide this field.",
-  "funding.extremeRate": "Extreme rate",
-  "funding.maxSpread": "Max spread",
-  "funding.legs": "short {short} · long {long}",
-
   "portfolio.realized": "Realized",
   "portfolio.title": "Positions",
   "portfolio.positionsCount": "{count} positions",
@@ -426,10 +373,9 @@ export const en = {
   "portfolio.accountingReview": "Historical fee accounting needs review. Automatic closing and PnL totals are unavailable until the inventory is verified.",
   "portfolio.rebate": "Rebate",
   "portfolio.entryEffect": "Earnings effect",
-  "portfolio.funding": "Funding",
   "portfolio.net": "Net",
   // Why there is no total, said once where an operator would look for one.
-  "portfolio.hint": "Select a position for its realized, unrealized, fee and funding breakdown. P&L is attributed per lineage, so there is no portfolio-wide total.",
+  "portfolio.hint": "Select a position for its realized, unrealized and fee breakdown. P&L is attributed per lineage, so there is no portfolio-wide total.",
   "portfolio.account": "Account",
   "portfolio.caption.positions": "Open positions",
   "portfolio.empty.positions": "No open positions",
@@ -439,7 +385,7 @@ export const en = {
   "portfolio.entries": "{count} entries",
   "portfolio.caption.ledger": "Ledger entries",
   "portfolio.empty.ledger": "No ledger entries",
-  "portfolio.empty.ledger.detail": "Realized P&L, fees, funding and adjustments are written here as they settle.",
+  "portfolio.empty.ledger.detail": "Realized P&L, fees and adjustments are written here as they settle.",
 
   // The kinds themselves (`command.submitted`, `command.cancel_accepted`) are
   // the server's and are never translated: the filter, the table cell, the

@@ -24,9 +24,8 @@ export type Locale = "en" | "zh";
 
 /**
  * Re-exported because a key is sometimes data rather than a call site: the order
- * book's view options and the funding page's columns are module-level arrays
- * that name their label instead of holding it, so they need the type without
- * needing the English dictionary.
+ * book's view options are module-level arrays that name their label instead of
+ * holding it, so they need the type without needing the English dictionary.
  */
 export type { Key } from "./en";
 

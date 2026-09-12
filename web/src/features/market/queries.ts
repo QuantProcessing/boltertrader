@@ -70,7 +70,7 @@ export function useAccounts(): UseQueryResult<Account[]> {
 }
 
 /**
- * Top of book, depth, mark price and funding for one instrument.
+ * Top of book, depth, mark price and index price for one instrument.
  *
  * REST supplies the first snapshot. The unified WebSocket owns later depth and
  * mark changes and performs its own generation-based resnapshot after a gap.
