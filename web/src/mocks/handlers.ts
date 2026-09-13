@@ -555,6 +555,22 @@ const accountPlane = [
   }),
 ];
 
+const notificationChannels = new Map<string, Record<string, unknown>>();
+const notifications = [
+  http.get("/api/v1/notifications", () => items([...notificationChannels.values()])),
+  http.put("/api/v1/notifications/:provider", async ({ request, params }) => {
+    const provider = String(params.provider);
+    if (provider !== "telegram" && provider !== "bark") return invalid("unsupported notification provider");
+    const body = (await request.json()) as Record<string, unknown>;
+    const current = notificationChannels.get(provider) ?? { provider, enabled: true, critical: false, volume: 5, updatedAt: new Date().toISOString() };
+    const channel = { ...current, ...body, secret: undefined, updatedAt: new Date().toISOString() };
+    notificationChannels.set(provider, channel);
+    return data(channel);
+  }),
+  http.post("/api/v1/notifications/:provider/test", ({ params }) => notificationChannels.has(String(params.provider)) ? data({ sent: true }) : failure(404, "NOT_FOUND", "notification channel is not configured")),
+  http.delete("/api/v1/notifications/:provider", ({ params }) => { notificationChannels.delete(String(params.provider)); return new HttpResponse(null, { status: 204 }); }),
+];
+
 /* --- Anything else -------------------------------------------------------- */
 
 /** Unknown routes must fail, as they do on the auth edge. */
@@ -575,5 +591,6 @@ export const handlers = [
   ...trading,
   ...manual,
   ...accountPlane,
+  ...notifications,
   fallthrough,
 ];

@@ -64,6 +64,7 @@ func run(ctx context.Context) error {
 	}
 	service, err := tradingapp.New(tradingapp.Config{
 		LivePrivateWritesEnabled: cfg.LivePrivateWritesEnabled,
+		NotificationKey:          cfg.NotificationKey,
 	}, tradingapp.Dependencies{
 		Database:              database,
 		CatalogSource:         gatewayClient,

@@ -12,10 +12,11 @@ import "net/http"
 // simply not registered, so a caller that has not wired (say) public data yet
 // still gets a working service instead of a construction error.
 type Options struct {
-	Audit       *AuditRouteOptions
-	PublicData  *PublicDataAPI
-	Trading     *TradingOptions
-	Projections *BrowserProjectionRoutesOptions
+	Audit         *AuditRouteOptions
+	PublicData    *PublicDataAPI
+	Trading       *TradingOptions
+	Projections   *BrowserProjectionRoutesOptions
+	Notifications *NotificationRoutesOptions
 }
 
 // The route groups this surface can mount. They are named here rather than
@@ -33,6 +34,8 @@ var (
 		"GET /api/v1/trading/realtime/ws",
 		"GET /api/v1/commands/{commandId}",
 		"GET /api/v1/positions", "GET /api/v1/ledger", "GET /api/v1/pnl",
+		"GET /api/v1/notifications", "PUT /api/v1/notifications/{provider}",
+		"DELETE /api/v1/notifications/{provider}", "POST /api/v1/notifications/{provider}/test",
 	}
 
 	manualRoutes = []string{
@@ -55,6 +58,9 @@ func Routes() []string {
 	all = append(all, tradingRoutes...)
 	all = append(all, manualRoutes...)
 	all = append(all, projectionRoutes...)
+	// Notification channels are mounted by the trading host alongside its
+	// projections; keep the contract visible even when a test omits the group.
+	all = append(all, notificationRoutes...)
 	return all
 }
 
@@ -107,6 +113,12 @@ func Register(mux *http.ServeMux, options Options) ([]string, error) {
 			return nil, err
 		}
 		owned = append(owned, projectionRoutes...)
+	}
+	if options.Notifications != nil {
+		if err := RegisterNotificationRoutes(mux, *options.Notifications); err != nil {
+			return nil, err
+		}
+		owned = append(owned, notificationRoutes...)
 	}
 	return owned, nil
 }

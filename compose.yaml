@@ -289,6 +289,7 @@ services:
       BT_TRADING_SERVICE_TOKEN_FILE: /etc/boltertrader/secrets/stack/trading_service_token
       BT_GATEWAY_TOKEN_FILE: /etc/boltertrader/secrets/stack/gateway_auth_token
       BT_GATEWAY_INTERNAL_TOKEN_FILE: /etc/boltertrader/secrets/stack/gateway_internal_auth_token
+      BT_NOTIFICATION_KEY_FILE: /etc/boltertrader/secrets/stack/notification_key
     volumes: *secrets
     ports:
       - "127.0.0.1:${TRADING_PORT:-18092}:18092"

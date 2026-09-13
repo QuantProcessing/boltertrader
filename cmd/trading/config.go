@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -27,6 +28,7 @@ const (
 	// any deployment that serves both paths from one listener.
 	gatewayInternalURLEnv       = "BT_GATEWAY_INTERNAL_URL"
 	gatewayInternalTokenFileEnv = "BT_GATEWAY_INTERNAL_TOKEN_FILE"
+	notificationKeyFileEnv      = "BT_NOTIFICATION_KEY_FILE"
 	livePrivateWritesEnv        = livewrite.EnvName
 	allowNonLoopbackEnv         = "BT_TRADING_ALLOW_NON_LOOPBACK_LISTEN"
 	allowPlaintextEnv           = "BT_TRADING_ALLOW_NON_LOOPBACK_UPSTREAM"
@@ -46,6 +48,7 @@ type config struct {
 	GatewayToken             []byte
 	GatewayInternalURL       string
 	GatewayInternalToken     []byte
+	NotificationKey          []byte
 	LivePrivateWritesEnabled bool
 	AllowNonLoopbackListen   bool
 	AllowNonLoopbackUpstream bool
@@ -149,6 +152,9 @@ func load() (config, error) {
 		{serviceTokenFileEnv, &cfg.ServiceToken},
 		{gatewayTokenFileEnv, &cfg.GatewayToken},
 	}
+	if keyFile := strings.TrimSpace(os.Getenv(notificationKeyFileEnv)); keyFile != "" {
+		secrets = append(secrets, secretFile{notificationKeyFileEnv, &cfg.NotificationKey})
+	}
 	if internalTokenFile != "" {
 		secrets = append(secrets, secretFile{gatewayInternalTokenFileEnv, &cfg.GatewayInternalToken})
 	}
@@ -159,6 +165,14 @@ func load() (config, error) {
 			return config{}, err
 		}
 		*secret.target = value
+	}
+	if len(cfg.NotificationKey) > 0 {
+		decoded := make([]byte, hex.DecodedLen(len(cfg.NotificationKey)))
+		if _, err := hex.Decode(decoded, cfg.NotificationKey); err != nil || len(decoded) != 32 {
+			cfg.clear()
+			return config{}, fmt.Errorf("%s must contain a 32-byte hex key", notificationKeyFileEnv)
+		}
+		cfg.NotificationKey = decoded
 	}
 	// Aliasing rather than copying, so clear() zeroes one buffer twice instead
 	// of missing a second copy of the same secret.
@@ -171,7 +185,7 @@ func load() (config, error) {
 // clear zeroes every secret read so far. A configuration that failed to load
 // must not leave key material in a heap this process keeps running on.
 func (cfg config) clear() {
-	for _, value := range [][]byte{cfg.ServiceToken, cfg.GatewayToken, cfg.GatewayInternalToken} {
+	for _, value := range [][]byte{cfg.ServiceToken, cfg.GatewayToken, cfg.GatewayInternalToken, cfg.NotificationKey} {
 		for index := range value {
 			value[index] = 0
 		}

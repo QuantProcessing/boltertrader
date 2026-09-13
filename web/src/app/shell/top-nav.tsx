@@ -306,7 +306,7 @@ function SettingsPopover() {
               variant="ghost"
               size="md"
               className="w-full justify-start"
-              onClick={() => void navigate({ to: "/settings" })}
+              onClick={() => void navigate({ to: "/settings", search: { section: "accounts" } })}
             >
               <Settings aria-hidden className="size-3.5 shrink-0 text-muted" />
               {t("utility.accountSettings")}

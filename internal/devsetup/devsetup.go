@@ -65,6 +65,7 @@ const (
 	// work and would quietly make the split decorative.
 	GatewayInternalAuthTokenFile = "gateway_internal_auth_token"
 	SecretMasterKeyFile          = "secret_master_key"
+	NotificationKeyFile          = "notification_key"
 	GatewayPostgresDSNFile       = "gateway_postgres_dsn"
 	BootstrapPasswordFile        = "bootstrap_password"
 	BootstrapPasswordHashFile    = "bootstrap_password_hash"
@@ -201,11 +202,18 @@ func Bootstrap(root string) (Result, error) {
 			result.Created = append(result.Created, name)
 		}
 	}
+	created, err := ensureSecret(filepath.Join(secretDir, NotificationKeyFile), newMasterKey)
+	if err != nil {
+		return Result{}, err
+	}
+	if created {
+		result.Created = append(result.Created, NotificationKeyFile)
+	}
 
 	// Separate from the loop above because its generator is different, not
 	// because its lifecycle is: it is created once and then reused, and
 	// regenerating it would orphan every credential already encrypted under it.
-	created, err := ensureSecret(filepath.Join(secretDir, SecretMasterKeyFile), newMasterKey)
+	created, err = ensureSecret(filepath.Join(secretDir, SecretMasterKeyFile), newMasterKey)
 	if err != nil {
 		return Result{}, err
 	}

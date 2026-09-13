@@ -747,6 +747,25 @@ export interface ActivityEvent {
   observedAt: string;
 }
 
+export type NotificationProvider = "telegram" | "bark";
+export interface NotificationChannel {
+  provider: NotificationProvider;
+  enabled: boolean;
+  chatId?: string;
+  serverUrl?: string;
+  critical: boolean;
+  volume: number;
+  updatedAt: string;
+}
+export interface NotificationInput {
+  secret?: string;
+  enabled: boolean;
+  chatId?: string;
+  serverUrl?: string;
+  critical: boolean;
+  volume: number;
+}
+
 /* --- Accounts ------------------------------------------------------------ */
 
 

@@ -166,6 +166,9 @@ const activityRoute = createRoute({ getParentRoute: () => appRoute, path: "/acti
 const settingsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/settings",
+  validateSearch: (search: Record<string, unknown>): { section?: "accounts" | "notifications" } => ({
+    section: search.section === "accounts" ? "accounts" : undefined,
+  }),
   staticData: { readOnly: true },
   component: SettingsPage,
 });

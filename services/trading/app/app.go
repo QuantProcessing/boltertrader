@@ -21,6 +21,7 @@ import (
 	"time"
 
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
+	"github.com/QuantProcessing/boltertrader/services/notifications"
 	"github.com/QuantProcessing/boltertrader/services/trading/accountpositions"
 	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
@@ -57,6 +58,7 @@ type Config struct {
 	// migration-validation startup can avoid background Gateway reads and
 	// command-state updates. Reconciliation never places or cancels orders.
 	ReconcilerDisabled bool
+	NotificationKey    []byte
 }
 
 // Dependencies names everything the trading service cannot decide for itself.
@@ -93,11 +95,12 @@ type Dependencies struct {
 // Register mounts it on whatever mux the host provides, and Run drives the
 // background reconciler on whatever lifecycle the host has.
 type Service struct {
-	routes     httpapi.Options
-	readiness  *platformsystem.Readiness
-	reconciler *orders.Reconciler
-	catalog    *catalog.Projection
-	positions  *accountpositions.Service
+	routes             httpapi.Options
+	readiness          *platformsystem.Readiness
+	reconciler         *orders.Reconciler
+	catalog            *catalog.Projection
+	positions          *accountpositions.Service
+	notificationSender *notifications.Service
 }
 
 // catalogTTL is how long the catalog projection's facts are considered fresh;
@@ -204,6 +207,21 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 			commandService.NotifyChange(command.PrincipalID)
 		})
 	}
+	var notificationService *notifications.Service
+	if len(cfg.NotificationKey) == 32 {
+		var notificationStore notifications.Store
+		if dependencies.Database != nil {
+			notificationStore = tradingpg.NewNotificationStore(dependencies.Database)
+		} else {
+			notificationStore = notifications.NewMemoryStore()
+		}
+		notificationService, err = notifications.New(notificationStore, cfg.NotificationKey, nil)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, fmt.Errorf("notification key is required")
+	}
 
 	return &Service{
 		routes: httpapi.Options{
@@ -220,11 +238,13 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				PortfolioPositions: accountPositionProjection, Commands: commandStore, Activity: activityLog,
 				Principal: dependencies.Principal,
 			},
+			Notifications: &httpapi.NotificationRoutesOptions{Service: notificationService, Principal: dependencies.Principal},
 		},
-		readiness:  readiness,
-		reconciler: reconciler,
-		catalog:    catalogProjection,
-		positions:  accountPositionProjection,
+		readiness:          readiness,
+		reconciler:         reconciler,
+		catalog:            catalogProjection,
+		positions:          accountPositionProjection,
+		notificationSender: notificationService,
 	}, nil
 }
 

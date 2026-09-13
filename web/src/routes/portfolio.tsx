@@ -8,7 +8,7 @@ import {
   Wallet,
   Info,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type {
   AccountPosition,
@@ -121,7 +121,8 @@ export function PortfolioPage() {
     () => summarizeLivePositions(livePositions),
     [livePositions],
   );
-  const group = search.group ?? "account";
+  const group = search.group ?? "instrument";
+  const [view, setView] = useState<"positions" | "ledger">("positions");
   const groups = useMemo(() => groupPositions(rows, group), [group, rows]);
   const accounts = useMemo(
     () =>
@@ -188,6 +189,10 @@ export function PortfolioPage() {
               count: snapshot?.summary.positionCount ?? rows.length,
             })}
           </Tag>
+        </div>
+        <div className="flex items-center gap-1 rounded-card bg-fill p-1">
+          <Button variant={view === "positions" ? "outline" : "ghost"} size="sm" onClick={() => setView("positions")}>{t("portfolio.positionsTab")}</Button>
+          <Button variant={view === "ledger" ? "outline" : "ghost"} size="sm" onClick={() => setView("ledger")}>{t("portfolio.ledgerTab")}</Button>
         </div>
         <select
           className={cn(inputClass, "w-44")}
@@ -277,9 +282,14 @@ export function PortfolioPage() {
         </Button>
       </header>
 
-      <p className="px-3 py-2 text-meta text-dim">
-        {t("portfolio.indexSummary")}
-      </p>
+      <div className="portfolio-overview border-b border-line px-3 py-3">
+        <div className="mb-2 flex items-center gap-2"><span className="text-base font-semibold text-text">{t("portfolio.overview")}</span><span className="text-meta text-dim">{t("portfolio.indexSummary")}</span></div>
+        <div className="flex flex-wrap items-center gap-8">
+          <Metric label={t("portfolio.positionsValue")} value={String(rows.length)} />
+          <Metric label={t("portfolio.assets")} value={String(liveSummaries.length)} />
+          <Metric label={t("portfolio.live")} value={`${livePositions.filter((position) => position.indexPriceStale !== true).length}/${livePositions.length}`} />
+        </div>
+      </div>
       <SummaryStrip
         summaries={liveSummaries}
         staleAccounts={snapshot?.summary.staleAccountCount ?? 0}
@@ -298,7 +308,7 @@ export function PortfolioPage() {
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {view === "positions" ? <div className="min-h-0 flex-1 overflow-y-auto">
         {positions.isError ? (
           <EmptyState
             icon={AlertTriangle}
@@ -341,9 +351,7 @@ export function PortfolioPage() {
             );
           })
         )}
-      </div>
-
-      <LedgerPanel accountId={search.account} />
+      </div> : <div className="min-h-0 flex-1"><LedgerPanel accountId={search.account} /></div>}
     </div>
   );
 }

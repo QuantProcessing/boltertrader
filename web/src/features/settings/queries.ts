@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 
-import { accounts, manual, trading, type CreateAccountRequest } from "@/api/endpoints";
-import type { Account, AccountRuntime, Venue } from "@/api/types";
+import { accounts, manual, trading, notifications, type CreateAccountRequest } from "@/api/endpoints";
+import type { Account, AccountRuntime, Venue, NotificationChannel, NotificationInput, NotificationProvider } from "@/api/types";
 import { PRIVATE_QUERY_META } from "@/app/query-privacy";
 import { marketKeys } from "@/features/market/queries";
 
@@ -11,7 +11,32 @@ import { marketKeys } from "@/features/market/queries";
 export const settingsKeys = {
   venues: () => ["manual", "venues"] as const,
   runtimes: (accountId: string) => ["trading", "account-runtimes", accountId] as const,
+  notifications: () => ["settings", "notifications"] as const,
 };
+
+export function useNotifications(): UseQueryResult<NotificationChannel[]> {
+  return useQuery({ queryKey: settingsKeys.notifications(), queryFn: ({ signal }) => notifications.list(signal), meta: PRIVATE_QUERY_META });
+}
+
+export function useSaveNotification() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ provider, input }: { provider: NotificationProvider; input: NotificationInput }) => notifications.save(provider, input),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: settingsKeys.notifications() }); },
+  });
+}
+
+export function useDeleteNotification() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (provider: NotificationProvider) => notifications.remove(provider),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: settingsKeys.notifications() }); },
+  });
+}
+
+export function useTestNotification() {
+  return useMutation({ mutationFn: (provider: NotificationProvider) => notifications.test(provider) });
+}
 
 /**
  * The venue catalog: credential schema and route profiles, which is everything

@@ -45,6 +45,9 @@ import type {
   ManualCommandRequest,
   MarketDataQuery,
   MarketFact,
+  NotificationChannel,
+  NotificationInput,
+  NotificationProvider,
   PnLSnapshot,
   Position,
   RateLimitStatus,
@@ -141,6 +144,9 @@ export const paths = {
   pnl: "/api/v1/pnl",
   fills: "/api/v1/fills",
   activity: "/api/v1/activity",
+  notifications: "/api/v1/notifications",
+  notification: (provider: string) => `/api/v1/notifications/${encodeURIComponent(provider)}`,
+  notificationTest: (provider: string) => `/api/v1/notifications/${encodeURIComponent(provider)}/test`,
   audit: "/api/v1/audit",
 
   accountRuntimes: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/runtimes`,
@@ -355,6 +361,19 @@ export const trading = {
   /** Trading's own view of an account's runtime — NOT the gateway's account record. */
   accountRuntimes: async (accountId: string, signal?: AbortSignal): Promise<AccountRuntime[]> =>
     items(await apiRequest<ItemsEnvelope<AccountRuntime>>(paths.accountRuntimes(accountId), { signal })),
+};
+
+export const notifications = {
+  list: async (signal?: AbortSignal): Promise<NotificationChannel[]> =>
+    items(await apiRequest<ItemsEnvelope<NotificationChannel>>(paths.notifications, { signal })),
+  save: async (provider: NotificationProvider, input: NotificationInput, signal?: AbortSignal): Promise<NotificationChannel> =>
+    (await apiRequest<DataEnvelope<NotificationChannel>>(paths.notification(provider), { method: "PUT", body: input, signal })).data,
+  remove: async (provider: NotificationProvider, signal?: AbortSignal): Promise<void> => {
+    await apiRequest(paths.notification(provider), { method: "DELETE", signal });
+  },
+  test: async (provider: NotificationProvider, signal?: AbortSignal): Promise<void> => {
+    await apiRequest(paths.notificationTest(provider), { method: "POST", body: {}, signal });
+  },
 };
 
 /** Private account facts projected through trading's principal boundary. */

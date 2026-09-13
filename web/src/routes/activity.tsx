@@ -7,6 +7,7 @@ import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/field";
 import { Tag } from "@/components/ui/state-badge";
+import { Metric } from "@/components/ui/panel";
 import { useActivity } from "@/features/activity/queries";
 import { useAccounts } from "@/features/market/queries";
 import { formatTimestamp } from "@/lib/format";
@@ -53,10 +54,20 @@ export function ActivityPage() {
 
   const rows = matched.slice(0, RENDER_LIMIT);
   const selected = all.find((event) => event.eventId === selectedId) ?? null;
+  const commandCount = all.filter((event) => event.kind.startsWith("command.")).length;
+  const fillCount = all.filter((event) => event.kind === "fill.recorded").length;
+  const attentionCount = all.filter((event) => needsAttention(event.kind)).length;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="workspace-page-header flex h-bar shrink-0 items-center gap-4 border-b border-line px-3">
+      <header className="workspace-page-header flex min-h-bar shrink-0 flex-wrap items-center gap-3 border-b border-line px-3">
+        <div className="mr-auto"><h1 className="text-title font-semibold text-text">{t("activity.title")}</h1><p className="text-meta text-dim">{t("activity.overview")}</p></div>
+        <div className="activity-kpis hidden items-center gap-5 lg:flex">
+          <Metric label={t("activity.total")} value={String(all.length)} />
+          <Metric label={t("activity.commands")} value={String(commandCount)} />
+          <Metric label={t("activity.fills")} value={String(fillCount)} />
+          <Metric label={t("activity.attention")} value={attentionCount ? String(attentionCount) : t("activity.noAttention")} tone={attentionCount ? "down" : "none"} />
+        </div>
         <label className="flex shrink-0 items-center gap-2">
           <span className="th">{t("col.kind")}</span>
           <select
@@ -203,7 +214,7 @@ function columns(selectedId: string | null, t: Translate): ColumnDef<ActivityEve
         </span>
       ),
     },
-    { id: "kind", header: t("col.kind"), accessorKey: "kind", meta: { width: "16rem" } },
+    { id: "kind", header: t("col.kind"), accessorKey: "kind", meta: { width: "16rem" }, cell: ({ row }) => <ActivityKind kind={row.original.kind} t={t} /> },
     {
       id: "product",
       header: t("col.product"),
@@ -231,6 +242,16 @@ function columns(selectedId: string | null, t: Translate): ColumnDef<ActivityEve
       meta: { numeric: true, width: "5rem" },
     },
   ];
+}
+
+function ActivityKind({ kind, t }: { kind: string; t: Translate }) {
+  const attention = needsAttention(kind);
+  const label = kind === "fill.recorded" ? t("activity.fills") : kind.replace(/^command\./, "").replace(/[._]/g, " ");
+  return <span className={cn("flex items-center gap-2", attention ? "text-down" : "text-text")} title={kind}>{attention ? <span className="size-1.5 rounded-full bg-down" aria-hidden="true" /> : null}<span className="capitalize">{label}</span></span>;
+}
+
+function needsAttention(kind: string): boolean {
+  return /(failed|rejected|blocked|unknown|unavailable|degraded|review|uncertain)/i.test(kind);
 }
 
 /** Null is a fact about the event, so it gets a mark of its own. */
