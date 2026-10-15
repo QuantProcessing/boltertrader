@@ -604,3 +604,217 @@
     flex-shrink: 0;
   }
 }
+
+/* -------------------------------------------------------------------------
+ * Operator workspace refresh
+ * A calm left rail keeps navigation out of the market surface, while the
+ * toolbar carries only session context and controls. The grid stays dense,
+ * but panels read as one instrument workspace instead of four floating cards.
+ * ------------------------------------------------------------------------- */
+.workspace-shell {
+  flex-direction: row;
+  background: var(--bt-bg);
+}
+
+.workspace-sidebar {
+  width: 220px;
+  height: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 22px 14px 16px;
+  border-right: 1px solid var(--bt-line);
+  border-bottom: 0;
+  background: var(--bt-sidebar);
+}
+
+.workspace-sidebar.is-collapsed {
+  width: 68px;
+  height: 100%;
+  padding-inline: 10px;
+}
+
+.workspace-sidebar .workspace-brand,
+.workspace-sidebar.is-collapsed .workspace-brand {
+  padding: 0 8px;
+  min-height: 44px;
+}
+
+.workspace-sidebar .brand-symbol,
+.workspace-sidebar.is-collapsed .brand-symbol {
+  width: 30px;
+  height: 34px;
+  font-size: 34px;
+}
+
+.workspace-sidebar .sidebar-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 28px 8px 8px;
+  padding: 0;
+  letter-spacing: .1em;
+}
+
+.sidebar-command {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border: 1px solid var(--bt-line);
+  border-radius: 5px;
+  letter-spacing: 0;
+  color: var(--bt-faint);
+}
+
+.workspace-sidebar nav {
+  flex-direction: column;
+  gap: 4px;
+  height: auto;
+}
+
+.workspace-sidebar .workspace-nav-link,
+.workspace-sidebar.is-collapsed .workspace-nav-link {
+  min-height: 42px;
+  justify-content: flex-start;
+  padding: 10px 12px;
+  border-radius: 8px;
+  gap: 12px;
+}
+
+.workspace-sidebar .workspace-nav-link.is-active {
+  background: color-mix(in oklch, var(--bt-accent) 14%, var(--bt-sidebar));
+  color: var(--bt-text);
+  box-shadow: inset 2px 0 var(--bt-accent);
+}
+
+.workspace-sidebar .workspace-nav-link.is-active svg { color: var(--bt-accent); }
+
+.workspace-sidebar .sidebar-rail-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: auto 8px 14px;
+  padding: 10px 8px;
+  border-top: 1px solid var(--bt-line);
+  color: var(--bt-dim);
+}
+
+.sidebar-rail-dot,
+.status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--bt-faint);
+}
+
+.sidebar-rail-dot { margin-left: auto; background: var(--bt-ok); }
+.status-dot-live { background: var(--bt-ok); box-shadow: 0 0 0 3px color-mix(in oklch, var(--bt-ok) 16%, transparent); }
+
+.workspace-sidebar .sidebar-bottom,
+.workspace-sidebar.is-collapsed .sidebar-bottom {
+  margin: 0;
+  padding: 0 8px;
+  flex-direction: row;
+  justify-content: flex-end;
+}
+
+.workspace-sidebar .sidebar-bottom > button { display: inline-flex; }
+.workspace-sidebar.is-collapsed .sidebar-label { display: none; }
+.workspace-sidebar.is-collapsed .workspace-nav-link { justify-content: center; padding-inline: 0; }
+.workspace-sidebar.is-collapsed .sidebar-rail-note { justify-content: center; margin-inline: 0; padding-inline: 0; }
+.workspace-sidebar.is-collapsed .sidebar-rail-note svg { margin: 0; }
+
+.workspace-main { min-width: 0; }
+
+.workspace-toolbar {
+  min-height: 58px;
+  padding: 8px 24px;
+  background: color-mix(in oklch, var(--bt-panel) 72%, var(--bt-bg));
+}
+
+.toolbar-context { border-radius: 999px; }
+
+.trade-workspace {
+  padding: 18px 22px 16px;
+  gap: 12px;
+}
+
+.instrument-strip {
+  min-height: 78px;
+  padding: 8px 4px 14px;
+  gap: 26px;
+  border-bottom: 1px solid var(--bt-line);
+}
+
+.trade-grid { gap: 10px; }
+.trade-chart,
+.trade-book,
+.trade-ticket,
+.trade-blotter {
+  border-radius: 9px;
+  background: color-mix(in oklch, var(--bt-panel) 92%, var(--bt-bg));
+}
+
+.trade-ticket { box-shadow: 0 10px 26px color-mix(in oklch, var(--bt-bg) 22%, transparent); }
+.trade-market-tabs { gap: 6px; }
+.trade-market-tabs button[aria-pressed="true"] { background: var(--bt-accent-soft); color: var(--bt-text); }
+
+.workspace-page-header {
+  min-height: 76px;
+  padding: 16px 24px;
+  background: color-mix(in oklch, var(--bt-panel) 62%, var(--bt-bg));
+}
+
+.workspace-page-header h1 { font-size: 20px; letter-spacing: -.03em; }
+.workspace-page-header p { margin-top: 3px; color: var(--bt-dim); }
+
+.activity-layout {
+  padding: 18px 24px 24px;
+  gap: 12px;
+}
+
+.activity-list,
+.activity-detail {
+  border-radius: 9px;
+  background: color-mix(in oklch, var(--bt-panel) 92%, var(--bt-bg));
+}
+
+.settings-notification-panel { border-radius: 9px; }
+
+select,
+input,
+textarea {
+  border-radius: 7px;
+  border-color: var(--bt-line-strong);
+  background: var(--bt-fill);
+}
+
+table thead { background: color-mix(in oklch, var(--bt-fill) 58%, var(--bt-panel)); }
+tbody tr { transition: background-color .15s var(--ease-out); }
+tbody tr:hover { background: color-mix(in oklch, var(--bt-accent) 6%, var(--bt-panel)); }
+
+@media (max-width: 760px) {
+  .workspace-shell { flex-direction: column; }
+  .workspace-sidebar,
+  .workspace-sidebar.is-collapsed {
+    width: 100%;
+    height: 58px;
+    flex-direction: row;
+    align-items: center;
+    padding: 5px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--bt-line);
+  }
+  .workspace-sidebar .workspace-brand { min-height: 44px; }
+  .workspace-sidebar .sidebar-section,
+  .workspace-sidebar .sidebar-rail-note,
+  .workspace-sidebar .sidebar-bottom { display: none; }
+  .workspace-sidebar nav { flex: 1; flex-direction: row; justify-content: flex-end; gap: 4px; }
+  .workspace-sidebar .workspace-nav-link,
+  .workspace-sidebar.is-collapsed .workspace-nav-link { min-width: 44px; min-height: 44px; padding: 10px; justify-content: center; }
+  .workspace-sidebar .sidebar-label { display: none; }
+  .workspace-toolbar { min-height: 52px; padding: 8px 14px; }
+  .trade-workspace { padding: 12px; }
+}

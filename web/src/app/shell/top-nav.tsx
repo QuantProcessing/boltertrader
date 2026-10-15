@@ -14,6 +14,9 @@ import {
   Sun,
   Moon,
   Monitor,
+  ArrowUpRight,
+  Command,
+  ShieldCheck,
 } from "lucide-react";
 
 import { useReadOnly } from "@/app/mode";
@@ -72,15 +75,16 @@ export function TopNav() {
     <aside className={cn("workspace-sidebar", collapsed && "is-collapsed")}>
       <Link to="/trade" className="workspace-brand" aria-label="Bolter">
         <span className="brand-symbol" aria-hidden>
-          ⌁
+          <span>⌁</span>
         </span>
         <span className="sidebar-label">
           Bolter<span className="brand-caption">{t("workspace.caption")}</span>
         </span>
       </Link>
-      <span className="sidebar-section sidebar-label">
-        {t("workspace.label")}
-      </span>
+      <div className="sidebar-section sidebar-label">
+        <span>{t("workspace.label")}</span>
+        <span className="sidebar-command"><Command size={12} /> K</span>
+      </div>
       <nav aria-label={t("nav.sections")}>
         {SECTIONS.map((section, i) => {
           const Icon = icons[i]!;
@@ -102,6 +106,11 @@ export function TopNav() {
           );
         })}
       </nav>
+      <div className="sidebar-rail-note sidebar-label">
+        <ShieldCheck size={15} aria-hidden />
+        <span>{t("utility.mainnet")}</span>
+        <span className="sidebar-rail-dot" aria-hidden />
+      </div>
       <div className="sidebar-bottom">
         <p className="sidebar-label text-meta text-dim leading-relaxed">
           {t("workspace.description")}
@@ -149,7 +158,7 @@ export function WorkspaceToolbar() {
         <span className="text-meta text-dim mr-2 hidden lg:inline">
           {t("workspace.label")} /
         </span>
-        <span className="font-semibold">
+        <span className="font-semibold tracking-tight">
           {section ? t(section.label) : "Bolter"}
         </span>
         {import.meta.env.VITE_BOLTER_MOCK === "1" ? (
@@ -162,6 +171,11 @@ export function WorkspaceToolbar() {
         ) : null}
       </div>
       <div className="ml-auto flex items-center gap-1.5 min-w-0">
+        <div className="toolbar-context hidden items-center gap-2 rounded-control border border-line bg-fill px-2.5 py-1.5 text-meta lg:flex">
+          <span className="status-dot status-dot-live" aria-hidden />
+          <span className="text-muted">{t("utility.marketRealtime")}</span>
+          <ArrowUpRight size={13} className="text-dim" aria-hidden />
+        </div>
         <span className="session-label text-meta text-muted">
           {state ? state.principal.username : t("mode.readOnly")}
         </span>
