@@ -1,292 +1,185 @@
+// Package store persists exchange accounts and their credentials in one
+// encrypted file. It is the gateway's only durable state.
+//
+// File format: JSON array of records. Each record's credential bundle is
+// sealed individually with AES-256-GCM (secretstore.Cipher), bound to the
+// account id and venue as additional data, so a record cannot be moved to
+// another account or venue without failing authentication. Writes are atomic
+// (temp file, fsync, rename) and the file is mode 0600.
 package store
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"strings"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
-var ErrNotFound = errors.New("gateway store not found")
+var (
+	ErrNotFound = errors.New("account not found")
+	ErrExists   = errors.New("account already exists")
+)
 
-type ReserveCommandRequest struct {
-	PrincipalID    domain.PrincipalID
-	AccountID      domain.AccountID
-	InstrumentID   domain.InstrumentID
-	IdempotencyKey domain.IdempotencyKey
-	CorrelationID  domain.EventID
-	PayloadHash    string
-	Payload        json.RawMessage
+// Account is the public part of a stored account.
+type Account struct {
+	ID        string    `json:"id"`
+	Venue     string    `json:"venue"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
-func (request ReserveCommandRequest) Validate() error {
-	if err := request.PrincipalID.Validate(); err != nil {
-		return err
+type record struct {
+	Account
+	Sealed []byte `json:"sealed"`
+}
+
+type Store struct {
+	path   string
+	cipher *secretstore.Cipher
+
+	mu      sync.Mutex
+	records map[string]record
+}
+
+// Open loads path (a missing file is an empty store) and verifies every
+// record decrypts with cipher.
+func Open(path string, cipher *secretstore.Cipher) (*Store, error) {
+	if cipher == nil {
+		return nil, fmt.Errorf("store cipher is required")
 	}
-	if err := request.AccountID.Validate(); err != nil {
-		return err
+	store := &Store{path: path, cipher: cipher, records: map[string]record{}}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return store, nil
 	}
-	if err := request.InstrumentID.Validate(); err != nil {
-		return err
-	}
-	if err := request.IdempotencyKey.Validate(); err != nil {
-		return err
-	}
-	if err := request.CorrelationID.Validate(); err != nil {
-		return err
-	}
-	if request.PayloadHash == "" {
-		return domainErr("payload hash is required")
-	}
-	if len(request.Payload) == 0 {
-		return domainErr("durable payload is required")
-	}
-	canonicalHash, err := domain.CanonicalPayloadHash(request.Payload)
 	if err != nil {
-		return domainErr("durable payload must be valid JSON")
+		return nil, fmt.Errorf("read account store: %w", err)
 	}
-	if canonicalHash != request.PayloadHash {
-		return domainErr("durable payload hash mismatch")
+	var records []record
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil, fmt.Errorf("account store is corrupt: %w", err)
 	}
-	return nil
-}
-
-type ReservedCommand struct {
-	CommandID       domain.CommandID
-	GatewayOrderID  domain.GatewayOrderID
-	ClientOrderID   string
-	State           domain.OrderState
-	ResourceVersion domain.ResourceVersion
-	VenueOrderID    string
-	New             bool
-	Conflict        IdempotencyConflict
-}
-
-type CommandStore interface {
-	ReserveCommand(context.Context, ReserveCommandRequest) (ReservedCommand, error)
-	MarkDispatching(context.Context, MarkDispatchingRequest) (StoredCommand, error)
-	RecordVenueResult(context.Context, RecordVenueResultRequest) (StoredCommand, error)
-	LoadOrder(context.Context, LoadOrderRequest) (StoredCommand, error)
-	LoadOrderByIdempotencyKey(context.Context, domain.PrincipalID, domain.IdempotencyKey) (StoredCommand, error)
-	LoadOrderByVenueIdentity(context.Context, LoadOrderByVenueIdentityRequest) (StoredCommand, error)
-	ListOrders(context.Context, ListOrdersRequest) ([]StoredCommand, error)
-	LoadRecoverableCommands(context.Context, LoadRecoverableCommandsRequest) ([]StoredCommand, error)
-	RescheduleReconciliation(context.Context, RescheduleReconciliationRequest) (ReconciliationTask, error)
-	ClaimDueReconciliationTasks(context.Context, ClaimDueReconciliationTasksRequest) ([]ReconciliationTask, error)
-}
-
-type IdempotencyConflict string
-
-const (
-	ConflictNone       IdempotencyConflict = ""
-	ConflictPayload    IdempotencyConflict = "payload_mismatch"
-	ConflictAccount    IdempotencyConflict = "account_mismatch"
-	ConflictInstrument IdempotencyConflict = "instrument_mismatch"
-)
-
-type StoredCommand struct {
-	CommandID       domain.CommandID
-	GatewayOrderID  domain.GatewayOrderID
-	PrincipalID     domain.PrincipalID
-	AccountID       domain.AccountID
-	InstrumentID    domain.InstrumentID
-	ClientOrderID   string
-	State           domain.OrderState
-	ResourceVersion domain.ResourceVersion
-	VenueOrderID    string
-	EventID         domain.EventID
-	Payload         json.RawMessage
-	// AcceptanceObserved survives uncertain observations and process restarts.
-	// PostgreSQL derives it from the immutable order event history.
-	AcceptanceObserved bool
-}
-
-type LoadOrderRequest struct {
-	PrincipalID    domain.PrincipalID
-	GatewayOrderID domain.GatewayOrderID
-}
-
-type LoadOrderByVenueIdentityRequest struct {
-	AccountID     domain.AccountID
-	Product       string
-	ClientOrderID string
-	VenueOrderID  string
-}
-
-func (request LoadOrderByVenueIdentityRequest) Validate() error {
-	if err := request.AccountID.Validate(); err != nil {
-		return err
-	}
-	if request.Product != "spot" && request.Product != "perp" {
-		return domainErr("order product is invalid")
-	}
-	if request.ClientOrderID == "" && request.VenueOrderID == "" {
-		return domainErr("venue order identity is required")
-	}
-	if request.ClientOrderID != "" {
-		if _, err := domain.ParseClientOrderID(request.ClientOrderID); err != nil {
-			return err
+	for _, item := range records {
+		plain, err := cipher.Open(item.ID, item.Venue, item.Sealed)
+		if err != nil {
+			return nil, fmt.Errorf("account %s cannot be decrypted with the configured key", item.ID)
 		}
+		clear(plain)
+		store.records[item.ID] = item
 	}
-	if request.VenueOrderID != strings.TrimSpace(request.VenueOrderID) ||
-		strings.ContainsAny(request.VenueOrderID, "\n\r\t") {
-		return domainErr("venue order id is invalid")
+	return store, nil
+}
+
+// List returns accounts ordered by creation time.
+func (store *Store) List() []Account {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	accounts := make([]Account, 0, len(store.records))
+	for _, item := range store.records {
+		accounts = append(accounts, item.Account)
+	}
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i].CreatedAt.Before(accounts[j].CreatedAt) })
+	return accounts
+}
+
+// Get returns an account and its decrypted credential bundle. Callers must
+// clear the returned bundle when done.
+func (store *Store) Get(id string) (Account, []byte, error) {
+	store.mu.Lock()
+	item, ok := store.records[id]
+	store.mu.Unlock()
+	if !ok {
+		return Account{}, nil, ErrNotFound
+	}
+	plain, err := store.cipher.Open(item.ID, item.Venue, item.Sealed)
+	if err != nil {
+		return Account{}, nil, err
+	}
+	return item.Account, plain, nil
+}
+
+// Create seals bundle and persists the account.
+func (store *Store) Create(account Account, bundle []byte) error {
+	sealed, err := store.cipher.Seal(account.ID, account.Venue, bundle)
+	if err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, exists := store.records[account.ID]; exists {
+		return ErrExists
+	}
+	store.records[account.ID] = record{Account: account, Sealed: sealed}
+	if err := store.flushLocked(); err != nil {
+		delete(store.records, account.ID)
+		return err
 	}
 	return nil
 }
 
-func (request LoadOrderRequest) Validate() error {
-	if err := request.PrincipalID.Validate(); err != nil {
+// Delete removes an account.
+func (store *Store) Delete(id string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	item, ok := store.records[id]
+	if !ok {
+		return ErrNotFound
+	}
+	delete(store.records, id)
+	if err := store.flushLocked(); err != nil {
+		store.records[id] = item
 		return err
-	}
-	return request.GatewayOrderID.Validate()
-}
-
-type ListOrdersRequest struct {
-	PrincipalID  domain.PrincipalID
-	AccountID    domain.AccountID
-	InstrumentID domain.InstrumentID
-	OpenOnly     bool
-	Limit        int
-	Cursor       domain.GatewayOrderID
-}
-
-func (request ListOrdersRequest) Validate() error {
-	if err := request.PrincipalID.Validate(); err != nil {
-		return err
-	}
-	if request.AccountID != "" {
-		if err := request.AccountID.Validate(); err != nil {
-			return err
-		}
-	}
-	if request.InstrumentID != "" {
-		if err := request.InstrumentID.Validate(); err != nil {
-			return err
-		}
-	}
-	if request.Cursor != "" {
-		if err := request.Cursor.Validate(); err != nil {
-			return err
-		}
-	}
-	if request.Limit <= 0 || request.Limit > 500 {
-		return domainErr("order list limit is out of range")
 	}
 	return nil
 }
 
-type MarkDispatchingRequest struct {
-	CommandID domain.CommandID
-	EventID   domain.EventID
-}
-
-type RecordVenueResultRequest struct {
-	CommandID       domain.CommandID
-	VenueOrderID    string
-	NextState       domain.OrderState
-	EventID         domain.EventID
-	ResourceVersion domain.ResourceVersion
-	Reconciliation  *ReconciliationPlan
-}
-
-type LoadRecoverableCommandsRequest struct {
-	AccountID domain.AccountID
-	Limit     int
-}
-
-type ReconciliationReason string
-
-const (
-	ReconciliationAmbiguousHandoff    ReconciliationReason = "ambiguous_handoff"
-	ReconciliationLookupFailed        ReconciliationReason = "lookup_failed"
-	ReconciliationEvidenceInvalid     ReconciliationReason = "evidence_invalid"
-	ReconciliationEvidenceUnconfirmed ReconciliationReason = "evidence_unconfirmed"
-)
-
-func (reason ReconciliationReason) Validate() error {
-	switch reason {
-	case ReconciliationAmbiguousHandoff, ReconciliationLookupFailed,
-		ReconciliationEvidenceInvalid, ReconciliationEvidenceUnconfirmed:
-		return nil
-	default:
-		return domainErr("reconciliation reason is invalid")
+func (store *Store) flushLocked() error {
+	records := make([]record, 0, len(store.records))
+	for _, item := range store.records {
+		records = append(records, item)
 	}
-}
-
-type ReconciliationPlan struct {
-	TaskID        domain.EventID
-	Reason        ReconciliationReason
-	NextAttemptAt time.Time
-}
-
-func (plan ReconciliationPlan) Validate() error {
-	if err := plan.TaskID.Validate(); err != nil {
+	sort.Slice(records, func(i, j int) bool { return records[i].CreatedAt.Before(records[j].CreatedAt) })
+	data, err := json.Marshal(records)
+	if err != nil {
 		return err
 	}
-	if err := plan.Reason.Validate(); err != nil {
+	dir := filepath.Dir(store.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if plan.NextAttemptAt.IsZero() {
-		return domainErr("reconciliation next attempt is required")
+	temp, err := os.CreateTemp(dir, ".accounts-*")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, store.path); err != nil {
+		return err
+	}
+	if directory, err := os.Open(dir); err == nil {
+		_ = directory.Sync()
+		directory.Close()
 	}
 	return nil
 }
-
-type ReconciliationTask struct {
-	TaskID        domain.EventID
-	Command       StoredCommand
-	Reason        ReconciliationReason
-	NextAttemptAt time.Time
-	Attempts      int
-}
-
-type RescheduleReconciliationRequest struct {
-	GatewayOrderID domain.GatewayOrderID
-	Plan           ReconciliationPlan
-}
-
-func (request RescheduleReconciliationRequest) Validate() error {
-	if err := request.GatewayOrderID.Validate(); err != nil {
-		return err
-	}
-	return request.Plan.Validate()
-}
-
-type ClaimDueReconciliationTasksRequest struct {
-	AccountID   domain.AccountID
-	Now         time.Time
-	LeaseUntil  time.Time
-	Limit       int
-	MaxAttempts int
-}
-
-func (request ClaimDueReconciliationTasksRequest) Validate() error {
-	if err := request.AccountID.Validate(); err != nil {
-		return err
-	}
-	if request.Now.IsZero() {
-		return domainErr("reconciliation due time is required")
-	}
-	if !request.LeaseUntil.After(request.Now) {
-		return domainErr("reconciliation lease must end after due time")
-	}
-	if request.Limit <= 0 || request.Limit > 1000 {
-		return domainErr("reconciliation task limit is out of range")
-	}
-	if request.MaxAttempts <= 0 || request.MaxAttempts > 1000 {
-		return domainErr("reconciliation max attempts is out of range")
-	}
-	return nil
-}
-
-func domainErr(message string) error {
-	return &contractError{message: message}
-}
-
-type contractError struct{ message string }
-
-func (err *contractError) Error() string { return err.message }

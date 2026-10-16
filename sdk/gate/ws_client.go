@@ -412,28 +412,42 @@ func (c *WSClient) readLoop(conn *websocket.Conn) {
 			continue
 		}
 
+		// Gate pushes every subscription of a channel on the same connection
+		// under the channel name alone. Deliver to each subscribed handler of
+		// that channel; handlers select their own instrument from the payload.
 		c.mu.RLock()
-		handler := c.handlers[wsKey(env.Channel, nil)]
-		if handler == nil {
-			for _, sub := range c.subs {
-				if sub.channel == env.Channel {
-					handler = sub.handler
-					break
+		var handlers []func(json.RawMessage)
+		if handler := c.handlers[wsKey(env.Channel, nil)]; handler != nil {
+			handlers = append(handlers, handler)
+		} else {
+			keys := make([]string, 0, len(c.subs))
+			for key, sub := range c.subs {
+				if sub.channel == env.Channel && sub.handler != nil {
+					keys = append(keys, key)
 				}
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				handlers = append(handlers, c.subs[key].handler)
 			}
 		}
 		dispatcher := c.callbackDispatcher
 		c.mu.RUnlock()
-		if handler != nil {
+		if len(handlers) > 0 {
 			copied := append(json.RawMessage(nil), payload...)
+			run := func() {
+				for _, handler := range handlers {
+					handler(copied)
+				}
+			}
 			if dispatcher != nil {
-				if !dispatcher.enqueueData(conn, gateWSCallback{run: func() { handler(copied) }}) {
+				if !dispatcher.enqueueData(conn, gateWSCallback{run: run}) {
 					c.handleGateWSConnectionLoss(conn, fmt.Errorf("gate ws: callback queue overflow for %s", env.Channel))
 					return
 				}
 				continue
 			}
-			handler(copied)
+			run()
 		}
 	}
 }

@@ -142,7 +142,9 @@ func candleQuery(interval string, start, end time.Time, limit int) map[string]st
 	if !end.IsZero() {
 		query["to"] = strconv.FormatInt(end.Unix(), 10)
 	}
-	if limit > 0 {
+	// Gate rejects limit together with both from and to
+	// (INVALID_PARAM_VALUE); a closed window already bounds the result.
+	if limit > 0 && (start.IsZero() || end.IsZero()) {
 		query["limit"] = strconv.Itoa(limit)
 	}
 	return query

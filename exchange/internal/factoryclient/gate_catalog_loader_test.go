@@ -275,3 +275,27 @@ func gateTestSettings(product exchange.Product, transport http.RoundTripper) Set
 		SourceDescriptor:  descriptor,
 	}
 }
+
+func TestGateDecimalEnabledContractsTradeInWholeContracts(t *testing.T) {
+	rows := gateCatalogTradableFuturesRows([]gate.Contract{
+		{Name: "ETH_USDT", Status: "trading", OrderSizeMin: 0, EnableDecimal: true, QuantoMultiplier: "0.01", OrderPriceRound: "0.01"},
+		{Name: "DEAD_USDT", Status: "trading", OrderSizeMin: 0, QuantoMultiplier: "1", OrderPriceRound: "0.01"},
+	})
+	if len(rows) != 1 || rows[0].Name != "ETH_USDT" || rows[0].OrderSizeMin != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	instruments, err := gatePerpCatalogInstruments(rows, gate.SettleUSDT)
+	if err != nil || len(instruments) != 1 {
+		t.Fatalf("instruments = %+v err=%v", instruments, err)
+	}
+	if got := instruments[0].Rules.MinQuantity.String(); got != "0.01" {
+		t.Fatalf("min quantity = %s, want one contract (0.01 ETH)", got)
+	}
+}
+
+func TestGateFuturesBookDropsEmptiedLevels(t *testing.T) {
+	levels := gateFuturesBookLevels([]gate.FuturesOrderBookItem{{Price: "2440", Size: 6426}, {Price: "2440.22", Size: 0}, {Price: "2440.23", Size: 320}}, decimal.RequireFromString("0.01"))
+	if len(levels) != 2 || levels[0].Quantity.String() != "64.26" || levels[1].Price.String() != "2440.23" {
+		t.Fatalf("levels = %+v", levels)
+	}
+}

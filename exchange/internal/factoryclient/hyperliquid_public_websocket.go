@@ -172,6 +172,9 @@ func (backend *hyperliquidPublicWSBackend) StartOrderBook(
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, "invalid order book payload"))
 			return
 		}
+		if raw.Coin != meta.nativeCoin {
+			return // a sibling coin's book on the same shared channel
+		}
 		event, err := hyperliquidBookEvent(meta, raw)
 		if err != nil {
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, err.Error()))
@@ -213,6 +216,9 @@ func (backend *hyperliquidPublicWSBackend) StartBBO(
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, "invalid BBO payload"))
 			return
 		}
+		if raw.Coin != meta.nativeCoin {
+			return
+		}
 		event, err := hyperliquidBBOFromBookEvent(meta, raw)
 		if err != nil {
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, err.Error()))
@@ -250,6 +256,9 @@ func (backend *hyperliquidPublicWSBackend) StartPublicTrades(
 			return
 		}
 		for _, row := range rows {
+			if row.Coin != meta.nativeCoin {
+				continue
+			}
 			event, err := hyperliquidTradeEvent(meta, row)
 			if err != nil {
 				callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, err.Error()))
@@ -302,6 +311,9 @@ func (backend *hyperliquidPublicWSBackend) StartCandles(
 		var raw hyperliquid.WsCandle
 		if err := json.Unmarshal(message.Data, &raw); err != nil {
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, "invalid candle payload"))
+			return
+		}
+		if raw.S != meta.nativeCoin || raw.I != interval {
 			return
 		}
 		event, err := hyperliquidCandleEvent(meta, interval, raw, time.Now().UTC())
@@ -420,6 +432,9 @@ func (backend *hyperliquidPerpWSBackend) StartReference(
 		var raw hyperliquid.WsActiveAssetCtx
 		if err := json.Unmarshal(message.Data, &raw); err != nil {
 			callbacks.Error(hyperliquidWebSocketMalformed(backend.meta, operation, "invalid reference payload"))
+			return
+		}
+		if raw.Coin != meta.nativeCoin {
 			return
 		}
 		event, err := hyperliquidReferenceEvent(meta, raw, time.Now().UTC())

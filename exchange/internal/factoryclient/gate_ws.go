@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -88,8 +89,8 @@ func gateSpotOrderBookEvent(raw json.RawMessage, instrument exchange.Instrument)
 	if err := gateValidateSpotOrderBook(meta, "WatchOrderBook", book); err != nil {
 		return exchange.BookEvent{}, err
 	}
-	if err := gateEnsureNativeInstrument(meta, "WatchOrderBook", instrument, message.Result.S); err != nil {
-		return exchange.BookEvent{}, err
+	if message.Result.S != instrument.Identity.NativeSymbol {
+		return exchange.BookEvent{}, errGateForeignInstrument
 	}
 	return exchange.BookEvent{
 		Kind:       exchange.EventSnapshot,
@@ -119,8 +120,8 @@ func gatePerpOrderBookEvent(raw json.RawMessage, instrument exchange.Instrument,
 	if err := gateValidateFuturesOrderBook(meta, "WatchOrderBook", book); err != nil {
 		return exchange.BookEvent{}, err
 	}
-	if err := gateEnsureNativeInstrument(meta, "WatchOrderBook", instrument, message.Result.Contract); err != nil {
-		return exchange.BookEvent{}, err
+	if message.Result.Contract != instrument.Identity.NativeSymbol {
+		return exchange.BookEvent{}, errGateForeignInstrument
 	}
 	return exchange.BookEvent{
 		Kind:       exchange.EventSnapshot,
@@ -165,10 +166,16 @@ func gatePerpCandleEvents(raw json.RawMessage, instrument exchange.Instrument, i
 	events := make([]exchange.CandleEvent, 0, len(message.Result))
 	for _, row := range message.Result {
 		event, err := gateWSCandleEvent(meta, row, instrument, interval)
+		if errors.Is(err, errGateForeignInstrument) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
 		events = append(events, event)
+	}
+	if len(events) == 0 && len(message.Result) > 0 {
+		return nil, errGateForeignInstrument
 	}
 	if len(events) == 0 {
 		return nil, gateMalformed(meta, "WatchCandles", "gate candle update is empty")
@@ -177,8 +184,8 @@ func gatePerpCandleEvents(raw json.RawMessage, instrument exchange.Instrument, i
 }
 
 func gateWSCandleEvent(meta clientMeta, row gateWSCandlestick, instrument exchange.Instrument, interval string) (exchange.CandleEvent, error) {
-	if err := gateEnsureNativeInstrument(meta, "WatchCandles", instrument, gateWSCandleInstrument(row.N, interval)); err != nil {
-		return exchange.CandleEvent{}, err
+	if gateWSCandleInstrument(row.N, interval) != instrument.Identity.NativeSymbol {
+		return exchange.CandleEvent{}, errGateForeignInstrument
 	}
 	candlestick := gate.Candlestick{row.T, row.V, row.C, row.H, row.L, row.O}
 	if err := gateValidateCandles(meta, "WatchCandles", []gate.Candlestick{candlestick}); err != nil {
@@ -219,7 +226,9 @@ func (backend *gateSpotWSBackend) StartOrderBook(ctx context.Context, instrument
 	return backend.subscribe(ctx, gate.ChannelSpotOrderBook, gateSpotOrderBookSubscription(native), func(raw json.RawMessage) {
 		event, err := gateSpotOrderBookEvent(raw, instrument)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		if !first {
@@ -273,7 +282,9 @@ func (backend *gateSpotWSBackend) StartPublicTrades(ctx context.Context, instrum
 	return backend.subscribe(ctx, gate.ChannelSpotTrade, []string{native}, func(raw json.RawMessage) {
 		event, err := gateSpotPublicTradeEvent(raw, instrument)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		callbacks.Event(event)
@@ -285,7 +296,9 @@ func (backend *gateSpotWSBackend) StartCandles(ctx context.Context, instrument e
 	return backend.subscribe(ctx, "spot.candlesticks", []string{interval, native}, func(raw json.RawMessage) {
 		event, err := gateSpotCandleEvent(raw, instrument, interval)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		callbacks.Event(event)
@@ -297,7 +310,9 @@ func (backend *gateSpotWSBackend) StartOrders(ctx context.Context, instrument ex
 	return backend.subscribe(ctx, gate.ChannelSpotOrder, []string{native}, func(raw json.RawMessage) {
 		events, err := gateSpotOrderEvents(raw, instrument)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -311,7 +326,9 @@ func (backend *gateSpotWSBackend) StartFills(ctx context.Context, instrument exc
 	return backend.subscribe(ctx, gate.ChannelSpotUserTrade, []string{native}, func(raw json.RawMessage) {
 		events, err := gateSpotFillEvents(raw, instrument)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -324,7 +341,9 @@ func (backend *gateSpotWSBackend) StartBalances(ctx context.Context, callbacks s
 	return backend.subscribe(ctx, gate.ChannelSpotBalance, []string{}, func(raw json.RawMessage) {
 		events, err := gateSpotBalanceEvents(raw)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -444,7 +463,9 @@ func (backend *gatePerpWSBackend) StartOrderBook(ctx context.Context, instrument
 	return backend.subscribe(ctx, gate.ChannelFuturesOrderBook, gatePerpOrderBookSubscription(native), func(raw json.RawMessage) {
 		event, err := gatePerpOrderBookEvent(raw, instrument, multiplier)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		if !first {
@@ -464,7 +485,9 @@ func (backend *gatePerpWSBackend) StartPublicTrades(ctx context.Context, instrum
 	return backend.subscribe(ctx, gate.ChannelFuturesTrade, []string{native}, func(raw json.RawMessage) {
 		events, err := gatePerpPublicTradeEvents(raw, instrument, multiplier)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -502,8 +525,8 @@ func gatePerpPublicTradeEvents(raw json.RawMessage, instrument exchange.Instrume
 	}
 	events := make([]exchange.PublicTradeEvent, 0, len(rows))
 	for _, row := range rows {
-		if err := gateEnsureNativeInstrument(meta, "WatchPublicTrades", instrument, row.Contract); err != nil {
-			return nil, err
+		if row.Contract != instrument.Identity.NativeSymbol {
+			continue // another instrument multiplexed on this channel
 		}
 		side := exchange.SideBuy
 		size := gateDecimal(string(row.Size))
@@ -511,6 +534,9 @@ func gatePerpPublicTradeEvents(raw json.RawMessage, instrument exchange.Instrume
 			side = exchange.SideSell
 		}
 		events = append(events, exchange.PublicTradeEvent{Instrument: instrument, TradeID: gateOrderID(row.ID), Side: side, Price: gateDecimal(row.Price), Quantity: size.Abs().Mul(multiplier), Time: gateUnixSecondDecimalString(string(row.CreateTime))})
+	}
+	if len(events) == 0 && len(rows) > 0 {
+		return nil, errGateForeignInstrument
 	}
 	if len(events) == 0 {
 		return nil, gateMalformed(meta, "WatchPublicTrades", "gate futures trade update is empty")
@@ -520,13 +546,20 @@ func gatePerpPublicTradeEvents(raw json.RawMessage, instrument exchange.Instrume
 
 func (backend *gatePerpWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
 	native := instrument.Identity.NativeSymbol
+	multiplier, err := backend.rest.gateContractMultiplier("WatchCandles", instrument)
+	if err != nil {
+		return nil, err
+	}
 	return backend.subscribe(ctx, "futures.candlesticks", []string{interval, native}, func(raw json.RawMessage) {
 		events, err := gatePerpCandleEvents(raw, instrument, interval)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
+			event.Candle.Volume = event.Candle.Volume.Mul(multiplier)
 			callbacks.Event(event)
 		}
 	})
@@ -544,7 +577,9 @@ func (backend *gatePerpWSBackend) StartOrders(ctx context.Context, instrument ex
 	return backend.subscribe(ctx, gate.ChannelFuturesOrder, gatePerpPrivateInstrumentPayload(userID, instrument.Identity.NativeSymbol), func(raw json.RawMessage) {
 		events, err := gateFuturesOrderEvents(raw, instrument, multiplier)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -565,7 +600,9 @@ func (backend *gatePerpWSBackend) StartFills(ctx context.Context, instrument exc
 	return backend.subscribe(ctx, gate.ChannelFuturesUserTrade, gatePerpPrivateInstrumentPayload(userID, instrument.Identity.NativeSymbol), func(raw json.RawMessage) {
 		events, err := gateFuturesFillEvents(raw, instrument, multiplier)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -582,7 +619,9 @@ func (backend *gatePerpWSBackend) StartBalances(ctx context.Context, callbacks s
 	return backend.subscribe(ctx, gate.ChannelFuturesBalance, gatePerpPrivateAccountPayload(userID), func(raw json.RawMessage) {
 		events, err := gateFuturesBalanceEvents(raw)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -603,7 +642,9 @@ func (backend *gatePerpWSBackend) StartPositions(ctx context.Context, instrument
 	return backend.subscribe(ctx, gate.ChannelFuturesPosition, gatePerpPrivateInstrumentPayload(userID, instrument.Identity.NativeSymbol), func(raw json.RawMessage) {
 		events, err := gateFuturesPositionEvents(raw, instrument, multiplier)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -770,8 +811,8 @@ func gatePerpReferenceEvents(raw json.RawMessage, instrument exchange.Instrument
 	}
 	events := make([]perpReferenceEvent, 0, len(message.Result))
 	for _, row := range message.Result {
-		if err := gateEnsureNativeInstrument(meta, "WatchMarkPrice", instrument, row.Contract); err != nil {
-			return nil, err
+		if row.Contract != instrument.Identity.NativeSymbol {
+			continue // another instrument multiplexed on this channel
 		}
 		if row.MarkPrice != "" {
 			if err := gateValidateDecimal(meta, "WatchMarkPrice", "mark price", row.MarkPrice); err != nil {
@@ -791,6 +832,9 @@ func gatePerpReferenceEvents(raw json.RawMessage, instrument exchange.Instrument
 			FundingRate:  exchange.FundingRateEvent{Instrument: instrument, Rate: gateDecimal(row.FundingRate), EffectiveAt: at},
 		})
 	}
+	if len(events) == 0 && len(message.Result) > 0 {
+		return nil, errGateForeignInstrument
+	}
 	if len(events) == 0 {
 		return nil, gateMalformed(meta, "WatchMarkPrice", "gate futures ticker update is empty")
 	}
@@ -801,7 +845,9 @@ func (backend *gatePerpWSBackend) StartReference(ctx context.Context, instrument
 	return backend.subscribe(ctx, "futures.tickers", []string{instrument.Identity.NativeSymbol}, func(raw json.RawMessage) {
 		events, err := gatePerpReferenceEvents(raw, instrument)
 		if err != nil {
-			callbacks.Error(err)
+			if !errors.Is(err, errGateForeignInstrument) {
+				callbacks.Error(err)
+			}
 			return
 		}
 		for _, event := range events {
@@ -831,8 +877,8 @@ func gateSpotPublicTradeEvent(raw json.RawMessage, instrument exchange.Instrumen
 	if err := gateValidateSpotPublicTrades(meta, "WatchPublicTrades", []gate.Trade{message.Result}); err != nil {
 		return exchange.PublicTradeEvent{}, err
 	}
-	if err := gateEnsureNativeInstrument(meta, "WatchPublicTrades", instrument, message.Result.CurrencyPair); err != nil {
-		return exchange.PublicTradeEvent{}, err
+	if message.Result.CurrencyPair != instrument.Identity.NativeSymbol {
+		return exchange.PublicTradeEvent{}, errGateForeignInstrument
 	}
 	return exchange.PublicTradeEvent{Instrument: instrument, TradeID: message.Result.ID, Side: gateSide(message.Result.Side), Price: gateDecimal(message.Result.Price), Quantity: gateDecimal(message.Result.Amount), Time: gateTimeMS(message.Result.CreateTimeMS)}, nil
 }
@@ -848,8 +894,8 @@ func gateSpotOrderEvents(raw []byte, instrument exchange.Instrument) ([]exchange
 	}
 	events := make([]exchange.OrderEvent, 0, len(message.Orders))
 	for _, row := range message.Orders {
-		if err := gateEnsureNativeInstrument(meta, "WatchOrders", instrument, row.CurrencyPair); err != nil {
-			return nil, err
+		if row.CurrencyPair != instrument.Identity.NativeSymbol {
+			continue // another instrument multiplexed on this channel
 		}
 		events = append(events, exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateSpotOrder(row, instrument)})
 	}
@@ -867,8 +913,8 @@ func gateFuturesOrderEvents(raw []byte, instrument exchange.Instrument, multipli
 	}
 	events := make([]exchange.OrderEvent, 0, len(message.Orders))
 	for _, row := range message.Orders {
-		if err := gateEnsureNativeInstrument(meta, "WatchOrders", instrument, row.Contract); err != nil {
-			return nil, err
+		if row.Contract != instrument.Identity.NativeSymbol {
+			continue // another instrument multiplexed on this channel
 		}
 		events = append(events, exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateFuturesOrder(row, instrument, multiplier)})
 	}
@@ -886,8 +932,8 @@ func gateSpotFillEvents(raw []byte, instrument exchange.Instrument) ([]exchange.
 	}
 	fills := make([]exchange.Fill, 0, len(message.Trades))
 	for _, row := range message.Trades {
-		if err := gateEnsureNativeInstrument(meta, "WatchFills", instrument, row.CurrencyPair); err != nil {
-			return nil, err
+		if row.CurrencyPair != instrument.Identity.NativeSymbol {
+			continue // another instrument multiplexed on this channel
 		}
 		fills = append(fills, exchange.Fill{NativeSymbol: row.CurrencyPair, NativeID: instrument.Identity.NativeID, OrderID: row.OrderID, ClientOrderID: gatePortableClientOrderID(row.Text), FillID: row.ID, Side: gateSide(row.Side), Price: gateDecimal(row.Price), Quantity: gateDecimal(row.Amount), Fee: gateDecimal(row.Fee), FeeAsset: row.FeeCurrency, Liquidity: gateLiquidity(row.Role), Time: gateTimeMS(row.CreateTimeMS)})
 	}
@@ -908,8 +954,8 @@ func gateFuturesFillEvents(raw []byte, instrument exchange.Instrument, multiplie
 		return nil, err
 	}
 	for _, row := range message.Trades {
-		if err := gateEnsureNativeInstrument(meta, "WatchFills", instrument, row.Contract); err != nil {
-			return nil, err
+		if row.Contract != instrument.Identity.NativeSymbol {
+			continue // another instrument multiplexed on this channel
 		}
 	}
 	fills := gateFuturesFills(message.Trades, instrument, multiplier)
@@ -967,8 +1013,8 @@ func gateFuturesPositionEvents(raw []byte, instrument exchange.Instrument, multi
 	}
 	positions := make([]exchange.Position, 0, len(message.Positions))
 	for _, row := range message.Positions {
-		if err := gateEnsureNativeInstrument(meta, "WatchPositions", instrument, row.Contract); err != nil {
-			return nil, err
+		if row.Contract != instrument.Identity.NativeSymbol {
+			continue // another instrument multiplexed on this channel
 		}
 		side := exchange.SideBuy
 		size := row.Size
@@ -981,6 +1027,13 @@ func gateFuturesPositionEvents(raw []byte, instrument exchange.Instrument, multi
 	return []exchange.PositionEvent{{Kind: exchange.EventDelta, Positions: positions, Time: time.Now().UTC()}}, nil
 }
 
+// errGateForeignInstrument marks a message for another instrument. Gate
+// multiplexes every subscription of a channel on one connection, so each
+// handler sees its siblings' messages and must ignore them.
+var errGateForeignInstrument = errors.New("gate message for another instrument")
+
+// gateEnsureNativeInstrument is the strict check for REST responses, which
+// answer exactly the instrument requested.
 func gateEnsureNativeInstrument(meta clientMeta, operation string, instrument exchange.Instrument, native string) error {
 	if strings.TrimSpace(native) == "" || native != instrument.Identity.NativeSymbol {
 		return meta.catalogMetadataResolution(operation, "gate native instrument does not match requested instrument")

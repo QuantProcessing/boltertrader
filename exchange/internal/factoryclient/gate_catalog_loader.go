@@ -63,6 +63,7 @@ func gateCatalogTradableFuturesRows(rows []gate.Contract) []gate.Contract {
 		if row.Status != "" && row.Status != "trading" {
 			continue
 		}
+		row.OrderSizeMin = gateIntegerOrderSizeMin(row)
 		if row.OrderSizeMin <= 0 {
 			continue
 		}
@@ -157,6 +158,16 @@ func gateValidateSpotInstrumentRow(meta clientMeta, operation string, row gate.C
 		}
 	}
 	return nil
+}
+
+// gateIntegerOrderSizeMin returns the minimum whole-contract order size. The
+// adapter always sends integer contract sizes, so a decimal-enabled contract
+// (which reports 0) trades in whole contracts with a minimum of one.
+func gateIntegerOrderSizeMin(row gate.Contract) int64 {
+	if row.OrderSizeMin <= 0 && row.EnableDecimal {
+		return 1
+	}
+	return row.OrderSizeMin
 }
 
 func gateValidateFuturesInstrumentRow(meta clientMeta, operation string, row gate.Contract) error {

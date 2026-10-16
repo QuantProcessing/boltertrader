@@ -1,49 +1,30 @@
-FROM golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5 AS build
+# One image, two processes: gateway and trader (which also serves the web app).
 
+FROM node:22-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+FROM golang:1.26-alpine AS go
 WORKDIR /src
-
 COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
-
-ARG TARGETOS
-ARG TARGETARCH
-ARG GOPROXY=https://proxy.golang.org,direct
-
-# One image carries every process in the stack. The alternative — an image per
-# service — would rebuild the same module graph five times and let the five
-# copies drift apart in Go version and dependency set, which is precisely the
-# skew that makes a "works in gateway, fails in trading" bug expensive. Compose
-# selects the process by overriding the entrypoint; the image stays one artifact.
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    set -eu; \
-    for target in \
-      exchange-gateway \
-      exchange-gateway-docker-support \
-      gateway-migrate \
-      gateway-market \
-      gateway-monitor \
-      trading \
-      trading-migrate \
-      authedge \
-      authedge-migrate \
-    ; do \
-      CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" GOPROXY="${GOPROXY}" \
-      go build -trimpath -ldflags="-s -w -buildid=" \
-        -o "/out/${target}" "./cmd/${target}"; \
+ARG TARGETOS TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    for cmd in gateway trader; do \
+      CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/$cmd ./cmd/$cmd; \
     done
+# A named volume mounted at /data copies this directory's ownership, so the
+# nonroot user (65532) can write state without running as root.
+RUN mkdir -p /data/gateway /data/trader && chown -R 65532:65532 /data && chmod -R 0700 /data
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6
-
-COPY --from=build --chown=nonroot:nonroot /out/ /usr/local/bin/
-
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=go /out/ /usr/local/bin/
+COPY --from=web /web/dist /srv/web
+COPY --from=go --chown=65532:65532 /data /data
+ENV TRADER_WEB_DIR=/srv/web
 USER nonroot:nonroot
-EXPOSE 18080 18091 18092
-
-# The default process stays the Gateway so the image behaves exactly as it did
-# when it held only that binary; the other services override both of these.
-HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=6 \
-  CMD ["/usr/local/bin/exchange-gateway-docker-support", "health", "-config", "/etc/boltertrader/gateway.yaml", "-kind", "ready"]
-
-ENTRYPOINT ["/usr/local/bin/exchange-gateway-docker-support"]
-CMD ["run", "-config", "/etc/boltertrader/gateway.yaml"]
+ENTRYPOINT ["/usr/local/bin/gateway"]

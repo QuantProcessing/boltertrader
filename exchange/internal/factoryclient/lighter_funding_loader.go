@@ -61,7 +61,7 @@ func (loader lighterDerivativeSnapshotLoader) LoadDerivativeSnapshot(ctx context
 			}
 			details[detail.MarketId] = marketDetail{
 				markPrice: detail.MarkPrice, indexPrice: detail.IndexPrice,
-				openInterest: strconv.FormatFloat(detail.OpenInterest, 'f', -1, 64),
+				openInterest: strconv.FormatFloat(float64(detail.OpenInterest), 'f', -1, 64),
 			}
 		}
 	}

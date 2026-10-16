@@ -50,6 +50,9 @@ type PlaceOrderParams struct {
 	WorkingType      string // Optional
 	PriceProtect     bool   // Optional
 	ReduceOnly       bool   // Optional
+	// NewOrderRespType selects ACK (venue default) or RESULT. RESULT makes a
+	// MARKET order return its final status and fill instead of NEW.
+	NewOrderRespType string // Optional
 }
 
 type AlgoOrderResponse struct {
@@ -180,6 +183,9 @@ func (c *Client) PlaceOrder(ctx context.Context, p PlaceOrderParams) (*OrderResp
 	}
 	if p.ReduceOnly {
 		params["reduceOnly"] = "true"
+	}
+	if p.NewOrderRespType != "" {
+		params["newOrderRespType"] = p.NewOrderRespType
 	}
 
 	var res OrderResponse

@@ -364,27 +364,27 @@ func TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch(t *testin
 		{
 			name: "market",
 			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2001", Side: exchange.SideBuy, Type: exchange.OrderTypeMarket, Quantity: decimal.RequireFromString("1.5")},
-			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "MARKET", Quantity: "1.5", NewClientOrderID: "2001"},
+			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "MARKET", Quantity: "1.5", NewClientOrderID: "2001", NewOrderRespType: "RESULT"},
 		},
 		{
 			name: "limit-resting",
 			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2002", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("2"), LimitPrice: decimal.RequireFromString("100.5"), LimitPolicy: exchange.LimitPolicyResting},
-			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "GTC", Quantity: "2", Price: "100.5", NewClientOrderID: "2002"},
+			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "GTC", Quantity: "2", Price: "100.5", NewClientOrderID: "2002", NewOrderRespType: "RESULT"},
 		},
 		{
 			name: "limit-ioc",
 			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2003", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("2.5"), LimitPrice: decimal.RequireFromString("100.75"), LimitPolicy: exchange.LimitPolicyIOC},
-			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "IOC", Quantity: "2.5", Price: "100.75", NewClientOrderID: "2003"},
+			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "IOC", Quantity: "2.5", Price: "100.75", NewClientOrderID: "2003", NewOrderRespType: "RESULT"},
 		},
 		{
 			name: "post-only",
 			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2004", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("3"), LimitPrice: decimal.RequireFromString("99.5"), LimitPolicy: exchange.LimitPolicyPostOnly},
-			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "LIMIT", TimeInForce: "GTX", Quantity: "3", Price: "99.5", NewClientOrderID: "2004"},
+			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "LIMIT", TimeInForce: "GTX", Quantity: "3", Price: "99.5", NewClientOrderID: "2004", NewOrderRespType: "RESULT"},
 		},
 		{
 			name: "reduce-only",
 			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2005", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("4"), LimitPrice: decimal.RequireFromString("99"), LimitPolicy: exchange.LimitPolicyResting, ReduceOnly: true},
-			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "GTC", Quantity: "4", Price: "99", NewClientOrderID: "2005", ReduceOnly: true},
+			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "GTC", Quantity: "4", Price: "99", NewClientOrderID: "2005", ReduceOnly: true, NewOrderRespType: "RESULT"},
 		},
 	}
 	for _, tc := range cases {

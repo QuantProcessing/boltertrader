@@ -16,3 +16,5 @@ web/.env.local
 /.playwright-cli/
 
 __pycache__/
+/data/
+/bin/

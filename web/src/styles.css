@@ -1,0 +1,100 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+/* Tokens from DESIGN.md. */
+@theme {
+  --color-bg: #0f1a1f;
+  --color-surface: #1b2429;
+  --color-raised: #273035;
+  --color-line: #273035;
+  --color-line-strong: #575e62;
+  --color-text: #f6fefd;
+  --color-text-2: #d2dad7;
+  --color-muted: #949e9c;
+  --color-faint: #9aa3a48c;
+  --color-accent: #50d2c1;
+  --color-accent-hover: #97fce4;
+  --color-on-accent: #04060c;
+  --color-accent-soft: #0e3333;
+  --color-long: #1fa67d;
+  --color-up: #50d2c1;
+  --color-down: #ed7088;
+  --color-short-deep: #732a36;
+  --color-warn-bg: #2e0c18;
+
+  --font-sans: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --text-xs: 10px;
+  --text-sm: 12px;
+  --text-base: 12px;
+  --text-md: 14px;
+  --text-lg: 20px;
+  --radius-sm: 4px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+*:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Thin, dark scrollbars like the reference. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #273035 transparent;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.dotted {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-line-strong);
+}
+
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(to right, var(--color-accent) var(--fill, 0%), var(--color-raised) var(--fill, 0%));
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--color-surface);
+  border: 2px solid var(--color-accent);
+  cursor: pointer;
+}
+.range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--color-surface);
+  border: 2px solid var(--color-accent);
+  cursor: pointer;
+}

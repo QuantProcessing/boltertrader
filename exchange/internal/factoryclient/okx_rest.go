@@ -756,7 +756,8 @@ func okxCandles(ctx context.Context, sdk *okx.Client, product exchange.Product, 
 		value := strconv.FormatInt(req.Start.UnixMilli(), 10)
 		before = &value
 	}
-	rows, err := sdk.GetCandles(ctx, req.Instrument.Identity.NativeSymbol, &req.Interval, after, before, okxLimitPtr(req.Limit))
+	bar := okxRESTBar(req.Interval)
+	rows, err := sdk.GetCandles(ctx, req.Instrument.Identity.NativeSymbol, &bar, after, before, okxLimitPtr(req.Limit))
 	if err != nil {
 		return exchange.CandlePage{}, okxNormalizeErr(product, "Candles", err)
 	}
@@ -1435,6 +1436,16 @@ func okxExchangeSide(raw string) (exchange.Side, error) {
 	default:
 		return "", errors.New("unknown side")
 	}
+}
+
+// okxRESTBar maps a portable interval onto OKX's bar code: minutes stay
+// lower-case ("15m"), hours and larger are upper-case ("1H", "1D", "1W").
+// OKX rejects "1h" with 51000 "Parameter bar error".
+func okxRESTBar(interval string) string {
+	if strings.HasSuffix(interval, "m") {
+		return interval
+	}
+	return strings.ToUpper(interval)
 }
 
 func okxIntervalDuration(interval string) (time.Duration, error) {

@@ -494,6 +494,9 @@ func binancePerpPlaceParams(symbol string, req exchange.PlaceOrderRequest) binan
 		Quantity:         req.Quantity.String(),
 		NewClientOrderID: req.ClientOrderID,
 		ReduceOnly:       req.ReduceOnly,
+		// RESULT returns the matching-engine outcome synchronously, so a market
+		// order acknowledges as FILLED with its average price rather than NEW.
+		NewOrderRespType: "RESULT",
 	}
 	if req.Type == exchange.OrderTypeMarket {
 		params.Type = "MARKET"

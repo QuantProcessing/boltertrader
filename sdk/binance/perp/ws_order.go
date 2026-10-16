@@ -41,6 +41,9 @@ func (c *WsAPIClient) PlaceOrderWS(apiKey, secretKey string, p PlaceOrderParams,
 	if p.ClosePosition {
 		params["closePosition"] = "true"
 	}
+	if p.NewOrderRespType != "" {
+		params["newOrderRespType"] = p.NewOrderRespType
+	}
 
 	// Sign
 	q := BuildQueryString(params)

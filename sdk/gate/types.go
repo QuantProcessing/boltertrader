@@ -191,16 +191,19 @@ type Contract struct {
 	InterestRate      string  `json:"interest_rate"`
 	OrderPriceRound   string  `json:"order_price_round"`
 	OrderSizeMin      int64   `json:"order_size_min"`
-	OrderSizeMax      int64   `json:"order_size_max"`
-	FundingInterval   int64   `json:"funding_interval"`
-	LeverageMin       string  `json:"leverage_min"`
-	LeverageMax       string  `json:"leverage_max"`
-	RiskLimitStep     string  `json:"risk_limit_step"`
-	RiskLimitMax      string  `json:"risk_limit_max"`
-	MakerFeeRate      string  `json:"maker_fee_rate"`
-	TakerFeeRate      string  `json:"taker_fee_rate"`
-	FundingRate       string  `json:"funding_rate"`
-	Status            string  `json:"status"`
+	// EnableDecimal marks contracts that also accept fractional sizes when the
+	// request opts in. Those report order_size_min 0; integer sizes stay valid.
+	EnableDecimal   bool   `json:"enable_decimal"`
+	OrderSizeMax    int64  `json:"order_size_max"`
+	FundingInterval int64  `json:"funding_interval"`
+	LeverageMin     string `json:"leverage_min"`
+	LeverageMax     string `json:"leverage_max"`
+	RiskLimitStep   string `json:"risk_limit_step"`
+	RiskLimitMax    string `json:"risk_limit_max"`
+	MakerFeeRate    string `json:"maker_fee_rate"`
+	TakerFeeRate    string `json:"taker_fee_rate"`
+	FundingRate     string `json:"funding_rate"`
+	Status          string `json:"status"`
 }
 
 type FuturesTicker struct {

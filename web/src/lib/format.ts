@@ -1,216 +1,96 @@
-/**
- * Decimal presentation.
- *
- * Every quantity, price and balance crossing the API is a string, because the
- * services carry them as arbitrary-precision decimals. Nothing in this file
- * parses one into a `number`. A float round-trip of "0.1" is invisible in a
- * label and catastrophic in an order ticket, and once a value has been through
- * `parseFloat` there is no way to tell from the result whether it was harmed.
- *
- * So: grouping, padding and sign handling are string operations, and the value
- * that reaches the DOM is a transformation of the value the server sent.
- */
+// Display formatting. Values arrive as decimal strings; arithmetic for display
+// uses Number, which is exact enough for rendering but never for order sizes —
+// sizes are snapped with snapToStep, which works on strings.
 
-/**
- * U+202F NARROW NO-BREAK SPACE, not U+2009 THIN SPACE.
- *
- * The two render alike and differ in one property: a thin space is a break
- * opportunity. Under `white-space: normal` that is enough for `114 250.19` to
- * split after the `114` and arrive on two lines inside a 22px order-book row —
- * a number that is no longer one number, at a width nobody chose. The no-break
- * form cannot do that at any width, which is the property being bought here.
- *
- * Comma and period stay out of it either way: each means the opposite thing to
- * half the world.
- */
-const GROUP_SEPARATOR = " ";
-const MINUS = "−"; // true minus, so a negative aligns with a positive digit
-
-export interface DecimalParts {
-  sign: "+" | "-" | "";
-  integer: string;
-  fraction: string;
+export function decimals(step: string): number {
+  const dot = step.indexOf(".");
+  if (dot < 0) return 0;
+  return step.slice(dot + 1).replace(/0+$/, "").length;
 }
 
-/** Splits a decimal string without interpreting it. Returns null if it is not one. */
-export function splitDecimal(value: string): DecimalParts | null {
-  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(value.trim());
-  if (!match) {
-    return null;
+const cache = new Map<string, Intl.NumberFormat>();
+function formatter(min: number, max: number): Intl.NumberFormat {
+  const key = min + ":" + max;
+  let value = cache.get(key);
+  if (!value) {
+    value = new Intl.NumberFormat("en-US", { minimumFractionDigits: min, maximumFractionDigits: max });
+    cache.set(key, value);
   }
-  const integer = match[2] ?? "";
-  const fraction = match[3] ?? "";
-  if (integer === "" && fraction === "") {
-    // Bare "", "+", "-" and "." all land here.
-    return null;
-  }
-  return {
-    sign: match[1] === "+" ? "+" : match[1] === "-" ? "-" : "",
-    integer: integer === "" ? "0" : integer,
-    fraction,
+  return value;
+}
+
+export function num(value: string | number | undefined | null, digits?: number): string {
+  if (value === undefined || value === null || value === "") return "—";
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return "—";
+  if (digits !== undefined) return formatter(digits, digits).format(n);
+  const abs = Math.abs(n);
+  const max = abs >= 1000 ? 2 : abs >= 1 ? 4 : abs >= 0.01 ? 6 : 8;
+  return formatter(0, max).format(n);
+}
+
+export function price(value: string | number | undefined, tickSize?: string): string {
+  return num(value, tickSize ? decimals(tickSize) : undefined);
+}
+
+export function usd(value: string | number | undefined, digits = 2): string {
+  if (value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return (n < 0 ? "-$" : "$") + formatter(digits, digits).format(Math.abs(n));
+}
+
+export function signed(value: number, digits = 2): string {
+  return (value > 0 ? "+" : value < 0 ? "-" : "") + formatter(digits, digits).format(Math.abs(value));
+}
+
+export function pct(value: number, digits = 2): string {
+  return signed(value * 100, digits) + "%";
+}
+
+export function compact(value: string | number | undefined): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(n);
+}
+
+export function time(ms: number): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  return d.toLocaleString("en-GB", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+export function countdown(targetMs: number | undefined, now: number): string {
+  if (!targetMs) return "—";
+  const total = Math.max(0, Math.floor((targetMs - now) / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return [h, m, s].map((v) => String(v).padStart(2, "0")).join(":");
+}
+
+/**
+ * Floors a positive decimal string to a multiple of step, as a string, using
+ * scaled BigInt arithmetic so no binary rounding error can reach an order.
+ */
+export function snapToStep(value: string, step: string): string {
+  const scale = Math.max(decimals(step), decimals(value));
+  const toUnits = (text: string) => {
+    const [whole = "0", fraction = ""] = text.split(".");
+    return BigInt(whole + fraction.padEnd(scale, "0").slice(0, scale));
   };
+  if (!/^\d*\.?\d*$/.test(value) || value === "" || value === ".") return "";
+  const units = toUnits(value);
+  const stepUnits = toUnits(step);
+  if (stepUnits <= 0n) return value;
+  const snapped = (units / stepUnits) * stepUnits;
+  const text = snapped.toString().padStart(scale + 1, "0");
+  const whole = text.slice(0, text.length - scale) || "0";
+  const fraction = scale ? text.slice(text.length - scale).replace(/0+$/, "") : "";
+  return fraction ? `${whole}.${fraction}` : whole;
 }
 
-function group(integer: string): string {
-  if (integer.length <= 4) {
-    // Four digits stay solid. "1 234" reads as two values at a glance; "1234"
-    // does not, and prices in this range are the common case.
-    return integer;
-  }
-  let out = "";
-  for (let i = integer.length; i > 0; i -= 3) {
-    const start = Math.max(0, i - 3);
-    out = integer.slice(start, i) + (out === "" ? "" : GROUP_SEPARATOR + out);
-  }
-  return out;
-}
-
-export interface FormatOptions {
-  /** Pad or truncate the fraction to exactly this many places. */
-  decimals?: number;
-  /** Show a leading + on positive values. Off by default; on for deltas. */
-  signed?: boolean;
-  /** Insert thin-space group separators in the integer part. On by default. */
-  grouped?: boolean;
-}
-
-/**
- * Formats a decimal string for display. Unparseable input is returned as-is
- * rather than replaced with a placeholder — if the server sends something
- * unexpected the operator should see it, not a dash that hides it.
- */
-export function formatDecimal(value: string | null | undefined, options: FormatOptions = {}): string {
-  if (value === null || value === undefined || value === "") {
-    return "—";
-  }
-  const parts = splitDecimal(value);
-  if (!parts) {
-    return value;
-  }
-
-  const { decimals, signed = false, grouped = true } = options;
-
-  let fraction = parts.fraction;
-  if (decimals !== undefined) {
-    fraction = fraction.slice(0, decimals).padEnd(decimals, "0");
-  }
-
-  const integer = grouped ? group(parts.integer) : parts.integer;
-  const magnitude = fraction === "" ? integer : `${integer}.${fraction}`;
-
-  if (parts.sign === "-") {
-    return isZero(parts) ? magnitude : MINUS + magnitude;
-  }
-  if (signed && !isZero(parts)) {
-    return "+" + magnitude;
-  }
-  return magnitude;
-}
-
-function isZero(parts: DecimalParts): boolean {
-  return /^0*$/.test(parts.integer) && /^0*$/.test(parts.fraction);
-}
-
-/** -1, 0 or 1. Used to pick a colour, never to do arithmetic. */
-export function decimalSign(value: string | null | undefined): -1 | 0 | 1 {
-  if (!value) return 0;
-  const parts = splitDecimal(value);
-  if (!parts || isZero(parts)) return 0;
-  return parts.sign === "-" ? -1 : 1;
-}
-
-/** Compact instrument rendering: BTC-USDT stays BTC-USDT, but the pair splits. */
-export function splitInstrument(instrumentId: string): { base: string; quote: string | null } {
-  const index = instrumentId.lastIndexOf("-");
-  if (index <= 0) {
-    return { base: instrumentId, quote: null };
-  }
-  return { base: instrumentId.slice(0, index), quote: instrumentId.slice(index + 1) };
-}
-
-/**
- * Which language the dates speak.
- *
- * Pushed in by `lib/i18n` rather than read from it, because this is the lower
- * of the two modules and importing upward would drag that module's side effects
- * into every test that formats a number. `undefined` means the browser's own
- * language — the right answer until a reader picks one, and the only sensible
- * answer in a test that never renders the app.
- *
- * Only `DATE_TIME` actually moves: `Aug 19, 10:11:28` against `8月19日 10:11:28`.
- * A 24-hour clock is digits and colons in both, so `TIME` is rebuilt for
- * symmetry rather than necessity.
- */
-let dateLocale: string | undefined;
-let TIME = timeFormat();
-let DATE_TIME = dateTimeFormat();
-
-function timeFormat(): Intl.DateTimeFormat {
-  return new Intl.DateTimeFormat(dateLocale, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}
-
-function dateTimeFormat(): Intl.DateTimeFormat {
-  return new Intl.DateTimeFormat(dateLocale, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}
-
-/** Called by `lib/i18n` when the reader picks a language. */
-export function setDateLocale(locale: string): void {
-  if (locale === dateLocale) return;
-  dateLocale = locale;
-  TIME = timeFormat();
-  DATE_TIME = dateTimeFormat();
-}
-
-/** Time of day for today's events, date-qualified for anything older. */
-export function formatTimestamp(iso: string | null | undefined, now: Date = new Date()): string {
-  if (!iso) return "—";
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  const sameDay =
-    at.getFullYear() === now.getFullYear() &&
-    at.getMonth() === now.getMonth() &&
-    at.getDate() === now.getDate();
-  return sameDay ? TIME.format(at) : DATE_TIME.format(at);
-}
-
-/** Full local timestamp for operational records whose date must never vanish. */
-export function formatFullTimestamp(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  const part = (value: number) => String(value).padStart(2, "0");
-  return `${at.getFullYear()}-${part(at.getMonth() + 1)}-${part(at.getDate())} ${part(at.getHours())}:${part(at.getMinutes())}:${part(at.getSeconds())}`;
-}
-
-/** "4s", "1m 20s" — for countdowns the operator is racing. */
-export function formatDuration(milliseconds: number): string {
-  const total = Math.max(0, Math.round(milliseconds / 1000));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
-}
-
-/**
- * Keeps opaque identifiers recognisable without letting them determine layout.
- *
- * The prefix and tail are the useful parts when matching a toast to logs. The
- * complete value still belongs in a title/copy surface at the call site.
- */
-export function compactIdentifier(value: string, maxLength = 28): string {
-  const trimmed = value.trim();
-  if (trimmed.length <= maxLength || maxLength < 12) return trimmed;
-  const tailLength = 6;
-  return `${trimmed.slice(0, maxLength - tailLength - 1)}…${trimmed.slice(-tailLength)}`;
+export function instrumentName(id: string): string {
+  const parts = id.split(":");
+  return parts.slice(2).join(":");
 }

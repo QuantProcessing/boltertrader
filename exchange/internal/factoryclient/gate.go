@@ -291,7 +291,20 @@ func (client *gatePerpClient) Candles(ctx context.Context, request exchange.Cand
 	if err := gateValidateCandles(client.meta, "Candles", candlesticks); err != nil {
 		return exchange.CandlePage{}, err
 	}
-	return gateCandlePage(candlesticks, request, interval), nil
+	multiplier, err := client.gateContractMultiplier("Candles", request.Instrument)
+	if err != nil {
+		return exchange.CandlePage{}, err
+	}
+	return gateCandleVolumeInBase(gateCandlePage(candlesticks, request, interval), multiplier), nil
+}
+
+// gateCandleVolumeInBase converts Gate futures candle volume, which is counted
+// in contracts, into base-asset units like every other venue reports.
+func gateCandleVolumeInBase(page exchange.CandlePage, multiplier decimal.Decimal) exchange.CandlePage {
+	for i := range page.Candles {
+		page.Candles[i].Volume = page.Candles[i].Volume.Mul(multiplier)
+	}
+	return page
 }
 
 func (client *gateSpotClient) PublicTrades(ctx context.Context, request exchange.PublicTradesRequest) (exchange.PublicTradePage, error) {
@@ -463,6 +476,11 @@ func gateBookLevels(rows [][]gate.NumberString) []exchange.BookLevel {
 func gateFuturesBookLevels(rows []gate.FuturesOrderBookItem, multiplier decimal.Decimal) []exchange.BookLevel {
 	out := make([]exchange.BookLevel, 0, len(rows))
 	for _, row := range rows {
+		// Gate's complete futures books can carry emptied levels (size 0) on
+		// decimal-enabled contracts. An empty level is not part of the book.
+		if row.Size <= 0 {
+			continue
+		}
 		out = append(out, exchange.BookLevel{Price: gateDecimal(row.Price), Quantity: decimal.NewFromInt(row.Size).Mul(multiplier)})
 	}
 	return out

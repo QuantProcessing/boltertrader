@@ -1,46 +1,9 @@
 .git
-.gitignore
-.omx
-.codex
-.agents
-
-.env
-.env.*
-**/.env
-**/.env.*
-
-**/*_test.go
-coverage.out
-coverage.*
-*.prof
-*.test
-
-docs
-docker
-.github
-
-# Build inputs, not build outputs. node_modules alone is tens of thousands of
-# files, and it reaches both images the same way — as context the daemon has to
-# read before it can decide it was never needed. The web image installs from the
-# lockfile inside the build; the Go image has no use for any of it.
+data
+bin
 web/node_modules
 web/dist
-web/test-results
-web/playwright-report
-
-Makefile
+docs
+**/*_test.go
 *.md
-
-*.pem
-*.key
-*.p12
-*.pfx
-*.jks
-
-tmp
-temp
-
-.secrets
-.local
-output
-.playwright-cli
+.env*

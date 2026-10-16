@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"testing"
@@ -179,30 +180,44 @@ func TestGatePerpPublicTradePayloadAcceptsTheArrayShape(t *testing.T) {
 	}
 }
 
-func TestGatePublicWebSocketRejectsMismatchedNativeIdentity(t *testing.T) {
+func TestGatePublicWebSocketIgnoresOtherInstruments(t *testing.T) {
 	spotInstrument := gateTestInstrument(exchange.ProductSpot)
 	perpInstrument := gateTestInstrument(exchange.ProductPerp)
 
 	_, err := gateSpotOrderBookEvent(json.RawMessage(`{"result":{"t":1606295412123,"lastUpdateId":48791820,"s":"ETH_USDT","bids":[["19079.55","0.0195"]],"asks":[["19080.24","0.1638"]]}}`), spotInstrument)
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 
 	_, err = gatePerpOrderBookEvent(json.RawMessage(`{"result":{"t":1541500161123,"contract":"ETH_USDT","id":93973511,"asks":[{"p":"97.1","s":2245}],"bids":[{"p":"96.9","s":3100}]}}`), perpInstrument, decimal.RequireFromString("0.001"))
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 
 	_, err = gateSpotPublicTradeEvent(json.RawMessage(`{"result":{"id":"1","currency_pair":"ETH_USDT","side":"buy","amount":"0.1","price":"100","create_time_ms":"1720000000000"}}`), spotInstrument)
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 
 	_, err = gateSpotCandleEvent(json.RawMessage(`{"result":{"t":"1606292580","v":"1","c":"100","h":"101","l":"99","o":"100","n":"1m_ETH_USDT","w":true}}`), spotInstrument, "1m")
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 
 	_, err = gatePerpCandleEvents(json.RawMessage(`{"result":[{"t":1545129300,"v":1,"c":"95.4","h":"96.9","l":"89.5","o":"94.3","n":"1m_ETH_USDT","w":false}]}`), perpInstrument, "1m")
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 
 	_, err = gatePerpPublicTradeEvents(json.RawMessage(`{"result":[{"id":2,"create_time":1720000000.125,"contract":"ETH_USDT","size":"1","price":"100"}]}`), perpInstrument, decimal.RequireFromString("0.001"))
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 
 	_, err = gatePerpReferenceEvents(json.RawMessage(`{"result":[{"contract":"ETH_USDT","funding_rate":"0.0001","mark_price":"100"}]}`), perpInstrument)
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 }
 
 func TestGatePerpOrderPayloadAcceptsDocumentedLifecycleMarkers(t *testing.T) {
@@ -282,11 +297,24 @@ func TestGateWebSocketParsesPrivateEnvelopeResultArrays(t *testing.T) {
 	}
 }
 
-func TestGatePrivateWebSocketUnknownNativeIdentityFailsMetadataResolution(t *testing.T) {
+// Gate multiplexes every subscription of a channel on one connection, so a
+// per-instrument handler receives its siblings' rows and must skip them.
+func TestGatePrivateWebSocketSkipsOtherInstruments(t *testing.T) {
 	instrument := gateTestInstrument(exchange.ProductSpot)
 	raw := []byte(`{"time":1720000000,"channel":"spot.orders","event":"update","result":[{"id":"11","text":"101","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"1","price":"99","left":"0","filled_amount":"1","status":"closed","finish_as":"filled"}]}`)
-	_, err := gateSpotOrderEvents(raw, instrument)
-	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+	events, err := gateSpotOrderEvents(raw, instrument)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("events = %+v err = %v, want none", events, err)
+	}
+}
+
+func TestGatePublicWebSocketForeignBookIsIgnorable(t *testing.T) {
+	instrument := gateTestInstrument(exchange.ProductSpot)
+	raw := []byte(`{"time":1720000000,"channel":"spot.order_book","event":"update","result":{"t":1720000000000,"s":"ETH_USDT","lastUpdateId":1,"bids":[["99","1"]],"asks":[["100","1"]]}}`)
+	_, err := gateSpotOrderBookEvent(raw, instrument)
+	if !errors.Is(err, errGateForeignInstrument) {
+		t.Fatalf("err = %v, want errGateForeignInstrument", err)
+	}
 }
 
 func TestGateWebSocketCommandsUseRESTBridge(t *testing.T) {

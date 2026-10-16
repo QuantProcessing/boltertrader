@@ -18,6 +18,22 @@ type perpReferenceEvent struct {
 	DerivativeValid bool
 }
 
+func derivativeFromReference(event perpReferenceEvent) exchange.DerivativeReferenceEvent {
+	derivative := exchange.DerivativeReferenceEvent{}
+	if event.MarkValid {
+		derivative.Instrument = event.MarkPrice.Instrument
+		derivative.MarkPrice = exchange.OptionalDecimal{Value: event.MarkPrice.Price, Valid: true}
+		derivative.MarkObservedAt = event.MarkPrice.Time
+	}
+	if event.FundingValid {
+		derivative.Instrument = event.FundingRate.Instrument
+		derivative.FundingRate = exchange.OptionalDecimal{Value: event.FundingRate.Rate, Valid: true}
+		derivative.NextFundingTime = event.FundingRate.NextAt
+		derivative.FundingObservedAt = event.FundingRate.EffectiveAt
+	}
+	return derivative
+}
+
 type perpWSBackend interface {
 	publicWSBackend
 	StartReference(context.Context, exchange.Instrument, streamCallbacks[perpReferenceEvent]) (func() error, error)
@@ -78,6 +94,11 @@ func (topic *referenceTopic) callbacks() streamCallbacks[perpReferenceEvent] {
 				for _, subscription := range funding {
 					subscription.emit(event.FundingRate)
 				}
+			}
+			if !event.DerivativeValid && (event.MarkValid || event.FundingValid) {
+				// Venues that publish mark and funding separately still serve
+				// derivative-reference subscribers with the fields they have.
+				event.Derivative, event.DerivativeValid = derivativeFromReference(event), true
 			}
 			if event.DerivativeValid {
 				topic.mu.Lock()

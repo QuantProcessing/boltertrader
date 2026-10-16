@@ -1,30 +1,11 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { App } from "@/app/App";
-import "@/styles/app.css";
+import { App } from "./app";
+import "./styles.css";
 
-async function enableMocking(): Promise<void> {
-  if (import.meta.env.VITE_BOLTER_MOCK !== "1") return;
-  const { installMockRealtime, startWorker } = await import("@/mocks/browser");
-  await startWorker();
-  // MSW also installs a WebSocket interceptor. Our complete local socket must
-  // replace it afterwards, otherwise its passthrough opens an orphan socket
-  // when React releases a connecting subscription during StrictMode startup.
-  installMockRealtime();
-}
-
-const container = document.getElementById("root");
-
-if (!container) {
-  throw new Error("#root is missing from index.html");
-}
-
-void enableMocking().then(() => {
-  const root = createRoot(container);
-  root.render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  );
-});
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);

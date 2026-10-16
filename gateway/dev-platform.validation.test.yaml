@@ -1,8 +1,0 @@
-server:
-  startup_profile: migration-validation
-  listen: 127.0.0.1:0
-  auth_token_ref: env://BT_DEV_GATEWAY_TOKEN
-  internal_listen: 127.0.0.1:18082
-  internal_auth_token_ref: env://BT_DEV_GATEWAY_TOKEN
-postgres:
-  dsn_ref: env://BT_DEV_GATEWAY_POSTGRES_DSN

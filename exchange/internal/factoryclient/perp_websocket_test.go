@@ -77,6 +77,10 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 	if got := <-mark.Events(); !got.Price.Equal(decimal.RequireFromString("3000.25")) {
 		t.Fatalf("mark = %+v", got)
 	}
+	// Derivative-reference subscribers also receive split mark updates.
+	if got := <-derivative.Events(); !got.MarkPrice.Valid || !got.MarkPrice.Value.Equal(decimal.RequireFromString("3000.25")) || got.FundingRate.Valid {
+		t.Fatalf("derivative from mark = %+v", got)
+	}
 	select {
 	case got := <-funding.Events():
 		t.Fatalf("mark-only native event leaked to funding subscribers: %+v", got)
@@ -93,6 +97,9 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 	})
 	if got := <-funding.Events(); !got.Rate.Equal(decimal.RequireFromString("0.0001")) {
 		t.Fatalf("funding = %+v", got)
+	}
+	if got := <-derivative.Events(); !got.FundingRate.Valid || got.MarkPrice.Valid {
+		t.Fatalf("derivative from funding = %+v", got)
 	}
 	select {
 	case got := <-mark.Events():

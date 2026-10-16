@@ -14,7 +14,10 @@ import (
 
 // These are local operating ceilings, not a model of all venue quotas. They limit this
 // Gateway process, not other processes or external callers sharing its IP/UID.
-var localUnitsPerMinute = map[string]int{"binance": 1200, "aster": 1200, "bybit": 1200, "bitget": 600, "okx": 600, "gate": 600, "hyperliquid": 600, "lighter": 300, "nado": 300}
+//
+// Hyperliquid documents 1200 weight per minute per IP for REST; its policy
+// costs (internal/venuehttp) are expressed in that weight.
+var localUnitsPerMinute = map[string]int{"binance": 1200, "aster": 1200, "bybit": 1200, "bitget": 600, "okx": 600, "gate": 600, "hyperliquid": 1200, "lighter": 300, "nado": 300}
 
 type Transport struct {
 	coordinator *Coordinator

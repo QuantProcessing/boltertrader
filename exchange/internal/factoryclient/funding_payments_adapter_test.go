@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestBinanceFundingPaymentsMapsSignedIncomeAndContinuation(t *testing.T) {
-	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	start := recentFundingWindowStart() // inside Binance's 3-month income retention
 	end := start.Add(time.Hour)
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +32,7 @@ func TestBinanceFundingPaymentsMapsSignedIncomeAndContinuation(t *testing.T) {
 		}
 		switch query.Get("page") {
 		case "1":
-			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","incomeType":"FUNDING_FEE","income":"-0.125","asset":"USDT","time":1782864001000,"tranId":123,"tradeId":"456","info":"funding fee"}]`))
+			_, _ = w.Write([]byte(fmt.Sprintf(`[{"symbol":"BTCUSDT","incomeType":"FUNDING_FEE","income":"-0.125","asset":"USDT","time":%d,"tranId":123,"tradeId":"456","info":"funding fee"}]`, start.Add(time.Second).UnixMilli())))
 		case "2":
 			_, _ = w.Write([]byte(`[]`))
 		default:
@@ -71,7 +72,7 @@ func TestBinanceFundingPaymentsMapsSignedIncomeAndContinuation(t *testing.T) {
 }
 
 func TestBinanceFundingPaymentsAllInstrumentEmptyAndCursorRejection(t *testing.T) {
-	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	start := recentFundingWindowStart() // inside Binance's 3-month income retention
 	end := start.Add(time.Hour)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("symbol") != "" {
@@ -791,4 +792,10 @@ func bybitFundingPaymentInstrument() exchange.Instrument {
 		exchange.OptionalDecimal{Value: decimal.NewFromInt(5), Valid: true},
 		oneContract(),
 	)
+}
+
+// recentFundingWindowStart is a whole UTC hour roughly one week ago: old enough
+// to be settled history, recent enough to be inside every venue's retention.
+func recentFundingWindowStart() time.Time {
+	return time.Now().UTC().Add(-7 * 24 * time.Hour).Truncate(time.Hour)
 }
