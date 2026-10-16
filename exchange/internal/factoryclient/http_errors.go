@@ -10,7 +10,8 @@ import (
 )
 
 // Strip native causes at the adapter boundary while retaining structured,
-// non-secret transport evidence. SDK callers can still inspect native errors.
+// non-secret transport evidence. The venue's own rejection text is kept in
+// Details().VenueMessage; nothing else from the native error crosses.
 func normalizeHTTPError(mapped, original error, venue exchange.Venue, product exchange.Product, operation string) error {
 	if mapped == nil {
 		return nil
@@ -64,7 +65,7 @@ func normalizeHTTPError(mapped, original error, venue exchange.Venue, product ex
 			(local.Action == "cancel" && (op == "cancel" || op == "cancelorder"))
 	}
 	details.Venue, details.Product, details.Operation = venue, product, operation
-	return exchange.NewError(kind, details)
+	return withVenueMessage(exchange.NewError(kind, details), nil, original)
 }
 
 func normalizeHTTPCommand(ack *exchange.OrderAcknowledgement, mapped *error, original error, venue exchange.Venue, product exchange.Product, operation string) {
@@ -77,4 +78,5 @@ func normalizeHTTPCommand(ack *exchange.OrderAcknowledgement, mapped *error, ori
 		*mapped = exchange.NewError(exchange.KindAmbiguousOutcome, exchange.ErrorDetails{Venue: venue, Product: product, Operation: operation, Code: ack.VenueCode, SafeMessage: "order command outcome is unknown after possible send"})
 	}
 	*mapped = normalizeHTTPError(*mapped, original, venue, product, operation)
+	*mapped = withVenueMessage(*mapped, ack, original)
 }

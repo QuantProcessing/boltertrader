@@ -114,7 +114,7 @@ func run() error {
 			slog.Warn("market unavailable", "market", status.Market, "error", status.Error)
 		}
 	}
-	go catalog.Run(ctx, 15*time.Minute)
+	go catalog.Run(ctx, 15*time.Minute, 30*time.Second)
 
 	manager := account.NewManager(accounts, catalog, httpClient)
 	manager.Start()

@@ -306,14 +306,18 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			result := test.run()
+			// The venue's rejection text is surfaced deliberately, but only in
+			// the dedicated VenueMessage fields, never in Error()/SafeMessage.
 			assertExchangeErrorRedacts(t, result.err, canary)
-			for _, rendered := range []string{
-				result.ack.VenueMessage,
-				fmt.Sprintf("%v", result.ack),
-				fmt.Sprintf("%+v", result.ack),
-			} {
-				if strings.Contains(rendered, canary) {
-					t.Fatalf("ack leaked canary: %s", rendered)
+			// The Aster SDK redacts venue text at construction; Aster is not a
+			// gateway venue, so its stricter policy stays.
+			var normalized *exchange.Error
+			if errors.As(result.err, &normalized) && normalized.Kind() == exchange.KindVenueRejected && !strings.HasPrefix(test.name, "aster") {
+				if got := normalized.Details().VenueMessage; got != canary {
+					t.Fatalf("VenueMessage = %q, want the venue's text", got)
+				}
+				if result.ack.State == exchange.AckRejected && result.ack.VenueMessage != canary {
+					t.Fatalf("ack.VenueMessage = %q, want the venue's text", result.ack.VenueMessage)
 				}
 			}
 		})
@@ -329,12 +333,13 @@ func assertExchangeErrorRedacts(t *testing.T, err error, canary string) {
 	if !errors.As(err, &normalized) {
 		t.Fatalf("error type = %T, want *exchange.Error", err)
 	}
+	details := normalized.Details()
+	details.VenueMessage = "" // deliberately carries the venue's text; checked separately
 	for _, rendered := range []string{
 		err.Error(),
-		normalized.Details().SafeMessage,
+		details.SafeMessage,
 		fmt.Sprintf("%v", err),
-		fmt.Sprintf("%+v", err),
-		fmt.Sprintf("%#v", err),
+		fmt.Sprintf("%+v", details),
 	} {
 		if strings.Contains(rendered, canary) {
 			t.Fatalf("normalized error leaked canary: %s", rendered)

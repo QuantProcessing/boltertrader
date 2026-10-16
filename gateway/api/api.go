@@ -2,7 +2,6 @@
 package api
 
 import (
-	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -242,49 +241,46 @@ func (server *Server) respond(w http.ResponseWriter, value any, err error) {
 	writeJSON(w, http.StatusOK, value)
 }
 
-// fail maps errors to HTTP. Only credential-free messages leave the process.
+// fail maps errors to HTTP. Venue failures are classified once, the same way
+// for every venue (see account.Category), so clients need no venue knowledge.
+// Only credential-free text leaves the process: our own messages and the
+// venue's rejection text.
 func (server *Server) fail(w http.ResponseWriter, err error) {
-	var normalized *exchange.Error
 	switch {
 	case errors.Is(err, account.ErrNotFound):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "account not found")
+		return
 	case errors.Is(err, market.ErrUnknownInstrument):
 		writeError(w, http.StatusNotFound, "UNKNOWN_INSTRUMENT", err.Error())
+		return
 	case errors.Is(err, account.ErrInvalidRequest):
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-	case errors.Is(err, account.ErrCredentialFailed):
-		writeError(w, http.StatusUnprocessableEntity, "CREDENTIAL_REJECTED", err.Error())
-	case errors.Is(err, account.ErrUnsupported), errors.Is(err, exchange.ErrUnsupported):
+		return
+	case errors.Is(err, account.ErrUnsupported):
 		writeError(w, http.StatusNotImplemented, "UNSUPPORTED", "operation is not supported for this venue")
-	case errors.As(err, &normalized):
-		details := normalized.Details()
-		message := details.SafeMessage
-		if message == "" {
-			message = string(normalized.Kind())
-		}
-		status := http.StatusBadGateway
-		switch normalized.Kind() {
-		case exchange.KindInvalidRequest:
-			status = http.StatusBadRequest
-		case exchange.KindAuthentication, exchange.KindPermission:
-			status = http.StatusForbidden
-		case exchange.KindRateLimit:
-			status = http.StatusTooManyRequests
-		case exchange.KindNotFound:
-			status = http.StatusNotFound
-		case exchange.KindVenueRejected:
-			status = http.StatusUnprocessableEntity
-		}
-		writeJSON(w, status, map[string]any{"error": map[string]any{
-			"code": strings.ToUpper(string(normalized.Kind())), "message": message, "venueCode": details.Code,
-			"retryable": normalized.Kind() == exchange.KindTransport || normalized.Kind() == exchange.KindRateLimit,
-		}})
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		writeError(w, http.StatusGatewayTimeout, "TIMEOUT", "venue did not answer in time")
-	default:
-		slog.Error("unclassified gateway error", "error", err)
-		writeError(w, http.StatusBadGateway, "VENUE_ERROR", "venue request failed")
+		return
 	}
+	failure := account.Classify(err)
+	status := map[account.Category]int{
+		account.CategoryNetwork:     http.StatusBadGateway,
+		account.CategoryRejected:    http.StatusUnprocessableEntity,
+		account.CategoryCredentials: http.StatusUnprocessableEntity,
+		account.CategoryRateLimited: http.StatusTooManyRequests,
+		account.CategoryInvalid:     http.StatusBadRequest,
+		account.CategoryUnsupported: http.StatusNotImplemented,
+		account.CategoryVenue:       http.StatusBadGateway,
+	}[failure.Category]
+	if failure.Category == account.CategoryVenue {
+		slog.Warn("venue error", "error", err)
+	}
+	writeJSON(w, status, map[string]any{"error": map[string]any{
+		"code":         strings.ToUpper(string(failure.Category)),
+		"category":     failure.Category,
+		"message":      failure.Message(),
+		"venueCode":    failure.Code,
+		"venueMessage": failure.VenueMessage,
+		"retryable":    failure.Retryable,
+	}})
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, target any) bool {

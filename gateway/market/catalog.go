@@ -77,8 +77,20 @@ func NewCatalog(httpClient *http.Client) (*Catalog, error) {
 // Refresh reloads every market concurrently and returns once all attempts
 // finished. Failures are recorded per market and logged, never fatal.
 func (catalog *Catalog) Refresh(ctx context.Context) {
+	markets := make([]venue.Market, 0, len(catalog.connectors))
+	for market := range catalog.connectors {
+		markets = append(markets, market)
+	}
+	catalog.refreshMarkets(ctx, markets)
+}
+
+func (catalog *Catalog) refreshMarkets(ctx context.Context, markets []venue.Market) {
 	var wg sync.WaitGroup
-	for _, item := range catalog.connectors {
+	for _, market := range markets {
+		item := catalog.connectors[market]
+		if item == nil {
+			continue
+		}
 		wg.Add(1)
 		go func(item *connector) {
 			defer wg.Done()
@@ -92,24 +104,53 @@ func (catalog *Catalog) Refresh(ctx context.Context) {
 				catalog.mu.Unlock()
 				return
 			}
+			catalog.mu.RLock()
+			recovered := catalog.loadErrors[item.market] != ""
+			catalog.mu.RUnlock()
 			catalog.publish(item.market, natives)
+			if recovered {
+				slog.Info("market recovered", "market", item.market.String(), "instruments", len(natives))
+			}
 		}(item)
 	}
 	wg.Wait()
 }
 
-// Run refreshes the catalog on an interval until ctx ends.
-func (catalog *Catalog) Run(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+// Run refreshes the catalog every interval until ctx ends. While any market
+// has never loaded (e.g. the venue was unreachable at startup), it retries
+// that market's load every retry period instead of waiting a full interval.
+func (catalog *Catalog) Run(ctx context.Context, interval, retry time.Duration) {
+	next := time.Now().Add(interval)
 	for {
+		wait := time.Until(next)
+		if missing := catalog.unloadedMarkets(); len(missing) > 0 && retry < wait {
+			wait = retry
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			catalog.Refresh(ctx)
+		case <-time.After(wait):
+		}
+		if time.Now().Before(next) {
+			catalog.refreshMarkets(ctx, catalog.unloadedMarkets())
+			continue
+		}
+		catalog.Refresh(ctx)
+		next = time.Now().Add(interval)
+	}
+}
+
+// unloadedMarkets lists markets with no instruments loaded yet.
+func (catalog *Catalog) unloadedMarkets() []venue.Market {
+	catalog.mu.RLock()
+	defer catalog.mu.RUnlock()
+	var missing []venue.Market
+	for _, market := range venue.Markets {
+		if len(catalog.byMarket[market]) == 0 {
+			missing = append(missing, market)
 		}
 	}
+	return missing
 }
 
 func (catalog *Catalog) publish(market venue.Market, natives []exchange.Instrument) {

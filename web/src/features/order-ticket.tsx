@@ -113,6 +113,8 @@ export function OrderTicket() {
       } else {
         toast.push({ kind: "error", title: outcome.kind === "rejected" ? "Order rejected" : "Order outcome unknown", detail: outcome.message });
       }
+    } catch (error) {
+      toast.push({ kind: "error", title: "Order failed", detail: (error as Error).message });
     } finally {
       setSubmitting(false);
     }

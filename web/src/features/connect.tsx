@@ -2,7 +2,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 
-import { api } from "@/api/client";
+import { ApiError, api } from "@/api/client";
 import type { VenueInfo } from "@/api/types";
 import { useWorkspace } from "@/state/workspace";
 import { Dialog, PrimaryButton, cx } from "@/ui/primitives";
@@ -27,14 +27,14 @@ export function ConnectDialog() {
   const [label, setLabel] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ text: string; network: boolean } | null>(null);
 
   useEffect(() => {
     if (!connectOpen) {
       setVenue(null);
       setValues({});
       setLabel("");
-      setError("");
+      setError(null);
     }
   }, [connectOpen]);
 
@@ -42,7 +42,7 @@ export function ConnectDialog() {
     event.preventDefault();
     if (!venue) return;
     setBusy(true);
-    setError("");
+    setError(null);
     try {
       const account = await api.createAccount(venue.venue, label, values);
       setValues({});
@@ -50,7 +50,10 @@ export function ConnectDialog() {
       setAccountId(account.id);
       setConnectOpen(false);
     } catch (e) {
-      setError((e as Error).message);
+      // A network failure says nothing about the key: keep the form filled
+      // so the user can simply retry.
+      const network = e instanceof ApiError && (e.category === "network" || e.category === "venue_error" || e.category === "rate_limited");
+      setError({ text: (e as Error).message, network });
     } finally {
       setBusy(false);
     }
@@ -95,9 +98,11 @@ export function ConnectDialog() {
             <span className="text-muted">Label (optional)</span>
             <input value={label} maxLength={64} onChange={(e) => setLabel(e.target.value)} placeholder={venueLabel(venue.venue)} className="h-9 rounded-lg border border-line bg-transparent px-3 outline-none placeholder:text-faint focus:border-line-strong" />
           </label>
-          <PrimaryButton type="submit" disabled={busy} className="mt-3">{busy ? "Verifying with exchange…" : "Connect"}</PrimaryButton>
-          {error && <div className="text-center text-down">{error}</div>}
-          <button type="button" onClick={() => { setVenue(null); setValues({}); setError(""); }} className="text-muted hover:text-text">← Choose another exchange</button>
+          <PrimaryButton type="submit" disabled={busy} className="mt-3">
+            {busy ? "Verifying with exchange…" : error?.network ? "Retry" : "Connect"}
+          </PrimaryButton>
+          {error && <div className={cx("text-center", error.network ? "text-text-2" : "text-down")}>{error.text}</div>}
+          <button type="button" onClick={() => { setVenue(null); setValues({}); setError(null); }} className="text-muted hover:text-text">← Choose another exchange</button>
         </form>
       )}
     </Dialog>

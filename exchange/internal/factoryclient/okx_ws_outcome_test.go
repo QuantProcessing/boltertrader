@@ -41,8 +41,11 @@ func TestOKXCommandTransportAckMapsWSAPIErrorSafely(t *testing.T) {
 	if !errors.Is(err, exchange.ErrVenueRejected) || ack.State != exchange.AckRejected || ack.VenueCode != "51000" {
 		t.Fatalf("rejected ack=%+v err=%v", ack, err)
 	}
-	if strings.Contains(err.Error(), "secret") || strings.Contains(ack.VenueMessage, "secret") {
-		t.Fatalf("unsafe venue detail leaked: ack=%+v err=%v", ack, err)
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("venue text leaked into the error string: %v", err)
+	}
+	if ack.VenueMessage != "secret venue rejection detail" {
+		t.Fatalf("ack.VenueMessage = %q, want the venue's rejection text", ack.VenueMessage)
 	}
 
 	ack, err = okxCommandTransportAck(exchange.ProductPerp, exchange.OrderOperationCancel, instrument, "1", "", &okx.APIError{

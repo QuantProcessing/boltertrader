@@ -43,11 +43,12 @@ const (
 
 // PlaceResult reports what the venue said. Order is present when accepted.
 type PlaceResult struct {
-	Status       string `json:"status"`
-	Order        *Order `json:"order,omitempty"`
-	VenueCode    string `json:"venueCode,omitempty"`
-	VenueMessage string `json:"venueMessage,omitempty"`
-	Message      string `json:"message,omitempty"`
+	Status       string   `json:"status"`
+	Order        *Order   `json:"order,omitempty"`
+	Category     Category `json:"category,omitempty"` // for rejected: why (see Category)
+	VenueCode    string   `json:"venueCode,omitempty"`
+	VenueMessage string   `json:"venueMessage,omitempty"`
+	Message      string   `json:"message,omitempty"` // display text
 }
 
 // maxClientOrderID is the exchange layer's portable uint48 ceiling.
@@ -144,25 +145,33 @@ func classify(id venue.InstrumentID, request exchange.PlaceOrderRequest, ack exc
 	if err != nil {
 		var normalized *exchange.Error
 		isNormalized := errors.As(err, &normalized)
+		failure := Classify(err)
+		rejected := func() PlaceResult {
+			result := PlaceResult{Status: OutcomeRejected, Category: failure.Category, VenueCode: failure.Code, VenueMessage: failure.VenueMessage, Message: failure.Message()}
+			if ack.VenueCode != "" {
+				result.VenueCode = ack.VenueCode
+			}
+			if result.VenueMessage == "" && ack.State == exchange.AckRejected {
+				result.VenueMessage = ack.VenueMessage
+			}
+			return result
+		}
 		switch {
 		case isNormalized && normalized.Details().CommandNotSent:
-			return PlaceResult{Status: OutcomeRejected, Message: safeMessage(err), VenueCode: normalized.Details().Code}
-		case ack.State == exchange.AckRejected:
-			return PlaceResult{Status: OutcomeRejected, VenueCode: ack.VenueCode, VenueMessage: ack.VenueMessage, Message: safeMessage(err)}
-		case errors.Is(err, exchange.ErrVenueRejected), errors.Is(err, exchange.ErrAuthentication), errors.Is(err, exchange.ErrPermission):
-			code := ""
-			if isNormalized {
-				code = normalized.Details().Code
-			}
-			return PlaceResult{Status: OutcomeRejected, VenueCode: code, Message: safeMessage(err)}
+			// Proven never sent (e.g. local rate limit): safe to treat as refused.
+			return rejected()
+		case ack.State == exchange.AckRejected,
+			errors.Is(err, exchange.ErrVenueRejected), errors.Is(err, exchange.ErrAuthentication), errors.Is(err, exchange.ErrPermission):
+			return rejected()
 		case isNormalized && normalized.Details().HTTPStatus == 0 &&
 			(errors.Is(err, exchange.ErrInvalidRequest) || errors.Is(err, exchange.ErrUnsupported) || errors.Is(err, exchange.ErrInvalidConfig)):
 			// Local validation failed before anything was sent.
-			return PlaceResult{Status: OutcomeRejected, Message: safeMessage(err)}
+			return rejected()
 		case errors.Is(err, exchange.ErrRateLimit) && isNormalized && normalized.Details().HTTPStatus == 0:
-			return PlaceResult{Status: OutcomeRejected, Message: "local rate limit; order not sent"}
+			return rejected()
 		default:
-			return PlaceResult{Status: OutcomeUnknown, Message: "order outcome unknown; look it up by clientOrderId before retrying"}
+			// Includes network failures after a possible send: never "rejected".
+			return PlaceResult{Status: OutcomeUnknown, Category: failure.Category, Message: "Order outcome unknown — checking with the exchange before anything else."}
 		}
 	}
 	order := Order{
@@ -344,6 +353,7 @@ func (rt *runtime) SetLeverage(ctx context.Context, instrument market.Instrument
 		return 0, fmt.Errorf("%w: leverage must be between 1 and 200", ErrInvalidRequest)
 	}
 	result, err := client.perp.SetLeverage(ctx, exchange.SetLeverageRequest{Instrument: instrument.Native(), Leverage: leverage})
+	slog.Info("leverage set", "account", rt.id, "inst", instrument.ID, "requested", leverage, "effective", result.Effective, "error", err)
 	if err != nil {
 		return 0, err
 	}

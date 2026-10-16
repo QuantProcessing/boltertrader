@@ -19,8 +19,8 @@ describe("submitOrder", () => {
   });
 
   it("surfaces venue rejection text", async () => {
-    const d = deps({ place: vi.fn().mockResolvedValue({ status: "rejected", venueMessage: "Margin is insufficient." }) });
-    expect(await submitOrder("acc", order, d)).toEqual({ kind: "rejected", message: "Margin is insufficient." });
+    const d = deps({ place: vi.fn().mockResolvedValue({ status: "rejected", category: "rejected", message: "Margin is insufficient.", venueMessage: "Margin is insufficient.", venueCode: "-2019" }) });
+    expect(await submitOrder("acc", order, d)).toEqual({ kind: "rejected", message: "Margin is insufficient. (-2019)" });
   });
 
   it("looks up an unknown outcome with the same client id and never re-places", async () => {
@@ -38,6 +38,13 @@ describe("submitOrder", () => {
     const outcome = await submitOrder("acc", order, d);
     expect(outcome.kind).toBe("unknown");
     expect(d.lookup).toHaveBeenCalledTimes(3);
+  });
+
+  it("renders the live Binance -2019 body as the venue's text", async () => {
+    // Exact body returned by the gateway for a real -2019 on 2026-10-16.
+    const body = { status: "rejected", category: "rejected", venueCode: "-2019", venueMessage: "Margin is insufficient.", message: "Margin is insufficient." };
+    const d = deps({ place: vi.fn().mockResolvedValue(body) });
+    expect(await submitOrder("acc", order, d)).toEqual({ kind: "rejected", message: "Margin is insufficient. (-2019)" });
   });
 
   it("treats a 4xx as definite", async () => {

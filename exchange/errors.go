@@ -63,6 +63,11 @@ type ErrorDetails struct {
 	SafeMessage string        `json:"safe_message,omitempty"`
 	RetryAfter  time.Duration `json:"retry_after,omitempty"`
 	HTTPStatus  int           `json:"http_status,omitempty"`
+	// VenueMessage is the venue's own explanation of an application-level
+	// rejection (e.g. "Margin is insufficient."). It is taken only from a
+	// decoded venue error body, never from transport errors, request data or
+	// credentials, and is capped in length.
+	VenueMessage string `json:"venue_message,omitempty"`
 	// CommandNotSent is proof that the command request was blocked before transport.
 	CommandNotSent bool `json:"command_not_sent,omitempty"`
 }

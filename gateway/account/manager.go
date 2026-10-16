@@ -144,8 +144,14 @@ func (manager *Manager) Create(ctx context.Context, request CreateRequest) (Acco
 	for _, client := range clients {
 		if _, err := rt.fetchBalances(verifyCtx, client); err != nil {
 			rt.close()
-			slog.Warn("credential verification failed", "venue", venueName, "market", client.market.String(), "error", err)
-			return AccountView{}, fmt.Errorf("%w on %s: %s", ErrCredentialFailed, client.market, safeMessage(err))
+			failure := Classify(err)
+			slog.Warn("account verification failed", "venue", venueName, "market", client.market.String(), "category", failure.Category, "error", err)
+			if failure.Category == CategoryCredentials {
+				return AccountView{}, fmt.Errorf("%w: %w", ErrCredentialFailed, failure)
+			}
+			// Not a verdict on the key: the venue was unreachable or answered
+			// unexpectedly. Report that, so the user retries rather than re-typing keys.
+			return AccountView{}, failure
 		}
 	}
 	if label == "" {

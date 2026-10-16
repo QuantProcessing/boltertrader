@@ -506,7 +506,7 @@ func TestBinancePrivateWSCommandErrorsPreserveOutcomeBoundaries(t *testing.T) {
 				if !errors.Is(err, tc.wantErr) || ack.State != tc.wantState {
 					t.Fatalf("ack=%+v err=%v, want state=%s error=%v", ack, err, tc.wantState, tc.wantErr)
 				}
-				if strings.Contains(err.Error(), "secret") || strings.Contains(ack.VenueMessage, "secret") {
+				if strings.Contains(err.Error(), "secret") || (ack.State != exchange.AckRejected && strings.Contains(ack.VenueMessage, "secret")) {
 					t.Fatalf("unsafe venue detail leaked: ack=%+v err=%v", ack, err)
 				}
 			})
@@ -565,7 +565,7 @@ func TestBinancePrivateWSCommandErrorsPreserveOutcomeBoundaries(t *testing.T) {
 				if !errors.Is(err, tc.wantErr) || ack.State != tc.wantState {
 					t.Fatalf("ack=%+v err=%v, want state=%s error=%v", ack, err, tc.wantState, tc.wantErr)
 				}
-				if strings.Contains(err.Error(), "secret") || strings.Contains(ack.VenueMessage, "secret") {
+				if strings.Contains(err.Error(), "secret") || (ack.State != exchange.AckRejected && strings.Contains(ack.VenueMessage, "secret")) {
 					t.Fatalf("unsafe venue detail leaked: ack=%+v err=%v", ack, err)
 				}
 			})

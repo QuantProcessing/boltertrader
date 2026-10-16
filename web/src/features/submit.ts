@@ -44,7 +44,8 @@ export async function submitOrder(
   }
   if (result?.status === "accepted" && result.order) return { kind: "accepted", order: result.order };
   if (result?.status === "rejected") {
-    return { kind: "rejected", message: result.venueMessage || result.message || "Order rejected" + (result.venueCode ? ` (${result.venueCode})` : "") };
+    const text = result.message || result.venueMessage || "Order rejected";
+    return { kind: "rejected", message: result.venueCode && !text.includes(result.venueCode) ? `${text} (${result.venueCode})` : text };
   }
   return resolveUnknown(accountId, order.inst, clientOrderId, deps);
 }

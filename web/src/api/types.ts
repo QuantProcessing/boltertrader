@@ -152,8 +152,11 @@ export interface PlaceRequest {
 export interface PlaceResult {
   status: "accepted" | "rejected" | "unknown";
   order?: Order;
+  /** Why it was rejected; uniform across venues. */
+  category?: "network" | "rejected" | "credentials" | "rate_limited" | "invalid" | "unsupported" | "venue_error";
   venueCode?: string;
   venueMessage?: string;
+  /** Display text. For venue rejections this is the venue's own message. */
   message?: string;
 }
 

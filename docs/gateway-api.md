@@ -72,11 +72,30 @@ HTTP 状态：accepted → 200，rejected → 422，unknown → 202；三者 bod
 ## 4. REST
 
 鉴权：`Authorization: Bearer <GATEWAY_TOKEN>`（常量时间比较）。`/v1/health` 免鉴权。
-所有数值用十进制字符串。错误统一：
+所有数值用十进制字符串。
+
+### 错误
+
+所有交易所失败按同一套 `category` 分类，调用方无需了解具体交易所：
+
+| category | 含义 | HTTP | retryable |
+|---|---|---|---|
+| `network` | 连不上交易所 / 超时 / 交易所 5xx | 502 | 是 |
+| `rejected` | 交易所收到并拒绝（保证金不足、数量不合规…） | 422 | 否 |
+| `credentials` | key、签名或权限被拒 | 422 | 否 |
+| `rate_limited` | 交易所或本地限流 | 429 | 是 |
+| `invalid` | 请求在发往交易所前即不合法 | 400 | 否 |
+| `unsupported` | 交易所/市场不支持该操作 | 501 | 否 |
+| `venue_error` | 交易所返回无法解析的内容 | 502 | 是 |
 
 ```json
-{"error":{"code":"VENUE_REJECTED","message":"...","venueCode":"-2019","venueMessage":"Margin is insufficient.","retryable":false}}
+{"error":{"code":"REJECTED","category":"rejected","message":"Margin is insufficient.",
+          "venueCode":"-2019","venueMessage":"Margin is insufficient.","retryable":false}}
 ```
+
+`venueMessage` 是交易所自己对拒绝原因的说明，原样透传（去除控制字符，最长 240 字符）；
+只来自交易所业务错误体，绝不来自网络错误、代理页面、请求参数或凭证。
+创建账户时若是 `network`，表示无法连接交易所，不代表 key 有误。
 
 ### 公共
 ```
@@ -105,7 +124,8 @@ GET    /orders/history?inst=&limit=
 GET    /fills?inst=&start=&limit=
 POST   /orders                          {inst, side, type:"market"|"limit", qty, price?,
                                          tif:"gtc"|"ioc"|"post_only", reduceOnly, clientOrderId}
-                                        → {status:"accepted"|"rejected"|"unknown", order?, error?}
+                                        → {status:"accepted"|"rejected"|"unknown", order?, category?,
+                                           venueCode?, venueMessage?, message}
 GET    /orders/lookup?inst=&clientOrderId=   | &orderId=
 DELETE /orders/{orderId}?inst=
 PUT    /leverage                        {inst, leverage}

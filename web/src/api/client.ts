@@ -2,8 +2,18 @@ import type {
   Account, Balance, Book, Candle, Fill, Instrument, LookupResult, Order, PlaceRequest, PlaceResult, Position, Stats, VenueInfo,
 } from "./types";
 
+/** Same for every venue; see gateway account.Category. */
+export type FailureCategory = "network" | "rejected" | "credentials" | "rate_limited" | "invalid" | "unsupported" | "venue_error";
+
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string, public venueCode?: string) {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public venueCode?: string,
+    public category?: FailureCategory,
+    public retryable = false,
+  ) {
     super(message);
   }
 }
@@ -26,7 +36,14 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
   // Place returns a typed outcome on 202/422 as well.
   if (!response.ok && !(path.endsWith("/orders") && method === "POST" && payload.status)) {
     const error = payload.error ?? {};
-    throw new ApiError(response.status, error.code ?? "HTTP_" + response.status, error.message ?? response.statusText, error.venueCode);
+    throw new ApiError(
+      response.status,
+      error.code ?? "HTTP_" + response.status,
+      error.message ?? response.statusText,
+      error.venueCode,
+      error.category,
+      Boolean(error.retryable),
+    );
   }
   return payload as T;
 }
