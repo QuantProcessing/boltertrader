@@ -95,6 +95,11 @@ func run() error {
 	base.MaxIdleConns = 256
 	base.MaxIdleConnsPerHost = 16
 	base.IdleConnTimeout = 5 * time.Minute
+	// Ping an HTTP/2 connection that has been silent for 15s and drop it if the
+	// ping goes unanswered. Behind a TUN proxy a dead upstream still accepts
+	// writes, so without this one stale connection would time out every
+	// request to that venue until the process restarts.
+	base.HTTP2 = &http.HTTP2Config{SendPingTimeout: 15 * time.Second, PingTimeout: 5 * time.Second}
 	transport, err := ratelimit.NewTransport(ratelimit.NewCoordinator(time.Now), base)
 	if err != nil {
 		return err

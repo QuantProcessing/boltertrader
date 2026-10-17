@@ -3,8 +3,9 @@ name: Bolter
 description: Single-operator multi-venue trading terminal. Visual language and interaction model follow app.hyperliquid.xyz/trade.
 source: extracted 2026-10-15 from app.hyperliquid.xyz/trade (computed styles + screenshots)
 colors:
-  bg: "#0f1a1f"            # page canvas, gaps between panels
-  surface: "#1b2429"       # panels (chart, book, ticket, blotter)
+  bg: "#1b2429"            # page canvas, shows through the gaps between panels
+  surface: "#0f1a1f"       # panels (top bar, chart, book, ticket, blotter), sign-in page
+  overlay: "#1b2429"       # menus and popovers floating over panels
   surface-raised: "#273035" # inputs, segmented controls, hover rows, dialogs' controls
   border: "#273035"        # 1px panel dividers
   border-strong: "#575e62" # focused / emphasized input borders
@@ -33,13 +34,13 @@ typography:
   tiny: { fontSize: "10px" }
 rounded:
   sm: "4px"
-  md: "5px"   # small chips (leverage badge)
+  md: "5px"   # panels, small chips (leverage badge)
   lg: "8px"   # buttons, inputs, segmented controls
   xl: "12px"  # dialogs
   full: "9999px"
 spacing:
   unit: "4px"
-  panel-gap: "4px"     # canvas shows between panels
+  panel-gap: "3px"     # canvas shows between panels
   panel-padding-x: "10px"
   row-height: "24px"   # book & table rows
   control-height: "32px" # inputs, segmented, tabs
@@ -61,8 +62,9 @@ No cards, shadows, gradients or illustrations.
 
 ## Colors
 
-- The canvas (`bg`) shows through 4px gaps between flat `surface` panels.
-  Panels have no radius on desktop; separation comes from the gaps.
+- Panels (`surface`) are the darkest layer. The slightly lighter canvas
+  (`bg`) shows through 3px gaps; panels have a 5px radius and no border.
+  Menus and popovers use `overlay` with a 1px `border` and 10px radius.
 - `accent` teal is reserved for: the primary action button, the active tab
   underline/text, the slider thumb, links and positive numbers.
 - Long/short colours apply to side buttons, PnL, price change and book rows.
@@ -98,9 +100,24 @@ explain a concept are dotted-underlined (tooltip affordance).
 
 ## Components
 
-**Top bar** — logo left, nav text links (12px→14px, `text`, active = `accent`).
+**Mark** — a teal (`accent`) rounded tile (28/32, radius 8) split by a bolt
+cut out of it (`web/src/ui/logo.tsx`, `web/public/favicon.svg`). Wordmark:
+mark + "Bolter" 17px semibold, `text`. No other brand colours.
+
+**Top bar** — 56px, `surface`, flush with the panels below. Wordmark left,
+then nav items (12px, padding 8×10px): active = `accent`, hover =
+`accent-hover`, no underline or background. **More** has a 14px chevron that
+flips when open; its menu (`overlay`, 10px radius, items 12px/24px, padding
+5×10px, hover = `accent-hover` text) holds the project links.
 Right: account switcher (venue · label) or a teal **Connect** button when no
-account exists, then icon buttons (32px square, `surface-raised`, radius lg).
+account exists, then a 32px icon button (1px `border`, radius lg, `muted`
+icon; hover/open = `overlay` fill and `text` icon) for the session menu.
+
+**Sign-in page** — `surface` page, a 320px left-aligned column centred on
+screen: mark 40px, "Sign in to Bolter" 20px, one muted line, a labelled
+password field with show/hide toggle and Caps Lock hint, full-width primary
+button. Errors replace the hint under the field and turn its border pink.
+The footer tells where the first-run password is printed.
 
 **Market header** — instrument selector (icon-less name + chevron, 20px) with a
 leverage chip (`accent-soft` bg, `accent` text, radius md). Stats are label
@@ -116,7 +133,22 @@ one tab per venue), table: Market (name + max-leverage chip), Last Price,
 tick selector, unit selector. Columns Price · Size · Total. Asks above (pink
 price), spread row centred (`Spread 0.1 0.004%`), bids below (teal price).
 Cumulative depth bars drawn from the right in soft colours. Clicking a price
-fills the ticket's limit price.
+fills the ticket's limit price. The book fills its panel: rows per side are
+computed from the panel height (asks take the whole rows of the top half,
+bids the rest). When a venue streams fewer levels than fit, blank rows go on
+the outer edges so the spread stays centred.
+
+**Chart drawing tools** — a 40px vertical toolbar left of the chart (32px
+icon buttons, `text-secondary`, hover `surface-raised`, active `accent`):
+Cross · Trend line · Ray · Horizontal line · Vertical line · Rectangle ·
+Fib retracement · Measure, then Magnet (snap to OHLC), Hide, Remove all.
+Two-point tools are placed by click-click or by dragging; the tool returns to
+Cross afterwards. Drawings are grey lines (`text-secondary`), selected ones
+show teal handles and can be dragged or reshaped; Delete removes the
+selected one, Esc cancels. Horizontal lines label their price on the axis.
+Measure is transient (teal up, pink down) and shows change, %, bars and
+time. Drawings are stored per instrument in localStorage and kept across
+intervals.
 
 **Order ticket** —
 1. Top row of three equal segmented buttons: margin mode (Cross), leverage

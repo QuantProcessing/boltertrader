@@ -90,6 +90,11 @@ export function snapToStep(value: string, step: string): string {
   return fraction ? `${whole}.${fraction}` : whole;
 }
 
+const VENUE_LABEL: Record<string, string> = {
+  binance: "Binance", okx: "OKX", bybit: "Bybit", bitget: "Bitget", gate: "Gate", hyperliquid: "Hyperliquid", lighter: "Lighter",
+};
+export const venueLabel = (venue: string) => VENUE_LABEL[venue] ?? venue;
+
 export function instrumentName(id: string): string {
   const parts = id.split(":");
   return parts.slice(2).join(":");

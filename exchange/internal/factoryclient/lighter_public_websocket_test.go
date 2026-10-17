@@ -491,6 +491,17 @@ func TestLighterCandleResolutionMappingMatchesOfficialWebSocketSet(t *testing.T)
 			t.Fatalf("unsupported resolution %q was accepted", unsupported)
 		}
 	}
+	// REST candles accept the same set, so a chart can load history for
+	// every interval it can stream.
+	for resolution, duration := range want {
+		got, err := lighterInterval(resolution)
+		if err != nil || got != duration {
+			t.Fatalf("REST resolution %q = %s, %v; want %s", resolution, got, err, duration)
+		}
+	}
+	if _, err := lighterInterval("1w"); err == nil {
+		t.Fatal("REST resolution 1w was accepted")
+	}
 }
 
 func TestLighterStartBBOReportsMalformedPayloadAndRemainsConnecting(t *testing.T) {

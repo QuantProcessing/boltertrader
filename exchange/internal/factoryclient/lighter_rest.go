@@ -1653,21 +1653,15 @@ func lighterFinite(values ...float64) bool {
 	return true
 }
 
+// lighterInterval maps a REST candle resolution. The REST and WebSocket
+// candle endpoints accept the same resolution set (1m … 1d, including 30m,
+// 4h and 12h), so both share one table.
 func lighterInterval(interval string) (time.Duration, error) {
-	switch interval {
-	case "1m":
-		return time.Minute, nil
-	case "5m":
-		return 5 * time.Minute, nil
-	case "15m":
-		return 15 * time.Minute, nil
-	case "1h":
-		return time.Hour, nil
-	case "1d":
-		return 24 * time.Hour, nil
-	default:
+	duration, err := lighterWSCandleInterval(interval)
+	if err != nil {
 		return 0, errors.New("unsupported interval")
 	}
+	return duration, nil
 }
 
 func lighterReady(ctx context.Context, product exchange.Product, operation string, sdk *lighter.Client) error {

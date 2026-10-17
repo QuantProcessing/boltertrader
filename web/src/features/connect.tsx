@@ -134,7 +134,7 @@ export function AccountSwitcher() {
         <span className="text-muted">▾</span>
       </Popover.Trigger>
       <Popover.Portal>
-        <Popover.Content align="end" sideOffset={6} className="z-40 w-72 rounded-lg border border-line bg-surface p-1 shadow-2xl">
+        <Popover.Content align="end" sideOffset={6} className="z-40 w-72 rounded-[10px] border border-line bg-overlay p-1 shadow-2xl">
           {accounts.map((item) => (
             <div key={item.id} className={cx("flex items-center gap-2 rounded-md px-2 py-2", item.id === account.id && "bg-raised")}>
               <button className="flex flex-1 flex-col items-start" onClick={() => { setAccountId(item.id); setOpen(false); }}>

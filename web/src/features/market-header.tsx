@@ -2,15 +2,12 @@ import * as Popover from "@radix-ui/react-popover";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Instrument } from "@/api/types";
-import { compact, countdown, pct, price, signed } from "@/lib/format";
+import { compact, countdown, pct, price, signed, venueLabel } from "@/lib/format";
 import { useInstrument, useInstruments, useLastPrice, useNow, useStats, useTicker } from "@/state/hooks";
 import { useWorkspace } from "@/state/workspace";
 import { cx } from "@/ui/primitives";
 
-const VENUE_LABEL: Record<string, string> = {
-  binance: "Binance", okx: "OKX", bybit: "Bybit", bitget: "Bitget", gate: "Gate", hyperliquid: "Hyperliquid", lighter: "Lighter",
-};
-export const venueLabel = (venue: string) => VENUE_LABEL[venue] ?? venue;
+export { venueLabel } from "@/lib/format";
 
 export function MarketHeader() {
   const { instrumentId } = useWorkspace();
@@ -120,7 +117,7 @@ function InstrumentPicker() {
         <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-accent">{venueLabel(instrument?.venue ?? "")} · {instrument?.product === "perp" ? "Perp" : "Spot"}</span>
       </Popover.Trigger>
       <Popover.Portal>
-        <Popover.Content align="start" sideOffset={8} className="z-40 w-[min(760px,calc(100vw-16px))] rounded-lg border border-line bg-surface shadow-2xl">
+        <Popover.Content align="start" sideOffset={8} className="z-40 w-[min(760px,calc(100vw-16px))] rounded-[10px] border border-line bg-overlay shadow-2xl">
           <div className="p-3">
             <input
               autoFocus
